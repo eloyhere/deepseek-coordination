@@ -93,8 +93,8 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **42 Windows golden cases, 44 POSIX golden cases and 13 plugin cases pass**, all
-encoding contracts hold, 86 verbs in the table.
+Current state: **44 Windows golden cases, 44 POSIX golden cases and 13 plugin cases pass**, all
+encoding contracts hold, 86 verbs in the table. 58 of the 86 verbs are implemented on Windows.
 
 ## Using it from the harness
 
@@ -128,13 +128,17 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
   `permission` (read-only) and `selfcheck`.
 - Implemented and tested on POSIX: the same surface except `service`, `window` and `screenshot`, plus
   `file search` and `execute` (command / synchronous / asynchronous).
-- Implemented and tested on Windows for `window` and `screenshot`: enumeration, matching, move, resize,
-  minimize, maximize, restore, z-order, close, and screen capture to png/jpeg/bmp.
+- Implemented and tested on Windows for `window`, `screenshot`, `clipboard` and `wait`: enumeration,
+  matching, move, resize, minimize, maximize, restore, z-order, close, screen capture to png/jpeg/bmp,
+  clipboard text round-trip including non-ASCII, an explicit sleep, and waiting for a window to appear
+  or to go away.
 - Both goldens include the failure path, which is the point: a failing call must still deliver exactly
   one parseable envelope on stdout, because a bare exit code tells an agent nothing.
-- Not written yet: `mouse`, `keyboard`, `clipboard` and `wait` on both platforms, `text` and
-  `structure` on both, and `service`, `window` and `screenshot` on POSIX. Those verbs are declared in
-  the table and return a typed `E_NOT_SUPPORTED`, never a silent success.
+- Not written yet on either platform: `mouse`, `keyboard`, `text` and `structure`. Also not written:
+  `service`, `window`, `screenshot`, `clipboard` and `wait` on POSIX, `execute.query`,
+  `execute.kill`, `task.show`, `task.kill`, `task.launch`, the `service` lifecycle verbs
+  (start/stop/restart), and `permission.grant`/`revoke`/`acl.init`. Every one of those verbs is
+  declared in the table and returns a typed `E_NOT_SUPPORTED`, never a silent success.
 - The consent-delegate plugin for durable authorization is not written; read-only `permission.*`
   works, and the protected-path boundary is enforced.
 

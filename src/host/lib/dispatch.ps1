@@ -132,6 +132,10 @@ function Invoke-Dispatch {
     'window.maximize' { return (Invoke-WindowMaximize -Parsed $inner) }
     'window.restore' { return (Invoke-WindowRestore -Parsed $inner) }
     'screenshot' { return (Invoke-Screenshot -Parsed $inner) }
+    'clipboard.read' { return (Invoke-ClipboardRead -Parsed $inner) }
+    'clipboard.write' { return (Invoke-ClipboardWrite -Parsed $inner) }
+    'wait.ms' { return (Invoke-WaitMs -Parsed $inner) }
+    'wait.window' { return (Invoke-WaitWindow -Parsed $inner) }
 
     default {
       throw (New-OsError -Code 'E_NOT_SUPPORTED' -Message ("verb '{0}' is not implemented in this build" -f $target.key) `

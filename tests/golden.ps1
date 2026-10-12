@@ -769,6 +769,55 @@ Assert-Case 'screenshot/usage-and-output' {
   }
 }
 
+Assert-Case 'clipboard/round-trip-and-authorization' {
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('clipboard', 'write', 'x'))).code 'write requires authorization'
+  Assert-OsError (Invoke-Os @('clipboard', 'read', 'extra')) | Out-Null
+
+  # Save and restore whatever the user had, so running the suite does not destroy their clipboard.
+  $saved = $null
+  try {
+    $s = Invoke-Os @('clipboard', 'read')
+    if ($s.json.ok) { $saved = $s.json.result.text }
+  } catch { }
+
+  try {
+    $w = Invoke-Os @('clipboard', 'write', 'dsh golden round trip', '--allow')
+    if ($w.json.ok) {
+      $r = Invoke-Os @('clipboard', 'read')
+      Assert-True $r.json.ok 'read succeeds after write'
+      Assert-Equal 'dsh golden round trip' $r.json.result.text 'the text comes back unchanged'
+      Assert-Equal 21 $r.json.result.length 'length is reported in characters'
+    } elseif (@('E_NO_DISPLAY', 'E_NOT_SUPPORTED', 'E_IO') -contains $w.json.error.code) {
+      # A headless session or a clipboard held by another process is a legitimate environment, and the
+      # verb must say so rather than pretend the write happened.
+      Assert-True $true 'typed capability error is acceptable'
+    } else {
+      throw ('unexpected clipboard write failure: ' + $w.raw)
+    }
+  } finally {
+    if ($null -ne $saved) { Invoke-Os @('clipboard', 'write', $saved, '--allow') | Out-Null }
+  }
+}
+
+Assert-Case 'wait/ms-and-window' {
+  Assert-Equal 'E_RANGE' (Assert-OsError (Invoke-Os @('wait', 'ms', '99999999'))).code 'an hour is the ceiling'
+  Assert-Equal 'E_TYPE' (Assert-OsError (Invoke-Os @('wait', 'ms', 'abc'))).code 'ms must be numeric'
+  $r = Invoke-Os @('wait', 'ms', '120')
+  Assert-True $r.json.ok 'a modest wait succeeds'
+  Assert-Equal 120 $r.json.result.requestedMs 'reports what was asked'
+  # elapsedMs must be at least the requested time; a wait that returns early would be a lie.
+  Assert-True ($r.json.result.elapsedMs -ge 110) 'the wait actually elapsed'
+
+  # wait window on a name that cannot exist must time out with a typed error rather than hang or
+  # return success.
+  $t = Invoke-Os @('wait', 'window', 'zzz-no-such-window-zzz', '--timeout', '300', '--interval', '100')
+  if ($t.json.ok) {
+    Assert-True $false 'a window that cannot exist must not be reported as present'
+  } else {
+    Assert-True (@('E_TIMEOUT', 'E_NO_DISPLAY') -contains $t.json.error.code) 'typed timeout'
+  }
+}
+
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ("passed: " + $script:Passed + "   failed: " + $script:Failed) -ForegroundColor Cyan

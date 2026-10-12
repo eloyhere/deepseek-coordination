@@ -447,3 +447,184 @@ function Invoke-Screenshot {
     fullScreen = $full
   }
 }
+
+# ---------------------------------------------------------------------------
+# clipboard
+# ---------------------------------------------------------------------------
+
+# The clipboard is a single global resource: only one process can hold it open, so every use is
+# wrapped in try/finally and closed on every path. A leaked open clipboard makes every other
+# application's copy and paste fail until this process exits.
+function Invoke-ClipboardRead {
+  param($Parsed)
+  Assert-NoExtra -Parsed $Parsed -Expected 0
+  Initialize-Native
+  Assert-Desktop
+
+  $opened = $false
+  try {
+    $opened = [DshNative]::OpenClipboard([IntPtr]::Zero)
+    if (-not $opened) {
+      throw (New-OsError -Code 'E_IO' -Message 'the clipboard is held by another process' `
+          -Hint 'retry; another application is mid-copy')
+    }
+    $handle = [DshNative]::GetClipboardData([DshNative]::CF_UNICODETEXT)
+    if ($handle -eq [IntPtr]::Zero) {
+      # The clipboard is not empty in general, it just holds no text. E_NOT_TEXT says that precisely,
+      # where a null value would be indistinguishable from a failed read.
+      throw (New-OsError -Code 'E_NOT_TEXT' -Message 'the clipboard holds no text' `
+          -Hint 'the clipboard may contain an image or files rather than text')
+    }
+    $ptr = [DshNative]::GlobalLock($handle)
+    if ($ptr -eq [IntPtr]::Zero) {
+      throw (New-OsError -Code 'E_IO' -Message 'the clipboard text could not be locked for reading')
+    }
+    try {
+      $text = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ptr)
+    } finally {
+      [void][DshNative]::GlobalUnlock($handle)
+    }
+    return [ordered]@{
+      text = $text
+      length = $text.Length
+      format = 'CF_UNICODETEXT'
+    }
+  } finally {
+    if ($opened) { [void][DshNative]::CloseClipboard() }
+  }
+}
+
+function Invoke-ClipboardWrite {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'clipboard write'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  Assert-Allowed -Parsed $Parsed -Verb 'clipboard write' -Perm 'W'
+  $text = Get-Positional -Parsed $Parsed -Index 0
+  Initialize-Native
+  Assert-Desktop
+
+  $opened = $false
+  try {
+    $opened = [DshNative]::OpenClipboard([IntPtr]::Zero)
+    if (-not $opened) {
+      throw (New-OsError -Code 'E_IO' -Message 'the clipboard is held by another process' `
+          -Hint 'retry; another application is mid-copy')
+    }
+    if (-not [DshNative]::EmptyClipboard()) {
+      throw (New-OsError -Code 'E_IO' -Message 'the clipboard could not be emptied')
+    }
+    # GMEM_MOVEABLE is required by SetClipboardData. The buffer is deliberately never freed here: on
+    # success the system takes ownership of the memory, and freeing it would leave the clipboard
+    # pointing at released memory. On failure it leaks one small allocation, which is the safe side of
+    # a choice with no third option.
+    $bytes = ($text.Length + 1) * 2
+    # [UIntPtr]$int is a cast PowerShell cannot perform; ::new is the conversion that works.
+    $handle = [DshNative]::GlobalAlloc([DshNative]::GMEM_MOVEABLE, [UIntPtr]::new($bytes))
+    if ($handle -eq [IntPtr]::Zero) {
+      throw (New-OsError -Code 'E_IO' -Message 'memory for the clipboard text could not be allocated')
+    }
+    $ptr = [DshNative]::GlobalLock($handle)
+    if ($ptr -eq [IntPtr]::Zero) {
+      [void][DshNative]::GlobalFree($handle)
+      throw (New-OsError -Code 'E_IO' -Message 'the clipboard buffer could not be locked for writing')
+    }
+    try {
+      # Copy the characters and a terminating null; the trailing zero is written explicitly because
+      # the buffer is raw memory and nothing else will terminate the string.
+      $chars = $text.ToCharArray()
+      [System.Runtime.InteropServices.Marshal]::Copy($chars, 0, $ptr, $chars.Length)
+      [System.Runtime.InteropServices.Marshal]::WriteInt16($ptr, $chars.Length * 2, [int16]0)
+    } finally {
+      [void][DshNative]::GlobalUnlock($handle)
+    }
+    if ([DshNative]::SetClipboardData([DshNative]::CF_UNICODETEXT, $handle) -eq [IntPtr]::Zero) {
+      [void][DshNative]::GlobalFree($handle)
+      throw (New-OsError -Code 'E_IO' -Message 'the clipboard refused the text')
+    }
+    return [ordered]@{
+      written = $text.Length
+      format = 'CF_UNICODETEXT'
+      text = $text
+    }
+  } finally {
+    if ($opened) { [void][DshNative]::CloseClipboard() }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# wait
+# ---------------------------------------------------------------------------
+
+# wait ms: an explicit sleep.
+function Invoke-WaitMs {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'wait ms'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  $ms = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'ms'
+  if ($ms -lt 0) {
+    throw (New-OsError -Code 'E_RANGE' -Message ("ms must not be negative, got {0}" -f $ms))
+  }
+  if ($ms -gt 3600000) {
+    # An hour is a generous ceiling. Beyond it the caller almost certainly passed seconds by mistake,
+    # and silently sleeping for hours is worse than saying so.
+    throw (New-OsError -Code 'E_RANGE' -Message ("ms must be at most 3600000 (one hour), got {0}" -f $ms) `
+        -Hint 'the value is milliseconds; 1000 ms is one second')
+  }
+  $started = [DateTime]::UtcNow
+  Start-Sleep -Milliseconds $ms
+  return [ordered]@{
+    requestedMs = $ms
+    elapsedMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+  }
+}
+
+# wait window: block until a window appears, or until it goes away with --absent.
+function Invoke-WaitWindow {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'wait window'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  $name = Get-Positional -Parsed $Parsed -Index 0
+  $timeoutText = Get-FlagValue -Parsed $Parsed -Name 'timeout' -Default '10000'
+  $timeout = Get-IntArg -Text $timeoutText -Name 'timeout'
+  if ($timeout -lt 0) {
+    throw (New-OsError -Code 'E_RANGE' -Message ("timeout must not be negative, got {0}" -f $timeout))
+  }
+  $intervalText = Get-FlagValue -Parsed $Parsed -Name 'interval' -Default '100'
+  $interval = Get-IntArg -Text $intervalText -Name 'interval'
+  if ($interval -lt 1) { $interval = 1 }
+  $exact = Test-HasFlag -Parsed $Parsed -Name 'exact'
+  $absent = Test-HasFlag -Parsed $Parsed -Name 'absent'
+
+  Assert-Desktop
+  $started = [DateTime]::UtcNow
+  $attempts = 0
+  while ($true) {
+    $attempts++
+    $found = $null
+    foreach ($w in (Get-TopLevelWindows)) {
+      $hit = $false
+      if ($exact) { $hit = ($w.title -ceq $name) }
+      else { $hit = ($w.title.IndexOf($name, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) }
+      if ($hit) { $found = $w; break }
+    }
+    $satisfied = $(if ($absent) { $null -eq $found } else { $null -ne $found })
+    if ($satisfied) {
+      return [ordered]@{
+        name = $name
+        condition = $(if ($absent) { 'absent' } else { 'present' })
+        satisfied = $true
+        attempts = $attempts
+        elapsedMs = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+        window = $found
+      }
+    }
+    if ([int]([DateTime]::UtcNow - $started).TotalMilliseconds -ge $timeout) {
+      # Reporting the condition that was NOT met, plus how long we waited, is more useful to a caller
+      # than a bare timeout: it says which way the wait failed.
+      throw (New-OsError -Code 'E_TIMEOUT' `
+          -Message ("window '{0}' did not become {1} within {2}ms" -f $name, $(if ($absent) { 'absent' } else { 'present' }), $timeout) `
+          -Hint 'run: dsh-os window list   (to see the titles that exist now)')
+    }
+    Start-Sleep -Milliseconds $interval
+  }
+}
