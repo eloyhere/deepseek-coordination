@@ -1,4 +1,4 @@
-# Module: 04-native.sh - platform-native primitives.
+# Module: native.sh - platform-native primitives.
 #
 # Intentionally empty. The PowerShell module declares Add-Type P/Invoke bindings (SendInput, BitBlt,
 # GDI, clipboard) because those are the only way to reach them on Windows. On POSIX the equivalents

@@ -1,4 +1,4 @@
-# Module: 08-execute.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: execute.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-OneShellCommand {
   param([string]$CommandLine, [string]$WorkDir, [int]$TimeoutMs, [string]$EncodingName)

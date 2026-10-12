@@ -1,4 +1,4 @@
-# Module: 11-service.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: service.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-ServiceList {
   param($Parsed)

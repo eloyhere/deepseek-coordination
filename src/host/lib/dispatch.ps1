@@ -1,4 +1,4 @@
-# Module: 14-dispatch.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: dispatch.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Get-VerbKey {
   param($Parsed)

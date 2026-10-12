@@ -1,4 +1,4 @@
-# Module: 15-entry.ps1 - the entry point: run, emit, exit.
+# Module: entry.ps1 - the entry point: run, emit, exit.
 
 # ---------------------------------------------------------------------------
 # Entry point

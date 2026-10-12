@@ -1,4 +1,4 @@
-# Module: 04-native.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: native.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 # Whether the Add-Type P/Invoke block has been compiled. Add-Type costs a few hundred
 # milliseconds, so read-only verbs must never trigger it.

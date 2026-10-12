@@ -1,4 +1,4 @@
-# Module: 06-file.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: file.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-FileCreate {
   param($Parsed)

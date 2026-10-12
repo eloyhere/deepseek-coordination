@@ -1,4 +1,4 @@
-# Module: 13-window.ps1 - window.* and screenshot.
+# Module: window.ps1 - window.* and screenshot.
 #
 # Everything here reads or moves windows on the interactive desktop, so every verb needs the
 # input desktop to exist. A session with no window station (a service, a headless run) gets

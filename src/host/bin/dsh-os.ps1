@@ -2,29 +2,29 @@
 #
 # Assembled by tools/build.ps1 from src/host/lib/*.ps1, which are the source of truth:
 #
-#   00-preamble.ps1
-#   01-json.ps1
-#   02-command.ps1
-#   03-charset.ps1
-#   04-native.ps1
-#   05-paths.ps1
-#   06-file.ps1
-#   07-system.ps1
-#   08-execute.ps1
-#   09-task.ps1
-#   10-environment.ps1
-#   11-service.ps1
-#   12-permission.ps1
-#   13-window.ps1
-#   14-dispatch.ps1
-#   15-entry.ps1
+#   preamble.ps1
+#   json.ps1
+#   command.ps1
+#   charset.ps1
+#   native.ps1
+#   paths.ps1
+#   file.ps1
+#   system.ps1
+#   execute.ps1
+#   task.ps1
+#   environment.ps1
+#   service.ps1
+#   permission.ps1
+#   window.ps1
+#   dispatch.ps1
+#   entry.ps1
 #
 # The shipped script is deliberately a single self-contained file: it is invoked directly by the
 # harness and by hand, it must carry UTF-8 with BOM so Windows PowerShell 5.1 decodes it in the right
 # code page, and it must run without module resolution or relative-path assumptions.
 
 
-# ===== 00-preamble.ps1 =============================================
+# ===== preamble.ps1 ================================================
 
 #requires -version 5.1
 <#
@@ -104,7 +104,7 @@ $script:RepoDir = Find-RepoDir -StartDir $script:ScriptDir
 # counting levels alone.
 $script:RootDir = $script:RepoDir
 
-# ===== 01-json.ps1 =================================================
+# ===== json.ps1 ====================================================
 
 # ---------------------------------------------------------------------------
 # Error model. Every failure is an OsError; exit codes are a coarse class and
@@ -294,7 +294,7 @@ function New-ErrorObject {
   return $o
 }
 
-# ===== 02-command.ps1 ==============================================
+# ===== command.ps1 =================================================
 
 # ---------------------------------------------------------------------------
 # Argument parsing.
@@ -518,9 +518,9 @@ function Get-IntArg {
   return $out
 }
 
-# ===== 03-charset.ps1 ==============================================
+# ===== charset.ps1 =================================================
 
-# Module: 03-charset.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: charset.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 # Lazy cache for spec/charsets.tsv. Initialised here because Get-CharsetTable reads it
 # before any assignment on the first call; the split moved the declaration away from the
@@ -742,9 +742,9 @@ function Get-OutputBytes {
   return , (Get-WithBomBytes -Payload $payload -Charset $Doc.charset -WithBom $Doc.hasBom)
 }
 
-# ===== 04-native.ps1 ===============================================
+# ===== native.ps1 ==================================================
 
-# Module: 04-native.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: native.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 # Whether the Add-Type P/Invoke block has been compiled. Add-Type costs a few hundred
 # milliseconds, so read-only verbs must never trigger it.
@@ -1054,9 +1054,9 @@ function Write-Atomic {
   }
 }
 
-# ===== 05-paths.ps1 ================================================
+# ===== paths.ps1 ===================================================
 
-# Module: 05-paths.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: paths.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Get-CharBoundaryCheck {
   param($Doc, [int]$Offset, [string]$Path)
@@ -1162,9 +1162,9 @@ function Assert-NotProtectedPath {
   }
 }
 
-# ===== 06-file.ps1 =================================================
+# ===== file.ps1 ====================================================
 
-# Module: 06-file.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: file.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-FileCreate {
   param($Parsed)
@@ -1800,9 +1800,9 @@ function Invoke-FileSearch {
   }
 }
 
-# ===== 07-system.ps1 ===============================================
+# ===== system.ps1 ==================================================
 
-# Module: 07-system.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: system.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Get-CimSafe {
   param([string]$ClassName, [string]$Namespace = 'root\cimv2')
@@ -1935,9 +1935,9 @@ function Test-IsElevated {
   }
 }
 
-# ===== 08-execute.ps1 ==============================================
+# ===== execute.ps1 =================================================
 
-# Module: 08-execute.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: execute.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-OneShellCommand {
   param([string]$CommandLine, [string]$WorkDir, [int]$TimeoutMs, [string]$EncodingName)
@@ -2063,9 +2063,9 @@ function Invoke-ExecuteBatch {
   }
 }
 
-# ===== 09-task.ps1 =================================================
+# ===== task.ps1 ====================================================
 
-# Module: 09-task.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: task.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-TaskList {
   param($Parsed)
@@ -2144,9 +2144,9 @@ function Invoke-TaskShow {
   }
 }
 
-# ===== 10-environment.ps1 ==========================================
+# ===== environment.ps1 =============================================
 
-# Module: 10-environment.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: environment.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Resolve-EnvironmentScope {
   param($Parsed, [string]$Default = 'user')
@@ -2463,9 +2463,9 @@ function Invoke-EnvironmentAttributeDelete {
   }
 }
 
-# ===== 11-service.ps1 ==============================================
+# ===== service.ps1 =================================================
 
-# Module: 11-service.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: service.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-ServiceList {
   param($Parsed)
@@ -2506,9 +2506,9 @@ function Invoke-ServiceQuery {
   }
 }
 
-# ===== 12-permission.ps1 ===========================================
+# ===== permission.ps1 ==============================================
 
-# Module: 12-permission.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: permission.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Get-PermissionFilePath {
   return (Join-Path $script:RootDir 'permission.json')
@@ -2674,9 +2674,9 @@ function Invoke-Selfcheck {
   }
 }
 
-# ===== 13-window.ps1 ===============================================
+# ===== window.ps1 ==================================================
 
-# Module: 13-window.ps1 - window.* and screenshot.
+# Module: window.ps1 - window.* and screenshot.
 #
 # Everything here reads or moves windows on the interactive desktop, so every verb needs the
 # input desktop to exist. A session with no window station (a service, a headless run) gets
@@ -3126,9 +3126,9 @@ function Invoke-Screenshot {
   }
 }
 
-# ===== 14-dispatch.ps1 =============================================
+# ===== dispatch.ps1 ================================================
 
-# Module: 14-dispatch.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: dispatch.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Get-VerbKey {
   param($Parsed)
@@ -3270,9 +3270,9 @@ function Invoke-Dispatch {
   }
 }
 
-# ===== 15-entry.ps1 ================================================
+# ===== entry.ps1 ===================================================
 
-# Module: 15-entry.ps1 - the entry point: run, emit, exit.
+# Module: entry.ps1 - the entry point: run, emit, exit.
 
 # ---------------------------------------------------------------------------
 # Entry point

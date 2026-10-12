@@ -34,22 +34,22 @@ generated from them by `tools/build.ps1`, so never edit the generated files.
 
 | Module | Concern |
 |---|---|
-| `00-preamble` | strict mode, encoding pins, layout and repository-root discovery |
-| `01-json` | error model, JSON serialisation, the envelope writer |
-| `02-command` | argument parsing (positional and `name="value"`), assertions, coercion |
-| `03-charset` | charset table, BOM policy, byte-level text model |
-| `04-native` | P/Invoke declarations and atomic replace (Windows only; empty on POSIX) |
-| `05-paths` | path resolution and the protected-path boundary |
-| `06-file` | `file.*`, `file verify.*`, `file search` |
-| `07-system` | `system.*` queries |
-| `08-execute` | `execute.command` / `.synchronous` / `.asynchronous` |
-| `09-task` | `task.*` |
-| `10-environment` | `environment.*` and `environment attribute.*` |
-| `11-service` | `service.*` |
-| `12-permission` | `permission.*` (read-only) and `selfcheck` |
-| `13-window` | `window.*` / `mouse.*` / `keyboard.*` / `clipboard.*` / `wait.*` / observe |
-| `14-dispatch` | verb resolution and the dispatch table |
-| `15-entry` | run, emit, exit |
+| `preamble` | strict mode, encoding pins, layout and repository-root discovery |
+| `json` | error model, JSON serialisation, the envelope writer |
+| `command` | argument parsing (positional and `name="value"`), assertions, coercion |
+| `charset` | charset table, BOM policy, byte-level text model |
+| `native` | P/Invoke declarations and atomic replace (Windows only; empty on POSIX) |
+| `paths` | path resolution and the protected-path boundary |
+| `file` | `file.*`, `file verify.*`, `file search` |
+| `system` | `system.*` queries |
+| `execute` | `execute.command` / `.synchronous` / `.asynchronous` |
+| `task` | `task.*` |
+| `environment` | `environment.*` and `environment attribute.*` |
+| `service` | `service.*` |
+| `permission` | `permission.*` (read-only) and `selfcheck` |
+| `window` | `window.*` / `mouse.*` / `keyboard.*` / `clipboard.*` / `wait.*` / observe |
+| `dispatch` | verb resolution and the dispatch table |
+| `entry` | run, emit, exit |
 
 A build step rather than dot-sourcing the modules at runtime, deliberately: the shipped script must
 stay one self-contained file that the harness and a human can invoke directly, with no module

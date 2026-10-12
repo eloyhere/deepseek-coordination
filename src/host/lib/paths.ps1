@@ -1,4 +1,4 @@
-# Module: 05-paths.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: paths.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Get-CharBoundaryCheck {
   param($Doc, [int]$Offset, [string]$Path)

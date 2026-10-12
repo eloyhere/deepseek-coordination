@@ -1,4 +1,4 @@
-# Module: 03-charset.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: charset.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 # Lazy cache for spec/charsets.tsv. Initialised here because Get-CharsetTable reads it
 # before any assignment on the first call; the split moved the declaration away from the

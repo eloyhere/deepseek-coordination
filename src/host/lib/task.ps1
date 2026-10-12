@@ -1,4 +1,4 @@
-# Module: 09-task.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: task.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Invoke-TaskList {
   param($Parsed)

@@ -1,4 +1,4 @@
-# Module: 12-permission.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: permission.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Get-PermissionFilePath {
   return (Join-Path $script:RootDir 'permission.json')

@@ -1,4 +1,4 @@
-# Module: 11-service.sh - service.* (systemd, launchd, SysV init).
+# Module: service.sh - service.* (systemd, launchd, SysV init).
 #
 # Intentionally empty. Service management is per-init-system on POSIX (systemctl, launchctl, service),
 # and start/stop/restart need privilege. The verb table already declares these verbs and dispatch

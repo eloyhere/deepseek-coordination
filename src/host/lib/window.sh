@@ -1,4 +1,4 @@
-# Module: 13-window.sh - window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe.
+# Module: window.sh - window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe.
 #
 # Intentionally empty. These need synthetic input, which on POSIX means XTest (X11) or compositor
 # protocols (Wayland), and screen capture via import/scrot. The verbs are already declared in

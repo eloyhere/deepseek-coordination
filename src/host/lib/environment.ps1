@@ -1,4 +1,4 @@
-# Module: 10-environment.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: environment.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
 
 function Resolve-EnvironmentScope {
   param($Parsed, [string]$Default = 'user')

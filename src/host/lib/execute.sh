@@ -1,6 +1,6 @@
-# Module: 08-execute.sh - execute.command / execute.synchronous / execute.asynchronous.
+# Module: execute.sh - execute.command / execute.synchronous / execute.asynchronous.
 #
-# Contract, mirroring src/host/lib/08-execute.ps1 so a caller sees the same shape on both platforms:
+# Contract, mirroring src/host/lib/execute.ps1 so a caller sees the same shape on both platforms:
 #   - every element of the array is a SHELL command. The verb is named "command", the documented
 #     examples are quoted strings, and the Windows side already runs them through cmd.exe. The POSIX
 #     side therefore runs each through sh -c. This is the one verb group where a shell string is the

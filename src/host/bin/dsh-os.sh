@@ -3,29 +3,29 @@
 #
 # Assembled by tools/build.ps1 from src/host/lib/*.sh, which are the source of truth:
 #
-#   00-preamble.sh
-#   01-json.sh
-#   02-command.sh
-#   04-native.sh
-#   05-paths.sh
-#   03-charset.sh
-#   06-file.sh
-#   07-system.sh
-#   08-execute.sh
-#   09-task.sh
-#   10-environment.sh
-#   11-service.sh
-#   12-permission.sh
-#   13-window.sh
-#   14-dispatch.sh
-#   15-entry.sh
+#   preamble.sh
+#   json.sh
+#   command.sh
+#   native.sh
+#   paths.sh
+#   charset.sh
+#   file.sh
+#   system.sh
+#   execute.sh
+#   task.sh
+#   environment.sh
+#   service.sh
+#   permission.sh
+#   window.sh
+#   dispatch.sh
+#   entry.sh
 #
 # The shipped script is deliberately a single self-contained file, LF-terminated and BOM-free: the
 # shebang must be the very first bytes, and a carriage return would become part of the last token on
 # every line.
 
 
-# ===== 00-preamble.sh ==============================================
+# ===== preamble.sh =================================================
 
 #!/usr/bin/env bash
 #
@@ -108,7 +108,7 @@ find_repo_dir() {
   return 0
 }
 
-# ===== 01-json.sh ==================================================
+# ===== json.sh =====================================================
 
 ROOT_DIR="$(find_repo_dir "$SCRIPT_DIR")"
 
@@ -246,7 +246,7 @@ success_envelope() {
     "$(jstr "$verb")" "$result" "$duration" "$(jstr "$(platform_name)")"
 }
 
-# ===== 02-command.sh ===============================================
+# ===== command.sh ==================================================
 
 
 # ---------------------------------------------------------------------------
@@ -463,9 +463,9 @@ normalize_path() {
   printf '%s/%s' "$dir" "$base"
 }
 
-# ===== 04-native.sh ================================================
+# ===== native.sh ===================================================
 
-# Module: 04-native.sh - platform-native primitives.
+# Module: native.sh - platform-native primitives.
 #
 # Intentionally empty. The PowerShell module declares Add-Type P/Invoke bindings (SendInput, BitBlt,
 # GDI, clipboard) because those are the only way to reach them on Windows. On POSIX the equivalents
@@ -473,7 +473,7 @@ normalize_path() {
 # to declare here; the verbs that would use them return a typed E_NOT_SUPPORTED until implemented,
 # which is the required behaviour rather than a silent no-op.
 
-# ===== 05-paths.sh =================================================
+# ===== paths.sh ====================================================
 
 
 is_protected() {
@@ -503,7 +503,7 @@ assert_not_protected() {
   fi
 }
 
-# ===== 03-charset.sh ===============================================
+# ===== charset.sh ==================================================
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +688,7 @@ rewrite_doc() {
   rm -f "$tmp" "$payload"
 }
 
-# ===== 06-file.sh ==================================================
+# ===== file.sh =====================================================
 
 
 # ---------------------------------------------------------------------------
@@ -1179,7 +1179,7 @@ cmd_file_search() {
     "$([ "$recursive" -eq 1 ] && echo true || echo false)"
 }
 
-# ===== 07-system.sh ================================================
+# ===== system.sh ===================================================
 
 
 # ---------------------------------------------------------------------------
@@ -1248,11 +1248,11 @@ cmd_system_info() {
   printf '{"brand":%s,"cpu":%s,"gpu":%s,"version":%s}' "$brand" "$cpu" "$gpu" "$ver"
 }
 
-# ===== 08-execute.sh ===============================================
+# ===== execute.sh ==================================================
 
-# Module: 08-execute.sh - execute.command / execute.synchronous / execute.asynchronous.
+# Module: execute.sh - execute.command / execute.synchronous / execute.asynchronous.
 #
-# Contract, mirroring src/host/lib/08-execute.ps1 so a caller sees the same shape on both platforms:
+# Contract, mirroring src/host/lib/execute.ps1 so a caller sees the same shape on both platforms:
 #   - every element of the array is a SHELL command. The verb is named "command", the documented
 #     examples are quoted strings, and the Windows side already runs them through cmd.exe. The POSIX
 #     side therefore runs each through sh -c. This is the one verb group where a shell string is the
@@ -1567,7 +1567,7 @@ cmd_execute_command() {
     "$EXEC_ELAPSED" "$(jstr "$EXEC_OUT")" "$(jstr "$EXEC_ERR")"
 }
 
-# ===== 09-task.sh ==================================================
+# ===== task.sh =====================================================
 
 
 # ---------------------------------------------------------------------------
@@ -1606,7 +1606,7 @@ cmd_task_query() {
   printf '{"pid":%s,"name":%s,"path":%s}' "$pid" "$(jstr "$name")" "$(jstr "$path")"
 }
 
-# ===== 10-environment.sh ===========================================
+# ===== environment.sh ==============================================
 
 
 cmd_environment_list() {
@@ -1685,15 +1685,15 @@ cmd_environment_attribute_get() {
     "$(jstr "$attr")" "$(jstr "$name")" "$(jstr "$sep")" "$count" "$out"
 }
 
-# ===== 11-service.sh ===============================================
+# ===== service.sh ==================================================
 
-# Module: 11-service.sh - service.* (systemd, launchd, SysV init).
+# Module: service.sh - service.* (systemd, launchd, SysV init).
 #
 # Intentionally empty. Service management is per-init-system on POSIX (systemctl, launchctl, service),
 # and start/stop/restart need privilege. The verb table already declares these verbs and dispatch
 # reports E_NOT_SUPPORTED for them until an implementation lands.
 
-# ===== 12-permission.sh ============================================
+# ===== permission.sh ===============================================
 
 
 # ---------------------------------------------------------------------------
@@ -1731,16 +1731,16 @@ cmd_selfcheck() {
     "$(command -v trash-put >/dev/null 2>&1 && echo available || echo unavailable)"
 }
 
-# ===== 13-window.sh ================================================
+# ===== window.sh ===================================================
 
-# Module: 13-window.sh - window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe.
+# Module: window.sh - window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe.
 #
 # Intentionally empty. These need synthetic input, which on POSIX means XTest (X11) or compositor
 # protocols (Wayland), and screen capture via import/scrot. The verbs are already declared in
 # spec/verbs.tsv and dispatch reports a typed E_NOT_SUPPORTED for them, which is the required
 # behaviour: an unavailable capability must be an explicit error, never an empty success.
 
-# ===== 14-dispatch.sh ==============================================
+# ===== dispatch.sh =================================================
 
 
 cmd_arg_error() {
@@ -1861,7 +1861,7 @@ resolve_verb() {
   return 0
 }
 
-# ===== 15-entry.sh =================================================
+# ===== entry.sh ====================================================
 
 
 main() {

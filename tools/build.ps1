@@ -35,46 +35,49 @@ $outSh = Join-Path $rootDir 'src\host\bin\dsh-os.sh'
 if (-not (Test-Path -LiteralPath $libDir)) { throw "module directory not found: $libDir" }
 
 # Concatenation order is dependency order: every module may only use names defined above it.
+#
+# The order is stated here explicitly rather than derived from the file names, because the file names
+# deliberately carry no ordering (a numbered prefix was removed). That makes this list the single place
+# the order is defined, and it must be kept in step when a module is added or moved.
 $modulesPs1 = @(
-  '00-preamble.ps1',   # header comment, set-strictmode, encodings, layout discovery
-  '01-json.ps1',       # JSON encoding and the envelope writer
-  '02-command.ps1',    # argument parsing, named arguments, assertions, int coercion
-  '03-charset.ps1',    # charset table, BOM policy, byte-level text model
-  '04-native.ps1',     # Add-Type P/Invoke declarations and atomic replace
-  '05-paths.ps1',      # path resolution and the protected-path boundary
-  '06-file.ps1',       # file.*, file verify.*, file search
-  '07-system.ps1',     # system.* queries
-  '08-execute.ps1',    # execute.command / synchronous / asynchronous
-  '09-task.ps1',       # task.*
-  '10-environment.ps1',# environment.* and environment attribute.*
-  '11-service.ps1',    # service.*
-  '12-permission.ps1', # permission.* (read-only)
-  '13-window.ps1',     # window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe
-  '14-dispatch.ps1',   # selfcheck, verb table lookup, dispatch table
-  '15-entry.ps1'       # entry point: run, emit, exit
+  'preamble.ps1',    # header comment, set-strictmode, encodings, layout discovery
+  'json.ps1',        # JSON encoding and the envelope writer
+  'command.ps1',     # argument parsing, named arguments, assertions, int coercion
+  'charset.ps1',     # charset table, BOM policy, byte-level text model
+  'native.ps1',      # Add-Type P/Invoke declarations and atomic replace
+  'paths.ps1',       # path resolution and the protected-path boundary
+  'file.ps1',        # file.*, file verify.*, file search
+  'system.ps1',      # system.* queries
+  'execute.ps1',     # execute.command / synchronous / asynchronous
+  'task.ps1',        # task.*
+  'environment.ps1', # environment.* and environment attribute.*
+  'service.ps1',     # service.*
+  'permission.ps1',  # permission.* (read-only)
+  'window.ps1',      # window.* and screenshot
+  'dispatch.ps1',    # selfcheck, verb table lookup, dispatch table
+  'entry.ps1'        # entry point: run, emit, exit
 )
 
-# The shell modules mirror the PowerShell ones by concern. Their order here is SOURCE order, which
-# is not the same as the numeric names suggest: the shell file defines the path helpers before the
-# document helpers, so 05-paths precedes 03-charset. Reordering them would change behaviour because
-# some top-level state is initialised at first use.
+# The shell modules mirror the PowerShell ones by concern, but NOT one-for-one in order: the shell file
+# defines the path helpers before the document helpers, so paths precedes charset. Reordering them
+# would change behaviour, because some top-level state is initialised at first use.
 $modulesSh = @(
-  '00-preamble.sh',    # locale, layout discovery, repository root
-  '01-json.sh',        # jstr/emit_envelope, error model, fail
-  '02-command.sh',     # argument parsing, named arguments, assertions
-  '04-native.sh',      # native primitives (no POSIX declarations needed)
-  '05-paths.sh',       # protected-path boundary
-  '03-charset.sh',     # charset table, detection, byte-level document model
-  '06-file.sh',        # file.*, file verify.*, file search
-  '07-system.sh',      # system.*
-  '08-execute.sh',     # execute.command / synchronous / asynchronous
-  '09-task.sh',        # task.list / task.query
-  '10-environment.sh', # environment.* and environment attribute.*
-  '11-service.sh',     # service.* (not implemented on POSIX)
-  '12-permission.sh',  # permission.list and selfcheck
-  '13-window.sh',      # window/mouse/keyboard (not implemented on POSIX)
-  '14-dispatch.sh',    # verb resolution and the dispatch table
-  '15-entry.sh'        # main and the run/emit/exit block
+  'preamble.sh',    # locale, layout discovery, repository root
+  'json.sh',        # jstr/emit_envelope, error model, fail
+  'command.sh',     # argument parsing, named arguments, assertions
+  'native.sh',      # native primitives (no POSIX declarations needed)
+  'paths.sh',       # protected-path boundary
+  'charset.sh',     # charset table, detection, byte-level document model
+  'file.sh',        # file.*, file verify.*, file search
+  'system.sh',      # system.*
+  'execute.sh',     # execute.command / synchronous / asynchronous
+  'task.sh',        # task.list / task.query
+  'environment.sh', # environment.* and environment attribute.*
+  'service.sh',     # service.* (not implemented on POSIX)
+  'permission.sh',  # permission.list and selfcheck
+  'window.sh',      # window/mouse/keyboard (not implemented on POSIX)
+  'dispatch.sh',    # verb resolution and the dispatch table
+  'entry.sh'        # main and the run/emit/exit block
 )
 
 $ascii = New-Object System.Text.UTF8Encoding($false)
