@@ -362,7 +362,10 @@ fi
 # success or merely an exit code. This machine has no display server, which is exactly the condition
 # under test.
 echo "== unavailable desktop verbs must be typed errors, never empty successes =="
-for v in "window list" "keyboard codes" "clipboard read" "screenshot 0 0 10 10"; do
+# keyboard.* and mouse.* moved OUT of this list when they were implemented: they now report
+# E_NO_DISPLAY from their own capability gate rather than falling through to the unimplemented arm, so
+# they are asserted in their own sections. What remains are the groups still unimplemented here.
+for v in "window list" "clipboard read" "screenshot 0 0 10 10" "text 1 1" "structure 1 1"; do
   out="$(cd "$ROOT_DIR" && bash "$SH" $v 2>/dev/null)"
   rc=$?
   ok=1
@@ -419,6 +422,38 @@ else
   printf '  FAIL  %-46s %s/7 listed\n' "selfcheck lists every mouse verb" "$mc"
 fi
 
+echo "== keyboard.*: implemented, and typed when there is no display =="
+# The same gates as mouse.*: dispatched, capability-checked, and a typed error rather than a fall
+# through to the unimplemented arm.
+for v in "keyboard codes" "keyboard down Return --allow" "keyboard up Return --allow" \
+         "keyboard press F5 --allow" "keyboard combination ctrl c --allow" \
+         "keyboard type hello --allow"; do
+  out="$(cd "$ROOT_DIR" && bash "$SH" $v 2>/dev/null)"
+  rc=$?
+  ok=1
+  [ -n "$out" ] || ok=0
+  case "$out" in '{'*) ;; *) ok=0 ;; esac
+  if [ -z "${DISPLAY:-}" ]; then
+    case "$out" in *'"code":"E_NO_DISPLAY"'*) ;; *) ok=0 ;; esac
+  fi
+  if [ "$ok" = "1" ]; then
+    PASS=$((PASS+1)); printf '  PASS  %-46s rc=%-3s\n' "$v" "$rc"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - $v (rc=$rc, envelope=$( [ -n "$out" ] && echo present || echo MISSING ))"
+    printf '  FAIL  %-46s rc=%-3s\n' "$v" "$rc"
+  fi
+done
+
+out="$(cd "$ROOT_DIR" && bash "$SH" selfcheck 2>/dev/null)"
+kc="$(printf '%s' "$out" | grep -o '"keyboard\.[a-z]*"' | sort -u | wc -l | tr -d ' ')"
+if [ "$kc" = "6" ]; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s 6/6 listed\n' "selfcheck lists every keyboard verb"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - selfcheck lists every keyboard verb (found $kc, expected 6)"
+  printf '  FAIL  %-46s %s/6 listed\n' "selfcheck lists every keyboard verb" "$kc"
+fi
 echo "== every envelope must be well-formed JSON =="
 # An unquoted field produced a malformed envelope that a shell-based check did not notice, because the
 # assertions used grep on substrings. This parses each reply instead.

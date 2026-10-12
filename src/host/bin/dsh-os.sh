@@ -2754,6 +2754,228 @@ cmd_mouse_up() {
 }
 
 # ---------------------------------------------------------------------------
+# keyboard.*
+#
+# xdotool takes X keysym NAMES, not virtual key codes, so a caller writing portable code needs the two
+# to line up. The names below are the intersection that means the same thing on both platforms, and the
+# mapping is applied before every call. Anything not listed is passed through unchanged, which lets a
+# caller use any X keysym name ('XF86AudioMute', 'Greek_alpha') without this layer having to enumerate
+# the whole keyboard.
+#
+# The reason the mapping exists at all is the same reason the Windows side sends Unicode events for
+# keyboard type: a key is not a character, and 'Return' versus 'Enter' is exactly the kind of difference
+# that makes a script work on one machine and silently do nothing on another.
+# ---------------------------------------------------------------------------
+window_key_name() {
+  local key="$1"
+  case "$key" in
+    '' ) fail E_TYPE '<code> must not be empty' ;;
+    # Single characters and function keys are already keysyms.
+    [A-Za-z0-9]) printf '%s' "$key" ;;
+    F[0-9]|F1[0-2]) printf '%s' "$key" ;;
+    # Windows spelling -> X keysym spelling.
+    enter|Enter|ENTER|return|Return|RETURN) printf 'Return' ;;
+    esc|Esc|ESC|escape|Escape|ESCAPE) printf 'Escape' ;;
+    backspace|Backspace|BACKSPACE|back|Back|BACK) printf 'BackSpace' ;;
+    del|Del|DEL|delete|Delete|DELETE) printf 'Delete' ;;
+    ins|Ins|INS|insert|Insert|INSERT) printf 'Insert' ;;
+    space|Space|SPACE) printf 'space' ;;
+    tab|Tab|TAB) printf 'Tab' ;;
+    ctrl|Ctrl|CTRL|control|Control|CONTROL) printf 'ctrl' ;;
+    shift|Shift|SHIFT) printf 'shift' ;;
+    alt|Alt|ALT) printf 'alt' ;;
+    win|Win|WIN|super|Super|SUPER|meta|Meta|META) printf 'super' ;;
+    up|Up|UP) printf 'Up' ;;
+    down|Down|DOWN) printf 'Down' ;;
+    left|Left|LEFT) printf 'Left' ;;
+    right|Right|RIGHT) printf 'Right' ;;
+    home|Home|HOME) printf 'Home' ;;
+    end|End|END) printf 'End' ;;
+    pageup|PageUp|PAGEUP|pgup|PgUp|PGUP) printf 'Prior' ;;
+    pagedown|PageDown|PAGEDOWN|pgdn|PgDn|PGDN) printf 'Next' ;;
+    printscreen|PrintScreen|PRINTSCREEN) printf 'Print' ;;
+    capslock|CapsLock|CAPSLOCK) printf 'Caps_Lock' ;;
+    numlock|NumLock|NUMLOCK) printf 'Num_Lock' ;;
+    scrolllock|ScrollLock|SCROLLLOCK) printf 'Scroll_Lock' ;;
+    pause|Pause|PAUSE) printf 'Pause' ;;
+    # A Windows virtual key number means nothing to X, so saying so beats sending a literal "13".
+    [0-9]*) fail E_TYPE "<code> '$key' is a virtual key number, which has no X equivalent" \
+        'use a name such as Return, Escape, ctrl or F5' ;;
+    *) printf '%s' "$key" ;;
+  esac
+}
+
+# The interval between injected keys, in milliseconds, as a fractional sleep. xdotool has --delay but
+# it is per character in milliseconds and its handling differs between versions, so the delay is applied
+# here where its meaning is unambiguous.
+window_key_delay() {
+  local interval; interval="$(flag_value interval '')"
+  [ -z "$interval" ] && return 0
+  case "$interval" in ''|*[!0-9]*) fail E_TYPE "<interval> must be an integer, got '$interval'" ;; esac
+  if [ "$interval" -gt 0 ]; then
+    local secs=$((interval / 1000))
+    local rem=$((interval % 1000))
+    if [ "$rem" -ne 0 ] && sleep "0.$rem" 2>/dev/null; then
+      :
+    elif [ "$rem" -ne 0 ]; then
+      secs=$((secs + 1))
+    fi
+    [ "$secs" -gt 0 ] && sleep "$secs"
+  fi
+  return 0
+}
+
+cmd_keyboard_codes() {
+  window_require_display
+  window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard codes'
+  # The names this layer maps, plus the fact that xdotool resolves anything else itself. Reported as a
+  # sorted list so a caller can check a name without guessing.
+  printf '{"platform":"x11","count":32,"names":["Alt","BackSpace","Caps_Lock","Control","Delete","Down","End","Enter","Escape","F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12","Home","Insert","Left","Next","Num_Lock","Pause","Print","Prior","Return","Right","Tab","Up"],"note":"any X keysym name is also accepted and passed through unchanged","tool":"xdotool"}'
+}
+
+cmd_keyboard_down() {
+  require_min 1 'keyboard down'
+  require_allow 'keyboard down' "${#POSITIONALS[@]}"
+  window_require_display
+  window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard down'
+  local key; key="$(window_key_name "$(pos 0)")"
+  local cm; cm="$(window_clearmod_flag)"
+  # shellcheck disable=SC2086
+  xdotool keydown $cm "$key" >/dev/null 2>&1 || fail E_IO "xdotool could not press '$key' down"
+  printf '{"code":%s,"held":true,"note":"the key stays down until keyboard up","tool":"xdotool"}' "$(jstr "$key")"
+}
+
+cmd_keyboard_up() {
+  require_min 1 'keyboard up'
+  require_allow 'keyboard up' "${#POSITIONALS[@]}"
+  window_require_display
+  window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard up'
+  local key; key="$(window_key_name "$(pos 0)")"
+  local cm; cm="$(window_clearmod_flag)"
+  # shellcheck disable=SC2086
+  xdotool keyup $cm "$key" >/dev/null 2>&1 || fail E_IO "xdotool could not release '$key'"
+  printf '{"code":%s,"held":false,"tool":"xdotool"}' "$(jstr "$key")"
+}
+
+cmd_keyboard_press() {
+  require_min 1 'keyboard press'
+  require_allow 'keyboard press' "${#POSITIONALS[@]}"
+  window_require_display
+  window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard press'
+  local key; key="$(window_key_name "$(pos 0)")"
+  local interval; interval="$(flag_value interval '')"
+  local cm; cm="$(window_clearmod_flag)"
+  # A press is xdotool key, which presses AND releases. The key is always released even if the
+  # injection fails, because a key left down makes the machine unusable until it is pressed again.
+  # shellcheck disable=SC2086
+  if ! xdotool key $cm "$key" >/dev/null 2>&1; then
+    xdotool keyup "$key" >/dev/null 2>&1 || true
+    fail E_IO "xdotool could not press '$key'"
+  fi
+  window_key_delay
+  printf '{"code":%s,"pressed":true,"released":true,"intervalMs":%s,"tool":"xdotool"}' \
+    "$(jstr "$key")" "$( [ -n "$interval" ] && printf '%s' "$interval" || printf 'null' )"
+}
+
+cmd_keyboard_combination() {
+  require_min 2 'keyboard combination'
+  require_allow 'keyboard combination' "${#POSITIONALS[@]}"
+  window_require_display
+  window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard combination'
+  local phase; phase="$(pos 0)"
+  local cm; cm="$(window_clearmod_flag)"
+  local interval; interval="$(flag_value interval '')"
+  # The keys may be one space-separated argument or several arguments, because both are natural to write.
+  local keys_raw="" i=1
+  while :; do
+    local v; v="$(pos $i)"
+    [ -z "$v" ] && break
+    keys_raw="$keys_raw $v"
+    i=$((i + 1))
+  done
+  local keys=()
+  local k
+  for k in $keys_raw; do keys+=("$(window_key_name "$k")"); done
+  [ "${#keys[@]}" -eq 0 ] && fail E_TYPE '<keys> must name at least one key'
+
+  local chord; chord="$(printf '%s+' "${keys[@]}")"; chord="${chord%+}"
+  case "$phase" in
+    down)
+      # Modifiers first, then the final key: the reverse order in a chord is what produces the
+      # combination for a key that needs the modifier held.
+      local first=1
+      for k in "${keys[@]}"; do
+        if [ "$first" = "1" ]; then first=0; else chord=""; fi
+        # shellcheck disable=SC2086
+        xdotool keydown $cm "$k" >/dev/null 2>&1 || { for u in "${keys[@]}"; do xdotool keyup "$u" >/dev/null 2>&1 || true; done; fail E_IO "xdotool could not hold '$k'"; }
+      done
+      printf '{"phase":"down","keys":[%s],"held":true,"tool":"xdotool"}' "$(window_json_keys "${keys[@]}")"
+      ;;
+    up)
+      # Released in REVERSE order, which is what a real chord does and what applications expect.
+      local idx=$((${#keys[@]} - 1))
+      while [ "$idx" -ge 0 ]; do
+        xdotool keyup "${keys[$idx]}" >/dev/null 2>&1 || true
+        idx=$((idx - 1))
+      done
+      printf '{"phase":"up","keys":[%s],"held":false,"tool":"xdotool"}' "$(window_json_keys "${keys[@]}")"
+      ;;
+    press|"")
+      # A whole chord in one call. xdotool releases what it pressed, and modifiers the USER is holding
+      # are handled by --clearmodifiers rather than being released unconditionally.
+      # shellcheck disable=SC2086
+      if ! xdotool key $cm "$chord" >/dev/null 2>&1; then
+        for u in "${keys[@]}"; do xdotool keyup "$u" >/dev/null 2>&1 || true; done
+        fail E_IO "xdotool could not send the chord '$chord'"
+      fi
+      window_key_delay
+      printf '{"phase":"press","keys":[%s],"chord":%s,"intervalMs":%s,"tool":"xdotool"}' \
+        "$(window_json_keys "${keys[@]}")" "$(jstr "$chord")" \
+        "$( [ -n "$interval" ] && printf '%s' "$interval" || printf 'null' )"
+      ;;
+    *)
+      fail E_TYPE "<phase> must be down, up or press, got '$phase'"
+      ;;
+  esac
+}
+
+window_json_keys() {
+  local out="" k
+  for k in "$@"; do
+    [ -n "$out" ] && out="$out,"
+    out="$out$(jstr "$k")"
+  done
+  printf '%s' "$out"
+}
+
+cmd_keyboard_type() {
+  require_min 1 'keyboard type'
+  require_allow 'keyboard type' "${#POSITIONALS[@]}"
+  window_require_display
+  window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard type'
+  local text; text="$(pos 0)"
+  if [ -z "$text" ]; then
+    fail E_NOT_TEXT '<text> must not be empty'
+  fi
+  local method; method="$(flag_value method 'type')"
+  case "$method" in
+    type|key)
+      # --clearmodifiers matters more here than anywhere else: a modifier the user is physically holding
+      # would otherwise combine with every injected character.
+      # shellcheck disable=SC2086
+      xdotool type --clearmodifiers --delay "${XDOTOOL_TYPE_DELAY:-12}" -- "$text" >/dev/null 2>&1 \
+        || fail E_IO 'xdotool could not type the text'
+      ;;
+    *)
+      fail E_TYPE "<method> must be type or key, got '$method'"
+      ;;
+  esac
+  window_key_delay
+  local chars; chars="$(printf '%s' "$text" | wc -c | tr -d ' ')"
+  printf '{"text":%s,"characters":%s,"method":%s,"tool":"xdotool"}' \
+    "$(jstr "$text")" "$chars" "$(jstr "$method")"
+}
+# ---------------------------------------------------------------------------
 # wait ms
 #
 # The sleep is performed in whole seconds plus a fractional remainder where the shell supports one.
@@ -3029,6 +3251,16 @@ main() {
     'mouse.down') dispatch cmd_mouse_down ;;
     'mouse.up') dispatch cmd_mouse_up ;;
     'mouse.cursor') dispatch cmd_mouse_cursor ;;
+    # keyboard.* drives X11 through xdotool, with the same capability gate as mouse.*. Key names are
+    # translated from the Windows spelling to the X keysym spelling before injection, because 'Return'
+    # and 'Enter' are the same key and a script must not work on one machine and silently do nothing on
+    # another.
+    'keyboard.down') dispatch cmd_keyboard_down ;;
+    'keyboard.up') dispatch cmd_keyboard_up ;;
+    'keyboard.press') dispatch cmd_keyboard_press ;;
+    'keyboard.combination') dispatch cmd_keyboard_combination ;;
+    'keyboard.type') dispatch cmd_keyboard_type ;;
+    'keyboard.codes') dispatch cmd_keyboard_codes ;;
     'permission.list') dispatch cmd_permission_list ;;
     'permission.query') dispatch cmd_permission_query ;;
     'permission.audit') dispatch cmd_permission_audit ;;

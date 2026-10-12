@@ -99,6 +99,16 @@ main() {
     'mouse.down') dispatch cmd_mouse_down ;;
     'mouse.up') dispatch cmd_mouse_up ;;
     'mouse.cursor') dispatch cmd_mouse_cursor ;;
+    # keyboard.* drives X11 through xdotool, with the same capability gate as mouse.*. Key names are
+    # translated from the Windows spelling to the X keysym spelling before injection, because 'Return'
+    # and 'Enter' are the same key and a script must not work on one machine and silently do nothing on
+    # another.
+    'keyboard.down') dispatch cmd_keyboard_down ;;
+    'keyboard.up') dispatch cmd_keyboard_up ;;
+    'keyboard.press') dispatch cmd_keyboard_press ;;
+    'keyboard.combination') dispatch cmd_keyboard_combination ;;
+    'keyboard.type') dispatch cmd_keyboard_type ;;
+    'keyboard.codes') dispatch cmd_keyboard_codes ;;
     'permission.list') dispatch cmd_permission_list ;;
     'permission.query') dispatch cmd_permission_query ;;
     'permission.audit') dispatch cmd_permission_audit ;;
