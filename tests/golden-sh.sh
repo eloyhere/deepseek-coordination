@@ -130,6 +130,64 @@ else
   printf '  FAIL  %-46s %s\n' "execute/exit status" "$exit_out"
 fi
 
+echo "== process verbs: task/execute query, show, kill =="
+run "execute query (own pid)"  0 -- execute query "$$"
+run "task query (own pid)"     0 -- task query "$$"
+run "task query nonexistent"   5 -- task query 999999
+run "execute query nonexistent" 5 -- execute query 999999
+run "task query bad pid"       2 -- task query abc
+run "task kill without allow"  3 -- task kill 999999
+run "task kill nonexistent"    5 -- task kill 999999 --allow
+run "task kill bad pid"        2 -- task kill abc --allow
+run "task kill pid 0"          2 -- task kill 0 --allow
+# task show needs a display server; here there is none, and the verb must say so rather than succeed.
+show_out="$(cd "$ROOT_DIR" && bash "$SH" task show "$$" 2>&1)"
+case "$show_out" in
+  *'"ok":true'*)
+    PASS=$((PASS+1)); printf '  PASS  %-46s activated (display present)\n' "task show" ;;
+  *E_NO_DISPLAY*|*E_NOT_SUPPORTED*)
+    PASS=$((PASS+1)); printf '  PASS  %-46s typed capability error\n' "task show" ;;
+  *)
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - task show (got: $show_out)"
+    printf '  FAIL  %-46s %s\n' "task show" "$show_out" ;;
+esac
+
+echo "== task kill: a real process, and one that refuses to die =="
+sleep 60 & victim=$!
+sleep 0.3
+kill_out="$(cd "$ROOT_DIR" && bash "$SH" task kill "$victim" --allow 2>/dev/null)"
+if kill -0 "$victim" 2>/dev/null; then
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - task kill (process survived SIGTERM: $kill_out)"
+  printf '  FAIL  %-46s still alive\n' "task kill graceful"
+  kill -9 "$victim" 2>/dev/null
+else
+  PASS=$((PASS+1)); printf '  PASS  %-46s terminated\n' "task kill graceful"
+fi
+
+# A process that traps SIGTERM must be reported as still running. Claiming it was killed would leave
+# the caller operating on a process it believes is gone.
+sh -c 'trap "" TERM; sleep 60' & stubborn=$!
+sleep 0.4
+stub_out="$(cd "$ROOT_DIR" && bash "$SH" task kill "$stubborn" --allow 2>/dev/null)"
+if kill -0 "$stubborn" 2>/dev/null && printf '%s' "$stub_out" | grep -qF '"stillRunning":true'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s survived and reported honestly\n' "task kill ignores TERM"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - task kill ignores TERM (got: $stub_out)"
+  printf '  FAIL  %-46s %s\n' "task kill ignores TERM" "$stub_out"
+fi
+force_out="$(cd "$ROOT_DIR" && bash "$SH" task kill "$stubborn" --force --allow 2>/dev/null)"
+if kill -0 "$stubborn" 2>/dev/null; then
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - task kill --force (process survived SIGKILL: $force_out)"
+  printf '  FAIL  %-46s survived SIGKILL\n' "task kill --force"
+  kill -9 "$stubborn" 2>/dev/null
+else
+  PASS=$((PASS+1)); printf '  PASS  %-46s SIGKILL took effect\n' "task kill --force"
+fi
+
 echo "== agent-first file view: raw text plus structured lines =="
 (cd "$ROOT_DIR" && bash "$SH" file create "$BOX/view.txt" "alpha
 beta" utf-8 --allow >/dev/null 2>&1)

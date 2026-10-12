@@ -71,6 +71,10 @@ main() {
     'system.info') dispatch cmd_system_info ;;
     'task.list') dispatch cmd_task_list ;;
     'task.query') dispatch cmd_task_query ;;
+    'task.show') dispatch cmd_task_show ;;
+    'task.kill') dispatch cmd_task_kill ;;
+    'execute.query') dispatch cmd_execute_query ;;
+    'execute.kill') dispatch cmd_execute_kill ;;
     'environment.list') dispatch cmd_environment_list ;;
     'environment.get') dispatch cmd_environment_get ;;
     'environment.attribute.list') dispatch cmd_environment_attribute_list ;;

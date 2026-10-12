@@ -105,6 +105,8 @@ function Invoke-Dispatch {
     'system.info' { return (Invoke-SystemInfo -Parsed $inner) }
     'task.list' { return (Invoke-TaskList -Parsed $inner) }
     'task.query' { return (Invoke-TaskQuery -Parsed $inner) }
+    'task.show' { return (Invoke-TaskShow -Parsed $inner) }
+    'task.kill' { return (Invoke-TaskKill -Parsed $inner) }
     'environment.list' { return (Invoke-EnvironmentList -Parsed $inner) }
     'environment.get' { return (Invoke-EnvironmentGet -Parsed $inner) }
     'environment.add' { return (Invoke-EnvironmentAdd -Parsed $inner) }

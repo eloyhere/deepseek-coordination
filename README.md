@@ -93,8 +93,9 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **46 Windows golden cases, 44 POSIX golden cases and 13 plugin cases pass**, all
-encoding contracts hold, 86 verbs in the table. 71 of the 86 verbs are implemented on Windows.
+Current state: **46 Windows golden cases, 57 POSIX golden cases and 13 plugin cases pass**, all
+encoding contracts hold, 86 verbs in the table. 73 of the 86 verbs are implemented on Windows and 36
+on POSIX.
 
 ## Using it from the harness
 
@@ -126,8 +127,10 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
 - Implemented and tested on Windows: `file`, `file verify`, `file search`, `system`, `task`
   (list/query), `service` (list/query), `environment` including `environment attribute`,
   `permission` (read-only) and `selfcheck`.
-- Implemented and tested on POSIX: the same surface except `service`, `window` and `screenshot`, plus
-  `file search` and `execute` (command / synchronous / asynchronous).
+- Implemented and tested on POSIX: the same surface except `service`, `window`, `screenshot`,
+  `clipboard`, `wait`, `mouse` and `keyboard`, plus `file search`, `execute` (command / synchronous /
+  asynchronous) and the process verbs `execute.query`, `execute.kill`, `task.query`, `task.show` and
+  `task.kill`.
 - Implemented and tested on Windows for `window`, `screenshot`, `clipboard` and `wait`: enumeration,
   matching, move, resize, minimize, maximize, restore, z-order, close, screen capture to png/jpeg/bmp,
   clipboard text round-trip including non-ASCII, an explicit sleep, and waiting for a window to appear
@@ -137,11 +140,11 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
 - Implemented and tested on Windows for `mouse` and `keyboard`: cursor read-back, move, click,
   right-click, wheel, button down/up, key down/up, a self-releasing press, chords in both phases, and
   text entry by Unicode key events (so it is layout-independent and accepts non-ASCII).
-- Not written yet on either platform: `text` and `structure`. Also not written:
-  `service`, `window`, `screenshot`, `clipboard` and `wait` on POSIX, `execute.query`,
-  `execute.kill`, `task.show`, `task.kill`, `task.launch`, the `service` lifecycle verbs
-  (start/stop/restart), and `permission.grant`/`revoke`/`acl.init`. Every one of those verbs is
-  declared in the table and returns a typed `E_NOT_SUPPORTED`, never a silent success.
+- Not written yet on either platform: `text`, `structure` and `task.launch`. Also not written:
+  `service`, `window`, `screenshot`, `clipboard`, `wait`, `mouse` and `keyboard` on POSIX, the
+  `service` lifecycle verbs (start/stop/restart), and `permission.grant`/`revoke`/`acl.init`. Every
+  one of those verbs is declared in the table and returns a typed `E_NOT_SUPPORTED`, never a silent
+  success.
 - The consent-delegate plugin for durable authorization is not written; read-only `permission.*`
   works, and the protected-path boundary is enforced.
 
