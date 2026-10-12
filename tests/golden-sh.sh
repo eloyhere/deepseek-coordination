@@ -84,6 +84,34 @@ echo "== write authorization =="
 run "create without --allow"   3 -- file create "$BOX/a.txt" x utf-8
 run "create with --allow"      0 -- file create "$BOX/a.txt" x utf-8 --allow
 
+echo "== agent-first file view: raw text plus structured lines =="
+(cd "$ROOT_DIR" && bash "$SH" file create "$BOX/view.txt" "alpha
+beta" utf-8 --allow >/dev/null 2>&1)
+view="$(cd "$ROOT_DIR" && bash "$SH" file view "$BOX/view.txt" utf-8 0 10 2>/dev/null)"
+if printf '%s' "$view" | grep -qF '"text":"alpha\nbeta"'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s raw text has no line-number prefix\n' "view/text is raw"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - view/text is raw (got: $view)"
+  printf '  FAIL  %-46s %s\n' "view/text is raw" "$view"
+fi
+if printf '%s' "$view" | grep -q '"lines":\[{"number":1,"text":"alpha"}'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s structured lines present\n' "view/lines structured"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - view/lines structured (got: $view)"
+  printf '  FAIL  %-46s %s\n' "view/lines structured" "$view"
+fi
+# --with-numbers is the opt-in human rendering and must not be the default.
+viewnum="$(cd "$ROOT_DIR" && bash "$SH" file view "$BOX/view.txt" utf-8 0 10 --with-numbers 2>/dev/null)"
+if printf '%s' "$viewnum" | grep -q '"text":"1: alpha'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s opt-in human rendering\n' "view/--with-numbers"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - view/--with-numbers (got: $viewnum)"
+  printf '  FAIL  %-46s %s\n' "view/--with-numbers" "$viewnum"
+fi
+
 echo "== round-trip: BOM and EOL survive =="
 (cd "$ROOT_DIR" && bash "$SH" file create "$BOX/bom.txt" hello utf-8-bom --allow >/dev/null 2>&1)
 hex="$(od -An -tx1 -N3 "$BOX/bom.txt" 2>/dev/null | tr -d ' \n')"

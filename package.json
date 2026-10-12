@@ -34,9 +34,14 @@
     "linux",
     "darwin"
   ],
-  "main": "src/client/main.ts",
+  "main": "src/plugin/index.js",
   "bin": {
     "dsh-os": "src/host/bin/dsh-os.bat"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   },
   "files": [
     "src/host/bin/dsh-os.ps1",
@@ -48,6 +53,8 @@
     "src/host/docs/os-spec.md",
     "src/host/docs/permission-model.md",
     "src/host/docs/command-original.txt",
+    "cordis.patch.yml",
+    "src/plugin/index.js",
     "README.md"
   ],
   "scripts": {

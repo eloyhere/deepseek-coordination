@@ -116,7 +116,7 @@ Assert-Case 'path-with-spaces/create-charset-view' {
   Assert-Equal 0 $r.exit 'create exit'
   Assert-Equal $true $r.json.ok 'create ok'
   Assert-Equal 'utf-8' (Invoke-Os @('file', 'charset', $p)).json.result.charset 'charset'
-  Assert-Equal '1: hello world' (Invoke-Os @('file', 'view', $p)).json.result.text 'view text'
+  Assert-Equal 'hello world' (Invoke-Os @('file', 'view', $p)).json.result.text 'view text'
 }
 
 # -- 2. non-ASCII path and content -----------------------------------------
@@ -124,7 +124,7 @@ Assert-Case 'non-ascii/path-and-content' {
   $p = Join-Path $sandbox ($CN_DIR + ' dir\' + $CN + '.txt')
   $r = Invoke-Os @('file', 'create', $p, $CN, 'utf-8', '--allow')
   Assert-Equal 0 $r.exit 'create exit'
-  Assert-Equal ("1: " + $CN) (Invoke-Os @('file', 'view', $p)).json.result.text 'view text'
+  Assert-Equal $CN (Invoke-Os @('file', 'view', $p)).json.result.text 'view text'
 }
 
 # -- 3. UTF-8 with BOM: detected, and the BOM survives append --------------
@@ -145,7 +145,7 @@ Assert-Case 'bom/never-leaks-into-view' {
   Invoke-Os @('file', 'create', $p, 'abc', 'utf-8-bom', '--allow') | Out-Null
   $r = Invoke-Os @('file', 'view', $p)
   Assert-True (-not $r.json.result.text.Contains([char]0xFEFF)) 'view text must not contain U+FEFF'
-  Assert-Equal '1: abc' $r.json.result.text 'view text'
+  Assert-Equal 'abc' $r.json.result.text 'view text'
 }
 
 # -- 5. plain UTF-8 must not gain a BOM ------------------------------------
@@ -183,7 +183,7 @@ Assert-Case 'charset/gbk-detect-and-roundtrip' {
   Write-Bytes $p ([System.Text.Encoding]::GetEncoding(936).GetBytes($CN))
   Assert-Equal $original (Get-Hex $p) 'fixture must hold GBK bytes'
   Assert-Equal 'gbk' (Invoke-Os @('file', 'charset', $p)).json.result.charset 'detected charset'
-  Assert-Equal ("1: " + $CN) (Invoke-Os @('file', 'view', $p)).json.result.text 'decoded text'
+  Assert-Equal $CN (Invoke-Os @('file', 'view', $p)).json.result.text 'decoded text'
   Invoke-Os @('file', 'encode', $p, 'utf-8', '--allow') | Out-Null
   Assert-Equal $utf8Hex (Get-Hex $p) 'utf-8 bytes'
   Invoke-Os @('file', 'encode', $p, 'gbk', '--allow') | Out-Null
@@ -292,7 +292,15 @@ Assert-Case 'view/byte-range' {
   $p = Join-Path $sandbox 'range\f.txt'
   Invoke-Os @('file', 'create', $p, 'abcdef', 'utf-8', '--allow') | Out-Null
   $r = Invoke-Os @('file', 'view', $p, 'utf-8', '1', '4')
-  Assert-Equal '1: bcd' $r.json.result.text 'sliced text'
+  Assert-Equal 'bcd' $r.json.result.text 'sliced text'
+  # The result is agent-first: raw text plus structured lines, so a caller never strips a rendering.
+  Assert-Equal 1 $r.json.result.lineCount 'sliced lineCount'
+  Assert-Equal 'bcd' $r.json.result.lines[0].text 'sliced structured line text'
+  Assert-Equal 1 $r.json.result.lines[0].number 'sliced structured line number'
+  # --with-numbers restores the human rendering, and must not be the default.
+  $human = Invoke-Os @('file', 'view', $p, 'utf-8', '1', '4', '--with-numbers')
+  Assert-Equal '1: bcd' $human.json.result.text 'opt-in human rendering'
+  Assert-Equal 'bcd' $human.json.result.lines[0].text 'structured lines stay unnumbered even with the flag'
   Assert-Equal 1 $r.json.result.start 'start'
   Assert-Equal 4 $r.json.result.end 'end'
 }

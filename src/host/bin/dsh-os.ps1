@@ -1,10 +1,7 @@
 ﻿# dsh-os.ps1 - GENERATED FILE. Do not edit directly.
 #
 # Assembled by tools/build.ps1 from src/host/lib/*.ps1, which are the source of truth:
-##
-# The shipped script is deliberately a single self-contained file: it is invoked directly by the
-# harness and by hand, it must carry UTF-8 with BOM so Windows PowerShell 5.1 decodes it in the right
-# code page, and it must run without module resolution or relative-path assumptions.
+#
 #   00-preamble.ps1
 #   01-json.ps1
 #   02-command.ps1
@@ -21,6 +18,10 @@
 #   13-window.ps1
 #   14-dispatch.ps1
 #   15-entry.ps1
+#
+# The shipped script is deliberately a single self-contained file: it is invoked directly by the
+# harness and by hand, it must carry UTF-8 with BOM so Windows PowerShell 5.1 decodes it in the right
+# code page, and it must run without module resolution or relative-path assumptions.
 
 
 # ===== 00-preamble.ps1 =============================================
@@ -318,8 +319,8 @@ $script:ValueFlags = @(
 $script:KnownFlags = @(
   $script:ValueFlags +
   'allow', 'pretty', 'quiet', 'json', 'backup', 'permanent', 'parents', 'no-recursive',
-  'no-numbers', 'force', 'hold', 'clearmodifiers', 'exact', 'absent', 'z-order', 'shell',
-  'background', 'strict-args', 'regex', 'recursive'
+  'no-numbers', 'with-numbers', 'force', 'hold', 'clearmodifiers', 'exact', 'absent', 'z-order', 'shell',
+  'background', 'regex', 'recursive'
 )
 
 function Parse-Arguments {
@@ -400,7 +401,12 @@ function Get-VerbParams {
 # the positional form regardless of the order the names were written in.
 function Merge-NamedArguments {
   param($Parsed, [string]$VerbKey)
-  if ($Parsed.named.Count -eq 0 -and -not $Parsed.flags.ContainsKey('strict-args')) { return $Parsed }
+  # The guard is on named arguments alone. An earlier version also entered this function for a
+  # --strict-args flag and then rejected every argument that lacked literal quote characters; that
+  # check could never work, because PowerShell and bash both consume an argument's quotes while
+  # parsing, so a correctly quoted call is indistinguishable from an unquoted one by the time the
+  # script sees it. The flag has been removed rather than left as a validator that rejects valid input.
+  if ($Parsed.named.Count -eq 0) { return $Parsed }
   $declared = @(Get-VerbParams -VerbKey $VerbKey)
   if ($Parsed.named.Count -gt 0) {
     if ($declared.Count -eq 0) {
@@ -1528,11 +1534,19 @@ function Invoke-FileView {
   $text = Remove-BomChar -Text ($enc.GetString($slice))
 
   $normalized = $text.Replace("`r`n", "`n")
-  $lines = @($normalized -split "`n")
-  $withNumbers = -not (Test-HasFlag -Parsed $Parsed -Name 'no-numbers')
+  $lineValues = @($normalized -split "`n")
+
+  # Agent-first output. The previous shape returned text with a "N: " prefix on every line, which is
+  # a human rendering: a caller that wanted the file's actual bytes had to strip it back off, and a
+  # caller that wanted a line number had to parse it. The result now carries the raw slice in `text`
+  # and the same content as structured objects in `lines`, so neither has to be reverse-engineered.
+  # --with-numbers restores the prefixed form for a human reading a terminal; it is never the default.
+  $withNumbers = Test-HasFlag -Parsed $Parsed -Name 'with-numbers'
+  $lineObjects = New-Object System.Collections.ArrayList
   $rendered = New-Object System.Collections.ArrayList
   $n = 1
-  foreach ($l in $lines) {
+  foreach ($l in $lineValues) {
+    [void]$lineObjects.Add([ordered]@{ number = $n; text = $l })
     if ($withNumbers) { [void]$rendered.Add(('{0}: {1}' -f $n, $l)) } else { [void]$rendered.Add($l) }
     $n++
   }
@@ -1543,7 +1557,7 @@ function Invoke-FileView {
   $charLimit = [int]$limit
   $truncated = $false
   if ($body.Length -gt $charLimit) {
-    $body = $body.Substring(0, $charLimit) + "`n... (truncated at $charLimit characters)"
+    $body = $body.Substring(0, $charLimit)
     $truncated = $true
   }
 
@@ -1556,7 +1570,8 @@ function Invoke-FileView {
     start = $start
     end = $end
     totalBytes = $total
-    lines = $lines.Length
+    lineCount = $lineValues.Length
+    lines = $lineObjects.ToArray()
     truncated = $truncated
     text = $body
   }

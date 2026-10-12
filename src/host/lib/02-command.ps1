@@ -21,8 +21,8 @@ $script:ValueFlags = @(
 $script:KnownFlags = @(
   $script:ValueFlags +
   'allow', 'pretty', 'quiet', 'json', 'backup', 'permanent', 'parents', 'no-recursive',
-  'no-numbers', 'force', 'hold', 'clearmodifiers', 'exact', 'absent', 'z-order', 'shell',
-  'background', 'strict-args', 'regex', 'recursive'
+  'no-numbers', 'with-numbers', 'force', 'hold', 'clearmodifiers', 'exact', 'absent', 'z-order', 'shell',
+  'background', 'regex', 'recursive'
 )
 
 function Parse-Arguments {
@@ -103,7 +103,12 @@ function Get-VerbParams {
 # the positional form regardless of the order the names were written in.
 function Merge-NamedArguments {
   param($Parsed, [string]$VerbKey)
-  if ($Parsed.named.Count -eq 0 -and -not $Parsed.flags.ContainsKey('strict-args')) { return $Parsed }
+  # The guard is on named arguments alone. An earlier version also entered this function for a
+  # --strict-args flag and then rejected every argument that lacked literal quote characters; that
+  # check could never work, because PowerShell and bash both consume an argument's quotes while
+  # parsing, so a correctly quoted call is indistinguishable from an unquoted one by the time the
+  # script sees it. The flag has been removed rather than left as a validator that rejects valid input.
+  if ($Parsed.named.Count -eq 0) { return $Parsed }
   $declared = @(Get-VerbParams -VerbKey $VerbKey)
   if ($Parsed.named.Count -gt 0) {
     if ($declared.Count -eq 0) {

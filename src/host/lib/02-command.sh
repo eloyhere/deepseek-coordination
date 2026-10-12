@@ -5,7 +5,7 @@
 # a typo cannot silently become a positional.
 # ---------------------------------------------------------------------------
 VALUE_FLAGS=" encoding eol button count space out screen format workdir env stdin timeout interval method pid regex name max-bytes max-chars depth source bom text charset length sha256 limit filter scope index decision delegate args attr value "
-KNOWN_FLAGS=" allow pretty quiet json backup permanent parents no-recursive no-numbers force hold clearmodifiers exact absent z-order shell background "
+KNOWN_FLAGS=" allow pretty quiet json backup permanent parents no-recursive no-numbers with-numbers force hold clearmodifiers exact absent z-order shell background "
 
 POSITIONALS=()
 declare -A FLAGS=()

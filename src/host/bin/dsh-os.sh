@@ -2,10 +2,7 @@
 # dsh-os.sh - GENERATED FILE. Do not edit directly.
 #
 # Assembled by tools/build.ps1 from src/host/lib/*.sh, which are the source of truth:
-##
-# The shipped script is deliberately a single self-contained file, LF-terminated and BOM-free: the
-# shebang must be the very first bytes, and a carriage return would become part of the last token on
-# every line.
+#
 #   00-preamble.sh
 #   01-json.sh
 #   02-command.sh
@@ -22,6 +19,10 @@
 #   13-window.sh
 #   14-dispatch.sh
 #   15-entry.sh
+#
+# The shipped script is deliberately a single self-contained file, LF-terminated and BOM-free: the
+# shebang must be the very first bytes, and a carriage return would become part of the last token on
+# every line.
 
 
 # ===== 00-preamble.sh ==============================================
@@ -254,7 +255,7 @@ success_envelope() {
 # a typo cannot silently become a positional.
 # ---------------------------------------------------------------------------
 VALUE_FLAGS=" encoding eol button count space out screen format workdir env stdin timeout interval method pid regex name max-bytes max-chars depth source bom text charset length sha256 limit filter scope index decision delegate args attr value "
-KNOWN_FLAGS=" allow pretty quiet json backup permanent parents no-recursive no-numbers force hold clearmodifiers exact absent z-order shell background "
+KNOWN_FLAGS=" allow pretty quiet json backup permanent parents no-recursive no-numbers with-numbers force hold clearmodifiers exact absent z-order shell background "
 
 POSITIONALS=()
 declare -A FLAGS=()
@@ -1008,14 +1009,25 @@ cmd_file_view() {
   rm -f "$slice"
   # Strip a leading BOM character if the slice carried the preamble.
   text="${text#$'\xef\xbb\xbf'}"
+
+  # Agent-first output, mirroring the PowerShell implementation. `text` carries the raw slice with no
+  # line-number prefix, and `lines` carries the same content as structured objects, so a caller never
+  # has to strip a human rendering back off or parse it. --with-numbers is opt-in for a human.
+  local linesJson="" lineCount=0
   local numbered="$text"
-  if ! have_flag no-numbers; then
+  if have_flag with-numbers; then
     numbered="$(printf '%s' "$text" | awk '{ printf "%d: %s\n", NR, $0 }')"
   fi
-  printf '{"path":%s,"charset":%s,"bom":%s,"eol":%s,"size":%s,"start":%s,"end":%s,"totalBytes":%s,"text":%s}' \
+  # Build the structured array. IFS is scoped so an embedded newline cannot split a record early.
+  while IFS= read -r one || [ -n "$one" ]; do
+    linesJson="$linesJson$( [ "$lineCount" -gt 0 ] && printf ',' )$(printf '{"number":%s,"text":%s}' "$((lineCount + 1))" "$(jstr "$one")")"
+    lineCount=$((lineCount + 1))
+  done <<<"$text"
+
+  printf '{"path":%s,"charset":%s,"bom":%s,"eol":%s,"size":%s,"start":%s,"end":%s,"totalBytes":%s,"lineCount":%s,"lines":[%s],"truncated":false,"text":%s}' \
     "$(jstr "$path")" "$(jstr "$DOC_CHARSET")" \
     "$([ "$DOC_BOM" != "-" ] && echo true || echo false)" "$(jstr "$DOC_EOL")" \
-    "$DOC_SIZE" "$s" "$e" "$DOC_SIZE" "$(jstr "$numbered")"
+    "$DOC_SIZE" "$s" "$e" "$DOC_SIZE" "$lineCount" "$linesJson" "$(jstr "$numbered")"
 }
 
 # ---------------------------------------------------------------------------

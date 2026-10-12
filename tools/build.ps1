@@ -86,12 +86,17 @@ function Get-AssembledBytes {
   param(
     [string[]]$Modules,
     [string]$Header,
+    [string]$Footer,
     [string]$Eol,
     [bool]$Bom
   )
   $parts = New-Object System.Collections.ArrayList
+  # Header, then the module list, then the footer. The footer must come last: passing header+footer as
+  # one string and appending the list afterwards produced a stray "##" line and a header that read as
+  # if the footer text were a module.
   [void]$parts.Add($Header)
   foreach ($m in $Modules) { [void]$parts.Add('#   ' + $m) }
+  [void]$parts.Add($Footer)
   [void]$parts.Add('')
   foreach ($m in $Modules) {
     $path = Join-Path $libDir $m
@@ -137,8 +142,8 @@ $shFooter = @'
 # every line.
 '@
 
-$ps1Bytes = Get-AssembledBytes -Modules $modulesPs1 -Header ($ps1Header + $ps1Footer) -Eol 'crlf' -Bom $true
-$shBytes = Get-AssembledBytes -Modules $modulesSh -Header ($shHeader + $shFooter) -Eol 'lf' -Bom $false
+$ps1Bytes = Get-AssembledBytes -Modules $modulesPs1 -Header $ps1Header -Footer $ps1Footer -Eol 'crlf' -Bom $true
+$shBytes = Get-AssembledBytes -Modules $modulesSh -Header $shHeader -Footer $shFooter -Eol 'lf' -Bom $false
 
 if ($Check) {
   $failures = 0

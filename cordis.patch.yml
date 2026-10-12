@@ -1,0 +1,17 @@
+# dsh-os bundle patch.
+#
+# A bundle is an npm package whose manifest declares `dsh.bundle.patch`. The loader composes the
+# plugin tree by applying each bundle's patch list over an empty entry list, in the order the profile
+# lists them, then the profile's own patches. This file is that patch list for the host plugin.
+#
+# `insert` with no `id` appends to the root entry list. The plugin itself is a plain Cordis plugin:
+# src/plugin/index.js exports apply/inject/name, and registers one model-facing tool with ctx.tools.
+- insert:
+    - id: dsh-os
+      name: deepseek-coordination
+      config:
+        # Path to the implementation, relative to the package root. Overridable so a deployment can
+        # point at a different checkout without editing the package.
+        scriptDir: src/host/bin
+        # Default timeout for a single verb invocation, in milliseconds.
+        timeoutMs: 120000
