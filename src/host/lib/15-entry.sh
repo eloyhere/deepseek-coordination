@@ -76,6 +76,9 @@ main() {
     'environment.attribute.list') dispatch cmd_environment_attribute_list ;;
     'environment.attribute.get') dispatch cmd_environment_attribute_get ;;
     'permission.list') dispatch cmd_permission_list ;;
+    'execute.command') dispatch cmd_execute_command ;;
+    'execute.synchronous') dispatch cmd_execute_synchronous ;;
+    'execute.asynchronous') dispatch cmd_execute_asynchronous ;;
     *)
       # Routed through dispatch like every other verb: calling fail() directly here would exit from
       # inside main, before the entry point can re-emit the envelope fail() just wrote to the scratch

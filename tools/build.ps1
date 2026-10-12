@@ -67,7 +67,7 @@ $modulesSh = @(
   '03-charset.sh',     # charset table, detection, byte-level document model
   '06-file.sh',        # file.*, file verify.*, file search
   '07-system.sh',      # system.*
-  '08-execute.sh',     # execute.* (not implemented on POSIX)
+  '08-execute.sh',     # execute.command / synchronous / asynchronous
   '09-task.sh',        # task.list / task.query
   '10-environment.sh', # environment.* and environment attribute.*
   '11-service.sh',     # service.* (not implemented on POSIX)

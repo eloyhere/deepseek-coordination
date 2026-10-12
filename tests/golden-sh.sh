@@ -84,6 +84,52 @@ echo "== write authorization =="
 run "create without --allow"   3 -- file create "$BOX/a.txt" x utf-8
 run "create with --allow"      0 -- file create "$BOX/a.txt" x utf-8 --allow
 
+echo "== execute: argv form, and the two batch modes =="
+run "execute command (argv, no shell)" 0 -- execute command echo hello --allow
+run "execute command argv keeps a space" 0 -- execute command echo "a b c" --allow
+run "execute synchronous"      0 -- execute synchronous "echo one" "echo two" --allow
+run "execute asynchronous"     0 -- execute asynchronous "echo alpha" "echo beta" --allow
+run "execute batch needs --allow" 3 -- execute synchronous "echo x"
+
+echo "== execute: the behaviours that distinguish the two batch modes =="
+# Synchronous must stop at the first failure, so the third command never runs.
+sync_out="$(cd "$ROOT_DIR" && bash "$SH" execute synchronous "echo first" "exit 3" "echo never" --allow 2>/dev/null)"
+if printf '%s' "$sync_out" | grep -qF '"executed":2' && printf '%s' "$sync_out" | grep -qF '"exitCode":3'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s stops at first failure\n' "execute/sync stops"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - execute/sync stops (got: $sync_out)"
+  printf '  FAIL  %-46s %s\n' "execute/sync stops" "$sync_out"
+fi
+# Asynchronous must run every command even when one fails, and count the failure.
+async_out="$(cd "$ROOT_DIR" && bash "$SH" execute asynchronous "echo ok" "exit 2" --allow 2>/dev/null)"
+if printf '%s' "$async_out" | grep -qF '"executed":2' && printf '%s' "$async_out" | grep -qF '"failed":1'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s runs every command, counts failures\n' "execute/async continues"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - execute/async continues (got: $async_out)"
+  printf '  FAIL  %-46s %s\n' "execute/async continues" "$async_out"
+fi
+# A command killed for exceeding its deadline has no status of its own, so exitCode must be null
+# rather than a made-up number, and timedOut must be set.
+to_out="$(cd "$ROOT_DIR" && bash "$SH" execute command sleep 5 --timeout 800 --allow 2>/dev/null)"
+if printf '%s' "$to_out" | grep -qF '"timedOut":true' && printf '%s' "$to_out" | grep -qF '"exitCode":null'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s killed, exitCode null\n' "execute/timeout"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - execute/timeout (got: $to_out)"
+  printf '  FAIL  %-46s %s\n' "execute/timeout" "$to_out"
+fi
+# A command that fails on its own must report its real status, including for exit 0.
+exit_out="$(cd "$ROOT_DIR" && bash "$SH" execute synchronous "exit 7" --allow 2>/dev/null)"
+if printf '%s' "$exit_out" | grep -qF '"exitCode":7'; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s real status reported\n' "execute/exit status"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - execute/exit status (got: $exit_out)"
+  printf '  FAIL  %-46s %s\n' "execute/exit status" "$exit_out"
+fi
+
 echo "== agent-first file view: raw text plus structured lines =="
 (cd "$ROOT_DIR" && bash "$SH" file create "$BOX/view.txt" "alpha
 beta" utf-8 --allow >/dev/null 2>&1)
