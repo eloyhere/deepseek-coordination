@@ -82,6 +82,13 @@ main() {
     'environment.delete') dispatch cmd_environment_delete ;;
     'environment.attribute.list') dispatch cmd_environment_attribute_list ;;
     'environment.attribute.get') dispatch cmd_environment_attribute_get ;;
+    'environment.attribute.add') dispatch cmd_environment_attribute_add ;;
+    'environment.attribute.set') dispatch cmd_environment_attribute_set ;;
+    'environment.attribute.delete') dispatch cmd_environment_attribute_delete ;;
+    # wait ms is the one verb of the desktop group that needs nothing from a display server, so it is
+    # implemented here. The other window/mouse/keyboard/clipboard/observe verbs are deliberately absent
+    # from this table and fall through to the default arm, which reports a typed E_NOT_SUPPORTED.
+    'wait.ms') dispatch cmd_wait_ms ;;
     'permission.list') dispatch cmd_permission_list ;;
     'permission.query') dispatch cmd_permission_query ;;
     'permission.audit') dispatch cmd_permission_audit ;;

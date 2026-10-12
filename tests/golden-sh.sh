@@ -240,6 +240,56 @@ run "environment add bad scope"  4 -- environment add DSH_G3 x --scope galaxy --
 run "environment set absent"     5 -- environment set DSH_GONE x --allow
 run "environment delete absent"  5 -- environment delete DSH_GONE --allow
 
+echo "== environment attribute: list mutations at process scope =="
+# The harness's `run` executes the verb in its own process, so a list to mutate has to be seeded in the
+# environment that invocation inherits. attr_run does that for the value-mutating cases.
+attr_run() {
+  local desc="$1"; shift
+  local want="$1"; shift
+  [ "$1" = "--" ] && shift
+  local out rc
+  out="$(cd "$ROOT_DIR" && DSH_ATTR="/a:/b:/c" bash "$SH" "$@" 2>/dev/null)"
+  rc=$?
+  local ok=1
+  [ -n "$out" ] || ok=0
+  case "$out" in '{'*) ;; *) ok=0 ;; esac
+  [ "$want" = "-" ] || [ "$rc" = "$want" ] || ok=0
+  if [ "$ok" = "1" ]; then
+    PASS=$((PASS+1)); printf '  PASS  %-46s rc=%-3s %s\n' "$desc" "$rc" "$(printf '%s' "$out" | cut -c1-72)"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - $desc (rc=$rc, envelope=$( [ -n "$out" ] && echo present || echo MISSING ))"
+    printf '  FAIL  %-46s rc=%-3s envelope=%s\n' "$desc" "$rc" "$( [ -n "$out" ] && echo present || echo MISSING )"
+  fi
+}
+
+run "environment attribute list"  0 -- environment attribute list --scope process
+attr_run "attribute add appends"        0 -- environment attribute add DSH_ATTR /d --attr DSH_ATTR --scope process --allow
+attr_run "attribute add duplicate"      5 -- environment attribute add DSH_ATTR /a --attr DSH_ATTR --scope process --allow
+attr_run "attribute set replaces"       0 -- environment attribute set DSH_ATTR 1 /X --attr DSH_ATTR --scope process --allow
+attr_run "attribute set out of range"   2 -- environment attribute set DSH_ATTR 9 /X --attr DSH_ATTR --scope process --allow
+attr_run "attribute set bad integer"    2 -- environment attribute set DSH_ATTR abc /X --attr DSH_ATTR --scope process --allow
+attr_run "attribute delete by index"    0 -- environment attribute delete DSH_ATTR --attr DSH_ATTR --index 0 --scope process --allow
+attr_run "attribute delete by value"    0 -- environment attribute delete DSH_ATTR --attr DSH_ATTR --value /c --scope process --allow
+attr_run "attribute delete absent"      5 -- environment attribute delete DSH_ATTR --attr DSH_ATTR --value /nope --scope process --allow
+attr_run "attribute delete no selector" 1 -- environment attribute delete DSH_ATTR --attr DSH_ATTR --scope process --allow
+attr_run "attribute delete bad index"   2 -- environment attribute delete DSH_ATTR --attr DSH_ATTR --index abc --scope process --allow
+# Mutations are refused at a persistent scope rather than half-applied, because this platform has no
+# kernel API for a list variable and reconstructing PATH in a startup file can make shells unusable.
+attr_run "attribute add bad scope"      4 -- environment attribute add DSH_ATTR /d --attr DSH_ATTR --scope user --allow
+attr_run "attribute add needs allow"    3 -- environment attribute add DSH_ATTR /d --attr DSH_ATTR --scope process
+
+# The mutated list must actually have changed, not merely been reported as changed.
+out="$(cd "$ROOT_DIR" && DSH_ATTR="/a:/b" bash "$SH" environment attribute add DSH_ATTR /c --attr DSH_ATTR --scope process --allow 2>/dev/null)"
+cnt="$(printf '%s' "$out" | sed -n 's/.*"count":\([0-9]*\).*/\1/p' | head -1)"
+if [ "$cnt" = "3" ]; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s count=%s\n' "attribute add reports the new count" "$cnt"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - attribute add reports the new count (got '$cnt', expected 3)"
+  printf '  FAIL  %-46s count=%s\n' "attribute add reports the new count" "$cnt"
+fi
+
 echo "== environment: persistent scope through a managed block =="
 # A temporary HOME, so the real profile is never touched.
 FIXHOME="$(mktemp -d)"
@@ -286,6 +336,47 @@ else
   printf '  FAIL  %-46s wrong entries removed\n' "env/user delete"
 fi
 rm -rf "$FIXHOME"
+
+echo "== wait ms: the one desktop-group verb that needs no display server =="
+run "wait ms 0"                  0 -- wait ms 0
+run "wait ms 50"                 0 -- wait ms 50
+# A negative value is a range error, not a type error: the Windows side reports E_RANGE for it, so the
+# sign is checked before the digit test.
+run "wait ms negative"           2 -- wait ms -5
+run "wait ms not an integer"     2 -- wait ms abc
+run "wait ms beyond one hour"    2 -- wait ms 3600001
+
+# elapsedMs must be a real measurement. It was initially derived from $SECONDS, a whole-second counter,
+# so a 250 ms wait reported elapsedMs 0 - a false measurement rather than a rounding detail.
+out="$(cd "$ROOT_DIR" && bash "$SH" wait ms 250 2>/dev/null)"
+el="$(printf '%s' "$out" | sed -n 's/.*"elapsedMs":\([0-9]*\).*/\1/p' | head -1)"
+if [ -n "$el" ] && [ "$el" -ge 200 ] && [ "$el" -le 700 ]; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s elapsedMs=%s\n' "wait ms measures elapsed time" "$el"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - wait ms measures elapsed time (got '$el', expected roughly 250)"
+  printf '  FAIL  %-46s elapsedMs=%s\n' "wait ms measures elapsed time" "$el"
+fi
+
+# The verbs the desktop group cannot provide must fail in a TYPED way rather than returning an empty
+# success or merely an exit code. This machine has no display server, which is exactly the condition
+# under test.
+echo "== unavailable desktop verbs must be typed errors, never empty successes =="
+for v in "window list" "keyboard codes" "mouse cursor" "clipboard read" "screenshot 0 0 10 10"; do
+  out="$(cd "$ROOT_DIR" && bash "$SH" $v 2>/dev/null)"
+  rc=$?
+  ok=1
+  [ -n "$out" ] || ok=0
+  case "$out" in '{'*) ;; *) ok=0 ;; esac
+  case "$out" in *'"code":"E_NOT_SUPPORTED"'*) ;; *) ok=0 ;; esac
+  if [ "$ok" = "1" ]; then
+    PASS=$((PASS+1)); printf '  PASS  %-46s rc=%-3s typed E_NOT_SUPPORTED\n' "$v" "$rc"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - $v (rc=$rc, envelope=$( [ -n "$out" ] && echo present || echo MISSING ))"
+    printf '  FAIL  %-46s rc=%-3s\n' "$v" "$rc"
+  fi
+done
 
 echo "== every envelope must be well-formed JSON =="
 # An unquoted field produced a malformed envelope that a shell-based check did not notice, because the

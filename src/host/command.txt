@@ -124,6 +124,10 @@ environment attribute get name                   // R  the attribute's entries a
 environment attribute add name value             // W  append one entry to the attribute.
 environment attribute set name index value       // W  replace one entry by index.
 environment attribute delete name                // W  remove an entry, by --index or by --value.
+//   On POSIX the list mutations are --scope process only, and a persistent scope is refused with
+//   E_NOT_SUPPORTED rather than half-applied: this platform has no kernel API for a list variable, so
+//   persisting one means rewriting a startup file, and a wrong reconstruction of PATH there can make a
+//   machine's shells unusable. The read views are --scope process only for the same reason.
 
 permission query verb target                // R  current decision, matched rule, and enforcement strength.
 permission list                             // R  all durable rules.

@@ -2104,6 +2104,168 @@ cmd_environment_delete() {
     "$(jstr "$name")" "$(jstr "$scope")" "$(jstr "$previous")" "$(jstr "$file")" "$(env_visible_note "$scope")"
 }
 
+# ---------------------------------------------------------------------------
+# environment attribute add / set / delete
+#
+# An attribute is a list variable: PATH and friends, joined by the platform separator. add appends,
+# set replaces one entry by index, delete removes one entry by --index or by --value. They mirror the
+# Windows side field for field, so an agent parses the same result whichever platform answered.
+#
+# PROCESS SCOPE ONLY, deliberately. list and get already refuse every other scope here, and a list
+# mutation is a worse candidate for persistence than a plain variable: editing PATH in a startup file
+# can make a machine's shells unusable if the reconstruction is wrong, and the mutation would be
+# invisible to the caller anyway because this verb runs as its own process. Refusing is honest;
+# half-persisting a list would not be.
+# ---------------------------------------------------------------------------
+
+# Split the attribute's current value into ATTR_ENTRIES. Assigns rather than printing, because a verb
+# must be able to call it in its own shell: in `entries=$(...)` a fail inside would exit only the
+# subshell and the verb would carry on with empty data.
+ATTR_ENTRIES=()
+env_split_entries() {
+  local name="$1"
+  ATTR_ENTRIES=()
+  if [ -z "${!name+x}" ]; then return 0; fi
+  local sep; sep="$(env_separator)"
+  local oldifs="$IFS"
+  IFS="$sep"
+  local e
+  for e in ${!name}; do
+    [ -n "$e" ] && ATTR_ENTRIES+=("$e")
+  done
+  IFS="$oldifs"
+  return 0
+}
+
+# Rejoin entries and export. Prints the resulting count in ENV_ATTR_COUNT for the envelope.
+env_join_entries() {
+  local name="$1"
+  local sep; sep="$(env_separator)"
+  local joined="" i=0
+  for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+    if [ "$i" -eq 0 ]; then joined="$e"; else joined="$joined$sep$e"; fi
+    i=$((i + 1))
+  done
+  ENV_ATTR_COUNT="$i"
+  if [ "$i" -eq 0 ]; then
+    # An empty list means the variable goes away rather than becoming an empty string, so that
+    # `attribute list` stops reporting it, matching the Windows behaviour.
+    unset "$name"
+  else
+    export "$name=$joined"
+  fi
+}
+
+# Shared guard: attribute mutations are process scope only.
+env_attr_require_process_scope() {
+  local scope; scope="$(flag_value scope 'user')"
+  if [ "$scope" != "process" ]; then
+    fail E_NOT_SUPPORTED "scope '$scope' is not available on this platform" \
+      'attribute mutations support --scope process only'
+  fi
+}
+
+cmd_environment_attribute_add() {
+  require_min 2 'environment attribute add'
+  require_allow 'environment attribute add' "${#POSITIONALS[@]}"
+  local name; name="$(pos 0)"
+  local value; value="$(pos 1)"
+  env_attr_require_process_scope
+  local attr; attr="$(flag_value attr 'PATH')"
+  if [ -z "${!attr+x}" ]; then
+    fail E_NOT_FOUND "attribute '$attr' is not set at process scope"
+  fi
+  env_split_entries "$attr"
+  local e
+  for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+    # Ordinal comparison: an entry differing from the named value only by a non-printable control
+    # character must not be treated as the same entry. LC_ALL=C makes [ = ] a byte comparison.
+    if LC_ALL=C [ "$e" = "$value" ]; then
+      fail E_EXISTS "'$attr' already contains '$value'"
+    fi
+  done
+  ATTR_ENTRIES+=("$value")
+  env_join_entries "$attr"
+  printf '{"name":%s,"added":%s,"scope":"process","count":%s,"operation":"attr-add","requestedName":%s,"visibleToRunningProcesses":%s,"note":%s}' \
+    "$(jstr "$attr")" "$(jstr "$value")" "$ENV_ATTR_COUNT" "$(jstr "$name")" \
+    "$(env_visible_note process)" "$(env_visibility_note_json process)"
+}
+
+cmd_environment_attribute_set() {
+  require_min 3 'environment attribute set'
+  require_allow 'environment attribute set' "${#POSITIONALS[@]}"
+  local name; name="$(pos 0)"
+  local index; index="$(pos 1)"
+  case "$index" in ''|*[!0-9]*) fail E_TYPE "<index> must be an integer, got '$index'" ;; esac
+  local value; value="$(pos 2)"
+  env_attr_require_process_scope
+  local attr; attr="$(flag_value attr 'PATH')"
+  if [ -z "${!attr+x}" ]; then
+    fail E_NOT_FOUND "attribute '$attr' is not set at process scope"
+  fi
+  env_split_entries "$attr"
+  local n="${#ATTR_ENTRIES[@]}"
+  if [ "$index" -ge "$n" ]; then
+    local hi=0; [ "$n" -gt 0 ] && hi=$((n - 1))
+    fail E_RANGE "index $index is out of range for '$attr' (0..$hi)"
+  fi
+  local previous="${ATTR_ENTRIES[$index]}"
+  ATTR_ENTRIES[$index]="$value"
+  env_join_entries "$attr"
+  printf '{"name":%s,"index":%s,"previous":%s,"value":%s,"scope":"process","count":%s,"operation":"attr-set","requestedName":%s,"visibleToRunningProcesses":%s,"note":%s}' \
+    "$(jstr "$attr")" "$index" "$(jstr "$previous")" "$(jstr "$value")" "$ENV_ATTR_COUNT" "$(jstr "$name")" \
+    "$(env_visible_note process)" "$(env_visibility_note_json process)"
+}
+
+cmd_environment_attribute_delete() {
+  require_min 1 'environment attribute delete'
+  require_allow 'environment attribute delete' "${#POSITIONALS[@]}"
+  local name; name="$(pos 0)"
+  env_attr_require_process_scope
+  local attr; attr="$(flag_value attr 'PATH')"
+  local index_text; index_text="$(flag_value index '')"
+  local value_text; value_text="$(flag_value value '')"
+  if [ -z "$index_text" ] && [ -z "$value_text" ]; then
+    fail E_USAGE 'environment attr delete needs --index or --value to say which entry to remove'
+  fi
+  if [ -z "${!attr+x}" ]; then
+    fail E_NOT_FOUND "attribute '$attr' is not set at process scope"
+  fi
+  env_split_entries "$attr"
+  local n="${#ATTR_ENTRIES[@]}"
+  local removed="" kept=() i=0
+  if [ -n "$index_text" ]; then
+    local index; index="$index_text"
+    case "$index" in ''|*[!0-9]*) fail E_TYPE "<index> must be an integer, got '$index'" ;; esac
+    if [ "$index" -ge "$n" ]; then
+      local hi=0; [ "$n" -gt 0 ] && hi=$((n - 1))
+      fail E_RANGE "index $index is out of range for '$attr' (0..$hi)"
+    fi
+    removed="${ATTR_ENTRIES[$index]}"
+    for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+      [ "$i" -eq "$index" ] || kept+=("$e")
+      i=$((i + 1))
+    done
+  else
+    # Only the FIRST match is removed, and the comparison is ordinal for the same reason as add.
+    local done_removing=0
+    for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+      if [ "$done_removing" -eq 0 ] && LC_ALL=C [ "$e" = "$value_text" ]; then
+        removed="$e"; done_removing=1; continue
+      fi
+      kept+=("$e")
+    done
+    if [ -z "$removed" ]; then
+      fail E_NOT_FOUND "'$attr' does not contain '$value_text'"
+    fi
+  fi
+  ATTR_ENTRIES=(${kept[@]+"${kept[@]}"})
+  env_join_entries "$attr"
+  printf '{"name":%s,"removed":%s,"scope":"process","count":%s,"operation":"attr-delete","requestedName":%s,"visibleToRunningProcesses":%s,"note":%s}' \
+    "$(jstr "$attr")" "$(jstr "$removed")" "$ENV_ATTR_COUNT" "$(jstr "$name")" \
+    "$(env_visible_note process)" "$(env_visibility_note_json process)"
+}
+
 # ===== service.sh ==================================================
 
 # Module: service.sh - service.* (systemd, launchd, SysV init).
@@ -2289,10 +2451,67 @@ EOF
 
 # Module: window.sh - window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe.
 #
-# Intentionally empty. These need synthetic input, which on POSIX means XTest (X11) or compositor
-# protocols (Wayland), and screen capture via import/scrot. The verbs are already declared in
-# spec/verbs.tsv and dispatch reports a typed E_NOT_SUPPORTED for them, which is the required
-# behaviour: an unavailable capability must be an explicit error, never an empty success.
+# The desktop verbs need synthetic input, which on POSIX means XTest (X11) or compositor protocols
+# (Wayland), and screen capture via import/scrot. Those are NOT implemented here, and they are
+# deliberately not dispatched: an unimplemented verb falls through dispatch's default arm and gets a
+# typed E_NOT_SUPPORTED, which is the required behaviour. An unavailable capability must be an explicit
+# error, never an empty success.
+#
+# wait ms IS implemented, because it needs nothing from the display server: it is a sleep, and the
+# contract (bounds, envelope, elapsed measurement) is fully specified by the Windows side. Implementing
+# it here also means a portable script that paces itself keeps working when it moves to POSIX.
+
+# ---------------------------------------------------------------------------
+# wait ms
+#
+# The sleep is performed in whole seconds plus a fractional remainder where the shell supports one.
+# `sleep 0.05` is a GNU/busybox extension rather than POSIX, so the fractional form is used only when
+# the value is not a whole number of seconds AND the shell's sleep accepts it; otherwise the wait is
+# rounded UP to the next second. Rounding up rather than down is deliberate: a caller that asked to wait
+# 1500 ms is pacing something, and returning early is the failure mode that breaks it.
+# ---------------------------------------------------------------------------
+cmd_wait_ms() {
+  require_min 1 'wait ms'
+  local ms; ms="$(pos 0)"
+  # A leading '-' is not "not an integer", it is a negative number: reporting E_TYPE for -5 said the
+  # wrong thing, and the Windows side reports E_RANGE for it. The sign is checked first so the caller
+  # gets the same code on both platforms.
+  case "$ms" in
+    -*) fail E_RANGE "ms must not be negative, got $ms" ;;
+  esac
+  case "$ms" in ''|*[!0-9]*) fail E_TYPE "<ms> must be an integer, got '$ms'" ;; esac
+  if [ "$ms" -gt 3600000 ]; then
+    # An hour is a generous ceiling. Beyond it the caller almost certainly passed seconds by mistake,
+    # and silently sleeping for hours is worse than saying so.
+    fail E_RANGE "ms must be at most 3600000 (one hour), got $ms" \
+      'the value is milliseconds; 1000 ms is one second'
+  fi
+
+  # Elapsed is measured in MILLISECONDS with date, not from $SECONDS. $SECONDS is a whole-second
+  # counter, so a 250 ms wait reported elapsedMs 0, which is a false measurement rather than a rounding
+  # detail: the field exists to tell a caller how long it actually waited. The same expression the entry
+  # point uses is used here so the two agree. The %3N form is GNU; the fallback reports whole seconds.
+  local started; started="$(date +%s%3N 2>/dev/null || date +%s000)"
+  local secs=$((ms / 1000))
+  local rem=$((ms % 1000))
+  if [ "$rem" -eq 0 ]; then
+    [ "$secs" -gt 0 ] && sleep "$secs"
+  else
+    # `sleep 0.25` is a GNU/busybox extension, not POSIX, so it is tried and the wait rounds UP to the
+    # next whole second if the shell refuses it. Rounding up is deliberate: a caller that asked to wait
+    # 1500 ms is pacing something, and returning early is the failure mode that breaks it.
+    if sleep "0.$rem" 2>/dev/null; then
+      [ "$secs" -gt 0 ] && sleep "$secs"
+    else
+      sleep "$((secs + 1))"
+    fi
+  fi
+  local end_ms; end_ms="$(date +%s%3N 2>/dev/null || date +%s000)"
+  local elapsed=$((end_ms - started))
+
+  printf '{"requestedMs":%s,"elapsedMs":%s,"note":"fractional sleep is used when the shell supports it; otherwise the wait rounds up to the next whole second"}' \
+    "$ms" "$elapsed"
+}
 
 # ===== dispatch.sh =================================================
 
@@ -2501,6 +2720,13 @@ main() {
     'environment.delete') dispatch cmd_environment_delete ;;
     'environment.attribute.list') dispatch cmd_environment_attribute_list ;;
     'environment.attribute.get') dispatch cmd_environment_attribute_get ;;
+    'environment.attribute.add') dispatch cmd_environment_attribute_add ;;
+    'environment.attribute.set') dispatch cmd_environment_attribute_set ;;
+    'environment.attribute.delete') dispatch cmd_environment_attribute_delete ;;
+    # wait ms is the one verb of the desktop group that needs nothing from a display server, so it is
+    # implemented here. The other window/mouse/keyboard/clipboard/observe verbs are deliberately absent
+    # from this table and fall through to the default arm, which reports a typed E_NOT_SUPPORTED.
+    'wait.ms') dispatch cmd_wait_ms ;;
     'permission.list') dispatch cmd_permission_list ;;
     'permission.query') dispatch cmd_permission_query ;;
     'permission.audit') dispatch cmd_permission_audit ;;

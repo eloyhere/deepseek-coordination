@@ -386,3 +386,165 @@ cmd_environment_delete() {
   printf '{"name":%s,"scope":%s,"operation":"delete","previous":%s,"file":%s,"visibleToRunningProcesses":%s}' \
     "$(jstr "$name")" "$(jstr "$scope")" "$(jstr "$previous")" "$(jstr "$file")" "$(env_visible_note "$scope")"
 }
+
+# ---------------------------------------------------------------------------
+# environment attribute add / set / delete
+#
+# An attribute is a list variable: PATH and friends, joined by the platform separator. add appends,
+# set replaces one entry by index, delete removes one entry by --index or by --value. They mirror the
+# Windows side field for field, so an agent parses the same result whichever platform answered.
+#
+# PROCESS SCOPE ONLY, deliberately. list and get already refuse every other scope here, and a list
+# mutation is a worse candidate for persistence than a plain variable: editing PATH in a startup file
+# can make a machine's shells unusable if the reconstruction is wrong, and the mutation would be
+# invisible to the caller anyway because this verb runs as its own process. Refusing is honest;
+# half-persisting a list would not be.
+# ---------------------------------------------------------------------------
+
+# Split the attribute's current value into ATTR_ENTRIES. Assigns rather than printing, because a verb
+# must be able to call it in its own shell: in `entries=$(...)` a fail inside would exit only the
+# subshell and the verb would carry on with empty data.
+ATTR_ENTRIES=()
+env_split_entries() {
+  local name="$1"
+  ATTR_ENTRIES=()
+  if [ -z "${!name+x}" ]; then return 0; fi
+  local sep; sep="$(env_separator)"
+  local oldifs="$IFS"
+  IFS="$sep"
+  local e
+  for e in ${!name}; do
+    [ -n "$e" ] && ATTR_ENTRIES+=("$e")
+  done
+  IFS="$oldifs"
+  return 0
+}
+
+# Rejoin entries and export. Prints the resulting count in ENV_ATTR_COUNT for the envelope.
+env_join_entries() {
+  local name="$1"
+  local sep; sep="$(env_separator)"
+  local joined="" i=0
+  for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+    if [ "$i" -eq 0 ]; then joined="$e"; else joined="$joined$sep$e"; fi
+    i=$((i + 1))
+  done
+  ENV_ATTR_COUNT="$i"
+  if [ "$i" -eq 0 ]; then
+    # An empty list means the variable goes away rather than becoming an empty string, so that
+    # `attribute list` stops reporting it, matching the Windows behaviour.
+    unset "$name"
+  else
+    export "$name=$joined"
+  fi
+}
+
+# Shared guard: attribute mutations are process scope only.
+env_attr_require_process_scope() {
+  local scope; scope="$(flag_value scope 'user')"
+  if [ "$scope" != "process" ]; then
+    fail E_NOT_SUPPORTED "scope '$scope' is not available on this platform" \
+      'attribute mutations support --scope process only'
+  fi
+}
+
+cmd_environment_attribute_add() {
+  require_min 2 'environment attribute add'
+  require_allow 'environment attribute add' "${#POSITIONALS[@]}"
+  local name; name="$(pos 0)"
+  local value; value="$(pos 1)"
+  env_attr_require_process_scope
+  local attr; attr="$(flag_value attr 'PATH')"
+  if [ -z "${!attr+x}" ]; then
+    fail E_NOT_FOUND "attribute '$attr' is not set at process scope"
+  fi
+  env_split_entries "$attr"
+  local e
+  for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+    # Ordinal comparison: an entry differing from the named value only by a non-printable control
+    # character must not be treated as the same entry. LC_ALL=C makes [ = ] a byte comparison.
+    if LC_ALL=C [ "$e" = "$value" ]; then
+      fail E_EXISTS "'$attr' already contains '$value'"
+    fi
+  done
+  ATTR_ENTRIES+=("$value")
+  env_join_entries "$attr"
+  printf '{"name":%s,"added":%s,"scope":"process","count":%s,"operation":"attr-add","requestedName":%s,"visibleToRunningProcesses":%s,"note":%s}' \
+    "$(jstr "$attr")" "$(jstr "$value")" "$ENV_ATTR_COUNT" "$(jstr "$name")" \
+    "$(env_visible_note process)" "$(env_visibility_note_json process)"
+}
+
+cmd_environment_attribute_set() {
+  require_min 3 'environment attribute set'
+  require_allow 'environment attribute set' "${#POSITIONALS[@]}"
+  local name; name="$(pos 0)"
+  local index; index="$(pos 1)"
+  case "$index" in ''|*[!0-9]*) fail E_TYPE "<index> must be an integer, got '$index'" ;; esac
+  local value; value="$(pos 2)"
+  env_attr_require_process_scope
+  local attr; attr="$(flag_value attr 'PATH')"
+  if [ -z "${!attr+x}" ]; then
+    fail E_NOT_FOUND "attribute '$attr' is not set at process scope"
+  fi
+  env_split_entries "$attr"
+  local n="${#ATTR_ENTRIES[@]}"
+  if [ "$index" -ge "$n" ]; then
+    local hi=0; [ "$n" -gt 0 ] && hi=$((n - 1))
+    fail E_RANGE "index $index is out of range for '$attr' (0..$hi)"
+  fi
+  local previous="${ATTR_ENTRIES[$index]}"
+  ATTR_ENTRIES[$index]="$value"
+  env_join_entries "$attr"
+  printf '{"name":%s,"index":%s,"previous":%s,"value":%s,"scope":"process","count":%s,"operation":"attr-set","requestedName":%s,"visibleToRunningProcesses":%s,"note":%s}' \
+    "$(jstr "$attr")" "$index" "$(jstr "$previous")" "$(jstr "$value")" "$ENV_ATTR_COUNT" "$(jstr "$name")" \
+    "$(env_visible_note process)" "$(env_visibility_note_json process)"
+}
+
+cmd_environment_attribute_delete() {
+  require_min 1 'environment attribute delete'
+  require_allow 'environment attribute delete' "${#POSITIONALS[@]}"
+  local name; name="$(pos 0)"
+  env_attr_require_process_scope
+  local attr; attr="$(flag_value attr 'PATH')"
+  local index_text; index_text="$(flag_value index '')"
+  local value_text; value_text="$(flag_value value '')"
+  if [ -z "$index_text" ] && [ -z "$value_text" ]; then
+    fail E_USAGE 'environment attr delete needs --index or --value to say which entry to remove'
+  fi
+  if [ -z "${!attr+x}" ]; then
+    fail E_NOT_FOUND "attribute '$attr' is not set at process scope"
+  fi
+  env_split_entries "$attr"
+  local n="${#ATTR_ENTRIES[@]}"
+  local removed="" kept=() i=0
+  if [ -n "$index_text" ]; then
+    local index; index="$index_text"
+    case "$index" in ''|*[!0-9]*) fail E_TYPE "<index> must be an integer, got '$index'" ;; esac
+    if [ "$index" -ge "$n" ]; then
+      local hi=0; [ "$n" -gt 0 ] && hi=$((n - 1))
+      fail E_RANGE "index $index is out of range for '$attr' (0..$hi)"
+    fi
+    removed="${ATTR_ENTRIES[$index]}"
+    for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+      [ "$i" -eq "$index" ] || kept+=("$e")
+      i=$((i + 1))
+    done
+  else
+    # Only the FIRST match is removed, and the comparison is ordinal for the same reason as add.
+    local done_removing=0
+    for e in ${ATTR_ENTRIES[@]+"${ATTR_ENTRIES[@]}"}; do
+      if [ "$done_removing" -eq 0 ] && LC_ALL=C [ "$e" = "$value_text" ]; then
+        removed="$e"; done_removing=1; continue
+      fi
+      kept+=("$e")
+    done
+    if [ -z "$removed" ]; then
+      fail E_NOT_FOUND "'$attr' does not contain '$value_text'"
+    fi
+  fi
+  ATTR_ENTRIES=(${kept[@]+"${kept[@]}"})
+  env_join_entries "$attr"
+  printf '{"name":%s,"removed":%s,"scope":"process","count":%s,"operation":"attr-delete","requestedName":%s,"visibleToRunningProcesses":%s,"note":%s}' \
+    "$(jstr "$attr")" "$(jstr "$removed")" "$ENV_ATTR_COUNT" "$(jstr "$name")" \
+    "$(env_visible_note process)" "$(env_visibility_note_json process)"
+}
