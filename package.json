@@ -64,7 +64,8 @@
     "os": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1",
     "test": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/golden.ps1",
     "test:encoding": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/encoding.ps1",
-    "test:all": "npm run test:encoding && npm run test",
+    "test:plugin": "node tests/plugin.test.mjs",
+    "test:all": "npm run test:encoding && npm run test && npm run test:plugin",
     "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
   },
   "devDependencies": {

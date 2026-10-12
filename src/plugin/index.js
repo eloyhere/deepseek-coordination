@@ -28,16 +28,61 @@ export const name = 'dsh-os'
 /** The plugin is inert without the tool registry. */
 export const inject = ['tools']
 
-const PKG_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+// src/plugin/index.js -> package root, which is THREE levels up from the file:
+//   file          <pkg>/src/plugin/index.js
+//   dirname       <pkg>/src/plugin
+//   dirname       <pkg>/src
+//   dirname       <pkg>            <- what the scripts are joined against
+// Getting this off by one is invisible until runtime, where it reports "no entry point" while the
+// file is present; tests/plugin.test.mjs pins it.
+const PKG_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
-/** Resolve the platform entry point, or null when this deployment has no script for it. */
-function resolveEntry(scriptDir) {
-  const dir = join(PKG_ROOT, scriptDir)
-  const candidates = process.platform === 'win32'
-    ? [join(dir, 'dsh-os.bat'), join(dir, 'dsh-os.ps1')]
-    : [join(dir, 'dsh-os.sh')]
+/**
+ * Resolve how to invoke the implementation.
+ *
+ * Returns { command, prefix } where the final argv is [...prefix, ...verbArguments].
+ *
+ * A .bat cannot be executed directly: cmd.exe interprets it, so spawning it with shell:false fails
+ * with EINVAL on Windows. The .ps1 is therefore preferred and launched through powershell.exe, which
+ * is an executable and keeps the call shell-free. The .bat shim exists for a human at a cmd prompt,
+ * not for this plugin. A .sh is executed by bash for the same reason: the script need not be marked
+ * executable in the checkout for the plugin to work.
+ */
+function resolveInvocation(config) {
+  const explicit = config.scriptPath ? [config.scriptPath] : []
+  const dir = config.scriptPath
+    ? dirname(config.scriptPath)
+    : join(PKG_ROOT, config.scriptDir ?? 'src/host/bin')
+  const candidates = explicit.concat(process.platform === 'win32'
+    ? [join(dir, 'dsh-os.ps1')]
+    : [join(dir, 'dsh-os.sh')])
+
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate
+    if (!existsSync(candidate)) continue
+    if (candidate.toLowerCase().endsWith('.ps1')) {
+      return {
+        script: candidate,
+        command: process.env.DSH_OS_POWERSHELL ?? 'powershell.exe',
+        // -File passes the script and its arguments as separate argv entries. -Command would make
+        // PowerShell re-parse a single string, which is exactly the quoting layer this surface avoids.
+        prefix: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', candidate],
+      }
+    }
+    if (candidate.toLowerCase().endsWith('.sh')) {
+      return {
+        script: candidate,
+        command: '/bin/bash',
+        prefix: [candidate],
+      }
+    }
+    if (candidate.toLowerCase().endsWith('.bat')) {
+      // Only reachable when a caller explicitly configures a .bat; cmd.exe must interpret it.
+      return {
+        script: candidate,
+        command: process.env.ComSpec ?? 'cmd.exe',
+        prefix: ['/d', '/c', candidate],
+      }
+    }
   }
   return null
 }
@@ -48,9 +93,9 @@ function resolveEntry(scriptDir) {
  * Streams are read to completion rather than awaited one at a time: reading one pipe fully before the
  * other deadlocks as soon as the unread pipe fills.
  */
-function runScript(entry, argv, timeoutMs, signal) {
+function runScript(invocation, verbArgs, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
-    const child = spawn(entry, argv, {
+    const child = spawn(invocation.command, [...invocation.prefix, ...verbArgs], {
       windowsHide: true,
       // No shell. The argv array is passed through as-is.
       shell: false,
@@ -85,7 +130,6 @@ function runScript(entry, argv, timeoutMs, signal) {
 }
 
 export function apply(ctx, config = {}) {
-  const scriptDir = config.scriptDir ?? 'src/host/bin'
   const timeoutMs = config.timeoutMs ?? 120000
 
   ctx.tools.register({
@@ -124,22 +168,26 @@ export function apply(ctx, config = {}) {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args, exec) {
-      const entry = resolveEntry(scriptDir)
-      if (entry === null) {
+      const invocation = resolveInvocation(config)
+      if (invocation === null) {
+        // The message names the directory that was actually searched, because the first version of
+        // this code reported a plausible-looking path that was one level off and cost a debugging
+        // round to find.
+        const searched = config.scriptPath ?? join(PKG_ROOT, config.scriptDir ?? 'src/host/bin')
         throw new Error(
-          `dsh-os has no entry point for platform "${process.platform}" under ${scriptDir}; ` +
-          'the POSIX implementation may not be built yet (run tools/build.ps1)',
+          `dsh-os has no entry point for platform "${process.platform}"; searched ${searched}` +
+          ' (run tools/build.ps1 to generate it, or set the scriptPath config)',
         )
       }
 
       // The verb may be given as several words; the script resolves multi-word verbs itself, so it is
       // split here rather than guessed at.
-      const argv = [...String(args.verb).trim().split(/\s+/)]
-      for (const value of args.arguments ?? []) argv.push(String(value))
-      for (const flag of args.flags ?? []) argv.push(String(flag))
-      if (args.allow === true) argv.push('--allow')
+      const verbArgs = [...String(args.verb).trim().split(/\s+/)]
+      for (const value of args.arguments ?? []) verbArgs.push(String(value))
+      for (const flag of args.flags ?? []) verbArgs.push(String(flag))
+      if (args.allow === true) verbArgs.push('--allow')
 
-      const result = await runScript(entry, argv, timeoutMs, exec?.signal)
+      const result = await runScript(invocation, verbArgs, timeoutMs, exec?.signal)
 
       if (result.timedOut) {
         throw new Error(`dsh-os verb "${args.verb}" timed out after ${timeoutMs}ms`)

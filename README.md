@@ -93,15 +93,55 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **32 golden cases pass**, all encoding contracts hold, 83 verbs in the table.
+Current state: **38 Windows golden cases, 35 POSIX golden cases and 11 plugin cases pass**, all
+encoding contracts hold, 86 verbs in the table.
+
+## Using it from the harness
+
+`package.json` declares `dsh.bundle.patch`, so the package installs into a DSH profile as a bundle and
+registers one model-facing tool:
+
+| Tool | Purpose |
+|---|---|
+| `dsh_os` | Run one verb of the surface and return its JSON envelope verbatim |
+
+One tool rather than one per verb: the verb table is the contract and lives in `spec/verbs.tsv`, so
+the schema does not need regenerating when a verb is added or renamed; an agent discovers the whole
+surface with a single `verb: "selfcheck"` call; and the envelope is already the stable result shape,
+so there is no second contract to drift from the script's.
+
+```jsonc
+// call shape
+{ "verb": "file charset", "arguments": ["path=\"./a.txt\""], "allow": false }
+{ "verb": "environment attribute get", "arguments": ["PATH"], "flags": ["--scope", "process"] }
+```
+
+The implementation is spawned by absolute path with an argv array, never through a shell string, so a
+value containing spaces stays one value. On Windows the `.ps1` is launched through `powershell.exe -File`
+rather than the `.bat`: `cmd.exe` interprets a batch file, and spawning one with `shell: false` fails
+with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not be marked executable.
 
 ## Status
 
-- Windows `file`, `file verify`, `system`, `task` (list/query), `service` (list/query),
-  `environment`, `permission` (read-only) and `selfcheck` are implemented and tested.
-- The POSIX implementation, the remaining Windows verb groups
-  (`execute`, `mouse`, `keyboard`, `clipboard`, `window`, `wait`, `screenshot`, `text`, `structure`)
-  and the consent-delegate plugin are not written yet.
+- Implemented and tested on Windows: `file`, `file verify`, `file search`, `system`, `task`
+  (list/query), `service` (list/query), `environment` including `environment attribute`,
+  `permission` (read-only) and `selfcheck`.
+- Implemented and tested on POSIX: the same surface except `service`, plus `file search`.
+- Both goldens include the failure path, which is the point: a failing call must still deliver exactly
+  one parseable envelope on stdout, because a bare exit code tells an agent nothing.
+- Not written yet: `execute` on POSIX, and `mouse`, `keyboard`, `clipboard`, `window`, `wait`,
+  `screenshot`, `text`, `structure` on both platforms. Those verbs are declared in the table and
+  return a typed `E_NOT_SUPPORTED`, never a silent success.
+- The consent-delegate plugin for durable authorization is not written; read-only `permission.*`
+  works, and the protected-path boundary is enforced.
+
+### Verified or not
+
+Proven by tests in this repository: the scripts, the encoding contracts, the build's determinism, and
+the plugin's execute path including argv handling and error propagation.
+
+Not proven here: that DSH's loader accepts the bundle in a live profile. That needs a real install
+through the plugin manager and has not been done.
 
 ## License
 
