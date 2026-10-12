@@ -495,4 +495,34 @@ Windows 上进程**必须先声明 DPI 感知**（`SetProcessDpiAwarenessContext
 4. 剩余动词：`task.show/kill/launch`、`window.minimize/maximize/restore`、`service.start/stop/restart`、`environment.*` 写入侧、`mouse`/`keyboard`/`clipboard`/`wait`/`screenshot`/`text`/`structure`
 5. `tests/conformance.ps1`（动词集与 `command.txt` 一致性）
 
+## Round 19 - execute.command / query / kill and task.launch (Windows)
 
+Windows now implements 82 of the 86 declared verbs. Four were added: `execute.command`,
+`execute.query`, `execute.kill` and `task.launch`.
+
+**`execute.command` takes an argv array and uses no shell.** The batch verbs
+(`execute.synchronous` / `.asynchronous`) take command STRINGS and run them through `cmd.exe`; this one
+parses nothing, so a value containing spaces, quotes or metacharacters reaches the child exactly as
+given. `--shell` switches to the batch form explicitly rather than silently.
+
+Three defects were found while building it, each producing a wrong result rather than an error:
+
+1. **`ProcessStartInfo.ArgumentList` does not exist on .NET Framework**, which is what Windows
+   PowerShell 5.1 runs on, so every call failed with "property not found". The Win32 process API takes
+   a single command line string, so it is now built with the quoting rules `CommandLineToArgvW`
+   parses: backslashes are doubled before a quote and at the end of an argument, and an embedded quote
+   is escaped. This is the one place in the surface where a command line is assembled, and the reason
+   is that the API leaves no alternative.
+2. **A timeout waited for the grandchildren, not for the deadline.** Killing the direct child does not
+   close the output pipes, because descendants inherit those handles; the output await then blocked
+   until they exited on their own. A 1.2s timeout on `cmd /c ping -n 20` took **20 seconds**. The
+   process TREE is now terminated, which also matters to the caller: those pipes are the ones this
+   script was launched with, so the caller's own process stayed alive until they closed. The same case
+   now returns in about 3.6s including PowerShell startup.
+3. **`task.launch` reported `started: true` for a process that was already dead.** PowerShell runs its
+   children inside a job object that is terminated when PowerShell exits, so the launched program was
+   killed the moment the verb returned. It is now created through WMI, which asks a service that
+   outlives this process; the result names the mechanism used, and falls back to `Process.Start` with
+   an explicit warning on a machine without WMI.
+
+`execute.kill` delegates to the `task kill` implementation so the two cannot drift apart.

@@ -96,6 +96,9 @@ function Invoke-Dispatch {
     'file.verify.encoding' { return (Invoke-FileVerifyEncoding -Parsed $inner) }
     'file.verify.completion' { return (Invoke-FileVerifyCompletion -Parsed $inner) }
     'file.search' { return (Invoke-FileSearch -Parsed $inner) }
+    'execute.command' { return (Invoke-ExecuteCommand -Parsed $inner) }
+    'execute.query' { return (Invoke-ExecuteQuery -Parsed $inner) }
+    'execute.kill' { return (Invoke-ExecuteKill -Parsed $inner) }
     'execute.synchronous' { return (Invoke-ExecuteBatch -Parsed $inner -Sequential $true) }
     'execute.asynchronous' { return (Invoke-ExecuteBatch -Parsed $inner -Sequential $false) }
     'system.brand' { return (Invoke-SystemBrand -Parsed $inner) }
@@ -107,6 +110,7 @@ function Invoke-Dispatch {
     'task.query' { return (Invoke-TaskQuery -Parsed $inner) }
     'task.show' { return (Invoke-TaskShow -Parsed $inner) }
     'task.kill' { return (Invoke-TaskKill -Parsed $inner) }
+    'task.launch' { return (Invoke-TaskLaunch -Parsed $inner) }
     'environment.list' { return (Invoke-EnvironmentList -Parsed $inner) }
     'environment.get' { return (Invoke-EnvironmentGet -Parsed $inner) }
     'environment.add' { return (Invoke-EnvironmentAdd -Parsed $inner) }

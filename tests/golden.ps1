@@ -348,9 +348,16 @@ Assert-Case 'delete/default-is-recycle' {
 
 # -- 19. execute passes argv without a shell ------------------------------
 Assert-Case 'execute/argv-not-shell' {
-  $r = Invoke-Os @('execute', 'command', 'cmd.exe', '/c', 'echo', 'a b c')
-  if ($r.exit -ne 0 -and $r.json.error.code -eq 'E_NOT_SUPPORTED') { return }
+  # Started as a skip-until-implemented case: it passed when the verb answered E_NOT_SUPPORTED. Now
+  # that it IS implemented, an unauthorized call answers E_PERMISSION rather than exiting 0, so the
+  # case has to authorize the call and then check the property it was written for - that argv elements
+  # reach the child as separate arguments, with no shell to re-split them.
+  $r = Invoke-Os @('execute', 'command', 'cmd.exe', '/c', 'echo', 'a b c', '--allow')
+  if ($r.exit -ne 0 -and $null -ne $r.json -and $r.json.error.code -eq 'E_NOT_SUPPORTED') { return }
   Assert-Equal 0 $r.exit ('execute exit: ' + $r.raw)
+  Assert-Equal $false $r.json.result.shell 'the argv form must not use a shell'
+  # 'echo' and 'a b c' are two separate argv entries, so the child echoes the second one verbatim.
+  Assert-True ($r.json.result.stdout -match 'a b c') 'the spaced argument arrived intact'
 }
 
 # -- 20. envelopes are always parseable JSON ------------------------------
@@ -938,6 +945,41 @@ Assert-Case 'permission/delegate-only-and-acl-reporting' {
   Assert-Equal $sc.json.result.aclEnforced $list.json.result.aclEnforced 'selfcheck and permission list agree'
   $query = Invoke-Os @('permission', 'query', 'file.delete', 'x')
   Assert-Equal $sc.json.result.aclEnforced $query.json.result.aclEnforced 'and permission query agrees'
+}
+
+Assert-Case 'execute/argv-form-and-process-lifecycle' {
+  # The argv form runs with NO shell, so a value containing spaces reaches the child as one argument.
+  # cmd.exe is used as the child because it is always present and echoes its argv back predictably.
+  $r = Invoke-Os @('execute', 'command', 'cmd.exe', '/c', 'echo one&& echo two', '--allow')
+  Assert-True $r.json.ok 'a real command runs'
+  Assert-Equal 0 $r.json.result.exitCode 'exit code captured'
+  Assert-Equal $false $r.json.result.shell 'reports that no shell was used'
+  Assert-True ($r.json.result.stdout -match 'one') 'stdout captured'
+
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('execute', 'command', 'cmd.exe', '/c', 'echo x'))).code 'argv form requires authorization'
+  Assert-Equal 'E_NOT_FOUND' (Assert-OsError (Invoke-Os @('execute', 'command', 'dsh-no-such-program-xyz', '--allow'))).code 'a missing program is a typed not-found'
+  Assert-Equal 'E_NOT_FOUND' (Assert-OsError (Invoke-Os @('execute', 'query', '999999'))).code 'query on a dead pid'
+  Assert-Equal 'E_NOT_FOUND' (Assert-OsError (Invoke-Os @('execute', 'kill', '999999', '--allow'))).code 'kill on a dead pid'
+
+  # task launch must produce a process that OUTLIVES the launcher. A process started by PowerShell's
+  # Start() lives in a job object that dies with PowerShell, so the verb used to report started:true
+  # for a process that was already gone.
+  $victim = Invoke-Os @('task', 'launch', (Join-Path $env:SystemRoot 'System32\notepad.exe'), '--allow')
+  if ($victim.json.ok) {
+    $victimPid = [int]$victim.json.result.pid
+    try {
+      Start-Sleep -Milliseconds 1500
+      Assert-True ($null -ne (Get-Process -Id $victimPid -ErrorAction SilentlyContinue)) 'the launched process survived the launcher'
+      $q = Invoke-Os @('execute', 'query', "$victimPid")
+      Assert-True $q.json.ok 'the launched pid can be queried'
+      Assert-Equal 'notepad' $q.json.result.name 'query reports the right program'
+    } finally {
+      # Always cleaned up, so the suite never leaves a stray window behind.
+      Stop-Process -Id $victimPid -Force -ErrorAction SilentlyContinue
+    }
+  } else {
+    Assert-True (@('E_NO_DISPLAY', 'E_NOT_SUPPORTED') -contains $victim.json.error.code) 'typed capability error'
+  }
 }
 
 # ---------------------------------------------------------------------------

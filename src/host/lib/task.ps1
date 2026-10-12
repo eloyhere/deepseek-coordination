@@ -77,6 +77,117 @@ function Invoke-TaskShow {
   }
 }
 
+# task launch <path> [--args a b c] [--workdir dir]
+#
+# Starts a program and returns its pid WITHOUT waiting for it. That is the difference from
+# execute.command, which blocks and captures output: this verb answers "did it start", and the caller
+# then uses execute.query or task.show to follow it up.
+#
+# The path is a real path, never a shell string, so a program in a directory with spaces starts
+# correctly. When the path names a document rather than an executable, ShellExecute is used so the
+# registered handler opens it - that is the documented "or open a document by path" behaviour - and the
+# result says that is what happened, because the pid of a document handler is not the document.
+function Invoke-TaskLaunch {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'task launch'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  Assert-Allowed -Parsed $Parsed -Verb 'task launch' -Perm 'W'
+  $target = Get-Positional -Parsed $Parsed -Index 0
+  $workdir = Get-FlagValue -Parsed $Parsed -Name 'workdir' -Default $null
+  $args = @()
+  if ($Parsed.flags.ContainsKey('args')) { $args = @($Parsed.flags['args']) }
+
+  # A relative path is resolved against the working directory first, because "launch ./tool.exe" must
+  # mean the file next to the caller rather than whatever resolves on PATH.
+  $resolved = $target
+  $exists = Test-Path -LiteralPath $target -PathType Leaf
+  if ($exists) {
+    $resolved = (Resolve-Path -LiteralPath $target).ProviderPath
+    Assert-NotProtectedPath -Path $resolved
+  } elseif ($target -match '[\\/]') {
+    # It looks like a path but is not there: that is a not-found, not a PATH lookup.
+    throw (New-OsError -Code 'E_NOT_FOUND' -Message ("no such file: {0}" -f $target) `
+        -Hint 'an argument containing a slash or backslash is treated as a path')
+  }
+
+  $isExecutable = $exists -and ($resolved -match '\.(exe|com|bat|cmd)$')
+
+  if ($exists -and -not $isExecutable) {
+    # A document: hand it to its registered handler.
+    try {
+      $shell = New-Object -ComObject Shell.Application
+      $shell.ShellExecute($resolved, ($args -join ' '), $(if ($workdir) { $workdir } else { (Split-Path -Parent $resolved) }), 'open', 1)
+      return [ordered]@{
+        path = $resolved
+        opened = $true
+        mode = 'shell-execute'
+        pid = $null
+        note = 'a document was handed to its registered handler; no pid is reported because the handler is a separate process'
+      }
+    } catch {
+      throw (New-OsError -Code 'E_IO' -Message ("the document could not be opened: {0}" -f $_.Exception.Message))
+    }
+  }
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $resolved
+  if ($args.Count -gt 0) {
+    # Same escaping rule as execute.command: the Win32 process API takes one command line string, so it
+    # has to be built here with the quoting CommandLineToArgvW expects.
+    $psi.Arguments = ConvertTo-WindowsCommandLine -Arguments $args
+  }
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $false
+  if ($workdir) { $psi.WorkingDirectory = $workdir }
+
+  # Started through WMI rather than with [Process]::Start, because a process started by Start() does
+  # NOT outlive this one: PowerShell runs its child processes inside a job object that is terminated
+  # when PowerShell exits, so a launched program was being killed the moment the verb returned. The
+  # verb reported "started: true" and the process was already gone. WMI asks a service that outlives
+  # this process to create it, so it survives.
+  $procId = $null
+  $via = 'wmi'
+  try {
+    $commandLine = '"' + $resolved + '"'
+    if ($args.Count -gt 0) { $commandLine += ' ' + $psi.Arguments }
+    $wmiArgs = @{ CommandLine = $commandLine }
+    # Win32_Process.Create takes the working directory as a parameter; there is no way to set the
+    # environment this way, which is the trade for the process actually surviving.
+    if ($workdir) { $wmiArgs['CurrentDirectory'] = $workdir }
+    $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $wmiArgs -ErrorAction Stop
+    if ($created.ReturnValue -ne 0) {
+      throw (New-OsError -Code 'E_IO' -Message ("Win32_Process.Create returned {0}" -f $created.ReturnValue))
+    }
+    $procId = [int]$created.ProcessId
+  } catch {
+    # Fall back to Start() so a machine without WMI still launches something, but say which path was
+    # used, because the process may not outlive this one and the caller needs to know that.
+    try {
+      $proc = [System.Diagnostics.Process]::Start($psi)
+      $procId = $proc.Id
+      $via = 'process-start'
+    } catch {
+      throw (New-OsError -Code 'E_NOT_FOUND' -Message ("could not start '{0}': {1}" -f $resolved, $_.Exception.Message))
+    }
+  }
+
+  # Reported as started, with the pid, and explicitly NOT as healthy: this verb does not wait, so it
+  # cannot know whether the program went on to fail.
+  $result = [ordered]@{
+    path = $resolved
+    pid = $procId
+    started = $true
+    mode = 'executable'
+    launchedVia = $via
+    waitedForExit = $false
+    note = 'the process was started but not waited for; use execute query or task show to follow it up'
+  }
+  if ($via -eq 'process-start') {
+    $result['note'] = 'started without WMI, so the process may be terminated when this process exits'
+  }
+  return $result
+}
+
 # task kill <pid> [--force]
 #
 # Without --force this asks the process to close its main window and then waits briefly for it to act.

@@ -124,3 +124,248 @@ function Invoke-ExecuteBatch {
   }
 }
 
+# Quote one argument for a Windows command line, per the rules CommandLineToArgvW parses with.
+#
+# A backslash is only special when it precedes a double quote: backslashes are doubled before a quote
+# and before the end of the argument, and an embedded quote is escaped with a backslash. Getting this
+# wrong is the classic Windows quoting bug, where an argument ending in a backslash swallows its own
+# closing quote and silently joins the next argument.
+function ConvertTo-WindowsArgument {
+  param([string]$Argument)
+  if ($Argument -eq '') { return '""' }
+  if ($Argument -notmatch '[\s"]') { return $Argument }
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append('"')
+  $backslashes = 0
+  foreach ($ch in $Argument.ToCharArray()) {
+    if ($ch -eq '\') { $backslashes++; continue }
+    if ($ch -eq '"') {
+      # Double the pending backslashes, then escape the quote itself.
+      [void]$sb.Append('\' * ($backslashes * 2 + 1))
+      [void]$sb.Append('"')
+      $backslashes = 0
+      continue
+    }
+    if ($backslashes -gt 0) { [void]$sb.Append('\' * $backslashes); $backslashes = 0 }
+    [void]$sb.Append($ch)
+  }
+  # Trailing backslashes precede the closing quote, so they must be doubled.
+  if ($backslashes -gt 0) { [void]$sb.Append('\' * ($backslashes * 2)) }
+  [void]$sb.Append('"')
+  return $sb.ToString()
+}
+
+function ConvertTo-WindowsCommandLine {
+  param([string[]]$Arguments)
+  $parts = @()
+  foreach ($a in $Arguments) { $parts += (ConvertTo-WindowsArgument -Argument $a) }
+  return ($parts -join ' ')
+}
+
+# ---------------------------------------------------------------------------
+# execute.command - an argv ARRAY run with NO shell.
+#
+# The distinction from the batch verbs above is the whole point of this verb: the batch verbs take
+# command STRINGS and run them through cmd.exe, while this one takes argv and parses nothing, so a
+# value containing spaces, quotes or metacharacters reaches the child exactly as given. A caller that
+# knows the program should prefer this.
+# ---------------------------------------------------------------------------
+function Invoke-OneArgvCommand {
+  param(
+    [string[]]$Argv,
+    [string]$WorkDir,
+    [int]$TimeoutMs,
+    [string]$StdinText,
+    [hashtable]$Environment
+  )
+  if ($Argv.Count -eq 0) {
+    throw (New-OsError -Code 'E_USAGE' -Message 'no program was given')
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $Argv[0]
+  if ($Argv.Count -gt 1) {
+    # ArgumentList does not exist on .NET Framework, which is what Windows PowerShell 5.1 runs on, so
+    # the command line is built here with the escaping rules CommandLineToArgvW uses. This is the one
+    # place in the surface where a command line IS assembled, and it is unavoidable: the Win32 process
+    # API takes a single string. The rules below are what make spaces and quotes survive it.
+    $psi.Arguments = ConvertTo-WindowsCommandLine -Arguments @($Argv[1..($Argv.Count - 1)])
+  }
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  if ($StdinText) { $psi.RedirectStandardInput = $true }
+  if ($WorkDir) { $psi.WorkingDirectory = $WorkDir }
+  if ($null -ne $Environment) {
+    foreach ($k in $Environment.Keys) { $psi.EnvironmentVariables[[string]$k] = [string]$Environment[$k] }
+  }
+
+  $started = [DateTime]::UtcNow
+  try {
+    $proc = [System.Diagnostics.Process]::Start($psi)
+  } catch {
+    # A program that cannot be started is E_NOT_FOUND rather than an internal error: the caller named
+    # something that is not there, which is actionable.
+    throw (New-OsError -Code 'E_NOT_FOUND' -Message ("could not start '{0}': {1}" -f $Argv[0], $_.Exception.Message) `
+        -Hint 'the program must be an executable on PATH or an absolute path to one')
+  }
+
+  # Both pipes are drained concurrently. Reading one to completion before the other deadlocks as soon
+  # as the unread pipe fills its buffer, which is how a captured command appears to hang forever.
+  $outTask = $proc.StandardOutput.ReadToEndAsync()
+  $errTask = $proc.StandardError.ReadToEndAsync()
+  if ($StdinText) {
+    try {
+      $proc.StandardInput.Write($StdinText)
+      $proc.StandardInput.Close()
+    } catch {
+      # A child that never reads stdin makes this fail; that is not a reason to fail the call.
+    }
+  }
+  $exited = $proc.WaitForExit($TimeoutMs)
+  $outText = ''
+  $errText = ''
+  if (-not $exited) {
+    # The whole process TREE is killed, not just the direct child.
+    #
+    # A grandchild inherits the stdout and stderr handles, so it keeps the pipes open even after the
+    # direct child dies. That has two effects, and both were observed: this function blocked on the
+    # output await until the grandchild exited on its own, and - because the pipes are the ones this
+    # script was itself launched with - the CALLER's own process stayed alive waiting for the pipe to
+    # close. A 1.2s timeout on `cmd /c ping -n 20` therefore took 19-20 SECONDS end to end.
+    # `taskkill /T` terminates the descendants, which closes the handles and lets the timeout mean
+    # what it says.
+    try {
+      $kill = New-Object System.Diagnostics.ProcessStartInfo
+      $kill.FileName = "$env:SystemRoot\System32\taskkill.exe"
+      $kill.Arguments = ('/T /F /PID ' + $proc.Id)
+      $kill.UseShellExecute = $false
+      $kill.CreateNoWindow = $true
+      $kill.RedirectStandardOutput = $true
+      $kill.RedirectStandardError = $true
+      $killer = [System.Diagnostics.Process]::Start($kill)
+      [void]$killer.WaitForExit(5000)
+    } catch {
+      # Falling back to the single-process kill is still better than leaving it running.
+      try { $proc.Kill() } catch { }
+    }
+    try { $proc.WaitForExit(2000) | Out-Null } catch { }
+    # Drain what was captured, with a bound: the pipes normally close once the tree is gone, but this
+    # must not become the thing that hangs if a descendant somehow survives.
+    try {
+      if ($outTask.Wait(2000)) { $outText = $outTask.Result }
+    } catch { }
+    try {
+      if ($errTask.Wait(2000)) { $errText = $errTask.Result }
+    } catch { }
+    $duration = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+    return [ordered]@{
+      argv = $Argv
+      exitCode = $null
+      timedOut = $true
+      durationMs = $duration
+      stdout = $outText
+      stderr = $errText
+      shell = $false
+      note = 'killed at the deadline together with its descendants, so no orphan keeps the output pipes open'
+    }
+  }
+  try { $outText = $outTask.Result } catch { }
+  try { $errText = $errTask.Result } catch { }
+  $duration = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+
+  return [ordered]@{
+    argv = $Argv
+    exitCode = $proc.ExitCode
+    timedOut = $false
+    durationMs = $duration
+    stdout = $outText
+    stderr = $errText
+    shell = $false
+  }
+}
+
+function Invoke-ExecuteCommand {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'execute command'
+  Assert-Allowed -Parsed $Parsed -Verb 'execute command' -Perm 'W'
+  $argv = @($Parsed.positionals)
+  $workdir = Get-FlagValue -Parsed $Parsed -Name 'workdir' -Default $null
+  $timeoutText = Get-FlagValue -Parsed $Parsed -Name 'timeout' -Default '120000'
+  $timeout = Get-IntArg -Text $timeoutText -Name 'timeout'
+  $stdinText = Get-FlagValue -Parsed $Parsed -Name 'stdin' -Default $null
+
+  $environment = $null
+  $envPairs = @()
+  if ($Parsed.flags.ContainsKey('env')) {
+    # --env may be repeated; Get-FlagValue keeps only the last, so the multi-value accessor is used.
+    $envPairs = @($Parsed.flags['env'])
+  }
+  if ($envPairs.Count -gt 0) {
+    $environment = @{}
+    foreach ($pair in $envPairs) {
+      $eq = $pair.IndexOf('=')
+      if ($eq -lt 1) {
+        throw (New-OsError -Code 'E_USAGE' -Message ("--env expects NAME=value, got '{0}'" -f $pair))
+      }
+      $environment[$pair.Substring(0, $eq)] = $pair.Substring($eq + 1)
+    }
+  }
+
+  # --shell switches to the batch form on purpose. Silently becoming a shell is refused, because the
+  # difference between argv and a command string is precisely what this verb is about.
+  if (Test-HasFlag -Parsed $Parsed -Name 'shell') {
+    $one = Invoke-OneShellCommand -CommandLine ($argv -join ' ') -WorkDir $workdir -TimeoutMs $timeout -EncodingName 'utf-8'
+    $one['shell'] = $true
+    $one['note'] = '--shell ran this through a shell; the argv array was joined into one command line'
+    return $one
+  }
+
+  if (Test-HasFlag -Parsed $Parsed -Name 'background') {
+    throw (New-OsError -Code 'E_NOT_SUPPORTED' -Message 'execute command --background is not supported here' `
+        -Hint 'use task launch to start something without waiting for it')
+  }
+
+  $result = Invoke-OneArgvCommand -Argv $argv -WorkDir $workdir -TimeoutMs $timeout -StdinText $stdinText -Environment $environment
+  if ($result.timedOut) {
+    # A timeout is a typed failure, not a successful call with a null exit code: the caller asked for a
+    # command to run and did not get that.
+    throw (New-OsError -Code 'E_TIMEOUT' -Message ("'{0}' did not finish within {1}ms" -f $argv[0], $timeout) `
+        -Hint ("captured so far: stdout={0} bytes, stderr={1} bytes" -f $result.stdout.Length, $result.stderr.Length))
+  }
+  return $result
+}
+
+# ---------------------------------------------------------------------------
+# execute.query / execute.kill - process lookups by pid.
+#
+# These live beside the launch verbs because they are how a caller inspects and stops what it started.
+# execute.kill delegates to the task.kill implementation so the two cannot drift apart.
+# ---------------------------------------------------------------------------
+function Invoke-ExecuteQuery {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'execute query'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  $targetPid = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'pid'
+  $proc = Get-Process -Id $targetPid -ErrorAction SilentlyContinue
+  if ($null -eq $proc) {
+    throw (New-OsError -Code 'E_NOT_FOUND' -Message ("no process with pid {0}" -f $targetPid))
+  }
+  $path = $null
+  try { $path = $proc.Path } catch { }
+  return [ordered]@{
+    pid = $proc.Id
+    name = $proc.ProcessName
+    path = $path
+    memoryBytes = [int64]$proc.WorkingSet64
+    responding = [bool]$proc.Responding
+    handleCount = $proc.HandleCount
+    threadCount = $proc.Threads.Count
+  }
+}
+
+function Invoke-ExecuteKill {
+  param($Parsed)
+  return (Invoke-TaskKill -Parsed $Parsed)
+}
+
