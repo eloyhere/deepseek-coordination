@@ -143,25 +143,34 @@ export function apply(ctx, config = {}) {
       'Read-only verbs need no authorization; mutating verbs require allow: true.',
     ].join(' '),
     parameters: {
-      verb: {
-        type: 'string',
-        required: true,
-        description: 'Verb to run, e.g. "selfcheck", "file charset", "environment attribute get".',
+      // A COMPLETE JSON Schema, not the property map that `defineTool` accepts.
+      //
+      // The registry's `register()` takes a finished schema and does not compile one for you: only the
+      // internal `defineTool` runs `parameterSchemaSpecToJsonSchema` over a { name: {...} } map. Passing
+      // the bare map here ships a schema whose root has no `type`, and the provider rejects the whole
+      // request with `schema must be a JSON Schema of 'type: "object"', got 'type: null'`.
+      type: 'object',
+      properties: {
+        verb: {
+          type: 'string',
+          description: 'Verb to run, e.g. "selfcheck", "file charset", "environment attribute get".',
+        },
+        arguments: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Positional arguments and named arguments (name="value") in any order.',
+        },
+        flags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Flags, e.g. "--scope", "user", "--recursive". Prefix with -- exactly as documented.',
+        },
+        allow: {
+          type: 'boolean',
+          description: 'Authorization for a mutating verb. Required by create, delete, edit, execute, window, keyboard, clipboard, text, structure.',
+        },
       },
-      arguments: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Positional arguments and named arguments (name="value") in any order.',
-      },
-      flags: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Flags, e.g. "--scope", "user", "--recursive". Prefix with -- exactly as documented.',
-      },
-      allow: {
-        type: 'boolean',
-        description: 'Authorization for a mutating verb. Required by create, delete, edit, execute, window, keyboard, clipboard, text, structure.',
-      },
+      required: ['verb'],
     },
     output: {
       schema: { type: 'string' },

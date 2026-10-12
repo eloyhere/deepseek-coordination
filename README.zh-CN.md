@@ -1,0 +1,449 @@
+# deepseek-coordination
+
+面向 DeepSeek Harness 的跨平台**原子 OS 交互层**。
+
+一个通过**字符串**与操作系统对话的 agent，只要遇到路径含空格、文件带 UTF-8 BOM、行尾是 CRLF、文档不是 UTF-8，或命令由拼接产生，就会拿到错误答案。本项目用一套**参数稳定的动词集**取代字符串拼接，并把编码、字节序标记与行尾处理变成显式且逐字节精确的行为。
+
+同一套动词面，在 Windows 与 POSIX 上各自原生实现，既可被 agent 通过单个 harness 工具调用，也可被人直接在终端里使用。
+
+```console
+$ dsh-os selfcheck
+{"ok":true,"verb":"selfcheck","result":{"script":"bin/dsh-os.ps1","capabilities":{...}},"meta":{...}}
+
+$ dsh-os file charset "C:\path with spaces\notes.txt"
+{"ok":true,"verb":"file.charset","result":{"charset":"utf-8-bom","bom":true,"eol":"crlf"},"meta":{...}}
+```
+
+* **完全开源**，MIT 许可。无遥测、无账号、无网络请求。
+* **零运行时依赖。** Windows 侧是 `Add-Type` P/Invoke；POSIX 侧使用 coreutils 一类的系统工具。运行时不会去获取任何东西。
+* **每个平台一个自包含文件**，由确定性构建从模块拼装而成。
+
+> [!WARNING]
+> 本交互层可以**读取你的屏幕、截取屏幕截图、读写剪贴板、合成鼠标与键盘输入、启动与结束进程、删除文件、修改环境变量**。在授予它任何权限之前，请先读[危险权限](#危险权限)一章。
+
+---
+
+## 为什么需要它
+
+失败模式永远是同一个形状：某个值被变成了字符串的一部分，然后在下游被重新解释。
+
+| 故障 | 坏在哪里 | 本项目的做法 |
+|---|---|---|
+| `C:\Program Files\a b.exe` | 空格把一个路径拆成两个参数 | 值始终是**独立的 argv 元素**，绝不拼进 shell 字符串 |
+| 文本中间冒出 UTF-8 BOM | 每个消费方都看见 `\uFEFF` | 读取时剥离 BOM，且**绝不**泄漏到结果里；写入时还原 |
+| CRLF 文件被改写成 LF | diff 噪声、脚本损坏 | 读取报告 `eol`；写入还原原有约定 |
+| GBK 文档被当作 UTF-8 读 | 静默乱码（或静默退化到 `latin1`） | 编码显式声明；先试严格 UTF-8，再考虑回退 |
+| 命令靠拼接生成 | 注入、引号 bug | `execute.command` 接收真正的 **argv 数组**，永不经 shell |
+| 字节偏移落在字符中间 | 文本被切碎 | 偏移会按编码的字符边界校验 |
+
+每次调用都恰好返回**一个 JSON 信封**，调用方按 `error.code` 分支而不是解析散文——而且**失败**的调用同样会输出可解析的信封，因为裸退出码对 agent 毫无信息量。
+
+---
+
+## 仓库结构
+
+```
+deepseek-coordination/
+├─ src/host/command.txt            权威动词契约，一个动词一行
+├─ src/host/spec/verbs.tsv         机器可读动词表（单一真源）
+├─ src/host/spec/charsets.tsv      IANA 名 → .NET 码页 → iconv 名 → BOM 字节
+├─ src/host/lib/*.ps1, *.sh        真源：16 对模块，一个模块管一件事
+├─ src/host/bin/dsh-os.ps1         【生成物】Windows 实现
+├─ src/host/bin/dsh-os.sh          【生成物】POSIX 实现
+├─ src/host/bin/dsh-os.bat         仅 ASCII 的 cmd.exe 外壳（给人用，不给 harness 用）
+├─ src/host/docs/os-spec.md        完整规范：契约、错误码、黄金用例矩阵
+├─ src/host/docs/permission-model.md  授权模型及其残余风险
+├─ src/plugin/index.js             宿主插件：注册 `dsh_os` 工具
+├─ src/permission/index.js         同意写入委托：`permission.json` 的唯一写入方
+├─ tools/build.ps1                 拼装生成脚本；`-Check` 在漂移时失败
+├─ tests/                          黄金、编码、插件、授权四套测试
+└─ permission.json                 授权数据（随仓库为空文件，这就是初始状态）
+```
+
+`src/host/lib/` 中每个模块成对提供：
+
+| 模块 | 职责 |
+|---|---|
+| `preamble` | 严格模式、编码钉死、仓库根定位 |
+| `json` | 错误模型、JSON 序列化、信封写出 |
+| `command` | 参数解析（位置与 `name="value"`）、断言、类型转换 |
+| `charset` | 编码表、BOM 策略、字节级文本模型 |
+| `native` | P/Invoke 声明与原子替换（仅 Windows；POSIX 侧为空） |
+| `paths` | 路径解析与受保护路径边界 |
+| `file` | `file.*`、`file verify.*`、`file search` |
+| `system` | `system.*` 查询 |
+| `execute` | `execute.command` / `.synchronous` / `.asynchronous` |
+| `task` | `task.*` |
+| `environment` | `environment.*` 与 `environment attribute.*` |
+| `service` | `service.*` |
+| `permission` | `permission.*`（只读）与 `selfcheck` |
+| `window` | `window.*`、`mouse.*`、`keyboard.*`、`clipboard.*`、`wait.*`、观察面 |
+| `dispatch` | 动词解析与分发表 |
+| `entry` | 运行、输出、退出 |
+
+生成脚本是**单个自包含文件**，而不是运行时 dot-source。在 Windows PowerShell 5.1 上，一个不带 BOM 的被 source 文件会按 ANSI 码页解码——这恰恰就是本项目要消灭的那类编码故障。
+
+---
+
+## 开始使用
+
+尚未发布到 npm，因此从源码使用：
+
+```console
+git clone https://github.com/eloyhere/deepseek-coordination.git
+cd deepseek-coordination
+```
+
+脚本无需构建或安装，直接运行：
+
+```powershell
+# Windows
+src\host\bin\dsh-os.ps1 selfcheck
+src\host\bin\dsh-os.ps1 file charset "C:\path with spaces\file.txt"
+src\host\bin\dsh-os.ps1 file verify charset .\file.txt utf-8
+src\host\bin\dsh-os.ps1 environment attribute get PATH --scope process
+```
+
+```sh
+# POSIX
+src/host/bin/dsh-os.sh selfcheck
+src/host/bin/dsh-os.sh file charset "./a file.txt"
+```
+
+`dsh-os.bat` 是给人在 `cmd.exe` 里手敲的。能传 argv 数组的调用方——harness、Node 的 `execFile`、CI——应当**直接**调用 `.ps1` 或 `.sh` 并彻底绕开 `cmd.exe`，因为批处理文件的参数处理本身就是引号 bug 的来源。
+
+### 从 harness 使用
+
+`package.json` 声明了 `dsh.bundle.patch`，因此本包可以作为一个 bundle 安装进 DSH profile，并注册一个面向模型的工具。
+
+| 工具 | 用途 |
+|---|---|
+| `dsh_os` | 执行动词面上的一个动词，并原样返回其 JSON 信封 |
+
+只注册一个工具而非每个动词一个，理由有三：动词表就是契约且存放在 `src/host/spec/verbs.tsv`，新增动词时无需重新生成 schema；agent 用一次 `verb: "selfcheck"` 调用就能发现整个动词面；信封本身已是稳定的结果形状，不会出现第二份会与脚本漂移的契约。
+
+```jsonc
+// 调用形状
+{ "verb": "file charset", "arguments": ["path=\"./a.txt\""], "allow": false }
+{ "verb": "environment attribute get", "arguments": ["PATH"], "flags": ["--scope", "process"] }
+```
+
+实现以绝对路径加 argv 数组方式拉起，永不经 shell，因此含空格的值仍然是一个值。
+
+> [!IMPORTANT]
+> **把 bundle 装进 profile 这一步尚未端到端验证。** 插件的导入、工具注册与执行路径都有测试覆盖（`tests/plugin.test.mjs`，13 条），但"DSH loader 真的会组合这个 bundle，并让 `dsh_os` 出现在活动会话里"这一说法**没有被跑过**。详见[尚未证实的部分](#尚未证实的部分)。
+
+---
+
+## JSON 契约
+
+每次调用都向 stdout 写出**恰好一个** JSON 信封，UTF-8 **无 BOM**，以单个 LF 结尾。
+
+```jsonc
+// 成功
+{ "ok": true,  "verb": "file.charset", "result": { "charset": "utf-8", "bom": false, "eol": "crlf" },
+  "meta": { "durationMs": 3, "platform": "win32", "shell": "pwsh" } }
+
+// 失败 —— 仍然恰好一个信封，仍然在 stdout 上
+{ "ok": false, "verb": "file.charset",
+  "error": { "code": "E_NOT_A_FILE", "message": "…", "hint": "…" },
+  "meta": { "durationMs": 2, "platform": "win32", "shell": "pwsh" } }
+```
+
+* `error.hint` 仅在确有可操作建议时才出现。
+* `--pretty` 缩进输出；`--quiet` 只输出 `result`（或只输出 `error`）。
+* **stderr 只承载人类可读的诊断，绝不参与解析。** Windows 侧设置 `DSH_OS_TRACE=1` 可在 stderr 上得到失败追踪。
+
+### `error.code` 才是权威
+
+退出码只是粗分类，方便 shell 廉价地分支。**绝不要解析 `error.message`。**
+
+| 退出码 | 类别 | 代表错误码 |
+|---|---|---|
+| 0 | 成功 | — |
+| 1 | 用法 | `E_USAGE` |
+| 2 | 类型／取值 | `E_TYPE`、`E_CHARSET_UNKNOWN`、`E_BOUNDARY`、`E_RANGE`、`E_WINDOW_AMBIGUOUS` |
+| 3 | 授权 | `E_PERMISSION`、`E_ELEVATION_REQUIRED`、`E_PERMISSION_PROTECTED_PATH`、`E_PERMISSION_DELEGATE_ONLY`、`E_PERMISSION_FILE_UNTRUSTED`、`E_PERMISSION_DENIED_BY_RULE`、`E_PERMISSION_NO_ANSWERER` |
+| 4 | 平台不支持 | `E_NOT_SUPPORTED`、`E_NO_DISPLAY`、`E_ACCESSIBILITY_DENIED`、`E_ACCESSIBILITY_UNAVAILABLE` |
+| 5 | 目标／编码／IO | `E_NOT_FOUND`、`E_NOT_A_FILE`、`E_EXISTS`、`E_BINARY_CONTENT`、`E_CHARSET_MISMATCH`、`E_TRUNCATED`、`E_PARTIAL_WRITE`、`E_WINDOW_NOT_FOUND`、`E_IO` |
+| 6 | 超时 | `E_TIMEOUT` |
+| 7 | 内部／被中止 | `E_INTERNAL`、`E_ABORTED` |
+
+Windows 实现登记了 **36** 个错误码；POSIX 实现以 `case` 分组。两者对每个**已具名**错误码的归类一致，但对**未登记**错误码不一致：Windows 返回 7，POSIX 返回 5。
+
+### 调用约定
+
+值始终是独立 argv 元素，**绝不**拼进 shell 字符串。两种写法等价，但同一参数不得混用：
+
+```sh
+# 位置形式
+dsh-os file create "./a.txt" "123" "utf-8-bom"
+
+# 具名形式 —— 顺序任意；实际顺序取自动词表的参数列表
+dsh-os file create content="123" charset="utf-8-bom" path="./a.txt"
+```
+
+以下情况以 `E_USAGE` 拒绝：未知标志、空的 `--`、取值标志缺值、具名参数重复、未知名字、同一参数既给位置又给名字、多余的位置参数。读操作永不被要求 `--allow`；写操作总是被要求。
+
+动词深度为一到三段——`selfcheck`、`file charset`、`file verify charset`——解析器只在扩展形状确实已知时才吞掉下一个 token，因此一个恰好以单词开头的路径参数不会被当成动词的一部分吃掉。
+
+### 编码、BOM 与行尾
+
+`src/host/spec/charsets.tsv` 定义了 15 个规范编码名，各含别名、.NET 码页、`iconv` 名与 BOM 字节：
+
+`utf-8`、`utf-8-bom`、`utf-16le`、`utf-16be`、`utf-32le`、`utf-32be`、`gbk`、`gb18030`、`big5`、`shift_jis`、`euc-jp`、`euc-kr`、`latin1`、`windows-1252`、`ascii`。
+
+探测顺序是先嗅 BOM，再试**严格** UTF-8，然后是 GBK，最后 latin1。读取时剥离 BOM 并把 `\r\n` 归一为 `\n` 用于输出；**任何写回操作都还原文件原有的 BOM 存在性与行尾约定。** 偏移是半开区间 `[start, end)` 的字节偏移，必须落在字符边界上，否则以 `E_BOUNDARY` 失败，而不是把一个字符切碎。
+
+二进制判定是载荷前 8 KiB 内出现 NUL 字节，报 `E_BINARY_CONTENT`，而不是给出乱码。
+
+---
+
+## 动词面
+
+`src/host/spec/verbs.tsv` 中**声明了 86 个动词**，它是单一真源。其中一部分只声明未实现；在依赖某个动词之前，请先看[实际可用范围](#实际可用范围)。
+
+| 组 | 动词 |
+|---|---|
+| `file` | `create` `charset` `encode` `length` `information` `list` `delete` `move` `copy` `mkdir` `append` `insert` `view` `search` |
+| `file verify` | `charset` `encoding` `completion` |
+| `execute` | `command` `synchronous` `asynchronous` `query` `kill` |
+| `system` | `brand` `cpu` `gpu` `version` `info` |
+| `task` | `list` `query` `show` `kill` `launch` |
+| `service` | `list` `query` `start` `stop` `restart` |
+| `environment` | `list` `get` `add` `set` `delete` |
+| `environment attribute` | `list` `get` `add` `set` `delete` |
+| `permission` | `query` `list` `audit` `grant` `revoke` `acl init` |
+| `window` | `find` `list` `active` `close` `top` `bottom` `move` `resize` `minimize` `maximize` `restore` |
+| `mouse` | `click` `context` `over` `wheel` `down` `up` `cursor` |
+| `keyboard` | `down` `up` `press` `combination` `type` `codes` |
+| `clipboard` | `read` `write` `paste` |
+| `wait` | `window` `ms` |
+| 观察面 | `screenshot` `text` `structure` |
+| 自检 | `selfcheck` |
+
+几个值得先知道的设计点：
+
+* **`file verify.*` 是断言，不是抛错。** `file verify charset` 会在返回观测值的同时给出 `match: false`，让调用方能区分"文件不对"与"我要求错了"。`file verify completion` 在你没给任何预期时返回 `complete: null`——这是刻意不写成 `false`。
+* **`file insert` 的 `--charset` 是标志，不是位置参数。** 夹在 `content` 与 `offset` 之间时它会**静默顶掉 offset**。
+* **`file.delete` 在 Windows 上默认进回收站。** 在 POSIX 上需要 `trash-put`，否则报 `E_NOT_SUPPORTED`——它**不会**静默地真删。
+* **`environment` 有两层。** 变量持有一个字符串；**属性**（PATH、PATHEXT、LIB、INCLUDE）持有一个有序列表。写入会返回 `visibleToRunningProcesses`，因为 `user` 或 `machine` 级写入对已经在运行的进程不可见。
+* **`keyboard type` 以 Unicode 为先。** 非 ASCII 文本走剪贴板粘贴，因为在有输入法的情况下 `KEYEVENTF_UNICODE` 并不可靠。
+
+---
+
+## 危险权限
+
+在授予任何权限之前，这一章是必读的。本交互层刻意做得很有能力，而它给出的保证比功能列表看起来要窄。
+
+### 一个被完全授权的 agent 能做什么
+
+| 能力 | 涉及动词 | 授权要求 |
+|---|---|---|
+| **读取你的屏幕内容** | `screenshot`、`text`、`structure` | **只读，永不弹窗** |
+| **读写你的剪贴板** | `clipboard.read`、`clipboard.write` | `read` 永不弹窗；`write` 需 `--allow` |
+| **合成输入**——点击、拖拽、打字、组合键 | `mouse.*`、`keyboard.*` | `--allow` |
+| **操纵你的窗口**——移动、改尺寸、关闭、置前 | `window.*` | `--allow` |
+| **启动与结束进程** | `task.kill`、`execute.*` | `--allow` |
+| **执行任意命令行** | `execute.synchronous`、`execute.asynchronous` | `--allow` |
+| **删除、移动、覆盖文件** | `file.delete`、`file.move`、`file.copy` | `--allow` |
+| **持久修改你的环境变量** | `environment.set`、`.add`、`.delete`、`attribute.*` | `--allow` |
+| **控制系统服务**（已声明，未实现） | `service.start`、`.stop`、`.restart` | `--allow` + 提权 |
+| **读取进程与系统清单** | `task.*`、`system.*` | **只读，永不弹窗** |
+
+说得直白一些：`mouse.*` 与 `keyboard.*` 意味着一个被授权的 agent 能以你的权限操作**任何**你能操作的程序。又因为它能读屏，它还能观察自己刚刚做了什么。桌面之内没有沙箱。
+
+### 授权实际上是怎么运作的
+
+**B 层——结构强制（始终生效，跨平台）。**
+
+* 每个变更类动词都要求 `--allow`。缺失即 `E_PERMISSION`，且**什么都不会发生**。
+* `permission.json` **根本没有任何写入动词。** 动词表里只有 `permission query`、`permission list`、`permission audit`——全部只读。因此脚本在**结构上不可能**创建持久授权。
+* 一条硬性的**受保护路径边界**拒绝任何对"决定本层能做什么"的文件的修改：`permission.json`（及 `.bak`）、`src/host/command.txt`、三个 `src/host/bin/dsh-os.*`、`src/host/spec/verbs.tsv` 与 `src/host/spec/charsets.tsv`，以及任何可能在其旁边暂存内容的同名临时文件。违反者报 `E_PERMISSION_PROTECTED_PATH`，且无任何副作用。读取仍然允许，以便你审阅规则。
+* 该检查作用于**解析并归一化之后**的路径，逐段比较——而不是正则匹配，因为 `..`、8.3 短名或结尾的句点都能绕过正则。`file.move` 与 `file.copy` **两端都检查**，因为移动受保护文件同样是一种破坏方式。
+
+**A 层——内核 ACL（Windows，需显式开启，需提权）。**
+
+`permission acl init` 会给 `permission.json` 的 DACL 追加一条针对 `Everyone`（`S-1-1-0`）的显式 **DENY**，覆盖 `FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER`。该动作幂等；无法执行时报 `E_ELEVATION_REQUIRED`，而不是含糊地失败。
+
+`selfcheck` 报告 `aclEnforced` 的方式是**读取文件真实的安全描述符**并遍历 DACL。早期版本是从一个状态文件里读标志位——那会声称一种并未生效的强制；该实现已被删除。`aclReason` 会解释 `false` 的原因，使其可被处置而不只是被疑惑。
+
+### 四条需要如实说明的限制
+
+这些在 `src/host/docs/permission-model.md` 中有记录，在此重述是因为它们改变了上述保证的含义。
+
+1. **持久规则被记录了，但没有在动词层参与执法。** `permission.json` 的规则由同意写入委托及其 `os_permission_query` 工具来匹配；脚本读取该文件**仅用于展示**（`permission list/query/audit`）。没有任何动词在行动前查规则：真正的门禁是 `--allow`、受保护路径检查，以及（若已开启的）A 层。一条 `deny-always` 规则目前**并不能**拦住一个带着 `--allow` 到来的动词。
+2. **`E_PERMISSION_DENIED_BY_RULE` 已登记但从未被抛出。** 它在错误表里并映射到退出码 3，但没有任何代码路径产生它——与第 1 条一致。
+3. **脚本内的规则读取器没有实现 deny 优先。** 脚本侧的 `permission query` 取的是**第一条**匹配规则，不区分其决定是允许还是拒绝。委托侧正确实现了 deny 优先并有测试覆盖；因此两个读取器可能给出不同答案，而脚本侧是更弱的那个。
+4. **`execute` 是绕过受保护路径边界的一条通道。** 该边界守卫的是 `file.*` 与 `environment.*`。它无法约束子进程：`execute.synchronous` 在 Windows 上把命令行交给 `cmd.exe /d /s /c`，在 POSIX 上交给 `sh -c`，因此被启动的程序可以写任何它自身权限允许的东西，包括 `permission.json`。只有 A 层能阻止这一点。当 `aclEnforced: false` 时，B 层做不到。
+
+同意写入委托还有一个**设计缺口**需要直说：委托注册了五个工具（`os_permission_query`、`os_permission_grant`、`os_permission_revoke`、`os_permission_list`、`os_permission_audit`），但**没有注册 `approval/request` answerer**。它自己的设计文档写明应当注册，并且 `permission grant` **必须**经过用户确认的弹窗。就代码现状而言，强制手段是一段**工具描述**在告诉模型"只在用户选择之后才调用 `os_permission_grant`"；代码并不校验弹窗是否真的发生过。请把该委托当作可信基础设施，而不是对 agent 的检查。
+
+关于 A 层还有两点：它要求 harness 与委托以**不同身份**运行（否则退化为 B 层）；其 POSIX 等价物更弱——一次改权限模式，同一用户即可撤销。`permission acl init` 在自己的返回结果里也这么说。
+
+### 审阅已被授予了什么
+
+```sh
+dsh-os permission list                 # 规则、默认值，以及【实测】的 aclEnforced
+dsh-os permission query file.delete "R:\project\**"
+dsh-os permission audit --limit 50     # 追加式尾部；委托裁剪到 200 条
+```
+
+若 `permission.json` 的 `updatedBy` 不是 `consent-delegate`，它会被视为**不可信**：规则被忽略，一切退回默认值，并报告原因。也就是说，手工编辑该文件塞进去的恶意规则**不会**生效——它会被忽略，而且你会被告知。
+
+要**创建**持久决定，必须使用委托的工具。通配目标（`target.value === "*"`）会被拒绝，除非显式传入 `acknowledgeBroad: true`——因为"对一切永久同意"必须是一个独立的决定，而不能是某次点击的副作用。
+
+---
+
+## 实际可用范围
+
+统计方式：抽出各平台的分发表，与声明的动词表逐一比对。未实现的动词**从不静默失败**：它会返回一个指名道姓的 `E_NOT_SUPPORTED` 信封。
+
+| 平台 | 已声明 | 已实现 |
+|---|---|---|
+| Windows（`src/host/bin/dsh-os.ps1`） | 86 | **78** |
+| POSIX（`src/host/bin/dsh-os.sh`） | 86 | **44** |
+
+### Windows
+
+**已实现（78）：** 全部 `file.*`（含 `file.encode`）；`file verify.*`；`file.search`；`execute.synchronous` 与 `execute.asynchronous`；`system.*`；`task.list/query/show/kill`；`service.list/query`；整个 `environment` 面（含 `attribute.*`）；`permission.*`；整个 `window` 面；`screenshot`；`clipboard.read/write`；`wait.window/ms`；整个 `mouse` 与 `keyboard` 面；`text`；`structure`；`selfcheck`。
+
+**未实现（8）：** `execute.command`、`execute.query`、`execute.kill`、`clipboard.paste`、`task.launch`、`service.start`、`service.stop`、`service.restart`。
+
+### POSIX
+
+**已实现（44）：** 除 `encode` 外的整个 `file` 面；`file verify.*`；`file.search`；三个 `execute` 动词**含 `execute.command`**；`execute.query/kill`；`system.*`；`task.list/query/show/kill`；整个 `environment` 变量层（含其持久写入）；`environment attribute.list/get`；`permission.*`；`selfcheck`。
+
+**未实现（42）：** `file.encode`；全部 `mouse.*`、`keyboard.*`、`clipboard.*`、`window.*`、`service.*`、`wait.*`；`screenshot`、`text`、`structure`；`task.launch`；`environment.attribute.add/set/delete`。
+
+> [!NOTE]
+> POSIX 没有持久化环境变量的内核 API，因此 `environment add/set/delete --scope user` 是通过一个**托管块**去编辑 `${HOME}/.profile` 的，块由 `# >>> dsh-os managed environment >>>` 与 `# <<< dsh-os managed environment <<<` 标记界定。每次改动都会重新生成标记之间的全部内容，因此这些操作是幂等的，用户也可以直接删掉整个块来一次性撤销。若直接往文件里写裸赋值，第二次调用就会重复追加，而且无法撤销。`--scope machine` 不可用，会报 `E_NOT_SUPPORTED`。
+
+**未实现（42）：** `file.encode`；全部 `mouse.*`、`keyboard.*`、`clipboard.*`、`window.*`、`service.*`、`wait.*`；`screenshot`、`text`、`structure`；`task.launch`；`environment.attribute.add/set/delete`。
+
+> [!NOTE]
+> 桌面相关各组在 POSIX 上是**结构性缺失**。`window.sh`、`service.sh` 与 `native.sh` 是刻意留空的桩，其文件头解释了原因：POSIX 上的对应物是外部程序（`xdotool`、`wmctrl`、`wl-copy`、`import`），而不是可链接的库。
+
+### 两套实现并不对等
+
+同名动词、同一调用约定，但在若干处**行为不同**。重要的那些：
+
+| 方面 | Windows | POSIX |
+|---|---|---|
+| `execute.command` | 未实现 | 已实现（真 argv，不经 shell） |
+| `file.encode` | 已实现 | 未实现 |
+| `file.delete` 默认 | 进回收站 | 无 `trash-put` 则失败 |
+| `file.search` 字面匹配 | 大小写不敏感 | 大小写敏感 |
+| `file.view` 字符边界 | 强制校验（`E_BOUNDARY`） | **完全不校验** |
+| `file.view --max-bytes` | 生效 | 被忽略（`truncated` 恒为 `false`） |
+| 超过 32 MiB 的文件 | `E_TRUNCATED` | 无上限 |
+| 创建／追加时的 `--eol crlf` | 精确字节 | 会多出一个结尾 CRLF |
+| 追加时遇到混合行尾文件 | 原有行尾不动 | 整个文件被重新归一 |
+| 无法表示的字符 | 静默写成 `?` | `E_ENCODING_INVALID` |
+| `--pretty` / `--quiet` | 生效 | 接受但被忽略 |
+| `--` | `E_USAGE` | 选项结束标记 |
+| 受保护路径比较 | 大小写不敏感、已归一化 | 大小写敏感、按原参数 |
+| 未登记错误码 | 退出码 7 | 退出码 5 |
+| 失败时的 `meta.durationMs` | 真实耗时 | `0` |
+
+`file.search` 的 `--type` 在两套实现上都是一个潜在缺陷：实现会读它，但它并未登记为已知标志，因此行为取决于解析器的兜底路径。
+
+---
+
+## 安装现状与已知缺陷
+
+直说，以免有人措手不及。
+
+### 把 bundle 装进 profile 尚未验证
+
+插件能干净导入、能按自身包名解析、能注册 `dsh_os`、并能通过真实 spawn 路径执行动词——这些都有测试覆盖。**未**验证的是端到端的 loader 路径：DSH profile 真的会组合这个 bundle，并让 `dsh_os` 出现在活动会话的工具列表里。profile 的插件管理器在安装时会遍历 `patch.insert` 做校验，而另一个第三方 bundle 恰好就在这一步被拒（`patch.insert?.forEach is not a function`），说明这条路很容易踩错。在这个问题落定之前，`permission.json` 的规则一条都不会被执行。
+
+### Windows 黄金测试在干净检出上不通过
+
+在干净检出、且测试按设计从零重建沙箱的情况下实测：
+
+```
+passed: 47   failed: 1
+failures:
+  - parser/one-two-three-token-verbs: two tokens: expected '0', got '5'
+```
+
+原因是**测试间的顺序依赖**，不是随机抖动。`tests/golden.ps1` 在每次运行开始时删除并重建沙箱（第 37–38 行），但第 608 行的解析器用例断言 `file length .temporary\golden\verify` 退出码为 0——而该目录是在本次运行**更晚**的位置（第 437 行的 `file-verify` 用例）才被创建的。退出码 5 是 `E_NOT_FOUND`，对一个不存在的路径而言这是**正确**行为。该用例在断言一个它自己并未创建的夹具。
+
+### 其他缺口
+
+* **`tests/conformance.ps1` 并不存在**，尽管 `spec/verbs.tsv` 的文件头声称它存在、并会校验与 `command.txt` 的一致性。两张表目前是一致的——但没有任何东西在强制这一点。
+* **同意写入委托从未注册审批 answerer**，如前所述。
+* **委托在其 `query` 结果里无条件报告 `aclEnforced: false`**，而不是像脚本那样去实测 ACL。因此在 A 层已开启时，它会**低报**防护强度。
+* **`--shell`、`--env`、`--stdin`、`--background` 被接受但从不被读取。** `execute.*` 在 Windows 上永远用 `cmd.exe`，在 POSIX 上永远用 `/bin/sh`。Windows 批量动词上的 `--encoding` 会构造一个从未被应用的值，因此对子进程输出的解码没有影响。
+* **`E_TIMEOUT` 从未被任何一侧实现抛出**，尽管它被声明用于 `wait` 与 `execute` 各组。
+* **若干已声明的错误码不可达**，例如 `file.encode` 的 `E_CHARSET_MISMATCH` 与 `E_ENCODING_INVALID`，以及 `file.delete` 的 `E_IS_A_DIR`。
+* **`src/client/` 是未改动的 Vite 脚手架。** 它没有与宿主接线，`index.html` 引用 `./src/main.ts` 而实际文件在 `./src/client/main.ts`，且 `node_modules` 为空——因此 `npm run build` 与 `npm run dev` 目前没有意义。
+* **`git` 不是必需依赖，但也并非每个目标环境都有**，因此没有任何验收步骤依赖它。
+
+### 尚未证实的部分
+
+* DSH loader 会组合这个 bundle，并让 `dsh_os` 出现在活动会话中。
+* 两个平台之间的动词完全对等——两个方向都没有。
+* 在 harness 与委托共用同一身份的机器上 A 层的强制效果——按构造那种情况会退化为 B 层。
+* 关于 macOS 或非 Linux 的 POSIX，除代码审阅之外的一切：POSIX 测试套件是为 GNU 用户态写的，此处未运行。
+
+---
+
+## 测试
+
+```console
+npm run test:all        # 按顺序跑下面全部
+```
+
+| 套件 | 命令 | 用例数 | 实测结果 |
+|---|---|---|---|
+| 编码契约 | `powershell -File tests/encoding.ps1` | — | **全部成立** |
+| Windows 黄金 | `powershell -File tests/golden.ps1` | 48 | **47 通过，1 失败**（顺序依赖，见上） |
+| POSIX 黄金 | `bash tests/golden-sh.sh` | 75 | **75 通过** |
+| 插件 | `node tests/plugin.test.mjs` | 13 | **13 通过** |
+| 授权委托 | `node tests/permission.test.mjs` | 18 | **18 通过** |
+| 构建漂移 | `powershell -File tools/build.ps1 -Check` | — | **无漂移** |
+
+`tests/encoding.ps1` 守卫的是让其余一切有意义的那些契约：`.ps1` 生成物带 BOM、`.sh` 生成物不带、行尾遵循 `.gitattributes`、`command.txt` 与 `.tsv` 表保持纯 ASCII + LF，以及 **stdout 永不携带 BOM**。
+
+> [!WARNING]
+> **两套黄金测试必须串行运行。** 两套实现都会把失败信封暂存到一个**固定路径**的临时文件——`.temporary/dsh-os.err`，既无 PID 也无锁——因此并发调用会互相覆盖对方待取的结果。实测并行运行 `golden.ps1` 与 `golden-sh.sh` 时报出了 2 个**假**失败：退出码与信封自身的 `error.code` 相互矛盾；改为串行后二者全部消失。请把它当作缺陷而不是随机抖动：该暂存路径在构造上就是竞态的。
+
+---
+
+## 参与贡献
+
+`src/host/lib/*` 是真源。**绝不要手改 `src/host/bin/dsh-os.ps1` 或 `.sh`**——它们是生成物。请改模块，然后：
+
+```console
+powershell -File tools/build.ps1          # 重新生成
+powershell -File tools/build.ps1 -Check   # 已提交脚本一旦漂移即失败
+```
+
+`.gitattributes` 是契约的一部分而不是偏好：`command.txt` 与 `.tsv` 表必须是 LF，两套实现才能解析逐字节一致的输入；`dsh-os.bat` 必须是 CRLF 且仅 ASCII，否则 `cmd.exe` 会解析错误；`dsh-os.ps1` 必须是 CRLF 且 UTF-8 **带** BOM，否则 PowerShell 5.1 会按 ANSI 码页读取其中的非 ASCII 字面量。
+
+两条在这个仓库里踩出来的教训，值得一并继承：
+
+* **依赖路径推导的安全边界必须 fail-closed。** 一次重构曾让仓库根多算上一层，于是没有任何受保护路径匹配。其失败形态不是报错，而是**保护静默失效**——受保护的文件真的被删掉了。
+* **临时文件统一放在 `.temporary/` 下**，黄金测试夹具也在那里。
+
+各模块文件头仍引用已不存在的 `tools/split-once.ps1`；当前的拼装器是 `tools/build.ps1`。
+
+---
+
+## 许可
+
+**MIT**，在 `package.json` 中声明（`"license": "MIT"`，作者 Eloy Kim），并以独立的 [`LICENSE`](LICENSE) 文件随仓库分发。完全开源：整个动词面、规范文档与测试套件都在仓库里。无遥测、无需账号、运行时无网络访问。
+
+```
+MIT License
+
+Copyright (c) 2026 Eloy Kim
+```
+
+许可证文件为纯 ASCII、LF 行尾、无 BOM，与仓库其余的编码契约保持一致；同时已列入 `package.json` 的 `files` 白名单，因此它会随发布的包一起分发，而不只是留在检出目录里。
+
+动词契约与规范文档属于源码的一部分：行为变更应当同步反映到 `src/host/spec/verbs.tsv`、`src/host/command.txt` 与 `src/host/docs/os-spec.md`，而不只是改代码。
+
+另需说明：规范文档（`src/host/docs/os-spec.md`、`src/host/docs/permission-model.md`、`src/host/command.txt`）以**中文**撰写，而本 README 与动词表为英文。

@@ -6,6 +6,13 @@
 #
 # `insert` with no `id` appends to the root entry list. Each plugin below is a plain Cordis plugin
 # exporting apply/inject/name.
+#
+# The two rows must name DIFFERENT module specifiers. `name` is resolved as a package specifier, and
+# the "." export of this package is src/plugin/index.js: giving both rows the bare package name loads
+# that one module twice, and the second load throws
+#   tool "dsh_os" is already registered
+# which aborts the whole entry. The permission row therefore addresses the subpath export declared in
+# package.json ("exports": { "./permission": ... }).
 - insert:
     - id: dsh-os
       name: deepseek-coordination
@@ -19,7 +26,7 @@
     # the scripts must never write the file - there is no write verb in the verb table - so the row
     # that can write it is deliberately a distinct component with its own tools.
     - id: dsh-os-permission
-      name: deepseek-coordination
+      name: deepseek-coordination/permission
       config:
         # Defaults to <package root>/permission.json. Point it elsewhere to keep a deployment's
         # durable decisions outside the installed package.

@@ -327,8 +327,14 @@ export function apply(ctx, config = {}) {
     description:
       'Ask what the stored permission rules say about one verb and target. Read-only: never writes.',
     parameters: {
-      verb: { type: 'string', required: true, description: 'Verb to ask about, e.g. file.delete.' },
-      target: { type: 'string', description: 'Target value, e.g. an absolute path.' },
+      // A complete JSON Schema: `register()` does not compile the { name: {...} } property map that the
+      // internal `defineTool` accepts, so the object root must be stated here explicitly.
+      type: 'object',
+      properties: {
+        verb: { type: 'string', description: 'Verb to ask about, e.g. file.delete.' },
+        target: { type: 'string', description: 'Target value, e.g. an absolute path.' },
+      },
+      required: ['verb'],
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
@@ -342,20 +348,23 @@ export function apply(ctx, config = {}) {
       'Persist a durable authorization decision. This is the only path that writes permission.json, ' +
       'and it must only be called after the user has chosen "allow always" or "deny always".',
     parameters: {
-      verb: { type: 'string', required: true, description: 'Verb, or a namespace like file.*' },
-      target: { type: 'string', required: true, description: 'Target value; * means every target.' },
-      decision: {
-        type: 'string',
-        required: true,
-        description: 'allow-always or deny-always.',
-        enum: ['allow-always', 'deny-always'],
+      type: 'object',
+      properties: {
+        verb: { type: 'string', description: 'Verb, or a namespace like file.*' },
+        target: { type: 'string', description: 'Target value; * means every target.' },
+        decision: {
+          type: 'string',
+          description: 'allow-always or deny-always.',
+          enum: ['allow-always', 'deny-always'],
+        },
+        scope: { type: 'string', description: 'user, machine, process, session or any.' },
+        note: { type: 'string', description: 'Optional human note.' },
+        acknowledgeBroad: {
+          type: 'boolean',
+          description: 'Required when target is *, because consent to everything must be explicit.',
+        },
       },
-      scope: { type: 'string', description: 'user, machine, process, session or any.' },
-      note: { type: 'string', description: 'Optional human note.' },
-      acknowledgeBroad: {
-        type: 'boolean',
-        description: 'Required when target is *, because consent to everything must be explicit.',
-      },
+      required: ['verb', 'target', 'decision'],
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
@@ -367,7 +376,11 @@ export function apply(ctx, config = {}) {
     name: 'os_permission_revoke',
     description: 'Remove a stored rule by id. Revoking is itself a durable decision.',
     parameters: {
-      ruleId: { type: 'string', required: true, description: 'Rule id, e.g. r-0001.' },
+      type: 'object',
+      properties: {
+        ruleId: { type: 'string', description: 'Rule id, e.g. r-0001.' },
+      },
+      required: ['ruleId'],
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
@@ -378,7 +391,7 @@ export function apply(ctx, config = {}) {
   tool({
     name: 'os_permission_list',
     description: 'List the stored rules, the defaults, and whether the file is trusted.',
-    parameters: {},
+    parameters: { type: 'object', properties: {} },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute() {
       return JSON.stringify(list(), null, 2)
@@ -388,7 +401,12 @@ export function apply(ctx, config = {}) {
   tool({
     name: 'os_permission_audit',
     description: 'Read the tail of the append-only authorization audit.',
-    parameters: { limit: { type: 'number', description: 'How many recent entries (default 20).' } },
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'How many recent entries (default 20).' },
+      },
+    },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
     async execute(args) {
       return JSON.stringify(audit({ limit: args.limit }), null, 2)
