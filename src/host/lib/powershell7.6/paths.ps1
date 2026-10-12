@@ -61,14 +61,18 @@ function Resolve-FullPath {
 # or by a trailing dot on Windows. Reads are deliberately still allowed, so a caller can inspect
 # the rules and the scripts.
 #
-# The list is identical to the 5.1 list: it is the boundary itself, and widening or narrowing it
-# would silently change which files an agent is allowed to touch.
+# Every entry point is listed, not just the ones this file belongs to. The 5.1 list named only the
+# .ps1/.sh/.bat trio, and when dsh-os7.ps1 was added the 7.6 artefact was left UNPROTECTED - the
+# protected-path case in the golden suite moved it into a sandbox and deleted it, which is how the gap
+# was found. The script a surface is executed from is part of that surface's boundary, so a new entry
+# point must be added here in the same change that creates it.
 # ---------------------------------------------------------------------------
 $script:ProtectedRelativePaths = @(
   'permission.json',
   'permission.json.bak',
   'src\host\command.txt',
   'src\host\bin\dsh-os.ps1',
+  'src\host\bin\dsh-os7.ps1',
   'src\host\bin\dsh-os.sh',
   'src\host\bin\dsh-os.bat',
   'src\host\spec\verbs.tsv',

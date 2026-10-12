@@ -157,9 +157,29 @@ if (Test-Path -LiteralPath $libDir) {
   $allModules = @(Get-ChildItem -LiteralPath $libDir -Recurse -File | Sort-Object FullName)
   $psModules = @($allModules | Where-Object { $_.Extension -eq '.ps1' })
   $shModules = @($allModules | Where-Object { $_.Extension -eq '.sh' })
-  Write-Host ("  module files found under lib: {0} powershell, {1} shell" -f $psModules.Count, $shModules.Count)
 
-  foreach ($module in $psModules) {
+  # The ASCII rule applies to files the BUILD READS, because the assembler decodes them without a BOM:
+  # a non-ASCII byte there would be decoded in the ANSI code page on Windows PowerShell 5.1 and would
+  # corrupt the generated artefact. A .ps1 that is deliberately NOT in the build's module list is never
+  # concatenated into anything, so the rule does not apply to it, and failing it here would be a false
+  # alarm - the repository carries exactly such a file, a standalone interactive git runner whose own
+  # header says it is not a dsh-os module. Its shell counterpart IS a build input, and is ASCII anyway.
+  #
+  # A .sh file anywhere under lib/ must still be LF whatever it is, because a carriage return becomes
+  # part of the last token on every line regardless of how the file is used.
+  $moduleNames = @(
+    'preamble', 'json', 'command', 'charset', 'native', 'paths', 'file', 'system', 'execute',
+    'task', 'environment', 'service', 'permission', 'window', 'dispatch', 'entry'
+  )
+  $buildPs1 = @($psModules | Where-Object { $moduleNames -contains $_.BaseName })
+  $otherPs1 = @($psModules | Where-Object { $moduleNames -notcontains $_.BaseName })
+  Write-Host ("  files under lib: {0} powershell ({1} build modules, {2} standalone), {3} shell" -f `
+    $psModules.Count, $buildPs1.Count, $otherPs1.Count, $shModules.Count)
+  if ($otherPs1.Count -gt 0) {
+    Write-Host ("  not build inputs, so ASCII is not required of them: {0}" -f (($otherPs1 | ForEach-Object { $_.Name }) -join ', ')) -ForegroundColor DarkGray
+  }
+
+  foreach ($module in $buildPs1) {
     $rel = $module.FullName.Substring($rootDir.Length + 1)
     Test-Contract $rel 'ASCII only' {
       param($i)

@@ -22,14 +22,18 @@
 # Text equality, with the comparison named.
 #
 # PowerShell's -eq/-ne on strings are linguistic comparisons, and .NET's linguistic comparisons do not
-# treat every non-printable control character as ordinary text. Measured on 7.6.6 / .NET 10.0.12:
-#   'crlf' -eq ('crlf' + [char]7)          -> True    (the control character is ignored)
-#   [string]::Equals(same, same, Ordinal)  -> False
-#   'Food'.IndexOf('Foo' + [char]7 + 'd')  -> 0
-# So an expected value carrying an embedded control character can compare equal to one without it, and
-# a verify verb would report a match it never made. OrdinalIgnoreCase keeps the case-insensitivity -eq
-# had and drops the linguistic behaviour, so the result depends on the characters alone. It is also
-# the comparison the 5.1 protected-path code already used.
+# treat every non-printable control character as ordinary text. Where that tolerance lives changed
+# between the two runtimes, and it changed in the direction that breaks a verb: measured on this
+# machine (culture zh-CN) with BEL = [char]7,
+#     ('lf' + BEL) -eq 'lf'                    Windows PowerShell 5.1 -> False    7.6 -> True
+#     ('Foo' + BEL + 'd') -eq 'Food'           5.1 -> False                        7.6 -> True
+#     'Food'.IndexOf('Foo' + BEL + 'd')        5.1 -> -1                           7.6 -> 0
+#     [string]::Equals('lf' + BEL, 'lf', Ordinal)   5.1 -> False                    7.6 -> False
+# So an expected value carrying an embedded control character can compare equal to one without it on
+# 7.6, and a verify verb would report a match that the 5.1 script it replaces would have refused.
+# OrdinalIgnoreCase keeps the case-insensitivity -eq had and drops the linguistic behaviour, so the
+# answer depends on the characters alone. It is also the comparison the 5.1 protected-path code already
+# used.
 function Test-SameText {
   param([string]$A, [string]$B)
   return [string]::Equals($A, $B, [System.StringComparison]::OrdinalIgnoreCase)

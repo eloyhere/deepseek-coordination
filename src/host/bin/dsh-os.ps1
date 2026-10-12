@@ -1286,6 +1286,10 @@ $script:ProtectedRelativePaths = @(
   'permission.json.bak',
   'src\host\command.txt',
   'src\host\bin\dsh-os.ps1',
+  # The PowerShell 7 entry point is protected here too, and symmetrically dsh-os.ps1 is protected in
+  # the 7.6 list. Every entry point belongs to the same boundary: the script a surface is executed from
+  # is part of that surface, whichever runtime it targets, so none of them may be rewritten by a verb.
+  'src\host\bin\dsh-os7.ps1',
   'src\host\bin\dsh-os.sh',
   'src\host\bin\dsh-os.bat',
   'src\host\spec\verbs.tsv',

@@ -76,23 +76,24 @@ function ConvertTo-JsonString {
   [void]$sb.Append('"')
   foreach ($ch in $Value.ToCharArray()) {
     $c = [int][char]$ch
-    # switch on a SINGLE character. This is safe here, unlike the field-lookup case in command.ps1:
-    # the subject is one character long and the cases cannot both match, so there is no fall-through
-    # and nothing to iterate character by character.
-    switch ($ch) {
-      '"' { [void]$sb.Append('\"'); continue }
-      '\' { [void]$sb.Append('\\'); continue }
-      "`b" { [void]$sb.Append('\b'); continue }
-      "`f" { [void]$sb.Append('\f'); continue }
-      "`n" { [void]$sb.Append('\n'); continue }
-      "`r" { [void]$sb.Append('\r'); continue }
-      "`t" { [void]$sb.Append('\t'); continue }
-      default {
-        if ($c -lt 0x20 -or $c -eq 0x7F) { [void]$sb.Append('\u' + $c.ToString('x4')) }
-        elseif ($c -eq 0xFFFE -or $c -eq 0xFFFF) { [void]$sb.Append('\u' + $c.ToString('x4')) }
-        else { [void]$sb.Append($ch) }
-      }
-    }
+    # Dispatched on the CHARACTER CODE, not with `switch ($ch)` as the 5.1 module did.
+    #
+    # This is the single most dangerous consequence of the .NET 5 string-comparison change: on
+    # PowerShell 7 an ignorable character compares EQUAL to almost anything, so the 5.1 switch's
+    # `"`b" { ... }` case matched U+0001 and U+007F as well, and both were emitted as \b instead of
+    # \u0001 / \u007f. Verified on 7.6.6: [string][char]1 -ceq [string][char]8 returned True.
+    # `-match` and hashtable lookups are unaffected, but every -eq/-ceq/-like/-contains comparison in
+    # this file would be, so the escaper compares integers and cannot be fooled.
+    if ($c -eq 0x22) { [void]$sb.Append('\"') }
+    elseif ($c -eq 0x5C) { [void]$sb.Append('\\') }
+    elseif ($c -eq 0x08) { [void]$sb.Append('\b') }
+    elseif ($c -eq 0x0C) { [void]$sb.Append('\f') }
+    elseif ($c -eq 0x0A) { [void]$sb.Append('\n') }
+    elseif ($c -eq 0x0D) { [void]$sb.Append('\r') }
+    elseif ($c -eq 0x09) { [void]$sb.Append('\t') }
+    elseif ($c -lt 0x20 -or $c -eq 0x7F) { [void]$sb.Append('\u' + $c.ToString('x4')) }
+    elseif ($c -eq 0xFFFE -or $c -eq 0xFFFF) { [void]$sb.Append('\u' + $c.ToString('x4')) }
+    else { [void]$sb.Append($ch) }
   }
   [void]$sb.Append('"')
   return $sb.ToString()
@@ -140,26 +141,25 @@ function ConvertTo-PrettyJson {
   $escaped = $false
   for ($i = 0; $i -lt $Json.Length; $i++) {
     $ch = $Json[$i]
+    $code = [int][char]$ch
     if ($inString) {
       [void]$sb.Append($ch)
       if ($escaped) { $escaped = $false }
-      elseif ($ch -eq '\') { $escaped = $true }
-      elseif ($ch -eq '"') { $inString = $false }
+      elseif ($code -eq 0x5C) { $escaped = $true }
+      elseif ($code -eq 0x22) { $inString = $false }
       continue
     }
-    # As in ConvertTo-JsonString, each case here is a distinct single character, so a switch on it
-    # cannot iterate a string or fall through.
-    switch ($ch) {
-      '"' { $inString = $true; [void]$sb.Append($ch) }
-      '{' { [void]$sb.Append($ch); $indent++; [void]$sb.Append("`n" + ('  ' * $indent)) }
-      '[' { [void]$sb.Append($ch); $indent++; [void]$sb.Append("`n" + ('  ' * $indent)) }
-      '}' { $indent--; [void]$sb.Append("`n" + ('  ' * $indent) + $ch) }
-      ']' { $indent--; [void]$sb.Append("`n" + ('  ' * $indent) + $ch) }
-      ',' { [void]$sb.Append($ch); [void]$sb.Append("`n" + ('  ' * $indent)) }
-      ':' { [void]$sb.Append(': ') }
-      ' ' { }
-      default { [void]$sb.Append($ch) }
-    }
+    # Character codes again, for the same reason as ConvertTo-JsonString: `switch ($ch)` can only be
+    # trusted when its cases are not strings that an ignorable character could compare equal to.
+    if ($code -eq 0x22) { $inString = $true; [void]$sb.Append($ch) }
+    elseif ($code -eq 0x7B) { [void]$sb.Append($ch); $indent++; [void]$sb.Append("`n" + ('  ' * $indent)) }
+    elseif ($code -eq 0x5B) { [void]$sb.Append($ch); $indent++; [void]$sb.Append("`n" + ('  ' * $indent)) }
+    elseif ($code -eq 0x7D) { $indent--; [void]$sb.Append("`n" + ('  ' * $indent) + $ch) }
+    elseif ($code -eq 0x5D) { $indent--; [void]$sb.Append("`n" + ('  ' * $indent) + $ch) }
+    elseif ($code -eq 0x2C) { [void]$sb.Append($ch); [void]$sb.Append("`n" + ('  ' * $indent)) }
+    elseif ($code -eq 0x3A) { [void]$sb.Append(': ') }
+    elseif ($code -eq 0x20) { }
+    else { [void]$sb.Append($ch) }
   }
   return $sb.ToString()
 }

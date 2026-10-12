@@ -1,4 +1,28 @@
-# Module: permission.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+# Module: permission.ps1 - permission.* verbs, the ACL layer, selfcheck and the capability matrix.
+#
+# Ported from powershell5.1/permission.ps1 for bin/dsh-os7.ps1. Verb names, flags, result field names
+# and error codes are identical to the 5.1 module. What changed, and why:
+#
+#   * selfcheck reported $PSVersionTable.CLRVersion. That key does not exist in 7.x at all, so the
+#     expression throws rather than degrading. The field keeps the name `clrVersion` (an agent already
+#     parses it) and now carries
+#     [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription, the official
+#     replacement, which is more informative: ".NET 10.0.12" instead of a bare CLR version.
+#   * selfcheck's `script` names the artefact that actually ran: bin/dsh-os7.ps1. The field keeps its
+#     name; only the value is corrected, since reporting the 5.1 file name from the 7.6 script would be
+#     a false statement about which implementation answered.
+#   * String comparisons that can see argument text or file text name their comparison explicitly.
+#     PowerShell's -eq is a linguistic comparison, and .NET's linguistic comparisons do not treat every
+#     non-printable control character as ordinary text - measured, with BEL = [char]7:
+#     ('lf' + BEL) -eq 'lf' is False on Windows PowerShell 5.1 but True on 7.6, so an unchanged -eq
+#     would make this port answer a rule question differently from the script it replaces. file.ps1
+#     documents the same trap at its Test-SameText helper; this module inlines [string]::Equals with an
+#     explicit StringComparison rather than depending on a helper defined in an earlier module.
+#
+# The ACL layer needs no 7.x-specific work. It reads and writes the security descriptor through the
+# advapi32 P/Invoke in native.ps1 and never calls Get-Acl/Set-Acl, so the 7.3 relocation of the
+# ObjectSecurity type data into Microsoft.PowerShell.Security (which obliges callers of those cmdlets
+# to import that module explicitly) does not apply here.
 
 function Get-PermissionFilePath {
   return (Join-Path $script:RootDir 'permission.json')
@@ -21,7 +45,9 @@ function Read-PermissionFile {
   }
   $trusted = $true
   if ($null -ne $doc.PSObject.Properties['updatedBy']) {
-    if ([string]$doc.updatedBy -ne 'consent-delegate') { $trusted = $false }
+    # 'consent-delegate' is an identity token, so it is compared as one: ordinal and case-insensitive,
+    # never linguistically. A value carrying a control character must not pass as the delegate.
+    if (-not [string]::Equals([string]$doc.updatedBy, 'consent-delegate', [System.StringComparison]::OrdinalIgnoreCase)) { $trusted = $false }
   }
   return [ordered]@{ exists = $true; empty = $false; trusted = $trusted; document = $doc; path = $path }
 }
@@ -34,7 +60,7 @@ function Invoke-PermissionList {
   if ($null -ne $state.document -and $null -ne $state.document.PSObject.Properties['rules']) {
     $rules = @($state.document.rules)
   }
-  $items = New-Object System.Collections.ArrayList
+  $items = [System.Collections.ArrayList]::new()
   foreach ($r in $rules) {
     [void]$items.Add([ordered]@{
       id = $r.id
@@ -48,7 +74,7 @@ function Invoke-PermissionList {
   return [ordered]@{
     path = $state.path
     exists = $state.exists
-    empty = $(if ($null -ne $state.empty) { $state.empty } else { $false })
+    empty = ($state.empty ?? $false)
     trusted = $state.trusted
     count = $items.Count
     rules = $items.ToArray()
@@ -81,11 +107,21 @@ function Invoke-PermissionQuery {
   $matched = $null
   if ($null -ne $state.document -and $null -ne $state.document.PSObject.Properties['rules']) {
     foreach ($r in @($state.document.rules)) {
-      $verbMatch = ($r.verb -eq $verb) -or ($r.verb.EndsWith('.*') -and $verb.StartsWith($r.verb.Substring(0, $r.verb.Length - 1)))
+      # The rule text comes from permission.json and the verb comes from argv, so both comparisons are
+      # named rather than linguistic. A rule written "file.*" matches every verb under "file." because
+      # the trailing asterisk is dropped and what remains is used as a prefix.
+      $verbMatch = [string]::Equals([string]$r.verb, $verb, [System.StringComparison]::OrdinalIgnoreCase)
+      if (-not $verbMatch -and $r.verb.EndsWith('.*', [System.StringComparison]::Ordinal)) {
+        $prefix = $r.verb.Substring(0, $r.verb.Length - 1)
+        # The prefix test keeps the case-sensitivity the 5.1 code had; only its tolerance of control
+        # characters is dropped.
+        $verbMatch = $verb.StartsWith($prefix, [System.StringComparison]::Ordinal)
+      }
       if (-not $verbMatch) { continue }
       $value = '*'
       if ($null -ne $r.target -and $null -ne $r.target.PSObject.Properties['value']) { $value = [string]$r.target.value }
-      if ($value -eq '*' -or $value -eq $target) { $matched = $r; break }
+      if ([string]::Equals($value, '*', [System.StringComparison]::OrdinalIgnoreCase) -or
+          [string]::Equals($value, $target, [System.StringComparison]::OrdinalIgnoreCase)) { $matched = $r; break }
     }
   }
   $decision = 'ask'
@@ -255,6 +291,8 @@ function Get-PlatformCapabilities {
     $caps['screens'] = $null
   }
   try {
+    # All four assemblies load on 7.6.6 (verified by probe), so the 5.1 form is kept: Add-Type
+    # -AssemblyName still resolves them from the Windows Desktop runtime that pwsh ships with.
     Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
     Add-Type -AssemblyName WindowsBase -ErrorAction Stop
@@ -271,11 +309,14 @@ function Get-PlatformCapabilities {
 
 function Invoke-Selfcheck {
   param($Parsed)
-  $verbs = New-Object System.Collections.ArrayList
+  $verbs = [System.Collections.ArrayList]::new()
   $verbsPath = Join-Path $script:HostDir 'spec\verbs.tsv'
   if (Test-Path -LiteralPath $verbsPath) {
     foreach ($line in [System.IO.File]::ReadAllLines($verbsPath, $script:NoBom)) {
-      if ($line -eq '' -or $line.StartsWith('#') -or $line.StartsWith('verb')) { continue }
+      # Length and ordinal prefixes rather than -eq/-StartsWith: a line holding one control character
+      # is not an empty line, and "verb`0" is not the header.
+      if ($line.Length -eq 0 -or $line.StartsWith('#', [System.StringComparison]::Ordinal) -or
+          $line.StartsWith('verb', [System.StringComparison]::Ordinal)) { continue }
       $f = $line -split "`t"
       if ($f.Count -lt 4) { continue }
       [void]$verbs.Add([ordered]@{ verb = $f[0]; positionals = $f[1]; flags = $f[2]; perm = $f[3] })
@@ -283,9 +324,16 @@ function Invoke-Selfcheck {
   }
   $enforcement = Get-AclEnforcementDetail
   return [ordered]@{
-    script = 'bin/dsh-os.ps1'
+    # The artefact that actually answered. bin/dsh-os.ps1 is the Windows PowerShell 5.1 implementation;
+    # this module set is assembled into bin/dsh-os7.ps1, so the field keeps its name and reports the
+    # file that really ran rather than naming the other implementation.
+    script = 'bin/dsh-os7.ps1'
     powershell = $PSVersionTable.PSVersion.ToString()
-    clrVersion = $PSVersionTable.CLRVersion.ToString()
+    # Kept under the 5.1 field name because an agent already parses `clrVersion`. $PSVersionTable has
+    # no ClrVersion key in 7.x (6.0 removed it along with BuildVersion), so the 5.1 expression throws
+    # instead of reporting anything; FrameworkDescription is the official replacement and reads
+    # ".NET 10.0.12".
+    clrVersion = [System.Runtime.InteropServices.RuntimeInformation]::FrameworkDescription
     encodesPlainStdout = $true
     capabilities = Get-PlatformCapabilities
     # The permission model requires selfcheck to report which enforcement strength is actually in

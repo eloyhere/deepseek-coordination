@@ -27,6 +27,22 @@ $script:KnownFlags = @(
   'background', 'regex', 'recursive'
 )
 
+# Membership tests for flag and verb names are ORDINAL, not `-contains`.
+#
+# From .NET 5 an ignorable character compares equal to almost anything on PowerShell 7, so
+# @('allow') -contains "allow`a" is True: a typo carrying a stray control byte would be accepted as
+# --allow, and a name that is not in the table could select a flag that is. Verified on 7.6.6.
+# The explicit loop is [string]::Equals(...Ordinal) because [System.Array]::IndexOf does not bind its
+# 3-argument (Array, object, IComparer) overload from PowerShell here - the array arrives wrapped in
+# PSObject - and this is the same shape dispatch.ps1 already uses for its verb-key scan.
+function Test-FlagName {
+  param($Set, [string]$Name)
+  foreach ($item in $Set) {
+    if ([string]::Equals($item, $Name, [System.StringComparison]::Ordinal)) { return $true }
+  }
+  return $false
+}
+
 function Parse-Arguments {
   param([string[]]$Argv)
   $positionals = [System.Collections.ArrayList]::new()
@@ -41,16 +57,20 @@ function Parse-Arguments {
     # iterates the string character by character in its wildcard/regex forms, so a token such as
     # "--allow" could match a pattern it should not. That is a PowerShell language behaviour, not a
     # 5.1 quirk, so it is unchanged in 7.6 and the if/elseif form remains the safer one.
+    #
+    # The two tests here are safe from the ignorable-character trap: StartsWith is an ordinal .NET
+    # call, and `-match` was verified on 7.6.6 not to ignore control characters (unlike -eq, -ceq,
+    # -like and -contains, which all do). The flag table lookups below are the ones that had to change.
     if ($tok.Length -ge 2 -and $tok.StartsWith('--')) {
       $name = $tok.Substring(2)
-      if ($name -eq '') { throw (New-OsError -Code 'E_USAGE' -Message 'empty flag "--"' ) }
-      if (-not ($script:KnownFlags -contains $name)) {
+      if ($name.Length -eq 0) { throw (New-OsError -Code 'E_USAGE' -Message 'empty flag "--"' ) }
+      if (-not (Test-FlagName -Set $script:KnownFlags -Name $name)) {
         # A typo such as --alow must not silently become a no-op: it would look like a successful
         # call that did nothing, which is exactly the class of failure this layer exists to remove.
         throw (New-OsError -Code 'E_USAGE' -Message ("unknown flag --{0}" -f $name) `
             -Hint 'run: dsh-os7 selfcheck   (lists every accepted flag)')
       }
-      if ($script:ValueFlags -contains $name) {
+      if (Test-FlagName -Set $script:ValueFlags -Name $name) {
         if ($i + 1 -ge $Argv.Length) {
           throw (New-OsError -Code 'E_USAGE' -Message ("flag --{0} requires a value" -f $name))
         }

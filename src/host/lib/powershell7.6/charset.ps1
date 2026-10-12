@@ -58,9 +58,16 @@ function Resolve-Charset {
   if (-not $table.ContainsKey($key)) {
     # The table is a PowerShell hashtable, which is case-insensitive, so the lowercased key still
     # resolves every mixed-case alias the caller may have used.
-    $known = ($table.Keys | Sort-Object -Unique) -join ', '
+    #
+    # The list is sorted ORDINALLY, not with the culture-aware default. The default comparison ignores
+    # the hyphen and (from .NET 5) control characters, so it sorts 'utf16' before 'utf-8' on 7.6 where
+    # 5.1 sorted 'utf-16' first: the same error would carry a differently ordered hint on each runtime.
+    # Ordinal order is stable everywhere and cannot be perturbed by a locale.
+    $names = [System.Collections.Generic.List[string]]::new()
+    foreach ($k in $table.Keys) { if (-not $names.Contains($k)) { $names.Add([string]$k) } }
+    $names.Sort([System.StringComparer]::Ordinal)
     throw (New-OsError -Code 'E_CHARSET_UNKNOWN' -Message ("unknown charset '{0}'" -f $Name) `
-        -Hint ("supported names: {0}" -f $known))
+        -Hint ("supported names: {0}" -f ($names -join ', ')))
   }
   return $table[$key]
 }

@@ -54,16 +54,16 @@ function Invoke-TaskShow {
 
   # The callback delegate is held in a SCRIPT-SCOPE variable for the duration of the enumeration. As a
   # local it could be collected while the native enumerator still held its function pointer, and the
-  # process would crash rather than return an error. This is why $script:EnumResult exists rather than a
+  # process would crash rather than return an error. This is why $script:EnumWindowsResult exists rather than a
   # closure over a local.
-  $script:EnumResult = New-Object System.Collections.ArrayList
+  $script:EnumWindowsResult = New-Object System.Collections.ArrayList
   $callback = [DshNative+EnumProc]{
     param([IntPtr]$hWnd, [IntPtr]$param)
     try {
       $wpid = [uint32]0
       [void][DshNative]::GetWindowThreadProcessId($hWnd, [ref]$wpid)
       if ($wpid -eq $targetPid -and [DshNative]::IsWindowVisible($hWnd)) {
-        [void]$script:EnumResult.Add($hWnd)
+        [void]$script:EnumWindowsResult.Add($hWnd)
       }
     } catch {
       # A window can be destroyed mid-enumeration; skipping it is correct.
@@ -73,8 +73,8 @@ function Invoke-TaskShow {
   try {
     [void][DshNative]::EnumWindows($callback, [IntPtr]::Zero)
   } finally {
-    $found = $script:EnumResult
-    $script:EnumResult = $null
+    $found = $script:EnumWindowsResult
+    $script:EnumWindowsResult = $null
   }
 
   if ($found.Count -eq 0) {
