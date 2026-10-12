@@ -121,6 +121,27 @@ Test-Contract 'src\host\command.txt' 'ASCII only, LF' {
   return $v
 }
 
+# The POSIX implementation and its test must be LF and ASCII. A CRLF shell script is a real failure
+# mode, not a style question: the carriage return becomes part of the last token on every line, and
+# on a shebang-driven invocation it breaks interpretation outright.
+Test-Contract 'src\host\bin\dsh-os.sh' 'ASCII only, LF' {
+  param($i)
+  $v = New-Object System.Collections.ArrayList
+  if ($i.hasBom) { [void]$v.Add('must not carry a BOM; the shebang must be the first bytes') }
+  if ($i.nonAscii -gt 0) { [void]$v.Add("contains $($i.nonAscii) non-ASCII bytes; keep it ASCII-only") }
+  if ($i.crlf -gt 0) { [void]$v.Add("$($i.crlf) CRLF line ending(s); a shell script must be LF") }
+  return $v
+}
+
+Test-Contract 'tests\golden-sh.sh' 'ASCII only, LF' {
+  param($i)
+  $v = New-Object System.Collections.ArrayList
+  if ($i.hasBom) { [void]$v.Add('must not carry a BOM') }
+  if ($i.nonAscii -gt 0) { [void]$v.Add("contains $($i.nonAscii) non-ASCII bytes") }
+  if ($i.crlf -gt 0) { [void]$v.Add("$($i.crlf) CRLF line ending(s); a shell script must be LF") }
+  return $v
+}
+
 # Generated output must never carry a BOM: a caller parsing stdout would see it as part of the JSON.
 Write-Host ''
 Write-Host '  checking that stdout never carries a BOM' -ForegroundColor Cyan
