@@ -56,19 +56,27 @@ HOST_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # protected-path guard, so both implementations locate the root the same explicit way.
 find_repo_dir() {
   dir="$1"
-  i=0
+  local i=0
   while [ -n "$dir" ] && [ "$i" -lt 8 ]; do
     if [ -f "$dir/package.json" ] && [ -d "$dir/src/host" ]; then
       printf '%s' "$dir"
       return 0
     fi
+    local parent
     parent="$(dirname "$dir")"
-    [ "$parent" = "$dir" ] && break
+    # `[ ... ] && break` must not be the last command of the function: when the test is FALSE its
+    # status is 1, and because the caller assigns the result with ROOT_DIR="$(find_repo_dir ...)",
+    # `set -e` then aborts the entire script during load. That made every failing invocation die
+    # before the entry point could re-emit its envelope, and it also silently emptied ROOT_DIR.
+    if [ "$parent" = "$dir" ]; then
+      break
+    fi
     dir="$parent"
     i=$((i + 1))
   done
   # Fall back to the historical assumption so a relocated script still runs.
   (cd "$SCRIPT_DIR/../.." && pwd)
+  return 0
 }
 ROOT_DIR="$(find_repo_dir "$SCRIPT_DIR")"
 
@@ -169,10 +177,13 @@ exit_code_for() {
 fail() {
   # fail <code> <message> [hint]
   #
-  # The envelope is written to fd 8, NOT to stdout. Almost every verb body runs inside a $(...)
-  # command substitution, and a command substitution captures stdout: anything fail() printed there
-  # would be swallowed, so the caller would see a bare non-zero exit and no envelope at all. fd 8
-  # survives the capture, and the entry point below re-emits it on the real stdout exactly once.
+  # The envelope is stashed in a file, NOT printed to stdout, because almost every verb body runs
+  # inside a $(...) command substitution and a command substitution captures stdout: anything
+  # written there is swallowed, leaving the caller with a bare non-zero exit and no envelope.
+  #
+  # A scratch file is used rather than a file descriptor: writing to an inherited descriptor (fd 8)
+  # produced an empty result under git-bash/MSYS even though the descriptor was demonstrably open
+  # and the identical pattern works in a standalone script. A path is portable and observable.
   local code="$1" message="$2" hint="${3:-}"
   local err
   if [ -n "$hint" ]; then
@@ -181,7 +192,18 @@ fail() {
     err='{"code":'"$(jstr "$code")"',"message":'"$(jstr "$message")"'}'
   fi
   local body='{"ok":false,"verb":'"$(jstr "${CURRENT_VERB:-}")"',"error":'"$err"',"meta":{"durationMs":'"${ELAPSED_MS:-0}"',"platform":"'"$(platform_name)"'","shell":"sh"}}'
-  printf '%s\n' "$body" >&8
+  # The scratch path is derived here rather than read from a top-level variable. A variable set at
+  # the top level of this script was observed to be EMPTY when fail() ran, while the same name read
+  # inside the function had the right value -- so the value is not relied upon at all. ROOT_DIR and
+  # HOST_DIR are set above and are stable, and there is exactly one scratch path per repository.
+  local errfile="${ROOT_DIR}/.temporary/dsh-os.err"
+  if [ -n "${ROOT_DIR:-}" ]; then
+    mkdir -p "${ROOT_DIR}/.temporary" 2>/dev/null || true
+    printf '%s\n' "$body" >"$errfile" 2>/dev/null || true
+  fi
+  # Also keep a copy on stderr for a human running the script by hand; it never participates in
+  # parsing, and the entry point re-emits the file content on stdout exactly once.
+  printf '%s\n' "$body" >&2
   exit "$(exit_code_for "$code")"
 }
 
@@ -1275,24 +1297,28 @@ main() {
 CURRENT_VERB=""
 ELAPSED_MS=0
 
-# Entry point. fd 8 carries the failure envelope out of any command substitution; it is re-emitted
-# on stdout here so a caller always receives exactly one parseable envelope, on success or failure.
-ERR_FIFO="$(mktemp)"
-exec 8>"$ERR_FIFO"
-
-run_main() {
-  main "$@"
-}
+# Entry point.
+#
+# fail() stashes the failure envelope in a scratch file because the verb bodies run inside $(...)
+# command substitutions that would swallow anything written to stdout. The file is read back here and
+# re-emitted on the real stdout, so a caller always receives exactly one parseable envelope whether
+# the invocation succeeded or failed.
+#
+# The scratch path is written by fail() itself from $ROOT_DIR, so the entry point only has to read the
+# same stable location back. Deriving the path in both places is what makes this robust: the earlier
+# attempt passed the path through a shell variable, which was empty by the time the check ran.
+DSH_ERR_FILE="$ROOT_DIR/.temporary/dsh-os.err"
+mkdir -p "$ROOT_DIR/.temporary" 2>/dev/null || true
+: >"$DSH_ERR_FILE" 2>/dev/null || true
 
 set +e
-run_main "$@"
+main "$@"
 STATUS=$?
 set -e
 
-exec 8>&-
 if [ "$STATUS" -ne 0 ]; then
-  if [ -s "$ERR_FIFO" ]; then
-    cat "$ERR_FIFO"
+  if [ -s "$DSH_ERR_FILE" ]; then
+    cat "$DSH_ERR_FILE"
   else
     # A failure that produced no envelope would leave the caller with nothing to parse, so one is
     # synthesised rather than returning a bare non-zero exit.
@@ -1300,5 +1326,5 @@ if [ "$STATUS" -ne 0 ]; then
       "$(jstr "${CURRENT_VERB:-}")" "$(jstr "$(platform_name)")"
   fi
 fi
-rm -f "$ERR_FIFO"
+rm -f "$DSH_ERR_FILE" 2>/dev/null || true
 exit "$STATUS"
