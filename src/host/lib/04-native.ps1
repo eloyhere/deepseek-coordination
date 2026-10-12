@@ -144,9 +144,17 @@ public static class DshNative
 
     public const uint GW_HWNDNEXT = 2;
     public const uint GW_HWNDPREV = 3;
+    public const uint GW_OWNER = 4;
     public const uint WM_CLOSE = 0x0010;
     public const int SW_MINIMIZE = 6;
     public const int SW_RESTORE = 9;
+    public const int SW_MAXIMIZE = 3;
+
+    // Window state, so a verb reports the state it observed rather than assuming the call worked.
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool IsZoomed(IntPtr hWnd);
 
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public static readonly IntPtr HWND_BOTTOM = new IntPtr(1);

@@ -120,6 +120,18 @@ function Invoke-Dispatch {
     'permission.query' { return (Invoke-PermissionQuery -Parsed $inner) }
     'permission.list' { return (Invoke-PermissionList -Parsed $inner) }
     'permission.audit' { return (Invoke-PermissionAudit -Parsed $inner) }
+    'window.list' { return (Invoke-WindowList -Parsed $inner) }
+    'window.find' { return (Invoke-WindowFind -Parsed $inner) }
+    'window.active' { return (Invoke-WindowActive -Parsed $inner) }
+    'window.close' { return (Invoke-WindowClose -Parsed $inner) }
+    'window.top' { return (Invoke-WindowTop -Parsed $inner) }
+    'window.bottom' { return (Invoke-WindowBottom -Parsed $inner) }
+    'window.move' { return (Invoke-WindowMove -Parsed $inner) }
+    'window.resize' { return (Invoke-WindowResize -Parsed $inner) }
+    'window.minimize' { return (Invoke-WindowMinimize -Parsed $inner) }
+    'window.maximize' { return (Invoke-WindowMaximize -Parsed $inner) }
+    'window.restore' { return (Invoke-WindowRestore -Parsed $inner) }
+    'screenshot' { return (Invoke-Screenshot -Parsed $inner) }
 
     default {
       throw (New-OsError -Code 'E_NOT_SUPPORTED' -Message ("verb '{0}' is not implemented in this build" -f $target.key) `

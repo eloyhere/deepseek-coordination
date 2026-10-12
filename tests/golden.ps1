@@ -702,6 +702,74 @@ Assert-Case 'execute/batch-requires-authorization' {
 }
 
 # ---------------------------------------------------------------------------
+# window.* and screenshot.
+#
+# Only the deterministic properties are asserted. Window titles and handles depend on what happens to
+# be running, and the interactive deskop may not exist at all, so a case that demanded a particular
+# window would fail on a legitimate machine. What must hold everywhere: the geometry and matching
+# rules, the typed errors, and the authorization gate.
+# ---------------------------------------------------------------------------
+Assert-Case 'window/list-and-active-shape' {
+  $r = Invoke-Os @('window', 'list')
+  if ($r.json.ok) {
+    # A live desktop: the array must be present and each entry must carry identity, not just a handle,
+    # because a handle is reused after a window dies.
+    Assert-True ($null -ne $r.json.result.windows) 'windows array present'
+    Assert-Equal $r.json.result.count @($r.json.result.windows).Count 'count matches the array'
+    if (@($r.json.result.windows).Count -gt 0) {
+      $w = @($r.json.result.windows)[0]
+      Assert-True ($null -ne $w.PSObject.Properties['title']) 'entry carries a title'
+      Assert-True ($null -ne $w.PSObject.Properties['pid']) 'entry carries a pid'
+    }
+    $a = Invoke-Os @('window', 'active')
+    Assert-True ($a.json.ok -or $a.json.error.code -eq 'E_WINDOW_NOT_FOUND') 'active either reports a window or says there is none'
+  } else {
+    # A headless session must say so rather than returning an empty list, which would read as "there
+    # are no windows" and send the caller looking for a window that cannot exist here.
+    Assert-Equal 'E_NO_DISPLAY' $r.json.error.code 'headless reports E_NO_DISPLAY'
+  }
+}
+
+Assert-Case 'window/geometry-validation' {
+  # A non-numeric coordinate is a type error; a zero extent is a range error. They are distinct codes
+  # so a caller can tell "I wrote the call wrong" from "the value I passed is not usable".
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('window', 'move', 'x', '1'))).code 'move needs both coordinates'
+  Assert-Equal 'E_RANGE' (Assert-OsError (Invoke-Os @('window', 'resize', 'x', '0', '600', '--allow'))).code 'resize rejects a zero extent'
+  Assert-Equal 'E_TYPE' (Assert-OsError (Invoke-Os @('window', 'resize', 'x', 'abc', '600', '--allow'))).code 'resize rejects a non-numeric extent'
+}
+
+Assert-Case 'window/typed-errors-and-authorization' {
+  # A mutating window verb without --allow is refused before anything is touched.
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('window', 'top', 'no-such-window-xyz'))).code 'top requires authorization'
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('window', 'close', 'no-such-window-xyz'))).code 'close requires authorization'
+  # With authorization, an unknown name is a typed not-found, not a crash and not a silent success.
+  $r = Invoke-Os @('window', 'close', 'zzz-no-such-window-zzz', '--allow')
+  if ($r.json.ok) {
+    # Only possible on a machine that really has such a window; then the request still must be honest.
+    Assert-True $false 'a nonexistent window must not be reported as closed'
+  } else {
+    Assert-True (@('E_WINDOW_NOT_FOUND', 'E_NO_DISPLAY') -contains $r.json.error.code) 'typed not-found'
+  }
+}
+
+Assert-Case 'screenshot/usage-and-output' {
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('screenshot'))).code 'requires --out'
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('screenshot', '10', '10', '--out', (Join-Path $sandbox 'x.png')))).code 'partial geometry rejected'
+
+  $out = Join-Path $sandbox 'shot.png'
+  $r = Invoke-Os @('screenshot', '0', '0', '120', '80', '--out', $out)
+  if ($r.json.ok) {
+    Assert-Equal $out $r.json.result.path 'reports where it wrote'
+    Assert-True (Test-Path -LiteralPath $out) 'the file exists'
+    Assert-True ((Get-Item -LiteralPath $out).Length -gt 0) 'the file is not empty'
+    Assert-Equal 120 $r.json.result.region.width 'region width echoed'
+    Assert-Equal 80 $r.json.result.region.height 'region height echoed'
+  } else {
+    Assert-True (@('E_NO_DISPLAY', 'E_NOT_SUPPORTED') -contains $r.json.error.code) 'headless reports a typed capability error'
+  }
+}
+
+# ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ("passed: " + $script:Passed + "   failed: " + $script:Failed) -ForegroundColor Cyan
 if ($script:Failed -gt 0) {

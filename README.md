@@ -93,7 +93,7 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **38 Windows golden cases, 44 POSIX golden cases and 13 plugin cases pass**, all
+Current state: **42 Windows golden cases, 44 POSIX golden cases and 13 plugin cases pass**, all
 encoding contracts hold, 86 verbs in the table.
 
 ## Using it from the harness
@@ -126,13 +126,15 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
 - Implemented and tested on Windows: `file`, `file verify`, `file search`, `system`, `task`
   (list/query), `service` (list/query), `environment` including `environment attribute`,
   `permission` (read-only) and `selfcheck`.
-- Implemented and tested on POSIX: the same surface except `service`, plus `file search` and
-  `execute` (command / synchronous / asynchronous).
+- Implemented and tested on POSIX: the same surface except `service`, `window` and `screenshot`, plus
+  `file search` and `execute` (command / synchronous / asynchronous).
+- Implemented and tested on Windows for `window` and `screenshot`: enumeration, matching, move, resize,
+  minimize, maximize, restore, z-order, close, and screen capture to png/jpeg/bmp.
 - Both goldens include the failure path, which is the point: a failing call must still deliver exactly
   one parseable envelope on stdout, because a bare exit code tells an agent nothing.
-- Not written yet: `mouse`, `keyboard`, `clipboard`, `window`, `wait`, `screenshot`, `text` and
-  `structure` on both platforms, and `service` on POSIX. Those verbs are declared in the table and
-  return a typed `E_NOT_SUPPORTED`, never a silent success.
+- Not written yet: `mouse`, `keyboard`, `clipboard` and `wait` on both platforms, `text` and
+  `structure` on both, and `service`, `window` and `screenshot` on POSIX. Those verbs are declared in
+  the table and return a typed `E_NOT_SUPPORTED`, never a silent success.
 - The consent-delegate plugin for durable authorization is not written; read-only `permission.*`
   works, and the protected-path boundary is enforced.
 
