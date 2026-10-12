@@ -142,6 +142,24 @@ Test-Contract 'tests\golden-sh.sh' 'ASCII only, LF' {
   return $v
 }
 
+# The generated script is verified by the contract above; its source modules must also stay
+# ASCII-only, because the build composes the script by decoding them without a BOM. A module that
+# accidentally acquired a non-ASCII character would be decoded in the ANSI code page and would
+# corrupt the generated artefact rather than failing here.
+$libDir = Join-Path $rootDir 'src\host\lib'
+if (Test-Path -LiteralPath $libDir) {
+  foreach ($module in (Get-ChildItem -LiteralPath $libDir -Filter '*.ps1' | Sort-Object Name)) {
+    $rel = 'src\host\lib\' + $module.Name
+    Test-Contract $rel 'ASCII only' {
+      param($i)
+      $v = New-Object System.Collections.ArrayList
+      if ($i.hasBom) { [void]$v.Add('module must not carry a BOM; the build adds it to the generated script') }
+      if ($i.nonAscii -gt 0) { [void]$v.Add("contains $($i.nonAscii) non-ASCII bytes; modules must stay ASCII-only") }
+      return $v
+    }
+  }
+}
+
 # Generated output must never carry a BOM: a caller parsing stdout would see it as part of the JSON.
 Write-Host ''
 Write-Host '  checking that stdout never carries a BOM' -ForegroundColor Cyan

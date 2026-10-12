@@ -1,6 +1,33 @@
-﻿#requires -version 5.1
+﻿# dsh-os.ps1 - GENERATED FILE. Do not edit directly.
+#
+# Assembled by tools/build.ps1 from src/host/lib/*.ps1, which are the source of truth:
+#
+#   00-preamble.ps1
+#   01-json.ps1
+#   02-command.ps1
+#   03-charset.ps1
+#   04-native.ps1
+#   05-paths.ps1
+#   06-file.ps1
+#   07-system.ps1
+#   08-execute.ps1
+#   09-task.ps1
+#   10-environment.ps1
+#   11-service.ps1
+#   12-permission.ps1
+#   13-window.ps1
+#   14-dispatch.ps1
+#   15-entry.ps1
+#
+# The shipped script is deliberately a single self-contained file: it is invoked directly by the
+# harness and by hand, it must carry UTF-8 with BOM so Windows PowerShell 5.1 decodes it in the right
+# code page, and it must run without module resolution or relative-path assumptions.
+
+# ===== 00-preamble.ps1 =============================================
+
+#requires -version 5.1
 <#
-  dsh-os.ps1 - Windows implementation of the dsh-os atomic command surface.
+  dsh-os - Windows implementation of the dsh-os atomic command surface.
 
   Contract: command.txt (authoritative), docs/os-spec.md (full spec), spec/verbs.tsv (verb table),
             spec/charsets.tsv (charset table).
@@ -8,15 +35,19 @@
   Design rules honoured here:
     * Values arrive as separate argv elements. This script never re-parses a command line and never
       assembles one; arguments come from $args, which PowerShell populates without a shell layer.
+    * Every argument is quoted by the caller. Both forms are accepted and normalised before dispatch:
+        file create "./a.txt" "123" "utf-8-bom"
+        file create path="./a.txt" content="123" charset="utf-8-bom"
     * File content is only ever read through [System.IO.File]::ReadAllBytes and written through
       [System.IO.File]::WriteAllBytes with an explicit Encoding object, so BOM and EOL handling is
       deliberate. Get-Content/Set-Content are never used for file content.
     * stdout carries exactly one UTF-8 (no BOM) JSON envelope. stderr carries human diagnostics only.
+      Results are agent-first: structured fields, error.code authoritative, never human rendering.
     * Read-only verbs never require --allow; mutating verbs do.
     * Native calls use Add-Type P/Invoke only - no koffi, no third-party module.
 
-  SAVE THIS FILE AS UTF-8 WITH BOM. Without the BOM, Windows PowerShell 5.1 decodes it as ANSI and
-  mangles the non-ASCII literals inside it.
+  This file is one of the modules assembled into bin/dsh-os.ps1 by tools/build.ps1. Edit the module,
+  never the generated script. Modules are ASCII-only; the generated script carries the UTF-8 BOM.
 #>
 
 Set-StrictMode -Version Latest
@@ -71,6 +102,8 @@ $script:RepoDir = Find-RepoDir -StartDir $script:ScriptDir
 # RootDir is the repository root: it is where permission.json lives, so it must never be derived by
 # counting levels alone.
 $script:RootDir = $script:RepoDir
+
+# ===== 01-json.ps1 =================================================
 
 # ---------------------------------------------------------------------------
 # Error model. Every failure is an OsError; exit codes are a coarse class and
@@ -245,6 +278,8 @@ function Write-Envelope {
   }
   if ($script:Pretty -and -not $script:Quiet) { $json = ConvertTo-PrettyJson -Json $json }
 
+  # Written through the raw stdout stream so the bytes are exactly what was produced: no console
+  # encoding layer, and no BOM.
   $bytes = $script:NoBom.GetBytes($json + "`n")
   $stdout = [Console]::OpenStandardOutput()
   $stdout.Write($bytes, 0, $bytes.Length)
@@ -258,12 +293,16 @@ function New-ErrorObject {
   return $o
 }
 
+# ===== 02-command.ps1 ==============================================
+
 # ---------------------------------------------------------------------------
 # Argument parsing.
 #   positionals: every token that is not a flag and not a flag value.
 #   flags:       --name, or --name value when the name is a known value-taking flag.
+#   named:       name="value", folded into the positional list by Merge-NamedArguments below.
 # Unknown flags are a usage error so typos cannot silently become positionals.
 # ---------------------------------------------------------------------------
+
 $script:ValueFlags = @(
   'encoding', 'eol', 'button', 'count', 'space', 'out', 'screen', 'format',
   'workdir', 'env', 'stdin', 'timeout', 'interval', 'method', 'pid',
@@ -473,9 +512,14 @@ function Get-IntArg {
   return $out
 }
 
-# ---------------------------------------------------------------------------
-# Charset table. spec/charsets.tsv is the single source of truth.
-# ---------------------------------------------------------------------------
+# ===== 03-charset.ps1 ==============================================
+
+# Module: 03-charset.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
+# Lazy cache for spec/charsets.tsv. Initialised here because Get-CharsetTable reads it
+# before any assignment on the first call; the split moved the declaration away from the
+# function that depends on it, and an unset $script: variable is a hard error under
+# Set-StrictMode.
 $script:Charsets = $null
 
 function Get-CharsetTable {
@@ -692,15 +736,12 @@ function Get-OutputBytes {
   return , (Get-WithBomBytes -Payload $payload -Charset $Doc.charset -WithBom $Doc.hasBom)
 }
 
-# ---------------------------------------------------------------------------
-# Native layer.
-#
-# Everything native is declared here in a single Add-Type, compiled on first use
-# (Add-Type costs ~200-400 ms, so read-only verbs must never touch it). Only
-# built-in facilities are used: no koffi, no third-party module. Windows
-# PowerShell 5.1 compiles C# 5, so no string interpolation, no expression-bodied
-# members and no null-conditional operators appear below.
-# ---------------------------------------------------------------------------
+# ===== 04-native.ps1 ===============================================
+
+# Module: 04-native.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
+# Whether the Add-Type P/Invoke block has been compiled. Add-Type costs a few hundred
+# milliseconds, so read-only verbs must never trigger it.
 $script:NativeReady = $false
 
 function Initialize-Native {
@@ -999,6 +1040,10 @@ function Write-Atomic {
   }
 }
 
+# ===== 05-paths.ps1 ================================================
+
+# Module: 05-paths.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Get-CharBoundaryCheck {
   param($Doc, [int]$Offset, [string]$Path)
   if ($Offset -lt 0 -or $Offset -gt $Doc.bytes.Length) {
@@ -1103,9 +1148,10 @@ function Assert-NotProtectedPath {
   }
 }
 
-# ---------------------------------------------------------------------------
-# file.* verbs
-# ---------------------------------------------------------------------------
+# ===== 06-file.ps1 =================================================
+
+# Module: 06-file.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Invoke-FileCreate {
   param($Parsed)
   Assert-MinPositionals -Parsed $Parsed -Min 3 -Verb 'file create'
@@ -1731,10 +1777,10 @@ function Invoke-FileSearch {
   }
 }
 
-# ---------------------------------------------------------------------------
-# system.* - pure queries. Each field degrades to null on its own instead of failing the whole
-# answer, because a missing GPU driver or a locked-down WMI namespace is normal, not an error.
-# ---------------------------------------------------------------------------
+# ===== 07-system.ps1 ===============================================
+
+# Module: 07-system.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Get-CimSafe {
   param([string]$ClassName, [string]$Namespace = 'root\cimv2')
   # The unary comma is essential: PowerShell unwraps a returned one-element array into the element
@@ -1866,17 +1912,10 @@ function Test-IsElevated {
   }
 }
 
-# ---------------------------------------------------------------------------
-# execute.synchronous / execute.asynchronous
-#
-# Both walk a command array. Synchronous runs them one after another and stops at the first failure;
-# asynchronous starts them all and waits for every one. Each element is a whole command line, so it
-# is handed to the shell for parsing (unlike execute.command, whose arguments are passed as argv) --
-# that is what lets a caller write execute asynchronous "echo a" "echo b".
-#
-# Output is captured through asynchronous stream reads; reading a child's stdout to completion
-# before its stderr (or vice versa) deadlocks as soon as the unread pipe fills.
-# ---------------------------------------------------------------------------
+# ===== 08-execute.ps1 ==============================================
+
+# Module: 08-execute.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Invoke-OneShellCommand {
   param([string]$CommandLine, [string]$WorkDir, [int]$TimeoutMs, [string]$EncodingName)
   $enc = $script:NoBom
@@ -2001,9 +2040,10 @@ function Invoke-ExecuteBatch {
   }
 }
 
-# ---------------------------------------------------------------------------
-# task.* - process queries and launch. Launch never goes through a shell string.
-# ---------------------------------------------------------------------------
+# ===== 09-task.ps1 =================================================
+
+# Module: 09-task.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Invoke-TaskList {
   param($Parsed)
   Assert-NoExtra -Parsed $Parsed -Expected 0
@@ -2081,10 +2121,10 @@ function Invoke-TaskShow {
   }
 }
 
-# ---------------------------------------------------------------------------
-# environment.* - scoped variable access. Every mutating call reports the scope it wrote, because a
-# user- or machine-scope write does not reach already-running processes.
-# ---------------------------------------------------------------------------
+# ===== 10-environment.ps1 ==========================================
+
+# Module: 10-environment.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Resolve-EnvironmentScope {
   param($Parsed, [string]$Default = 'user')
   $scope = Get-FlagValue -Parsed $Parsed -Name 'scope' -Default $Default
@@ -2400,9 +2440,10 @@ function Invoke-EnvironmentAttributeDelete {
   }
 }
 
-# ---------------------------------------------------------------------------
-# service.* - Windows Service Control Manager. Mutating verbs report elevation problems explicitly.
-# ---------------------------------------------------------------------------
+# ===== 11-service.ps1 ==============================================
+
+# Module: 11-service.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Invoke-ServiceList {
   param($Parsed)
   Assert-NoExtra -Parsed $Parsed -Expected 0
@@ -2442,10 +2483,10 @@ function Invoke-ServiceQuery {
   }
 }
 
-# ---------------------------------------------------------------------------
-# permission.* - read the authorization file. The two mutating verbs are not implemented here on
-# purpose: they belong to the consent delegate, which is the only writer (docs/permission-model.md).
-# ---------------------------------------------------------------------------
+# ===== 12-permission.ps1 ===========================================
+
+# Module: 12-permission.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Get-PermissionFilePath {
   return (Join-Path $script:RootDir 'permission.json')
 }
@@ -2610,9 +2651,18 @@ function Invoke-Selfcheck {
   }
 }
 
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
+# ===== 13-window.ps1 ===============================================
+
+# Module: 13-window.ps1 - window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe.
+#
+# Intentionally empty for now. The verb table already declares these verbs, and the dispatch table
+# reports E_NOT_SUPPORTED for them, which is the required behaviour: an unimplemented verb must fail
+# with a typed error rather than silently doing nothing.
+
+# ===== 14-dispatch.ps1 =============================================
+
+# Module: 14-dispatch.ps1 - split from the verified bin/dsh-os.ps1 by tools/split-once.ps1.
+
 function Get-VerbKey {
   param($Parsed)
   if ($Parsed.positionals.Length -eq 0) {
@@ -2740,6 +2790,10 @@ function Invoke-Dispatch {
     }
   }
 }
+
+# ===== 15-entry.ps1 ================================================
+
+# Module: 15-entry.ps1 - the entry point: run, emit, exit.
 
 # ---------------------------------------------------------------------------
 # Entry point
