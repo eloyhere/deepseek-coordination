@@ -12,7 +12,8 @@
  */
 
 import { strict as assert } from 'node:assert'
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -149,10 +150,59 @@ await check('the package declares the bundle the loader needs', () => {
   const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'))
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.equal(pkg.main, 'src/plugin/index.js')
-  // The patch must be present for the loader to read, and it must reference the package by name.
+  // The loader resolves the plugin by the package NAME named in the patch row, so the manifest must
+  // export its entry point. Without an "exports" map, a name-based ESM resolution has nothing to
+  // follow and the plugin would fail to import even though the files are all present.
+  assert.equal(pkg.type, 'module')
+  assert.ok(pkg.exports, 'the manifest must export the plugin entry point')
+  assert.equal(pkg.exports['.'], './src/plugin/index.js')
   const patch = readFileSync(join(rootDir, 'cordis.patch.yml'), 'utf8')
   assert.ok(patch.includes(pkg.name), 'the patch must name the plugin package')
   assert.ok(patch.includes('insert:'), 'the patch must insert an entry')
+})
+
+await check('the patch row matches the documented bundle shape', () => {
+  // Checked structurally rather than by loading a YAML parser: the project has no YAML dependency,
+  // and the loader's dialect allows !!js tags that a stock parser would reject. The property that
+  // matters is that the row is an `insert` list whose entries carry a unique id and the package name.
+  const patch = readFileSync(join(rootDir, 'cordis.patch.yml'), 'utf8')
+  const lines = patch.split('\n')
+  const insertIndex = lines.findIndex((l) => /^- insert:\s*$/.test(l))
+  assert.ok(insertIndex >= 0, 'the first document node must be an `insert:` list')
+  const rowId = lines.findIndex((l) => /^\s+-\s+id:\s*\S+/.test(l))
+  assert.ok(rowId > insertIndex, 'the inserted row must declare an id')
+  const rowName = lines.findIndex((l) => /^\s+name:\s*\S+/.test(l))
+  assert.ok(rowName > rowId, 'the inserted row must declare the package name')
+  const declaredName = lines[rowName].split(':')[1].trim().replace(/^['"]|['"]$/g, '')
+  const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'))
+  assert.equal(declaredName, pkg.name, 'the row name must equal the package name the loader resolves')
+  // Only one row, so a second install cannot silently shadow the first.
+  const rows = lines.filter((l) => /^\s+-\s+id:/.test(l))
+  assert.equal(rows.length, 1, 'exactly one plugin row')
+})
+
+await check('the plugin is resolvable by its own package name', () => {
+  // This is the property the loader depends on and the one an "exports"-less manifest lacks. The
+  // check is done through Node's real resolver by creating a throwaway package that depends on this
+  // one, so it proves name resolution rather than assuming it.
+  const box = join(rootDir, '.temporary', 'name-resolution')
+  const inner = join(box, 'node_modules', 'deepseek-coordination')
+  rmSync(box, { recursive: true, force: true })
+  mkdirSync(join(box, 'probe'), { recursive: true })
+  mkdirSync(join(box, 'node_modules'), { recursive: true })
+  writeFileSync(join(box, 'package.json'), JSON.stringify({ name: 'probe', type: 'module' }))
+  symlinkSync(rootDir, inner, 'junction')
+  writeFileSync(
+    join(box, 'probe', 'entry.mjs'),
+    `const m = await import('deepseek-coordination')\n` +
+    `process.stdout.write(JSON.stringify({ apply: typeof m.apply, inject: m.inject, name: m.name }))\n`,
+  )
+  const out = execFileSync(process.execPath, [join(box, 'probe', 'entry.mjs')], { cwd: box, encoding: 'utf8' })
+  const resolved = JSON.parse(out)
+  assert.equal(resolved.apply, 'function', 'apply must be exported from the package root')
+  assert.deepEqual(resolved.inject, ['tools'])
+  assert.equal(resolved.name, 'dsh-os')
+  rmSync(box, { recursive: true, force: true })
 })
 
 console.log()

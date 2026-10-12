@@ -35,6 +35,14 @@
     "darwin"
   ],
   "main": "src/plugin/index.js",
+  "exports": {
+    ".": "./src/plugin/index.js",
+    "./package.json": "./package.json"
+  },
+  "meta": {
+    "title": "DSH OS",
+    "description": "Atomic cross-platform OS interaction surface: file, environment, task, service, system and permission verbs, each returning one agent-parseable JSON envelope."
+  },
   "bin": {
     "dsh-os": "src/host/bin/dsh-os.bat"
   },

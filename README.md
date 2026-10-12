@@ -137,11 +137,24 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
 
 ### Verified or not
 
-Proven by tests in this repository: the scripts, the encoding contracts, the build's determinism, and
-the plugin's execute path including argv handling and error propagation.
+Proven by tests in this repository:
 
-Not proven here: that DSH's loader accepts the bundle in a live profile. That needs a real install
-through the plugin manager and has not been done.
+- the scripts on both platforms, including that a failing call still emits exactly one envelope;
+- the encoding contracts and the build's determinism;
+- the plugin's execute path: entry-point resolution, argv construction, a path containing spaces
+  reaching the script as one argument, flag forwarding, authorization, and error propagation;
+- that the package is **resolvable by its own name** through Node's real resolver, which is what the
+  loader depends on (a manifest without an `exports` map would fail to import even with every file in
+  place);
+- that the patch row matches the documented bundle shape, compared against a working third-party
+  bundle in an installed profile.
+
+Checked against the loader's own source: the version gate compares only the `@deepseek-ai/dsh*` peer
+dependencies a plugin **declares**, so a host-only bundle that declares none is admitted.
+
+Not proven here: that the loader actually composes this bundle and the `dsh_os` tool appears in a live
+session. That needs `plugin_manager` `install_bundle`, which this session cannot invoke, and it is the
+one claim the repository does not yet support.
 
 ## License
 
