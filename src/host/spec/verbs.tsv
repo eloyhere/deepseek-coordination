@@ -89,18 +89,18 @@ service.restart	name	allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_NOT_SUPPORTED E_
 # An environment variable has attributes: PATH is one, as are PATHEXT, LIB and INCLUDE. A plain
 # variable holds one string; an attribute holds an ordered list joined by the platform separator
 # (';' on Windows, ':' on POSIX). Both levels expose the same five operations, so
-# `environment get PATH` returns the raw string while `environment attr get PATH` returns the split
+# `environment get PATH` returns the raw string while `environment attribute get PATH` returns the split
 # entries. --attr selects the attribute name and defaults to PATH.
 environment.list	-	scope|filter|json	R	E_NOT_SUPPORTED
 environment.get	name	scope	R	E_NOT_FOUND E_NOT_SUPPORTED
 environment.add	name|value	scope|allow	W	E_EXISTS E_ELEVATION_REQUIRED E_PERMISSION
 environment.set	name|value	scope|allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_PERMISSION
 environment.delete	name	scope|allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_PERMISSION
-environment.attr.list	-	scope|attr	R	E_NOT_FOUND E_NOT_SUPPORTED
-environment.attr.get	name	scope|attr	R	E_NOT_FOUND E_NOT_SUPPORTED
-environment.attr.add	name|value	scope|attr|allow	W	E_EXISTS E_ELEVATION_REQUIRED E_PERMISSION
-environment.attr.set	name|index|value	scope|attr|allow	W	E_NOT_FOUND E_RANGE E_ELEVATION_REQUIRED E_PERMISSION
-environment.attr.delete	name	scope|attr|index|value|allow	W	E_NOT_FOUND E_RANGE E_ELEVATION_REQUIRED E_PERMISSION
+environment.attribute.list	-	scope|attr	R	E_NOT_FOUND E_NOT_SUPPORTED
+environment.attribute.get	name	scope|attr	R	E_NOT_FOUND E_NOT_SUPPORTED
+environment.attribute.add	name|value	scope|attr|allow	W	E_EXISTS E_ELEVATION_REQUIRED E_PERMISSION
+environment.attribute.set	name|index|value	scope|attr|allow	W	E_NOT_FOUND E_RANGE E_ELEVATION_REQUIRED E_PERMISSION
+environment.attribute.delete	name	scope|attr|index|value|allow	W	E_NOT_FOUND E_RANGE E_ELEVATION_REQUIRED E_PERMISSION
 # permission.* read the authorization file; the two mutating verbs are delegate-only and always
 # require a user-accepted dialog (see docs/permission-model.md).
 permission.query	verb|target	scope|json	R	E_NOT_FOUND

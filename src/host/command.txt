@@ -103,11 +103,11 @@ environment get name                        // R  the raw value of one variable.
 environment add name value                  // W  fails with E_EXISTS when the variable is already set.
 environment set name value                  // W  overwrites; fails with E_NOT_FOUND when absent.
 environment delete name                     // W
-environment attr list                       // R  attributes of a list variable; --attr selects one, default PATH.
-environment attr get name                   // R  the attribute's entries as an ordered list.
-environment attr add name value             // W  append one entry to the attribute.
-environment attr set name index value       // W  replace one entry by index.
-environment attr delete name                // W  remove an entry, by --index or by --value.
+environment attribute list                       // R  attributes of a list variable; --attr selects one, default PATH.
+environment attribute get name                   // R  the attribute's entries as an ordered list.
+environment attribute add name value             // W  append one entry to the attribute.
+environment attribute set name index value       // W  replace one entry by index.
+environment attribute delete name                // W  remove an entry, by --index or by --value.
 
 permission query verb target                // R  current decision, matched rule, and enforcement strength.
 permission list                             // R  all durable rules.

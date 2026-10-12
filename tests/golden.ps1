@@ -487,12 +487,12 @@ Assert-Case 'environment/scoped-queries' {
   Assert-Equal 0 $list.exit 'environment list exit'
   Assert-Equal 'process' $list.json.result.scope 'scope echoed back'
   Assert-Equal 0 (Invoke-Os @('environment', 'get', 'PATH', '--scope', 'process')).exit 'environment get exit'
-  $attr = Invoke-Os @('environment', 'attr', 'get', 'PATH', '--scope', 'process')
+  $attr = Invoke-Os @('environment', 'attribute', 'get', 'PATH', '--scope', 'process')
   Assert-Equal 0 $attr.exit 'attr get exit'
   Assert-True ($attr.json.result.count -ge 1) 'PATH has entries'
   Assert-Equal ';' $attr.json.result.separator 'Windows joins list attributes with a semicolon'
   Assert-Equal 0 $attr.json.result.entries[0].index 'entries are indexed from zero'
-  $catalog = Invoke-Os @('environment', 'attr', 'list', '--scope', 'process')
+  $catalog = Invoke-Os @('environment', 'attribute', 'list', '--scope', 'process')
   Assert-Equal 0 $catalog.exit 'attr list exit'
   Assert-True ($catalog.json.result.count -ge 1) 'at least PATH is discoverable as an attribute'
   Assert-Equal 'E_USAGE' (Invoke-Os @('environment', 'list', '--scope', 'nonsense')).json.error.code 'bad scope'
@@ -548,7 +548,7 @@ Assert-Case 'environment/attribute-crud-lifecycle' {
   # fixture invisible and every count assertion misleading, so it is written explicitly.
   [System.Environment]::SetEnvironmentVariable($var, ('a' + $sep + 'b' + $sep + 'c'), 'Process')
   try {
-    $g = Invoke-Os @('environment', 'attr', 'get', $var, '--attr', $var, '--scope', 'process')
+    $g = Invoke-Os @('environment', 'attribute', 'get', $var, '--attr', $var, '--scope', 'process')
     Assert-Equal 0 $g.exit 'attr get'
     Assert-Equal 3 $g.json.result.count 'three entries'
     Assert-Equal 'a' $g.json.result.entries[0].value 'entry order is preserved'
@@ -559,32 +559,32 @@ Assert-Case 'environment/attribute-crud-lifecycle' {
     $uvar = 'DSH_OS_GOLDEN_ATTR_USER'
     [System.Environment]::SetEnvironmentVariable($uvar, $null, 'User')
     try {
-      Assert-Equal 0 (Invoke-Os @('environment', 'attr', 'add', $uvar, 'd', '--attr', $uvar, '--scope', 'user', '--allow')).exit 'first add at user scope'
-      Assert-Equal 'E_EXISTS' (Assert-OsError (Invoke-Os @('environment', 'attr', 'add', $uvar, 'd', '--attr', $uvar, '--scope', 'user', '--allow'))).code 'a duplicate entry is refused'
-      Assert-Equal 1 (Invoke-Os @('environment', 'attr', 'get', $uvar, '--attr', $uvar, '--scope', 'user')).json.result.count 'the first add is visible to the next invocation'
+      Assert-Equal 0 (Invoke-Os @('environment', 'attribute', 'add', $uvar, 'd', '--attr', $uvar, '--scope', 'user', '--allow')).exit 'first add at user scope'
+      Assert-Equal 'E_EXISTS' (Assert-OsError (Invoke-Os @('environment', 'attribute', 'add', $uvar, 'd', '--attr', $uvar, '--scope', 'user', '--allow'))).code 'a duplicate entry is refused'
+      Assert-Equal 1 (Invoke-Os @('environment', 'attribute', 'get', $uvar, '--attr', $uvar, '--scope', 'user')).json.result.count 'the first add is visible to the next invocation'
     } finally {
       [System.Environment]::SetEnvironmentVariable($uvar, $null, 'User')
     }
 
-    $s = Invoke-Os @('environment', 'attr', 'set', $var, '1', 'B', '--attr', $var, '--scope', 'process', '--allow')
+    $s = Invoke-Os @('environment', 'attribute', 'set', $var, '1', 'B', '--attr', $var, '--scope', 'process', '--allow')
     Assert-Equal 0 $s.exit ('attr set: ' + $s.raw)
     Assert-Equal 'b' $s.json.result.previous 'attr set reports the replaced entry'
 
-    $afterSet = Invoke-Os @('environment', 'attr', 'get', $var, '--attr', $var, '--scope', 'process')
+    $afterSet = Invoke-Os @('environment', 'attribute', 'get', $var, '--attr', $var, '--scope', 'process')
     Assert-Equal 'B' $afterSet.json.result.entries[1].value 'replacement took effect in the child that wrote it'
 
-    Assert-Equal 'E_RANGE' (Assert-OsError (Invoke-Os @('environment', 'attr', 'set', $var, '99', 'x', '--attr', $var, '--scope', 'process', '--allow'))).code 'index out of range'
+    Assert-Equal 'E_RANGE' (Assert-OsError (Invoke-Os @('environment', 'attribute', 'set', $var, '99', 'x', '--attr', $var, '--scope', 'process', '--allow'))).code 'index out of range'
 
-    $d = Invoke-Os @('environment', 'attr', 'delete', $var, '--index', '0', '--attr', $var, '--scope', 'process', '--allow')
+    $d = Invoke-Os @('environment', 'attribute', 'delete', $var, '--index', '0', '--attr', $var, '--scope', 'process', '--allow')
     Assert-Equal 0 $d.exit 'attr delete by index'
     Assert-Equal 'a' $d.json.result.removed 'reports the removed entry'
     Assert-Equal 2 $d.json.result.count 'the child started from the three-entry fixture'
 
-    $dv = Invoke-Os @('environment', 'attr', 'delete', $var, '--value', 'c', '--attr', $var, '--scope', 'process', '--allow')
+    $dv = Invoke-Os @('environment', 'attribute', 'delete', $var, '--value', 'c', '--attr', $var, '--scope', 'process', '--allow')
     Assert-Equal 0 $dv.exit 'attr delete by value'
     Assert-Equal 'c' $dv.json.result.removed 'removed by value'
-    Assert-Equal 'E_NOT_FOUND' (Assert-OsError (Invoke-Os @('environment', 'attr', 'delete', $var, '--value', 'zzz', '--attr', $var, '--scope', 'process', '--allow'))).code 'absent value'
-    Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('environment', 'attr', 'delete', $var, '--attr', $var, '--scope', 'process', '--allow'))).code 'neither index nor value'
+    Assert-Equal 'E_NOT_FOUND' (Assert-OsError (Invoke-Os @('environment', 'attribute', 'delete', $var, '--value', 'zzz', '--attr', $var, '--scope', 'process', '--allow'))).code 'absent value'
+    Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('environment', 'attribute', 'delete', $var, '--attr', $var, '--scope', 'process', '--allow'))).code 'neither index nor value'
   } finally {
     if ($null -eq $original) {
       [System.Environment]::SetEnvironmentVariable($var, $null, 'Process')
@@ -599,7 +599,7 @@ Assert-Case 'parser/one-two-three-token-verbs' {
   Assert-Equal 0 (Invoke-Os @('selfcheck')).exit 'one token'
   Assert-Equal 0 (Invoke-Os @('file', 'length', (Join-Path $sandbox 'verify'))).exit 'two tokens'
   Assert-Equal 0 (Invoke-Os @('file', 'verify', 'charset', (Join-Path $sandbox 'verify\f.txt'), 'utf-8')).exit 'three tokens'
-  Assert-Equal 0 (Invoke-Os @('environment', 'attr', 'list', '--scope', 'process')).exit 'three tokens in another group'
+  Assert-Equal 0 (Invoke-Os @('environment', 'attribute', 'list', '--scope', 'process')).exit 'three tokens in another group'
   # A path argument that happens to start with a word must not be eaten as part of the verb.
   $dirCase = Invoke-Os @('file', 'charset', (Join-Path $sandbox 'verify'))
   Assert-Equal 'file.charset' $dirCase.json.verb 'path stays a path argument'

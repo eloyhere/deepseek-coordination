@@ -1955,13 +1955,13 @@ function Get-AttributeList {
   return [ordered]@{ scope = (Get-ScopeName -Target $target); count = $items.Count; attributes = $items.ToArray() }
 }
 
-function Invoke-EnvironmentAttrList {
+function Invoke-EnvironmentAttributeList {
   param($Parsed)
   Assert-NoExtra -Parsed $Parsed -Expected 0
   return (Get-AttributeList -Parsed $Parsed)
 }
 
-function Invoke-EnvironmentAttrGet {
+function Invoke-EnvironmentAttributeGet {
   param($Parsed)
   $name = Get-Positional -Parsed $Parsed -Index 0 -Name 'name'
   Assert-NoExtra -Parsed $Parsed -Expected 1
@@ -1994,14 +1994,14 @@ function Invoke-EnvironmentAttrGet {
   }
 }
 
-function Invoke-EnvironmentAttrAdd {
+function Invoke-EnvironmentAttributeAdd {
   param($Parsed)
-  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'environment attr add'
-  Assert-Allowed -Parsed $Parsed -Verb 'environment attr add' -Perm 'W' -Positionals 2
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'environment attribute add'
+  Assert-Allowed -Parsed $Parsed -Verb 'environment attribute add' -Perm 'W' -Positionals 2
   $name = Get-Positional -Parsed $Parsed -Index 0 -Name 'name'
   $value = Get-Positional -Parsed $Parsed -Index 1 -Name 'value'
   $target = Resolve-EnvironmentScope -Parsed $Parsed
-  Assert-ScopeWritable -Target $target -Verb 'environment attr add'
+  Assert-ScopeWritable -Target $target -Verb 'environment attribute add'
   $attr = Resolve-AttributeName -Parsed $Parsed
   $entries = Get-AttributeEntries -Name $attr -Target $target
   foreach ($e in $entries) {
@@ -2019,15 +2019,15 @@ function Invoke-EnvironmentAttrAdd {
   }
 }
 
-function Invoke-EnvironmentAttrSet {
+function Invoke-EnvironmentAttributeSet {
   param($Parsed)
-  Assert-MinPositionals -Parsed $Parsed -Min 3 -Verb 'environment attr set'
-  Assert-Allowed -Parsed $Parsed -Verb 'environment attr set' -Perm 'W' -Positionals 3
+  Assert-MinPositionals -Parsed $Parsed -Min 3 -Verb 'environment attribute set'
+  Assert-Allowed -Parsed $Parsed -Verb 'environment attribute set' -Perm 'W' -Positionals 3
   $name = Get-Positional -Parsed $Parsed -Index 0 -Name 'name'
   $index = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 1 -Name 'index') -Name 'index'
   $value = Get-Positional -Parsed $Parsed -Index 2 -Name 'value'
   $target = Resolve-EnvironmentScope -Parsed $Parsed
-  Assert-ScopeWritable -Target $target -Verb 'environment attr set'
+  Assert-ScopeWritable -Target $target -Verb 'environment attribute set'
   $attr = Resolve-AttributeName -Parsed $Parsed
   $entries = Get-AttributeEntries -Name $attr -Target $target
   if ($index -ge $entries.Count) {
@@ -2044,13 +2044,13 @@ function Invoke-EnvironmentAttrSet {
   }
 }
 
-function Invoke-EnvironmentAttrDelete {
+function Invoke-EnvironmentAttributeDelete {
   param($Parsed)
-  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'environment attr delete'
-  Assert-Allowed -Parsed $Parsed -Verb 'environment attr delete' -Perm 'W' -Positionals 1
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'environment attribute delete'
+  Assert-Allowed -Parsed $Parsed -Verb 'environment attribute delete' -Perm 'W' -Positionals 1
   $name = Get-Positional -Parsed $Parsed -Index 0 -Name 'name'
   $target = Resolve-EnvironmentScope -Parsed $Parsed
-  Assert-ScopeWritable -Target $target -Verb 'environment attr delete'
+  Assert-ScopeWritable -Target $target -Verb 'environment attribute delete'
   $attr = Resolve-AttributeName -Parsed $Parsed
   $indexText = Get-FlagValue -Parsed $Parsed -Name 'index' -Default $null
   $valueText = Get-FlagValue -Parsed $Parsed -Name 'value' -Default $null
@@ -2409,11 +2409,11 @@ function Invoke-Dispatch {
     'environment.add' { return (Invoke-EnvironmentAdd -Parsed $inner) }
     'environment.set' { return (Invoke-EnvironmentSet -Parsed $inner) }
     'environment.delete' { return (Invoke-EnvironmentDelete -Parsed $inner) }
-    'environment.attr.list' { return (Invoke-EnvironmentAttrList -Parsed $inner) }
-    'environment.attr.get' { return (Invoke-EnvironmentAttrGet -Parsed $inner) }
-    'environment.attr.add' { return (Invoke-EnvironmentAttrAdd -Parsed $inner) }
-    'environment.attr.set' { return (Invoke-EnvironmentAttrSet -Parsed $inner) }
-    'environment.attr.delete' { return (Invoke-EnvironmentAttrDelete -Parsed $inner) }
+    'environment.attribute.list' { return (Invoke-EnvironmentAttributeList -Parsed $inner) }
+    'environment.attribute.get' { return (Invoke-EnvironmentAttributeGet -Parsed $inner) }
+    'environment.attribute.add' { return (Invoke-EnvironmentAttributeAdd -Parsed $inner) }
+    'environment.attribute.set' { return (Invoke-EnvironmentAttributeSet -Parsed $inner) }
+    'environment.attribute.delete' { return (Invoke-EnvironmentAttributeDelete -Parsed $inner) }
     'service.list' { return (Invoke-ServiceList -Parsed $inner) }
     'service.query' { return (Invoke-ServiceQuery -Parsed $inner) }
     'permission.query' { return (Invoke-PermissionQuery -Parsed $inner) }

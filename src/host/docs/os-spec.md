@@ -442,7 +442,52 @@ Windows 上进程**必须先声明 DPI 感知**（`SetProcessDpiAwarenessContext
 
 **验证证据**：`tests/golden.ps1` → **passed: 32 failed: 0**；`tests/encoding.ps1` → **all encoding contracts hold**；动词表 **82 条**。
 
-### 9.7 下一步（第 4 轮起）
+### 9.7 第 4 轮：目录重构、POSIX 实现与契约对齐
+
+**目录重构（"移动到 src 的 host/client 下"）**
+
+| 旧位置 | 新位置 |
+|---|---|
+| `bin/` | `src/host/bin/` |
+| `spec/` | `src/host/spec/` |
+| `command.txt`（仓库根） | `src/host/command.txt` |
+| `docs/` | `src/host/docs/` |
+| `tests/` | 保持在仓库根（面向贡献者，非运行时产物） |
+
+**本轮修掉的三个真实缺陷（每个都曾产生实际错误结果）**
+
+1. **受保护路径检查被静默解除（最严重）。** 拆分目录后，`$MyInvocation.MyCommand.Path` 在 `-File` 子进程里是**相对路径**，`Split-Path` 于是从调用者 CWD 向上走，把 `RootDir` 算成 `<repo>\src` 而非 `<repo>`；保护清单被解析到 `<repo>\src\src\host\...`，**一条都不匹配**。后果不是报错而是**保护失效**：`permission.json`、`src\host\bin\dsh-os.ps1`、`command.txt`、`verbs.tsv` 全被真正删除（进入回收站）。已按原始路径从回收站恢复，并改为**向上搜索标记**（同时存在 `package.json` 与 `src/host`）定位仓库根，不再数 `..` 层数。
+   > 教训：安全边界依赖路径推导时，推导失败必须 **fail-closed**。"算错了所以不匹配"等价于"放行"。
+2. **`environment attr` 与契约漂移。** `command.txt` 已改名为 `environment attribute`，而实现与动词表仍是 `attr`，于是**文档里的命令实际不可用**（`E_NOT_SUPPORTED`）。已把 `spec/verbs.tsv`、`.ps1`、`.sh`、`tests/golden.ps1` 全部对齐到 `attribute`（`--attr` 标志名保留）。
+3. **POSIX 实现的三个独立缺陷**（新建 `src/host/bin/dsh-os.sh`）：
+   * `resolve_verb` 被 `CURRENT_VERB="$(resolve_verb)"` 包成子 shell，其中的 `POSITIONALS` 重赋值被丢弃 —— 每个动词都把 `file` 当成首个参数，报出"cannot read 'file': not found"这种**看似合理但完全错误**的结果。改为在当前 shell 内解析。
+   * 动词体内的失败被 `set -e` 在 `result="$(cmd_x)"` 处直接终止，**信封来不及输出**。改为用 `dispatch` 包装并显式处理状态。
+   * 二进制检测把 `od` 的十六进制**拼接成整串**后找 `00`，于是 `b0 0a` 拼成 `b00a`，把普通 UTF-8 文本误判为二进制。改为按空白分隔逐字节匹配。
+
+**POSIX 实现现状（在 git-bash 实测）**
+
+* **成功路径全部可用**：`file charset/length/list/view`、`file verify charset|encoding`、`system brand/version`、`task list`、`environment get`、`environment attribute list|get`、`permission list`、`selfcheck`。
+* **失败路径仍是缺陷**：退出码正确，但**错误信封未出现在 stdout**（fd 8 中转方案在 git-bash 下未生效）。**未解决**，是 POSIX 进入可用状态前的最后一关。
+* 未实现：`execute`、`mouse`、`keyboard`、`window`、`wait`、`screenshot`、`text`、`structure`、`service`、环境写入类。
+
+### 9.8 待办（第 5 轮起，按第 4 轮要求排队）
+
+1. **修复 POSIX 失败信封**（阻塞 POSIX 可用性）
+2. **新增动词**：`file search name`（返回 JSON 数组）、`execute synchronous` / `execute asynchronous`（命令数组，分别顺序与并发执行并汇总结果）
+3. **输出改为 agent-first**：结果一律面向机器可解析，取消 `file view` 的人类行号渲染（行号改为结构化字段）
+4. **按模块拆分**：`command/charset/file/window/execute/json/task` 等，`.ps1` 与 `.sh` **成对**提供
+5. **DSH 插件入口**（`dsh.bundle.patch` + Cordis 插件），否则 npm 安装后 harness 不会加载
+6. **npm 发布 0.1.0**（用户已选"先补齐再发布"）
+
+### 9.9 本轮完成的交付动作
+
+* **GitHub 已推送**：`https://github.com/eloyhere/deepseek-coordination`，提交 `c2dae0c`，26 个文件；已用远端 API 校验 SHA 与目录内容一致。
+* **`.gitattributes`**：把行尾纳入契约（`.ps1`/`.bat` 检出 CRLF，`.tsv`/`command.txt`/`.md` 为 LF），避免 `core.autocrlf=true` 把 LF 写回仓库而破坏编码契约。
+* **package.json**：`private:false`、`0.1.0`、`repository`/`bugs`/`homepage`、`files` 白名单、`os`/`engines`、`bin`、测试脚本；`npm pack --dry-run` 通过（11 文件 / 54.9 kB）。
+* **README.md**：新增。
+* **npm**：身份 `eloyhere` 已登录，包名 `deepseek-coordination` **未被占用**；按用户决定**尚未发布**。
+
+### 9.10 原始第 4 轮计划（已并入 9.8）
 
 1. `execute` 族（argv 直传、非 ASCII 输出解码、超时、`--background`）
 2. `bin/dsh-os.sh` 对齐 `file` 族 + `tests/golden.sh`；locale 非 UTF-8 时必须 `E_NOT_SUPPORTED` 而非乱码
