@@ -77,8 +77,9 @@
     "test:plugin": "node tests/plugin.test.mjs",
     "test:permission": "node tests/permission.test.mjs",
     "test:bundle": "node tools/verify-bundle.mjs",
+    "test:desktop": "bash tests/smoke-desktop-sh.sh",
     "test:load": "node tools/verify-plugin-load.mjs && node tools/verify-editions.mjs",
-    "test:all": "npm run test:encoding && npm run test && npm run test:plugin && npm run test:permission && npm run test:bundle && npm run test:load",
+    "test:all": "npm run test:encoding && npm run test && npm run test:plugin && npm run test:permission && npm run test:bundle && npm run test:load && npm run test:desktop",
     "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
   },
   "devDependencies": {
