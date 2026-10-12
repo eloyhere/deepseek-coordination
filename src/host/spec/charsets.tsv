@@ -1,0 +1,28 @@
+# dsh-os charset table - single source of truth for encoding names.
+# Tab-separated. Columns:
+#   iana        canonical IANA name accepted on the command line (lower case; aliases resolved to these)
+#   aliases     '|'-separated accepted aliases
+#   dotnet      [System.Text.Encoding] name or code page, as resolved by GetEncoding() on Windows PowerShell 5.1
+#   iconv       iconv(1) name for Linux/Unix/macOS
+#   bom         BOM bytes in hex, or '-' when the encoding has no BOM
+#   fixed       yes when the encoding has exactly one byte order and no auto-detection is possible
+#
+# Verified on Windows PowerShell 5.1.19041.3031 / .NET Framework: every dotnet value below resolves.
+# NOTE: System.Text.Encoding.CodePages does NOT exist on .NET Framework; do not use CodePagesEncodingProvider.
+#       Code pages 936/54936/950/932/1200/1201/28591/1252/65001 are all built in.
+iana	aliases	dotnet	iconv	bom	fixed
+utf-8	utf8|utf-8-nobom|cp65001	65001	UTF-8	-	no
+utf-8-bom	utf8-bom|utf-8-sig	65001	UTF-8	EFBBBF	no
+utf-16le	utf16|utf-16|ucs-2|unicode	1200	UTF-16LE	FFFE	yes
+utf-16be	utf-16-be|unicodefffe	1201	UTF-16BE	FEFF	yes
+utf-32le	utf-32|utf32	12000	UTF-32LE	FFFE0000	yes
+utf-32be	utf-32-be	12001	UTF-32BE	0000FEFF	yes
+gbk	cp936|ms936|chinese	936	GBK	-	yes
+gb18030	cp54936	54936	GB18030	-	yes
+big5	cp950|big-5	950	BIG5	-	yes
+shift_jis	sjis|cp932|shift-jis	932	SHIFT_JIS	-	yes
+euc-jp	cp51932	51932	EUC-JP	-	yes
+euc-kr	cp949|ks_c_5601-1987	949	EUC-KR	-	yes
+latin1	iso-8859-1|iso8859-1|cp28591	28591	ISO-8859-1	-	yes
+windows-1252	cp1252	1252	CP1252	-	yes
+ascii	us-ascii|cp20127	20127	ASCII	-	yes

@@ -1,0 +1,111 @@
+# dsh-os verb table - single source of truth for the atomic command surface.
+# Tab-separated. Columns:
+#   verb        dotted verb, exactly as dispatched (group + '.' + subverb, or a bare top-level verb)
+#   positionals '|'-separated positional parameter names in order; '-' when the verb takes none
+#   flags       '|'-separated accepted flags (long form, no leading dashes); '-' when none
+#   perm        R = read-only/query, never prompts; W = mutating, requires --allow
+#   codes       '|'-separated error codes this verb can return, beyond the generic set
+# Generic codes available to every verb: E_USAGE E_TYPE E_PERMISSION E_IO E_ABORTED E_INTERNAL
+# Maintained alongside command.txt; tests/conformance.ps1 asserts the two agree.
+verb	positionals	flags	perm	codes
+file.create	path|content|charset	encoding|eol|allow	W	E_EXISTS E_NO_PARENT E_CHARSET_UNKNOWN E_ENCODING_INVALID E_PARTIAL_WRITE
+file.charset	path	-	R	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT
+file.encode	path|charset	backup|bom|allow	W	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT E_CHARSET_UNKNOWN E_CHARSET_MISMATCH E_PARTIAL_WRITE
+file.length	path	no-recursive	R	E_NOT_FOUND
+file.information	path	-	R	E_NOT_FOUND E_BINARY_CONTENT
+file.list	path	-	R	E_NOT_FOUND E_NOT_A_DIR
+file.delete	path	permanent|allow	W	E_NOT_FOUND E_IS_A_DIR E_PERMISSION E_IO
+file.move	source|destination	allow	W	E_NOT_FOUND E_EXISTS E_NO_PARENT E_PARTIAL_WRITE
+file.copy	source|destination	allow	W	E_NOT_FOUND E_EXISTS E_NO_PARENT E_PARTIAL_WRITE
+file.mkdir	path	parents|allow	W	E_EXISTS E_NO_PARENT
+file.append	path|content	charset|encoding|allow	W	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT E_CHARSET_MISMATCH E_PARTIAL_WRITE
+file.insert	path|content|offset	charset|encoding|allow	W	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT E_BOUNDARY E_RANGE E_PARTIAL_WRITE
+file.view	path|charset|start|end	max-bytes|no-numbers	R	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT E_CHARSET_MISMATCH E_RANGE E_BOUNDARY E_TRUNCATED
+execute.command	command|arguments	workdir|env|stdin|timeout|encoding|shell|background|allow	W	E_NOT_FOUND E_TIMEOUT E_NOT_SUPPORTED
+execute.query	pid	-	R	E_NOT_FOUND E_NOT_SUPPORTED
+execute.kill	pid	force|allow	W	E_NOT_FOUND E_PERMISSION E_NOT_SUPPORTED
+mouse.click	x|y	button|count|clearmodifiers|space|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_PERMISSION
+mouse.context	x|y	clearmodifiers|space|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_PERMISSION
+mouse.over	x|y	hold|space|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_PERMISSION
+mouse.wheel	x|y	space|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_PERMISSION
+mouse.down	x|y	button|space|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_PERMISSION
+mouse.up	-	button|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_PERMISSION
+mouse.cursor	-	-	R	E_NO_DISPLAY E_NOT_SUPPORTED
+screenshot	x|y|width|height	out|screen|format	R	E_NO_DISPLAY E_NOT_SUPPORTED E_RANGE E_IO
+keyboard.down	code	clearmodifiers|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_TYPE E_PERMISSION
+keyboard.up	code	clearmodifiers|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_TYPE E_PERMISSION
+keyboard.press	code	clearmodifiers|interval|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_TYPE E_PERMISSION
+keyboard.combination	phase|keys	clearmodifiers|interval|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_TYPE E_PERMISSION
+keyboard.type	text	method|interval|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_NOT_TEXT E_IO E_PERMISSION
+keyboard.codes	-	-	R	-
+clipboard.read	-	-	R	E_NO_DISPLAY E_NOT_SUPPORTED E_NOT_TEXT
+clipboard.write	text	allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_PERMISSION
+clipboard.paste	-	interval|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_PERMISSION
+window.find	name	regex|pid|exact	R	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND
+window.list	-	z-order	R	E_NO_DISPLAY E_NOT_SUPPORTED
+window.active	-	-	R	E_NO_DISPLAY E_NOT_SUPPORTED
+window.close	name	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+window.top	name	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+window.bottom	name	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+window.move	name|x|y	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+window.resize	name|width|height	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+wait.window	name	timeout|interval|absent|exact	R	E_NO_DISPLAY E_NOT_SUPPORTED E_TIMEOUT E_WINDOW_NOT_FOUND
+wait.ms	ms	-	R	E_TYPE E_RANGE
+text	x|y	source|max-chars	R	E_NO_DISPLAY E_NOT_SUPPORTED E_ACCESSIBILITY_DENIED E_ACCESSIBILITY_UNAVAILABLE E_ELEVATION_REQUIRED
+structure	x|y	depth|source	R	E_NO_DISPLAY E_NOT_SUPPORTED E_ACCESSIBILITY_DENIED E_ACCESSIBILITY_UNAVAILABLE E_ELEVATION_REQUIRED
+selfcheck	-	json	R	-
+# --- round 2 additions (see docs/os-spec.md and docs/permission-model.md) ---
+# file.verify.* are assertions: they compare against a caller-supplied expectation and report the
+# observed value alongside the match result. They never modify the target.
+file.verify.charset	path|charset	-	R	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT E_CHARSET_UNKNOWN
+file.verify.encoding	path|charset	-	R	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT E_CHARSET_UNKNOWN
+file.verify.completion	path	length|sha256|charset|bom|eol	R	E_NOT_FOUND E_NOT_A_FILE E_BINARY_CONTENT E_TRUNCATED
+# system.* are pure queries, never privileged, and must degrade field-by-field rather than fail whole.
+system.brand	-	json	R	E_NOT_SUPPORTED
+system.cpu	-	json	R	E_NOT_SUPPORTED
+system.gpu	-	json	R	E_NOT_SUPPORTED
+system.version	-	json	R	E_NOT_SUPPORTED
+system.info	-	json	R	E_NOT_SUPPORTED
+# task.* manage processes. task.launch is the "open this program/document" verb (command.txt wrote
+# "lunch", which is a typo); it never launches through a shell string.
+task.list	-	filter|limit|json	R	E_NOT_SUPPORTED
+task.query	pid	-	R	E_NOT_FOUND E_NOT_SUPPORTED
+task.show	pid	-	R	E_NOT_FOUND E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND
+task.kill	pid	force|allow	W	E_NOT_FOUND E_PERMISSION E_NOT_SUPPORTED
+task.launch	path	args|workdir|allow	W	E_NOT_FOUND E_NO_DISPLAY E_NOT_SUPPORTED E_PERMISSION
+window.minimize	name	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+window.maximize	name	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+window.restore	name	exact|allow	W	E_NO_DISPLAY E_NOT_SUPPORTED E_WINDOW_NOT_FOUND E_WINDOW_AMBIGUOUS E_PERMISSION
+# service.* address OS service managers: Windows SCM, systemd, launchd. Start/stop/restart need
+# elevation and must report E_ELEVATION_REQUIRED instead of failing opaquely.
+service.list	-	filter|json	R	E_NOT_SUPPORTED
+service.query	name	-	R	E_NOT_FOUND E_NOT_SUPPORTED
+service.start	name	allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_NOT_SUPPORTED E_PERMISSION
+service.stop	name	allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_NOT_SUPPORTED E_PERMISSION
+service.restart	name	allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_NOT_SUPPORTED E_PERMISSION
+# environment.* default to the user scope. A change to user or machine scope does not affect
+# already-running processes; every mutating call reports the scope it actually wrote.
+#
+# An environment variable has attributes: PATH is one, as are PATHEXT, LIB and INCLUDE. A plain
+# variable holds one string; an attribute holds an ordered list joined by the platform separator
+# (';' on Windows, ':' on POSIX). Both levels expose the same five operations, so
+# `environment get PATH` returns the raw string while `environment attr get PATH` returns the split
+# entries. --attr selects the attribute name and defaults to PATH.
+environment.list	-	scope|filter|json	R	E_NOT_SUPPORTED
+environment.get	name	scope	R	E_NOT_FOUND E_NOT_SUPPORTED
+environment.add	name|value	scope|allow	W	E_EXISTS E_ELEVATION_REQUIRED E_PERMISSION
+environment.set	name|value	scope|allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_PERMISSION
+environment.delete	name	scope|allow	W	E_NOT_FOUND E_ELEVATION_REQUIRED E_PERMISSION
+environment.attr.list	-	scope|attr	R	E_NOT_FOUND E_NOT_SUPPORTED
+environment.attr.get	name	scope|attr	R	E_NOT_FOUND E_NOT_SUPPORTED
+environment.attr.add	name|value	scope|attr|allow	W	E_EXISTS E_ELEVATION_REQUIRED E_PERMISSION
+environment.attr.set	name|index|value	scope|attr|allow	W	E_NOT_FOUND E_RANGE E_ELEVATION_REQUIRED E_PERMISSION
+environment.attr.delete	name	scope|attr|index|value|allow	W	E_NOT_FOUND E_RANGE E_ELEVATION_REQUIRED E_PERMISSION
+# permission.* read the authorization file; the two mutating verbs are delegate-only and always
+# require a user-accepted dialog (see docs/permission-model.md).
+permission.query	verb|target	scope|json	R	E_NOT_FOUND
+permission.list	-	json	R	-
+permission.audit	-	limit|json	R	-
+permission.grant	verb|target|decision	delegate|allow	W	E_PERMISSION_DELEGATE_ONLY E_PERMISSION_NO_ANSWERER
+permission.revoke	rule-id	delegate|allow	W	E_NOT_FOUND E_PERMISSION_DELEGATE_ONLY E_PERMISSION_NO_ANSWERER
+permission.acl.init	-	allow	W	E_NOT_SUPPORTED E_ELEVATION_REQUIRED E_PERMISSION

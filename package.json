@@ -1,0 +1,67 @@
+{
+  "name": "deepseek-coordination",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Cross-platform atomic OS-interaction surface for the DeepSeek Harness: one argument-stable verb set implemented natively on each OS, with byte-exact charset, BOM and line-ending handling.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "automation",
+    "windows",
+    "posix",
+    "utf-8",
+    "bom",
+    "atomic",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "Eloy Kim <eloy.kim@outlook.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eloyhere/deepseek-coordination.git"
+  },
+  "bugs": {
+    "url": "https://github.com/eloyhere/deepseek-coordination/issues"
+  },
+  "homepage": "https://github.com/eloyhere/deepseek-coordination#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32",
+    "linux",
+    "darwin"
+  ],
+  "main": "src/client/main.ts",
+  "bin": {
+    "dsh-os": "src/host/bin/dsh-os.bat"
+  },
+  "files": [
+    "src/host/bin/dsh-os.ps1",
+    "src/host/bin/dsh-os.bat",
+    "src/host/bin/dsh-os.sh",
+    "src/host/command.txt",
+    "src/host/spec/verbs.tsv",
+    "src/host/spec/charsets.tsv",
+    "src/host/docs/os-spec.md",
+    "src/host/docs/permission-model.md",
+    "src/host/docs/command-original.txt",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "os": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1",
+    "test": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/golden.ps1",
+    "test:encoding": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/encoding.ps1",
+    "test:all": "npm run test:encoding && npm run test",
+    "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  }
+}

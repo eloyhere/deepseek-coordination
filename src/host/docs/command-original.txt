@@ -1,0 +1,26 @@
+//execute, delete, create, edit, window needs permission. A dialog accepted by user.
+file create path content charset//create a file.
+file charset path//query charset of file, throw exception as not a file.
+file encode path charset//convert encode of a file, throw exception as not a file.
+file length path//query length of a file/directory
+file information path//query information of a file/directory
+file delete path
+file edit path content charset mode//mode = insert or append
+file view path charset start end
+execute command arguments
+mouse click x y//click point with left mouse key.
+mouse context x y//click point with right mouse key.
+mouse over x y//move the mouse to the point
+mouse wheel x y//the distance to wheel over x and y
+keyboard down code//trigger a key down.
+keyboard up code//trigger a key up.
+keyboard combination down a b c d//such as alt+tab
+keyboard combination up a b c d//such as alt+tab
+window find name//find a window
+window close name//close a window
+window top name//bring a window to front
+window bottom name//bring a window to back.
+text x y//find text structure round the point
+structure x y//find view structure around the point
+screenshot x y width height//catch a screenshot for a rectange range.
+

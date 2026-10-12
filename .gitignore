@@ -1,0 +1,33 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Scratch tree. The dsh-os contract requires temporary work to live under .temporary/, and the
+# reverse-engineering extracts and golden-test fixtures in there are never published.
+.temporary/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local authorization state. The canonical empty file IS committed (it is the documented initial
+# state); only the runtime side effects of an authorization are ignored.
+permission.json.bak
+.temporary/acl-state.json

@@ -1,0 +1,117 @@
+// dsh-os atomic command surface (authoritative contract).
+// Implementation: bin/dsh-os.ps1 (Windows) + bin/dsh-os.sh (Linux/Unix) + bin/dsh-os.bat shim.
+// Full spec: docs/os-spec.md      Machine-readable verb table: spec/verbs.tsv
+// Original draft preserved at: docs/command-original.txt
+//
+// Permission: R = read-only/query, never prompts.
+//             W = mutating; requires an authorization the user accepted (--allow).
+// W group: execute, delete, create, edit, window, keyboard, clipboard, text, structure
+//
+// Values are separate argv elements; never assembled into a shell string.
+// Charset names are IANA: utf-8, utf-8-bom, utf-16le, utf-16be, gbk, gb18030, big5, shift_jis, latin1, windows-1252.
+// Offsets are BYTE offsets in a half-open range [start,end) and must fall on a character boundary.
+
+file create path content charset            // W  create a file; fails with E_EXISTS if it already exists.
+file charset path                           // R  query charset of file, throw exception as not a file.
+file encode path charset                    // W  convert encode of a file, throw exception as not a file.
+file length path                            // R  query length of a file/directory
+file information path                       // R  query information of a file/directory
+file list path                              // R  list one directory level
+file delete path                            // W  recycle by default; --permanent unlinks.
+file move source destination                // W
+file copy source destination                // W
+file mkdir path                             // W
+file append path content charset            // W  append at end of file, preserving original BOM and EOL.
+file insert path content charset offset     // W  insert at a byte offset; must be a character boundary.
+file view path charset start end            // R  charset is an optional assertion; start/end an optional byte range.
+
+execute command arguments                   // W  arguments is an array passed straight to argv; no shell.
+execute query pid                           // R  query a running process
+execute kill pid                            // W  terminate a process
+
+mouse click x y                             // W  click point with left mouse key.
+mouse context x y                           // W  click point with right mouse key.
+mouse over x y                              // W  move the mouse to the point
+mouse wheel x y                             // W  the distance to wheel over x and y
+mouse down x y                              // W  press and hold a mouse button
+mouse up                                    // W  release the mouse button
+mouse cursor                                // R  read back the cursor position
+screenshot x y width height                 // R  catch a screenshot for a rectangle range (x y width height; omit for full screen).
+
+keyboard down code                          // W  trigger a key down.
+keyboard up code                             // W  trigger a key up.
+keyboard press code                         // W  one atomic down+up; use this instead of down followed by up.
+keyboard combination down a b c d           // W  such as alt+tab: press the whole chord together.
+keyboard combination up a b c d             // W  such as alt+tab: release the whole chord together.
+keyboard type text                          // W  type arbitrary text; non-ASCII goes through the clipboard.
+keyboard codes                              // R  list accepted key names for this platform.
+
+clipboard read                              // R
+clipboard write text                        // W
+clipboard paste                             // W  write the text then send Ctrl+V.
+
+window find name                            // R  find a window
+window list                                 // R  enumerate top-level windows in z-order
+window active                               // R  report the foreground window
+window close name                           // W  close a window
+window top name                             // W  bring a window to front
+window bottom name                          // W  bring a window to back.
+window move name x y                        // W
+window resize name width height             // W
+
+wait window name                            // R  block until a window appears; --absent waits for it to go.
+wait ms                                     // R  explicit wait
+
+text x y                                    // R  find the complete text around the point.
+structure x y                               // R  find view structure around the point.
+
+selfcheck                                   // R  report the verb table and the platform capability matrix.
+
+// ---------------------------------------------------------------------------
+// Round 2 additions. Same conventions as above. Where the request was ambiguous the chosen
+// reading is stated on the line and explained in docs/os-spec.md.
+// ---------------------------------------------------------------------------
+
+file verify charset path charset            // R  assert the declared charset; reports observed vs expected.
+file verify encoding path charset           // R  assert every byte sequence is legal in that charset (no replacement chars).
+file verify completion path                 // R  assert a write completed: --length/--sha256/--bom/--eol must all match.
+
+system brand                                // R  windows | macos | linux | wsl, plus version and architecture.
+system cpu                                  // R  CPU model, cores, threads, clocks.
+system gpu                                  // R  GPU adapters; degrades to an empty list when no driver is present.
+system version                              // R  OS version, build, kernel.
+system info                                 // R  brand + cpu + gpu + version in one envelope.
+
+task list                                   // R  enumerate processes.
+task query pid                              // R  process detail: name, path, user, memory, start time.
+task show pid                               // R  bring the process's window to the front.
+task kill pid                               // W  terminate; --force for a hard kill.
+task launch path                            // W  launch a program or open a document by path (no shell string).
+
+window minimize name                        // W
+window maximize name                        // W
+window restore name                         // W  undo minimize or maximize.
+
+service list                                // R  OS services (Windows SCM / systemd / launchd).
+service query name                          // R  service state, start type, account.
+service start name                          // W  needs elevation; reports E_ELEVATION_REQUIRED otherwise.
+service stop name                           // W
+service restart name                        // W
+
+environment list                            // R  --scope process|user|machine, defaults to user.
+environment get name                        // R  the raw value of one variable.
+environment add name value                  // W  fails with E_EXISTS when the variable is already set.
+environment set name value                  // W  overwrites; fails with E_NOT_FOUND when absent.
+environment delete name                     // W
+environment attr list                       // R  attributes of a list variable; --attr selects one, default PATH.
+environment attr get name                   // R  the attribute's entries as an ordered list.
+environment attr add name value             // W  append one entry to the attribute.
+environment attr set name index value       // W  replace one entry by index.
+environment attr delete name                // W  remove an entry, by --index or by --value.
+
+permission query verb target                // R  current decision, matched rule, and enforcement strength.
+permission list                             // R  all durable rules.
+permission audit                            // R  recent authorization decisions.
+permission grant verb target decision       // W  delegate-only; requires a user-accepted dialog.
+permission revoke rule-id                   // W  delegate-only; requires a user-accepted dialog.
+permission acl init                         // W  idempotently enable kernel-level protection of permission.json.
