@@ -266,7 +266,7 @@ function New-ErrorObject {
 # ---------------------------------------------------------------------------
 $script:ValueFlags = @(
   'encoding', 'eol', 'button', 'count', 'space', 'out', 'screen', 'format',
-  'workdir', 'env', 'stdin', 'timeout', 'interval', 'method', 'pid', 'regex',
+  'workdir', 'env', 'stdin', 'timeout', 'interval', 'method', 'pid',
   'name', 'max-bytes', 'max-chars', 'depth', 'source', 'bom', 'text', 'charset',
   # round 2
   'length', 'sha256', 'limit', 'filter', 'scope', 'index', 'decision', 'delegate', 'args',
@@ -280,13 +280,14 @@ $script:KnownFlags = @(
   $script:ValueFlags +
   'allow', 'pretty', 'quiet', 'json', 'backup', 'permanent', 'parents', 'no-recursive',
   'no-numbers', 'force', 'hold', 'clearmodifiers', 'exact', 'absent', 'z-order', 'shell',
-  'background'
+  'background', 'strict-args', 'regex', 'recursive'
 )
 
 function Parse-Arguments {
   param([string[]]$Argv)
   $positionals = New-Object System.Collections.ArrayList
   $flags = @{}
+  $named = @{}
   $i = 0
   while ($i -lt $Argv.Length) {
     $tok = $Argv[$i]
@@ -310,12 +311,100 @@ function Parse-Arguments {
         $flags[$name] = $true
         $i += 1
       }
+    } elseif ($tok -match '^([A-Za-z][A-Za-z0-9_-]*)=(.*)$') {
+      # Named argument form: file create path="./a.txt" content="123" charset="utf-8-bom".
+      # The value keeps whatever the caller passed after '=' (quotes are consumed by the shell or by
+      # the caller's own quoting, exactly as for a positional).
+      $key = $Matches[1]
+      $val = $Matches[2]
+      if ($named.ContainsKey($key)) {
+        throw (New-OsError -Code 'E_USAGE' -Message ("named argument '{0}' was given more than once" -f $key))
+      }
+      $named[$key] = $val
+      $i += 1
     } else {
       [void]$positionals.Add($tok)
       $i += 1
     }
   }
-  return @{ positionals = $positionals.ToArray(); flags = $flags }
+  return @{ positionals = $positionals.ToArray(); flags = $flags; named = $named }
+}
+
+# Declared positional names for a verb, in order, from spec/verbs.tsv.
+$script:VerbParams = @{}
+
+function Get-VerbParams {
+  param([string]$VerbKey)
+  if ($script:VerbParams.Count -eq 0) {
+    $path = Join-Path $script:HostDir 'spec\verbs.tsv'
+    if (Test-Path -LiteralPath $path) {
+      foreach ($line in [System.IO.File]::ReadAllLines($path, $script:NoBom)) {
+        if ($line -eq '' -or $line.StartsWith('#') -or $line.StartsWith('verb')) { continue }
+        $f = $line -split "`t"
+        if ($f.Count -lt 2) { continue }
+        $names = @()
+        if ($f[1] -ne '-') { $names = @($f[1] -split '\|') }
+        $script:VerbParams[$f[0]] = $names
+      }
+    }
+  }
+  # Return the array plainly and let the caller wrap it in @(). Doing BOTH (unary comma here plus
+  # @() at the call site) nests the array, so $declared[0] becomes the whole array and every name
+  # lookup misses. The @() at the call site is what protects against a single-name verb's list
+  # being unwrapped into a bare string.
+  if ($script:VerbParams.ContainsKey($VerbKey)) { return $script:VerbParams[$VerbKey] }
+  return @()
+}
+
+# Merge named arguments into the positional list so every verb body can keep reading by index.
+# Order comes from the verb table, so "file create charset=utf-8 path=x content=y" is equivalent to
+# the positional form regardless of the order the names were written in.
+function Merge-NamedArguments {
+  param($Parsed, [string]$VerbKey)
+  if ($Parsed.named.Count -eq 0 -and -not $Parsed.flags.ContainsKey('strict-args')) { return $Parsed }
+  $declared = @(Get-VerbParams -VerbKey $VerbKey)
+  if ($Parsed.named.Count -gt 0) {
+    if ($declared.Count -eq 0) {
+      throw (New-OsError -Code 'E_USAGE' -Message ("verb '{0}' takes no named arguments" -f $VerbKey) `
+          -Hint 'named arguments are declared in spec/verbs.tsv')
+    }
+    # Start from the caller's positionals, then place each named value at its declared index.
+    $slots = New-Object string[] $declared.Count
+    $filled = New-Object bool[] $declared.Count
+    $posIdx = 0
+    foreach ($name in $declared) {
+      if ($posIdx -lt $Parsed.positionals.Length) {
+        $slots[$posIdx] = [string]$Parsed.positionals[$posIdx]
+        $filled[$posIdx] = $true
+        $posIdx++
+      }
+    }
+    if ($posIdx -lt $Parsed.positionals.Length) {
+      throw (New-OsError -Code 'E_USAGE' -Message ("unexpected extra argument <{0}>" -f $Parsed.positionals[$posIdx]))
+    }
+    for ($k = 0; $k -lt $declared.Count; $k++) {
+      $name = $declared[$k]
+      if (-not $Parsed.named.ContainsKey($name)) { continue }
+      if ($filled[$k]) {
+        throw (New-OsError -Code 'E_USAGE' -Message ("'{0}' was given both positionally and by name" -f $name))
+      }
+      $slots[$k] = [string]$Parsed.named[$name]
+      $filled[$k] = $true
+    }
+    foreach ($key in $Parsed.named.Keys) {
+      if ($declared -notcontains $key) {
+        throw (New-OsError -Code 'E_USAGE' -Message ("unknown named argument '{0}' for '{1}'" -f $key, $VerbKey) `
+            -Hint ("accepted names, in order: {0}" -f ($declared -join ', ')))
+      }
+    }
+    # Compact the slots: a gap can only appear past the end of the supplied values.
+    $out = New-Object System.Collections.ArrayList
+    for ($k = 0; $k -lt $declared.Count; $k++) {
+      if ($filled[$k]) { [void]$out.Add($slots[$k]) }
+    }
+    $Parsed.positionals = $out.ToArray()
+  }
+  return $Parsed
 }
 
 function Get-Positional {
@@ -1559,6 +1648,90 @@ function Invoke-FileVerifyCompletion {
 }
 
 # ---------------------------------------------------------------------------
+# file.search - returns a JSON ARRAY of matches. The array is the top-level result value, not a
+# wrapper object, so an agent can iterate it directly without knowing a key name.
+# ---------------------------------------------------------------------------
+function Invoke-FileSearch {
+  param($Parsed)
+  $dirText = Get-Positional -Parsed $Parsed -Index 0 -Name 'directory'
+  $name = Get-Positional -Parsed $Parsed -Index 1 -Name 'name'
+  Assert-NoExtra -Parsed $Parsed -Expected 2
+  $dir = Resolve-FullPath $dirText
+  if (-not (Test-Path -LiteralPath $dir)) {
+    throw (New-OsError -Code 'E_NOT_FOUND' -Message ("cannot search '{0}': not found" -f $dir))
+  }
+  if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+    throw (New-OsError -Code 'E_NOT_A_DIR' -Message ("cannot search '{0}': not a directory" -f $dir))
+  }
+  $useRegex = Test-HasFlag -Parsed $Parsed -Name 'regex'
+  $recursive = Test-HasFlag -Parsed $Parsed -Name 'recursive'
+  $maxDepthText = Get-FlagValue -Parsed $Parsed -Name 'max-depth' -Default '0'
+  $maxDepth = Get-IntArg -Text $maxDepthText -Name 'max-depth'
+  $limitText = Get-FlagValue -Parsed $Parsed -Name 'limit' -Default '500'
+  $limit = Get-IntArg -Text $limitText -Name 'limit'
+  $maxBytesText = Get-FlagValue -Parsed $Parsed -Name 'max-bytes' -Default '0'
+  $maxBytes = Get-IntArg -Text $maxBytesText -Name 'max-bytes'
+  $typeFilter = Get-FlagValue -Parsed $Parsed -Name 'type' -Default '*'
+
+  if ($useRegex) {
+    try { $pattern = New-Object System.Text.RegularExpressions.Regex($name) } catch {
+      throw (New-OsError -Code 'E_TYPE' -Message ("'{0}' is not a valid regular expression: {1}" -f $name, $_.Exception.Message))
+    }
+  }
+
+  # A non-recursive search lists the given directory only; recursive honours --max-depth when given.
+  $items = New-Object System.Collections.ArrayList
+  $candidates = New-Object System.Collections.ArrayList
+  if ($recursive -or $maxDepth -gt 0) {
+    [void]$candidates.AddRange(@(Get-ChildItem -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue))
+  } else {
+    [void]$candidates.AddRange(@(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue))
+  }
+
+  $truncated = $false
+  foreach ($item in $candidates) {
+    if ($maxDepth -gt 0) {
+      $rel = $item.FullName.Substring($dir.Length).TrimStart('\', '/')
+      $depth = ($rel -split '[\\/]').Count
+      if ($item.PSIsContainer) { $depth = $depth - 0 } else { $depth = $depth - 1 }
+      if ($depth -gt $maxDepth) { continue }
+    }
+    $isDir = [bool]$item.PSIsContainer
+    $itemType = $(if ($isDir) { 'directory' } else { 'file' })
+    if ($typeFilter -ne '*' -and $typeFilter -ne '' -and $itemType -ne $typeFilter) { continue }
+    $matched = $false
+    if ($useRegex) { $matched = $pattern.IsMatch($item.Name) }
+    else { $matched = ($item.Name.IndexOf($name, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) }
+    if (-not $matched) { continue }
+    $size = 0
+    if (-not $isDir) { $size = [int64]$item.Length }
+    if ($maxBytes -gt 0 -and $size -gt $maxBytes) { continue }
+    [void]$items.Add([ordered]@{
+      path = $item.FullName
+      name = $item.Name
+      type = $itemType
+      size = $size
+      modified = $item.LastWriteTimeUtc.ToString('o')
+      relative = $item.FullName.Substring($dir.Length).TrimStart('\', '/')
+    })
+    if ($items.Count -ge $limit) { $truncated = $true; break }
+  }
+
+  # The array is the result. Truncation is reported alongside it so a caller can tell a complete
+  # answer from a capped one without inferring it from the count.
+  return [ordered]@{
+    matches = $items.ToArray()
+    count = $items.Count
+    truncated = $truncated
+    limit = $limit
+    directory = $dir
+    pattern = $name
+    regex = $useRegex
+    recursive = ($recursive -or $maxDepth -gt 0)
+  }
+}
+
+# ---------------------------------------------------------------------------
 # system.* - pure queries. Each field degrades to null on its own instead of failing the whole
 # answer, because a missing GPU driver or a locked-down WMI namespace is normal, not an error.
 # ---------------------------------------------------------------------------
@@ -1690,6 +1863,141 @@ function Test-IsElevated {
     return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
   } catch {
     return $null
+  }
+}
+
+# ---------------------------------------------------------------------------
+# execute.synchronous / execute.asynchronous
+#
+# Both walk a command array. Synchronous runs them one after another and stops at the first failure;
+# asynchronous starts them all and waits for every one. Each element is a whole command line, so it
+# is handed to the shell for parsing (unlike execute.command, whose arguments are passed as argv) --
+# that is what lets a caller write execute asynchronous "echo a" "echo b".
+#
+# Output is captured through asynchronous stream reads; reading a child's stdout to completion
+# before its stderr (or vice versa) deadlocks as soon as the unread pipe fills.
+# ---------------------------------------------------------------------------
+function Invoke-OneShellCommand {
+  param([string]$CommandLine, [string]$WorkDir, [int]$TimeoutMs, [string]$EncodingName)
+  $enc = $script:NoBom
+  if ($EncodingName -and $EncodingName -ne 'utf-8') {
+    try { $enc = [System.Text.Encoding]::GetEncoding([int](Resolve-Charset -Name $EncodingName).dotnet) } catch { $enc = $script:NoBom }
+  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  # cmd.exe on Windows, /bin/sh elsewhere: the command line is a shell command by definition here.
+  if ($env:OS -eq 'Windows_NT') {
+    $psi.FileName = "$env:SystemRoot\System32\cmd.exe"
+    $psi.Arguments = '/d /s /c "' + $CommandLine + '"'
+  } else {
+    $psi.FileName = '/bin/sh'
+    $psi.Arguments = '-c ' + $CommandLine
+  }
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  if ($WorkDir) { $psi.WorkingDirectory = $WorkDir }
+
+  $started = [DateTime]::UtcNow
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $outTask = $proc.StandardOutput.ReadToEndAsync()
+  $errTask = $proc.StandardError.ReadToEndAsync()
+  $exited = $proc.WaitForExit($TimeoutMs)
+  if (-not $exited) {
+    try { $proc.Kill() } catch { }
+    $proc.WaitForExit()
+  }
+  $outText = ''
+  $errText = ''
+  try { $outText = $outTask.Result } catch { $outText = '' }
+  try { $errText = $errTask.Result } catch { $errText = '' }
+  $duration = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+  $exitCode = $(if ($exited) { $proc.ExitCode } else { $null })
+  return [ordered]@{
+    command = $CommandLine
+    exitCode = $exitCode
+    timedOut = (-not $exited)
+    durationMs = $duration
+    stdout = $outText
+    stderr = $errText
+  }
+}
+
+function Invoke-ExecuteBatch {
+  param($Parsed, [bool]$Sequential)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb $(if ($Sequential) { 'execute synchronous' } else { 'execute asynchronous' })
+  Assert-Allowed -Parsed $Parsed -Verb $(if ($Sequential) { 'execute synchronous' } else { 'execute asynchronous' }) -Perm 'W'
+  $commands = @($Parsed.positionals)
+  $workdir = Get-FlagValue -Parsed $Parsed -Name 'workdir' -Default $null
+  $timeoutText = Get-FlagValue -Parsed $Parsed -Name 'timeout' -Default '120000'
+  $timeoutMs = Get-IntArg -Text $timeoutText -Name 'timeout'
+  $encodingName = Get-FlagValue -Parsed $Parsed -Name 'encoding' -Default 'utf-8'
+
+  $results = New-Object System.Collections.ArrayList
+  $started = [DateTime]::UtcNow
+  if ($Sequential) {
+    # Stop at the first non-zero exit so a caller does not run later steps on a broken precondition.
+    foreach ($cmd in $commands) {
+      $one = Invoke-OneShellCommand -CommandLine $cmd -WorkDir $workdir -TimeoutMs $timeoutMs -EncodingName $encodingName
+      [void]$results.Add($one)
+      if ($one.exitCode -ne 0) { break }
+    }
+  } else {
+    # Start every command first, then collect. Waiting inside the start loop would make it sequential.
+    $running = New-Object System.Collections.ArrayList
+    foreach ($cmd in $commands) {
+      $enc = $script:NoBom
+      $psi = New-Object System.Diagnostics.ProcessStartInfo
+      if ($env:OS -eq 'Windows_NT') {
+        $psi.FileName = "$env:SystemRoot\System32\cmd.exe"
+        $psi.Arguments = '/d /s /c "' + $cmd + '"'
+      } else {
+        $psi.FileName = '/bin/sh'
+        $psi.Arguments = '-c ' + $cmd
+      }
+      $psi.RedirectStandardOutput = $true
+      $psi.RedirectStandardError = $true
+      $psi.UseShellExecute = $false
+      $psi.CreateNoWindow = $true
+      if ($workdir) { $psi.WorkingDirectory = $workdir }
+      $p = [System.Diagnostics.Process]::Start($psi)
+      [void]$running.Add([pscustomobject]@{
+        command = $cmd; proc = $p
+        outTask = $p.StandardOutput.ReadToEndAsync()
+        errTask = $p.StandardError.ReadToEndAsync()
+        started = [DateTime]::UtcNow
+      })
+    }
+    foreach ($entry in $running) {
+      $exited = $entry.proc.WaitForExit($timeoutMs)
+      if (-not $exited) {
+        try { $entry.proc.Kill() } catch { }
+        $entry.proc.WaitForExit()
+      }
+      $outText = ''; $errText = ''
+      try { $outText = $entry.outTask.Result } catch { }
+      try { $errText = $entry.errTask.Result } catch { }
+      [void]$results.Add([ordered]@{
+        command = $entry.command
+        exitCode = $(if ($exited) { $entry.proc.ExitCode } else { $null })
+        timedOut = (-not $exited)
+        durationMs = [int]([DateTime]::UtcNow - $entry.started).TotalMilliseconds
+        stdout = $outText
+        stderr = $errText
+      })
+    }
+  }
+  $total = [int]([DateTime]::UtcNow - $started).TotalMilliseconds
+  $failed = 0
+  foreach ($r in $results) { if ($r['exitCode'] -ne 0) { $failed++ } }
+  return [ordered]@{
+    mode = $(if ($Sequential) { 'synchronous' } else { 'asynchronous' })
+    requested = $commands.Length
+    executed = $results.Count
+    failed = $failed
+    allSucceeded = ($failed -eq 0 -and $results.Count -eq $commands.Length)
+    totalDurationMs = $total
+    results = $results.ToArray()
   }
 }
 
@@ -2371,11 +2679,14 @@ function Invoke-Dispatch {
 
   $target = Get-VerbKey -Parsed $Parsed
   $script:Verb = $target.key
-  # Rebuild a positional list matching the verb table (group, optional subverb, then the rest).
+  # Rebuild a positional list matching the verb table (group, optional subverb, then the rest), then
+  # fold any name="value" arguments into it. From here on every verb body is unaffected by which
+  # calling form was used.
   $tail = $target.tail
   $rebuilt = @()
   foreach ($t in $tail) { $rebuilt += $t }
-  $inner = @{ positionals = $rebuilt; flags = $Parsed.flags }
+  $inner = @{ positionals = $rebuilt; flags = $Parsed.flags; named = $Parsed.named }
+  $inner = Merge-NamedArguments -Parsed $inner -VerbKey $target.key
 
   switch ($target.key) {
     'file.create' { return (Invoke-FileCreate -Parsed $inner) }
@@ -2397,6 +2708,9 @@ function Invoke-Dispatch {
     'file.verify.charset' { return (Invoke-FileVerifyCharset -Parsed $inner) }
     'file.verify.encoding' { return (Invoke-FileVerifyEncoding -Parsed $inner) }
     'file.verify.completion' { return (Invoke-FileVerifyCompletion -Parsed $inner) }
+    'file.search' { return (Invoke-FileSearch -Parsed $inner) }
+    'execute.synchronous' { return (Invoke-ExecuteBatch -Parsed $inner -Sequential $true) }
+    'execute.asynchronous' { return (Invoke-ExecuteBatch -Parsed $inner -Sequential $false) }
     'system.brand' { return (Invoke-SystemBrand -Parsed $inner) }
     'system.cpu' { return (Invoke-SystemCpu -Parsed $inner) }
     'system.gpu' { return (Invoke-SystemGpu -Parsed $inner) }

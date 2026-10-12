@@ -605,6 +605,94 @@ Assert-Case 'parser/one-two-three-token-verbs' {
   Assert-Equal 'file.charset' $dirCase.json.verb 'path stays a path argument'
 }
 
+# -- 30. named arguments are equivalent to positional ones --------------------
+# The hard convention allows both "file create a b c" and "file create path=a content=b charset=c".
+Assert-Case 'arguments/named-form-equals-positional' {
+  $a = Join-Path $sandbox 'args\pos.txt'
+  $b = Join-Path $sandbox 'args\named.txt'
+  Assert-Equal 0 (Invoke-Os @('file', 'create', $a, 'hello', 'utf-8-bom', '--allow')).exit 'positional create'
+  # Same values, named, and deliberately written in a different order.
+  Assert-Equal 0 (Invoke-Os @('file', 'create', 'charset=utf-8-bom', "content=hello", "path=$b", '--allow')).exit 'named create'
+  Assert-Equal (Get-Hex $a) (Get-Hex $b) 'both forms must produce identical bytes'
+
+  # Single-parameter verbs are the case that used to break: a one-element parameter list gets
+  # unwrapped by PowerShell into a bare string.
+  foreach ($verb in @('charset', 'length', 'information')) {
+    $r = Invoke-Os @('file', $verb, "path=$a")
+    Assert-Equal 0 $r.exit ("named argument for single-parameter verb file $verb -> " + $r.raw)
+  }
+  Assert-Equal 'utf-8-bom' (Invoke-Os @('file', 'charset', "path=$a")).json.result.charset 'named charset result'
+
+  # A multi-parameter verb with the names out of declaration order.
+  $v = Invoke-Os @('file', 'view', "charset=utf-8-bom", "path=$a")
+  Assert-Equal 0 $v.exit 'named view with reversed order'
+}
+
+Assert-Case 'arguments/named-form-errors' {
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('file', 'create', 'nope=x', 'content=y', 'charset=utf-8', '--allow'))).code 'unknown name'
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('file', 'create', "path=$sandbox\a.txt", "path=$sandbox\b.txt", 'content=y', 'charset=utf-8', '--allow'))).code 'duplicate name'
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('file', 'create', (Join-Path $sandbox 'args\c.txt'), "path=$sandbox\args\d.txt", 'content=y', 'charset=utf-8', '--allow'))).code 'both positional and named'
+}
+
+# -- 31. file search returns a JSON array ------------------------------------
+Assert-Case 'file-search/returns-array' {
+  $dir = Join-Path $sandbox 'search'
+  New-Item -ItemType Directory -Path (Join-Path $dir 'sub') -Force | Out-Null
+  Write-Bytes (Join-Path $dir 'a.txt') ([byte[]](0x41))
+  Write-Bytes (Join-Path $dir 'b.md') ([byte[]](0x42))
+  Write-Bytes (Join-Path $dir 'sub\c.txt') ([byte[]](0x43))
+
+  $r = Invoke-Os @('file', 'search', $dir, 'txt')
+  Assert-Equal 0 $r.exit 'search exit'
+  Assert-Equal 1 $r.json.result.count 'non-recursive finds only the top level'
+  # matches must be an actual array so an agent can iterate it without knowing a key name.
+  Assert-True ($r.json.result.matches -is [System.Array]) 'matches is a JSON array'
+  Assert-Equal 'a.txt' $r.json.result.matches[0].name 'match name'
+  Assert-Equal 'file' $r.json.result.matches[0].type 'match type'
+
+  Assert-Equal 2 (Invoke-Os @('file', 'search', "directory=$dir", 'name=txt', '--recursive')).json.result.count 'recursive finds both'
+  Assert-Equal 1 (Invoke-Os @('file', 'search', "directory=$dir", 'name=\.md$', '--regex')).json.result.count 'regex match'
+  Assert-Equal 0 (Invoke-Os @('file', 'search', $dir, 'nothing-matches-this')).json.result.count 'no match is an empty array, not an error'
+  Assert-Equal 'E_NOT_FOUND' (Assert-OsError (Invoke-Os @('file', 'search', (Join-Path $sandbox 'no-such-dir'), 'x'))).code 'missing directory'
+  Assert-Equal 'E_NOT_A_DIR' (Assert-OsError (Invoke-Os @('file', 'search', (Join-Path $dir 'a.txt'), 'x'))).code 'file instead of directory'
+}
+
+# -- 32. execute batch modes --------------------------------------------------
+Assert-Case 'execute/synchronous-stops-at-first-failure' {
+  $r = Invoke-Os @('execute', 'synchronous', 'echo one', 'echo two', '--allow')
+  Assert-Equal 0 $r.exit 'all-succeed exit'
+  Assert-Equal 2 $r.json.result.executed 'both ran'
+  Assert-Equal $true $r.json.result.allSucceeded 'allSucceeded'
+
+  $bad = Invoke-Os @('execute', 'synchronous', 'echo first', 'exit 3', 'echo never', '--allow')
+  Assert-Equal 0 $bad.exit 'a failed command is a result, not an envelope failure'
+  Assert-Equal 2 $bad.json.result.executed 'stops after the failure, so the third never runs'
+  Assert-Equal 3 $bad.json.result.results[1].exitCode 'failure exit code is reported'
+  Assert-Equal 1 $bad.json.result.failed 'failed count'
+  Assert-Equal $false $bad.json.result.allSucceeded 'allSucceeded false'
+  # Results are in input order, so a caller can map them back without tracking ids.
+  Assert-Equal 'echo first' $bad.json.result.results[0].command 'results keep input order'
+}
+
+Assert-Case 'execute/asynchronous-runs-every-command' {
+  $r = Invoke-Os @('execute', 'asynchronous', 'echo a', 'exit 4', 'echo still-runs', '--allow')
+  Assert-Equal 0 $r.exit 'exit'
+  Assert-Equal 3 $r.json.result.executed 'every command runs even after a failure'
+  Assert-Equal 1 $r.json.result.failed 'one failure'
+  Assert-Equal 'synchronous' (Invoke-Os @('execute', 'synchronous', 'echo x', '--allow')).json.result.mode 'mode label synchronous'
+  Assert-Equal 'asynchronous' $r.json.result.mode 'mode label asynchronous'
+  Assert-Equal 'echo still-runs' $r.json.result.results[2].command 'input order preserved'
+  Assert-Equal 0 $r.json.result.results[2].exitCode 'the command after the failure did run'
+}
+
+Assert-Case 'execute/batch-requires-authorization' {
+  $r = Invoke-Os @('execute', 'asynchronous', 'echo nope')
+  Assert-Equal 3 $r.exit 'exit class'
+  Assert-Equal 'E_PERMISSION' $r.json.error.code 'authorization refused'
+  # Nothing may run without the authorization argument.
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('execute', 'synchronous', 'echo nope'))).code 'synchronous also refused'
+}
+
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ("passed: " + $script:Passed + "   failed: " + $script:Failed) -ForegroundColor Cyan

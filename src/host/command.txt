@@ -8,6 +8,19 @@
 // W group: execute, delete, create, edit, window, keyboard, clipboard, text, structure
 //
 // Values are separate argv elements; never assembled into a shell string.
+//
+// HARD CONVENTION: every argument is quoted. Two equivalent forms are accepted:
+//   positional: file create "./a.txt" "123" "utf-8-bom"
+//   named:      file create path="./a.txt" content="123" charset="utf-8-bom"
+// Named arguments may be written in any order; order is taken from this file's parameter list.
+// Giving the same parameter positionally and by name is refused, as is an unknown name. Quoting is
+// the caller's job: the harness passes argv directly, so the quotes are consumed by the calling
+// shell, and the value arrives as one argument.
+//
+// Results are agent-first, never human-oriented: exactly one JSON envelope on stdout, `result`
+// carrying structured fields (no decorative formatting, no human line-number rendering), `error.code`
+// authoritative for branching, and `file search` returning its matches as a JSON array.
+//
 // Charset names are IANA: utf-8, utf-8-bom, utf-16le, utf-16be, gbk, gb18030, big5, shift_jis, latin1, windows-1252.
 // Offsets are BYTE offsets in a half-open range [start,end) and must fall on a character boundary.
 
@@ -24,8 +37,11 @@ file mkdir path                             // W
 file append path content charset            // W  append at end of file, preserving original BOM and EOL.
 file insert path content charset offset     // W  insert at a byte offset; must be a character boundary.
 file view path charset start end            // R  charset is an optional assertion; start/end an optional byte range.
+file search directory name                  // R  returns a JSON array of matching paths. Literal substring by default, --regex to switch.
 
 execute command arguments                   // W  arguments is an array passed straight to argv; no shell.
+execute synchronous commands                // W  walk the command array one after another; stop at the first failure.
+execute asynchronous commands               // W  walk the command array concurrently; wait for all of them.
 execute query pid                           // R  query a running process
 execute kill pid                            // W  terminate a process
 
