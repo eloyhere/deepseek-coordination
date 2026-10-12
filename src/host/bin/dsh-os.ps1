@@ -1,6 +1,6 @@
 ﻿# dsh-os.ps1 - GENERATED FILE. Do not edit directly.
 #
-# Assembled by tools/build.ps1 from src/host/lib/*.ps1, which are the source of truth:
+# Assembled by tools/build.ps1 from the module list named below, which is the source of truth:
 #
 #   preamble.ps1
 #   json.ps1

@@ -147,10 +147,20 @@ Test-Contract 'tests\golden-sh.sh' 'ASCII only, LF' {
 # acquired a non-ASCII character would be decoded in the ANSI code page and would corrupt the
 # generated artefact rather than failing here. The shell modules additionally must be LF: a carriage
 # return becomes part of the last token on every line.
+#
+# This walks the tree RECURSIVELY. It used a non-recursive -Filter glob, so when the PowerShell modules
+# moved into powershell5.1/ and powershell7.6/ they silently stopped being checked at all - the guard
+# reported success while covering only the shell files. A guard that quietly narrows its scope is worse
+# than no guard, because it is trusted.
 $libDir = Join-Path $rootDir 'src\host\lib'
 if (Test-Path -LiteralPath $libDir) {
-  foreach ($module in (Get-ChildItem -LiteralPath $libDir -Filter '*.ps1' | Sort-Object Name)) {
-    $rel = 'src\host\lib\' + $module.Name
+  $allModules = @(Get-ChildItem -LiteralPath $libDir -Recurse -File | Sort-Object FullName)
+  $psModules = @($allModules | Where-Object { $_.Extension -eq '.ps1' })
+  $shModules = @($allModules | Where-Object { $_.Extension -eq '.sh' })
+  Write-Host ("  module files found under lib: {0} powershell, {1} shell" -f $psModules.Count, $shModules.Count)
+
+  foreach ($module in $psModules) {
+    $rel = $module.FullName.Substring($rootDir.Length + 1)
     Test-Contract $rel 'ASCII only' {
       param($i)
       $v = New-Object System.Collections.ArrayList
@@ -159,8 +169,8 @@ if (Test-Path -LiteralPath $libDir) {
       return $v
     }
   }
-  foreach ($module in (Get-ChildItem -LiteralPath $libDir -Filter '*.sh' | Sort-Object Name)) {
-    $rel = 'src\host\lib\' + $module.Name
+  foreach ($module in $shModules) {
+    $rel = $module.FullName.Substring($rootDir.Length + 1)
     Test-Contract $rel 'ASCII only, LF' {
       param($i)
       $v = New-Object System.Collections.ArrayList
