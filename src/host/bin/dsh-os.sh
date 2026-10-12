@@ -225,8 +225,81 @@ KNOWN_FLAGS=" allow pretty quiet json backup permanent parents no-recursive no-n
 POSITIONALS=()
 declare -A FLAGS=()
 declare -A FLAG_MULTI=()
+declare -A NAMED=()
+unknown_flag=""
+ARG_ERROR_CODE=""
+ARG_ERROR_MESSAGE=""
+ARG_ERROR_HINT=""
+
+# Declared positional names for a verb, in order, read from spec/verbs.tsv.
+verb_params() {
+  local key="$1" file="$HOST_DIR/spec/verbs.tsv"
+  [ -f "$file" ] || return 0
+  awk -F'\t' -v k="$key" '!/^#/ && $1 == k && NF >= 2 { if ($2 != "-") { n = split($2, a, "|"); for (i = 1; i <= n; i++) print a[i] } }' "$file"
+}
+
+# Fold name="value" arguments into the positional list, in the order the verb table declares them,
+# so no verb body needs to know which calling form was used. Mirrors Merge-NamedArguments in the
+# PowerShell implementation, including its refusal of a parameter given both ways.
+merge_named_args() {
+  local key="$1"
+  [ "${#NAMED[@]}" -eq 0 ] && return 0
+  local declared=()
+  while IFS= read -r pname; do
+    [ -n "$pname" ] && declared+=("$pname")
+  done < <(verb_params "$key")
+  if [ "${#declared[@]}" -eq 0 ]; then
+    ARG_ERROR_CODE="E_USAGE"
+    ARG_ERROR_MESSAGE="verb '$key' takes no named arguments"
+    ARG_ERROR_HINT="named arguments are declared in spec/verbs.tsv"
+    return 1
+  fi
+  local n=${#declared[@]}
+  local slots=() filled=()
+  local k
+  for ((k = 0; k < n; k++)); do slots[$k]=""; filled[$k]=0; done
+  local pos=0
+  for ((k = 0; k < ${#POSITIONALS[@]}; k++)); do
+    if [ "$k" -lt "$n" ]; then
+      slots[$k]="${POSITIONALS[$k]}"; filled[$k]=1
+    else
+      pos=$((k + 1))
+      ARG_ERROR_CODE="E_USAGE"
+      ARG_ERROR_MESSAGE="unexpected extra argument <${POSITIONALS[$k]}>"
+      return 1
+    fi
+  done
+  local name
+  for name in "${!NAMED[@]}"; do
+    local found=-1
+    for ((k = 0; k < n; k++)); do
+      if [ "${declared[$k]}" = "$name" ]; then found=$k; break; fi
+    done
+    if [ "$found" -lt 0 ]; then
+      ARG_ERROR_CODE="E_USAGE"
+      ARG_ERROR_MESSAGE="unknown named argument '$name' for '$key'"
+      ARG_ERROR_HINT="accepted names, in order: ${declared[*]}"
+      return 1
+    fi
+    if [ "${filled[$found]}" = "1" ]; then
+      ARG_ERROR_CODE="E_USAGE"
+      ARG_ERROR_MESSAGE="'$name' was given both positionally and by name"
+      return 1
+    fi
+    slots[$found]="${NAMED[$name]}"
+    filled[$found]=1
+  done
+  POSITIONALS=()
+  for ((k = 0; k < n; k++)); do
+    if [ "${filled[$k]}" = "1" ]; then POSITIONALS+=("${slots[$k]}"); fi
+  done
+  NAMED=()
+}
 
 parse_args() {
+  # Returns non-zero with ARG_ERROR_* set instead of calling fail(). parse_args populates the globals
+  # POSITIONALS/FLAGS/NAMED, so it must run in the current shell; and fail() exits, which would
+  # terminate the script before the entry point could emit an envelope. The caller reports the error.
   local i=0
   local n=$#
   local argv=("$@")
@@ -240,10 +313,14 @@ parse_args() {
         ;;
       --*)
         local name="${tok#--}"
-        [ -z "$name" ] && fail E_USAGE 'empty flag "--"'
+        if [ -z "$name" ]; then
+          ARG_ERROR_CODE="E_USAGE"; ARG_ERROR_MESSAGE='empty flag "--"'
+          return 1
+        fi
         if [ "${VALUE_FLAGS#* $name }" != "$VALUE_FLAGS" ]; then
           if [ $((i + 1)) -ge "$n" ]; then
-            fail E_USAGE "flag --$name requires a value"
+            ARG_ERROR_CODE="E_USAGE"; ARG_ERROR_MESSAGE="flag --$name requires a value"
+            return 1
           fi
           local val="${argv[$((i + 1))]}"
           if [ -n "${FLAGS[$name]:-}" ]; then
@@ -255,8 +332,32 @@ parse_args() {
           FLAGS["$name"]="true"
           i=$((i + 1))
         else
-          fail E_USAGE "unknown flag --$name" 'run: dsh-os.sh selfcheck   (lists every accepted flag)'
+          unknown_flag="$name"
+          ARG_ERROR_CODE="E_USAGE"
+          ARG_ERROR_MESSAGE="unknown flag --$name"
+          ARG_ERROR_HINT='run: dsh-os.sh selfcheck   (lists every accepted flag)'
+          return 1
         fi
+        ;;
+      *=*)
+        # Named argument form: file create path="./a.txt" content="123" charset="utf-8-bom".
+        # Values keep whatever the caller passed after '='; the calling shell consumes the quotes.
+        local nname="${tok%%=*}"
+        local nval="${tok#*=}"
+        case "$nname" in
+          *[!A-Za-z0-9_-]*|'')
+            POSITIONALS+=("$tok")
+            ;;
+          *)
+            if [ -n "${NAMED[$nname]:-}" ]; then
+              ARG_ERROR_CODE="E_USAGE"
+              ARG_ERROR_MESSAGE="named argument '$nname' was given more than once"
+              return 1
+            fi
+            NAMED["$nname"]="$nval"
+            ;;
+        esac
+        i=$((i + 1))
         ;;
       *)
         POSITIONALS+=("$tok")
@@ -264,6 +365,7 @@ parse_args() {
         ;;
     esac
   done
+  return 0
 }
 
 have_flag() { [ -n "${FLAGS[$1]:-}" ]; }
@@ -945,6 +1047,74 @@ sha256_of() {
 }
 
 # ---------------------------------------------------------------------------
+# file.search - matches as a JSON ARRAY, mirroring the Windows implementation so an agent can parse
+# either platform's answer identically.
+# ---------------------------------------------------------------------------
+cmd_file_search() {
+  require_min 2 'file search'
+  local dir name
+  dir="$(pos 0)"; name="$(pos 1)"
+  if [ ! -e "$dir" ]; then
+    fail E_NOT_FOUND "cannot search '$dir': not found"
+  fi
+  if [ ! -d "$dir" ]; then
+    fail E_NOT_A_DIR "cannot search '$dir': not a directory"
+  fi
+  local use_regex=0 recursive=0
+  have_flag regex && use_regex=1
+  have_flag recursive && recursive=1
+  local maxdepth; maxdepth="$(flag_value max-depth '0')"
+  local limit; limit="$(flag_value limit '500')"
+  local typefilter; typefilter="$(flag_value type '*')"
+
+  local out="" count=0 truncated=false
+  local findargs=()
+  if [ "$recursive" -eq 1 ] || [ "$maxdepth" -gt 0 ] 2>/dev/null; then
+    findargs+=("-mindepth" "1")
+    if [ "${maxdepth:-0}" -gt 0 ] 2>/dev/null; then
+      findargs+=("-maxdepth" "$maxdepth")
+    fi
+  else
+    findargs+=("-mindepth" "1" "-maxdepth" "1")
+  fi
+
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    local base itemtype size matched=0
+    base="$(basename "$entry")"
+    if [ -d "$entry" ]; then itemtype="directory"; size=0; else itemtype="file"; size="$(wc -c <"$entry" 2>/dev/null | tr -d ' ')"; fi
+    [ -n "$size" ] || size=0
+    if [ "$typefilter" != "*" ] && [ "$typefilter" != "" ] && [ "$itemtype" != "$typefilter" ]; then continue; fi
+    if [ "$use_regex" -eq 1 ]; then
+      if printf '%s' "$base" | grep -Eq -- "$name"; then matched=1; fi
+    else
+      case "$base" in
+        *"$name"*) matched=1 ;;
+      esac
+    fi
+    [ "$matched" -eq 1 ] || continue
+    # Strip the leading directory so the caller gets a path relative to what it asked about.
+    local rel="$entry"
+    case "$entry" in
+      "$dir"/*) rel="${entry#*/}" ;;
+    esac
+    # Built with printf rather than an escaped literal: backslash-escaped quotes inside a double
+    # quoted string are where this kind of JSON assembly silently goes wrong.
+    local one
+    one="$(printf '{"path":%s,"name":%s,"type":%s,"size":%s,"relative":%s}' \
+      "$(jstr "$entry")" "$(jstr "$base")" "$(jstr "$itemtype")" "$size" "$(jstr "$rel")")"
+    if [ "$count" -gt 0 ]; then out="$out,$one"; else out="$one"; fi
+    count=$((count + 1))
+    if [ "$count" -ge "$limit" ]; then truncated=true; break; fi
+  done < <(find "$dir" "${findargs[@]}" -print 2>/dev/null | LC_ALL=C sort)
+
+  printf '{"matches":[%s],"count":%s,"truncated":%s,"limit":%s,"directory":%s,"pattern":%s,"regex":%s,"recursive":%s}' \
+    "$out" "$count" "$truncated" "$limit" "$(jstr "$dir")" "$(jstr "$name")" \
+    "$([ "$use_regex" -eq 1 ] && echo true || echo false)" \
+    "$([ "$recursive" -eq 1 ] && echo true || echo false)"
+}
+
+# ---------------------------------------------------------------------------
 # system.* - pure queries, each field degrading on its own.
 # ---------------------------------------------------------------------------
 cmd_system_brand() {
@@ -1157,6 +1327,37 @@ cmd_selfcheck() {
     "$(command -v trash-put >/dev/null 2>&1 && echo available || echo unavailable)"
 }
 
+cmd_arg_error() {
+  fail "$ARG_ERROR_CODE" "$ARG_ERROR_MESSAGE" "$ARG_ERROR_HINT"
+}
+
+# dispatch <verb-function...>
+#
+# Runs a verb body and records its status in MAIN_STATUS instead of letting a non-zero exit escape.
+#
+# This MUST be a top-level function, not a nested one inside main: the verb body runs in the command
+# substitution below, which is what contains fail()'s `exit`. A nested definition is only in scope
+# while main is executing, so any earlier caller (the entry-point argument-error path) hit
+# "dispatch: command not found" and produced no envelope at all.
+#
+# RESULT is a global for the same reason: main reads it after the body has run.
+RESULT=""
+MAIN_STATUS=0
+
+dispatch() {
+  local status=0
+  RESULT="$("$@")" || status=$?
+  if [ "$status" -ne 0 ]; then
+    MAIN_STATUS="$status"
+  fi
+  return 0
+}
+
+cmd_not_implemented() {
+  fail E_NOT_SUPPORTED "verb '$CURRENT_VERB' is not implemented in this build" \
+    'run: dsh-os.sh selfcheck   (implemented verbs are listed in its "implemented" field)'
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch. Two or three word verbs: "selfcheck", "file charset", "file verify charset".
 # ---------------------------------------------------------------------------
@@ -1166,6 +1367,11 @@ known_verb() {
   awk -F'\t' -v k="$key" '!/^#/ && $1 == k { found = 1 } END { exit(found ? 0 : 1) }' "$file"
 }
 
+# Verb bodies that are declared in the verb table but not yet implemented here. Resolving them
+# normally lets the case statement's default branch report a typed E_NOT_SUPPORTED envelope, instead
+# of the script dying in the parser with nothing on stdout.
+UNKNOWN_VERB=""
+
 resolve_verb() {
   # Sets the global CURRENT_VERB and strips the consumed verb tokens from POSITIONALS.
   #
@@ -1174,7 +1380,12 @@ resolve_verb() {
   # then reads its first positional as the literal verb token ("file" instead of the path). The
   # result is a plausible-looking but wrong error such as: cannot read 'file': not found.
   local key="${POSITIONALS[0]:-}"
-  [ -z "$key" ] && fail E_USAGE 'no verb given' 'run: dsh-os.sh selfcheck   (lists the full verb table)'
+  if [ -z "$key" ]; then
+    # Returns rather than calling fail(). fail() exits, and an exit raised here -- in the current
+    # shell, before the entry point -- terminates the script with no envelope. The caller reports it.
+    UNKNOWN_VERB=""
+    return 2
+  fi
   local consumed=1
   while [ "$consumed" -lt 3 ] && [ "$consumed" -lt "${#POSITIONALS[@]}" ]; do
     local token="${POSITIONALS[$consumed]}"
@@ -1231,71 +1442,108 @@ resolve_verb() {
     POSITIONALS=("${remaining[@]}")
   fi
   CURRENT_VERB="$key"
+  return 0
 }
 
 main() {
   local start_ms
   start_ms="$(date +%s%3N 2>/dev/null || date +%s000)"
+  # parse_args populates globals (POSITIONALS, FLAGS, NAMED), so it cannot run in a subshell. It
+  # therefore RETURNS its error instead of calling fail(), and the failure is reported here where the
+  # entry point can still re-emit the envelope. Calling fail() inside it exited before any output
+  # could be produced, which is why a bad flag used to return a bare exit code.
   parse_args "$@"
+  local parse_status=$?
+  if [ "$parse_status" -ne 0 ]; then
+    # Routed through dispatch, not called directly. fail() ends with `exit`, and an exit raised in the
+    # main shell terminates the script before the entry point can re-emit the envelope it just wrote.
+    # Inside dispatch's command substitution that exit only ends the substitution, so the status
+    # returns to main and the entry point gets to run. Every failing path must go through here.
+    dispatch cmd_arg_error
+    return "$MAIN_STATUS"
+  fi
+  # resolve_verb must also run in the CURRENT shell, for the same reason: it reassigns POSITIONALS.
   resolve_verb
+  local verb_status=$?
+  if [ "$verb_status" -ne 0 ]; then
+    if [ "$verb_status" -eq 2 ]; then
+      fail E_USAGE 'no verb given' 'run: dsh-os.sh selfcheck   (lists the full verb table)'
+    fi
+    # Reporting through fail() is what writes the envelope; setting the status alone would leave the
+    # caller with a non-zero exit and nothing to parse.
+    local reported="${UNKNOWN_VERB:-}"
+    if [ -z "$reported" ]; then reported="${POSITIONALS[0]:-}"; fi
+    fail E_NOT_SUPPORTED "verb '$reported' is not implemented in this build" \
+      'run: dsh-os.sh selfcheck   (implemented verbs are listed in its "implemented" field)'
+  fi
+  # Normalise the two calling forms before dispatch, so no verb body has to care which was used.
+  merge_named_args "$CURRENT_VERB"
+  local merge_status=$?
+  if [ "$merge_status" -ne 0 ]; then
+    dispatch cmd_arg_error
+    return "$MAIN_STATUS"
+  fi
 
   # Each verb body is invoked through this wrapper rather than directly.
   #
-  # `result="$(cmd_x)"` is fatal under `set -e` the moment cmd_x exits non-zero, which aborts main
-  # BEFORE the envelope is emitted: the caller then gets a truncated "result":, or nothing at all.
-  # Catching the status here lets a failing verb hand its already-written fd 8 envelope straight
-  # through with the correct exit code.
-  local result=""
-  dispatch() {
-    local status=0
-    result="$("$@")" || status=$?
-    if [ "$status" -ne 0 ]; then
-      exit "$status"
-    fi
-  }
-
+  # `result="$(cmd_x)"` would be fatal under `set -e` the moment cmd_x exits non-zero, aborting main
+  # BEFORE the envelope is emitted. Catching the status here keeps main in control.
+  #
+  # dispatch and RESULT are top-level (defined above main) so the argument-error path can reach them
+  # too. An `exit` raised while the verb body runs in dispatch's command substitution is contained
+  # there; the status travels back via MAIN_STATUS and the entry point performs the single exit.
   case "$CURRENT_VERB" in
-    selfcheck) dispatch cmd_selfcheck ;;
-    file.create) dispatch cmd_file_create ;;
-    file.charset) dispatch cmd_file_charset ;;
-    file.information) dispatch cmd_file_information ;;
-    file.length) dispatch cmd_file_length ;;
-    file.list) dispatch cmd_file_list ;;
-    file.delete) dispatch cmd_file_delete ;;
-    file.move) dispatch cmd_file_move ;;
-    file.copy) dispatch cmd_file_copy ;;
-    file.mkdir) dispatch cmd_file_mkdir ;;
-    file.append) dispatch cmd_file_append ;;
-    file.insert) dispatch cmd_file_insert ;;
-    file.view) dispatch cmd_file_view ;;
-    file.verify.charset) dispatch cmd_file_verify_charset ;;
-    file.verify.encoding) dispatch cmd_file_verify_encoding ;;
-    file.verify.completion) dispatch cmd_file_verify_completion ;;
-    system.brand) dispatch cmd_system_brand ;;
-    system.cpu) dispatch cmd_system_cpu ;;
-    system.gpu) dispatch cmd_system_gpu ;;
-    system.version) dispatch cmd_system_version ;;
-    system.info) dispatch cmd_system_info ;;
-    task.list) dispatch cmd_task_list ;;
-    task.query) dispatch cmd_task_query ;;
-    environment.list) dispatch cmd_environment_list ;;
-    environment.get) dispatch cmd_environment_get ;;
-    environment.attribute.list) dispatch cmd_environment_attribute_list ;;
-    environment.attribute.get) dispatch cmd_environment_attribute_get ;;
-    permission.list) dispatch cmd_permission_list ;;
+    'selfcheck') dispatch cmd_selfcheck ;;
+    'file.create') dispatch cmd_file_create ;;
+    'file.charset') dispatch cmd_file_charset ;;
+    'file.information') dispatch cmd_file_information ;;
+    'file.length') dispatch cmd_file_length ;;
+    'file.list') dispatch cmd_file_list ;;
+    'file.delete') dispatch cmd_file_delete ;;
+    'file.move') dispatch cmd_file_move ;;
+    'file.copy') dispatch cmd_file_copy ;;
+    'file.mkdir') dispatch cmd_file_mkdir ;;
+    'file.append') dispatch cmd_file_append ;;
+    'file.insert') dispatch cmd_file_insert ;;
+    'file.view') dispatch cmd_file_view ;;
+    'file.search') dispatch cmd_file_search ;;
+    'file.verify.charset') dispatch cmd_file_verify_charset ;;
+    'file.verify.encoding') dispatch cmd_file_verify_encoding ;;
+    'file.verify.completion') dispatch cmd_file_verify_completion ;;
+    'system.brand') dispatch cmd_system_brand ;;
+    'system.cpu') dispatch cmd_system_cpu ;;
+    'system.gpu') dispatch cmd_system_gpu ;;
+    'system.version') dispatch cmd_system_version ;;
+    'system.info') dispatch cmd_system_info ;;
+    'task.list') dispatch cmd_task_list ;;
+    'task.query') dispatch cmd_task_query ;;
+    'environment.list') dispatch cmd_environment_list ;;
+    'environment.get') dispatch cmd_environment_get ;;
+    'environment.attribute.list') dispatch cmd_environment_attribute_list ;;
+    'environment.attribute.get') dispatch cmd_environment_attribute_get ;;
+    'permission.list') dispatch cmd_permission_list ;;
     *)
-      fail E_NOT_SUPPORTED "verb '$CURRENT_VERB' is not implemented in this build" \
-        'run: dsh-os.sh selfcheck   (implemented verbs are listed in its "implemented" field)'
+      # Routed through dispatch like every other verb: calling fail() directly here would exit from
+      # inside main, before the entry point can re-emit the envelope fail() just wrote to the scratch
+      # file. Wrapping it keeps the status in MAIN_STATUS so main returns normally.
+      dispatch cmd_not_implemented
       ;;
   esac
   local end_ms
   end_ms="$(date +%s%3N 2>/dev/null || date +%s000)"
   ELAPSED_MS=$((end_ms - start_ms))
-  emit_envelope "$CURRENT_VERB" "$result" "" "$ELAPSED_MS"
+  if [ "$MAIN_STATUS" -ne 0 ]; then
+    # A verb failed: its envelope is already in the scratch file, written by fail(). Returning here
+    # without emitting the success envelope is what lets the entry point report the failure.
+    return "$MAIN_STATUS"
+  fi
+  emit_envelope "$CURRENT_VERB" "$RESULT" "" "$ELAPSED_MS"
+  return 0
 }
 
 CURRENT_VERB=""
 ELAPSED_MS=0
+MAIN_STATUS=0
 
 # Entry point.
 #
