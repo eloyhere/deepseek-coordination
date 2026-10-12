@@ -188,6 +188,49 @@ else
   PASS=$((PASS+1)); printf '  PASS  %-46s SIGKILL took effect\n' "task kill --force"
 fi
 
+echo "== permission: read-only views and the delegate-only refusals =="
+run "permission list"           0 -- permission list
+run "permission audit"          0 -- permission audit
+run "permission query"          0 -- permission query file.delete x
+run "permission query bad arity" 1 -- permission query
+# The two write verbs must be DELEGATE_ONLY, and the enforcement is that there is no implementation in
+# the script at all: a durable grant needs the approval dialog only the plugin can reach.
+run "permission grant is delegate-only"  3 -- permission grant file.delete x allow-always --allow
+run "permission revoke is delegate-only" 3 -- permission revoke r-0001 --allow
+run "permission grant needs --allow"     3 -- permission grant file.delete x allow-always
+
+echo "== permission: the reported ACL strength must be measured, not assumed =="
+# Whatever the mode is, selfcheck, permission list and permission query must agree with each other and
+# with the file's actual writability.
+sc_acl="$(cd "$ROOT_DIR" && bash "$SH" selfcheck 2>/dev/null | sed -n 's/.*"aclEnforced":\(true\|false\).*/\1/p' | head -1)"
+pl_acl="$(cd "$ROOT_DIR" && bash "$SH" permission list 2>/dev/null | sed -n 's/.*"aclEnforced":\(true\|false\).*/\1/p' | head -1)"
+writable=no; [ -w "$ROOT_DIR/permission.json" ] && writable=yes
+expected=true; [ "$writable" = "yes" ] && expected=false
+if [ "$sc_acl" = "$pl_acl" ] && [ "$sc_acl" = "$expected" ]; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s %s (writable=%s)\n' "permission/acl measured" "$sc_acl" "$writable"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - permission/acl measured (selfcheck=$sc_acl list=$pl_acl writable=$writable)"
+  printf '  FAIL  %-46s selfcheck=%s list=%s writable=%s\n' "permission/acl measured" "$sc_acl" "$pl_acl" "$writable"
+fi
+
+echo "== selfcheck must report what is really implemented =="
+# The implemented list is derived from the dispatch table. It used to be a hardcoded string naming
+# nine groups while the table answered thirty-six verbs, so a caller would have concluded that most of
+# the working surface did not exist.
+sc_impl="$(cd "$ROOT_DIR" && bash "$SH" selfcheck 2>/dev/null | sed -n 's/.*"implementedCount":\([0-9]*\).*/\1/p' | head -1)"
+# Counted with awk rather than grep, because the dispatch lines contain a ')' that a basic regular
+# expression treats as a literal only when a '\(' has not opened a group, and getting that subtly
+# wrong silently yielded zero.
+dispatch_count="$(awk "/^    '/ && /) dispatch/ { n++ } END { print n + 0 }" "$SH")"
+if [ -n "$sc_impl" ] && [ "$sc_impl" = "$dispatch_count" ]; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s %s verbs\n' "selfcheck/implemented derived" "$sc_impl"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - selfcheck/implemented derived (reported=$sc_impl dispatch=$dispatch_count)"
+  printf '  FAIL  %-46s reported=%s dispatch=%s\n' "selfcheck/implemented derived" "$sc_impl" "$dispatch_count"
+fi
+
 echo "== agent-first file view: raw text plus structured lines =="
 (cd "$ROOT_DIR" && bash "$SH" file create "$BOX/view.txt" "alpha
 beta" utf-8 --allow >/dev/null 2>&1)

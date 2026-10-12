@@ -80,6 +80,11 @@ main() {
     'environment.attribute.list') dispatch cmd_environment_attribute_list ;;
     'environment.attribute.get') dispatch cmd_environment_attribute_get ;;
     'permission.list') dispatch cmd_permission_list ;;
+    'permission.query') dispatch cmd_permission_query ;;
+    'permission.audit') dispatch cmd_permission_audit ;;
+    'permission.grant') dispatch cmd_permission_grant ;;
+    'permission.revoke') dispatch cmd_permission_revoke ;;
+    'permission.acl.init') dispatch cmd_permission_acl_init ;;
     'execute.command') dispatch cmd_execute_command ;;
     'execute.synchronous') dispatch cmd_execute_synchronous ;;
     'execute.asynchronous') dispatch cmd_execute_asynchronous ;;

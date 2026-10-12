@@ -95,9 +95,9 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **48 Windows golden cases, 57 POSIX golden cases, 13 plugin cases and 18 permission
+Current state: **48 Windows golden cases, 66 POSIX golden cases, 13 plugin cases and 18 permission
 cases pass**, all encoding contracts hold, 86 verbs in the table. 78 of the 86 verbs are implemented
-on Windows and 36 on POSIX.
+on Windows and 41 on POSIX.
 
 ## Using it from the harness
 
@@ -131,8 +131,15 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
   `permission` (read-only) and `selfcheck`.
 - Implemented and tested on POSIX: the same surface except `service`, `window`, `screenshot`,
   `clipboard`, `wait`, `mouse` and `keyboard`, plus `file search`, `execute` (command / synchronous /
-  asynchronous) and the process verbs `execute.query`, `execute.kill`, `task.query`, `task.show` and
-  `task.kill`.
+  asynchronous), the process verbs `execute.query`, `execute.kill`, `task.query`, `task.show` and
+  `task.kill`, and the whole `permission.*` group including `permission acl init`.
+- POSIX layer A is a mode change rather than a Windows deny ACE, and the equivalence is weaker: the
+  same user can restore write access. `permission acl init` says so in its own result, and its
+  `restore` field names the command that undoes it.
+- `selfcheck` derives its implemented list from the platform's own dispatch table. It used to be a
+  hardcoded string that had already drifted from the truth - it named nine groups while the table
+  answered thirty-six verbs - so a caller would have concluded that most of the working surface did
+  not exist.
 - Implemented and tested on Windows for `window`, `screenshot`, `clipboard` and `wait`: enumeration,
   matching, move, resize, minimize, maximize, restore, z-order, close, screen capture to png/jpeg/bmp,
   clipboard text round-trip including non-ASCII, an explicit sleep, and waiting for a window to appear
@@ -146,7 +153,10 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
   point, its text via ValuePattern / TextPattern / LegacyIAccessiblePattern / Name in that order, and
   the control tree around it. Both are honest about the environment - a missing UIA stack or a refusal
   is a typed E_ACCESSIBILITY_UNAVAILABLE / E_ACCESSIBILITY_DENIED, never an empty result.
-- Not written yet on either platform: `task.launch`. Also not written:
+- Not written yet on Windows: `execute.command`, `execute.query`, `execute.kill`, `clipboard.paste`,
+  `task.launch`, and the `service` lifecycle verbs (start/stop/restart). On POSIX the desktop
+  interaction groups are also absent. Not written on either platform: `task.launch` and the `service`
+  lifecycle. Also not written:
   `service`, `window`, `screenshot`, `clipboard`, `wait`, `mouse` and `keyboard` on POSIX, the
   `service` lifecycle verbs (start/stop/restart), and `permission.grant`/`revoke`/`acl.init`. Every
   one of those verbs is declared in the table and returns a typed `E_NOT_SUPPORTED`, never a silent
