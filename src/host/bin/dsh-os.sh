@@ -1,4 +1,32 @@
 #!/usr/bin/env bash
+# dsh-os.sh - GENERATED FILE. Do not edit directly.
+#
+# Assembled by tools/build.ps1 from src/host/lib/*.sh, which are the source of truth:
+##
+# The shipped script is deliberately a single self-contained file, LF-terminated and BOM-free: the
+# shebang must be the very first bytes, and a carriage return would become part of the last token on
+# every line.
+#   00-preamble.sh
+#   01-json.sh
+#   02-command.sh
+#   04-native.sh
+#   05-paths.sh
+#   03-charset.sh
+#   06-file.sh
+#   07-system.sh
+#   08-execute.sh
+#   09-task.sh
+#   10-environment.sh
+#   11-service.sh
+#   12-permission.sh
+#   13-window.sh
+#   14-dispatch.sh
+#   15-entry.sh
+
+
+# ===== 00-preamble.sh ==============================================
+
+#!/usr/bin/env bash
 #
 # dsh-os.sh - POSIX implementation of the dsh-os atomic command surface.
 #
@@ -78,6 +106,9 @@ find_repo_dir() {
   (cd "$SCRIPT_DIR/../.." && pwd)
   return 0
 }
+
+# ===== 01-json.sh ==================================================
+
 ROOT_DIR="$(find_repo_dir "$SCRIPT_DIR")"
 
 # ---------------------------------------------------------------------------
@@ -213,6 +244,9 @@ success_envelope() {
   printf '{"ok":true,"verb":%s,"result":%s,"meta":{"durationMs":%s,"platform":%s,"shell":"sh"}}' \
     "$(jstr "$verb")" "$result" "$duration" "$(jstr "$(platform_name)")"
 }
+
+# ===== 02-command.sh ===============================================
+
 
 # ---------------------------------------------------------------------------
 # Argument parsing. Mirrors the Windows parser: --flag, or --flag value for the
@@ -428,6 +462,19 @@ normalize_path() {
   printf '%s/%s' "$dir" "$base"
 }
 
+# ===== 04-native.sh ================================================
+
+# Module: 04-native.sh - platform-native primitives.
+#
+# Intentionally empty. The PowerShell module declares Add-Type P/Invoke bindings (SendInput, BitBlt,
+# GDI, clipboard) because those are the only way to reach them on Windows. On POSIX the equivalents
+# are external programs (xdotool, wl-copy, import) rather than a linked library, so there is nothing
+# to declare here; the verbs that would use them return a typed E_NOT_SUPPORTED until implemented,
+# which is the required behaviour rather than a silent no-op.
+
+# ===== 05-paths.sh =================================================
+
+
 is_protected() {
   local candidate
   candidate="$(normalize_path "$1")"
@@ -454,6 +501,9 @@ assert_not_protected() {
       'authorization changes go through the consent delegate, which requires a user-accepted dialog; see docs/permission-model.md'
   fi
 }
+
+# ===== 03-charset.sh ===============================================
+
 
 # ---------------------------------------------------------------------------
 # Charset table (spec/charsets.tsv is the single source of truth).
@@ -636,6 +686,9 @@ rewrite_doc() {
   write_doc_bytes "$DOC_PATH" "$payload"
   rm -f "$tmp" "$payload"
 }
+
+# ===== 06-file.sh ==================================================
+
 
 # ---------------------------------------------------------------------------
 # file.* verbs
@@ -1114,6 +1167,9 @@ cmd_file_search() {
     "$([ "$recursive" -eq 1 ] && echo true || echo false)"
 }
 
+# ===== 07-system.sh ================================================
+
+
 # ---------------------------------------------------------------------------
 # system.* - pure queries, each field degrading on its own.
 # ---------------------------------------------------------------------------
@@ -1180,6 +1236,18 @@ cmd_system_info() {
   printf '{"brand":%s,"cpu":%s,"gpu":%s,"version":%s}' "$brand" "$cpu" "$gpu" "$ver"
 }
 
+# ===== 08-execute.sh ===============================================
+
+# Module: 08-execute.sh - execute.command / execute.synchronous / execute.asynchronous.
+#
+# Intentionally empty. execute.command is deliberately NOT implemented in shell: the POSIX variant
+# must not go through a shell string, and the array form needs job control with asynchronous stream
+# reads to avoid a deadlock when one pipe fills. Until that is implemented the dispatch table reports
+# a typed E_NOT_SUPPORTED, so a caller never mistakes an unimplemented verb for a successful one.
+
+# ===== 09-task.sh ==================================================
+
+
 # ---------------------------------------------------------------------------
 # task.* / environment.* / service.* / permission.*
 # ---------------------------------------------------------------------------
@@ -1215,6 +1283,9 @@ cmd_task_query() {
   path="$(readlink "/proc/$pid/exe" 2>/dev/null || echo '')"
   printf '{"pid":%s,"name":%s,"path":%s}' "$pid" "$(jstr "$name")" "$(jstr "$path")"
 }
+
+# ===== 10-environment.sh ===========================================
+
 
 cmd_environment_list() {
   local scope; scope="$(flag_value scope 'user')"
@@ -1292,6 +1363,17 @@ cmd_environment_attribute_get() {
     "$(jstr "$attr")" "$(jstr "$name")" "$(jstr "$sep")" "$count" "$out"
 }
 
+# ===== 11-service.sh ===============================================
+
+# Module: 11-service.sh - service.* (systemd, launchd, SysV init).
+#
+# Intentionally empty. Service management is per-init-system on POSIX (systemctl, launchctl, service),
+# and start/stop/restart need privilege. The verb table already declares these verbs and dispatch
+# reports E_NOT_SUPPORTED for them until an implementation lands.
+
+# ===== 12-permission.sh ============================================
+
+
 # ---------------------------------------------------------------------------
 # permission.* - read-only views of the authorization file.
 # ---------------------------------------------------------------------------
@@ -1326,6 +1408,18 @@ cmd_selfcheck() {
     "$(jstr "$(platform_name)")" "$(jstr "${LC_ALL:-C}")" "$verbs" \
     "$(command -v trash-put >/dev/null 2>&1 && echo available || echo unavailable)"
 }
+
+# ===== 13-window.sh ================================================
+
+# Module: 13-window.sh - window.* / mouse.* / keyboard.* / clipboard.* / wait.* / observe.
+#
+# Intentionally empty. These need synthetic input, which on POSIX means XTest (X11) or compositor
+# protocols (Wayland), and screen capture via import/scrot. The verbs are already declared in
+# spec/verbs.tsv and dispatch reports a typed E_NOT_SUPPORTED for them, which is the required
+# behaviour: an unavailable capability must be an explicit error, never an empty success.
+
+# ===== 14-dispatch.sh ==============================================
+
 
 cmd_arg_error() {
   fail "$ARG_ERROR_CODE" "$ARG_ERROR_MESSAGE" "$ARG_ERROR_HINT"
@@ -1444,6 +1538,9 @@ resolve_verb() {
   CURRENT_VERB="$key"
   return 0
 }
+
+# ===== 15-entry.sh =================================================
+
 
 main() {
   local start_ms

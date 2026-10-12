@@ -1,7 +1,10 @@
 ﻿# dsh-os.ps1 - GENERATED FILE. Do not edit directly.
 #
 # Assembled by tools/build.ps1 from src/host/lib/*.ps1, which are the source of truth:
-#
+##
+# The shipped script is deliberately a single self-contained file: it is invoked directly by the
+# harness and by hand, it must carry UTF-8 with BOM so Windows PowerShell 5.1 decodes it in the right
+# code page, and it must run without module resolution or relative-path assumptions.
 #   00-preamble.ps1
 #   01-json.ps1
 #   02-command.ps1
@@ -18,10 +21,7 @@
 #   13-window.ps1
 #   14-dispatch.ps1
 #   15-entry.ps1
-#
-# The shipped script is deliberately a single self-contained file: it is invoked directly by the
-# harness and by hand, it must carry UTF-8 with BOM so Windows PowerShell 5.1 decodes it in the right
-# code page, and it must run without module resolution or relative-path assumptions.
+
 
 # ===== 00-preamble.ps1 =============================================
 

@@ -142,10 +142,11 @@ Test-Contract 'tests\golden-sh.sh' 'ASCII only, LF' {
   return $v
 }
 
-# The generated script is verified by the contract above; its source modules must also stay
-# ASCII-only, because the build composes the script by decoding them without a BOM. A module that
-# accidentally acquired a non-ASCII character would be decoded in the ANSI code page and would
-# corrupt the generated artefact rather than failing here.
+# The generated scripts are verified above; their source modules must also stay ASCII-only, because
+# the build composes the artifacts by decoding the modules without a BOM. A module that accidentally
+# acquired a non-ASCII character would be decoded in the ANSI code page and would corrupt the
+# generated artefact rather than failing here. The shell modules additionally must be LF: a carriage
+# return becomes part of the last token on every line.
 $libDir = Join-Path $rootDir 'src\host\lib'
 if (Test-Path -LiteralPath $libDir) {
   foreach ($module in (Get-ChildItem -LiteralPath $libDir -Filter '*.ps1' | Sort-Object Name)) {
@@ -155,6 +156,17 @@ if (Test-Path -LiteralPath $libDir) {
       $v = New-Object System.Collections.ArrayList
       if ($i.hasBom) { [void]$v.Add('module must not carry a BOM; the build adds it to the generated script') }
       if ($i.nonAscii -gt 0) { [void]$v.Add("contains $($i.nonAscii) non-ASCII bytes; modules must stay ASCII-only") }
+      return $v
+    }
+  }
+  foreach ($module in (Get-ChildItem -LiteralPath $libDir -Filter '*.sh' | Sort-Object Name)) {
+    $rel = 'src\host\lib\' + $module.Name
+    Test-Contract $rel 'ASCII only, LF' {
+      param($i)
+      $v = New-Object System.Collections.ArrayList
+      if ($i.hasBom) { [void]$v.Add('module must not carry a BOM') }
+      if ($i.nonAscii -gt 0) { [void]$v.Add("contains $($i.nonAscii) non-ASCII bytes; modules must stay ASCII-only") }
+      if ($i.crlf -gt 0) { [void]$v.Add("$($i.crlf) CRLF line ending(s); shell modules must be LF") }
       return $v
     }
   }
