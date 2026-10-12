@@ -25,6 +25,8 @@ encoding, byte order marks and line endings explicit and byte-exact.
 | `tests/golden.ps1` | Windows golden cases driving the real script through argv |
 | `tests/golden-sh.sh` | POSIX golden cases, including that a failing call still emits an envelope |
 | `tests/encoding.ps1` | Encoding-contract guard (BOM, ASCII-only, line endings, BOM-free stdout) |
+| `tests/plugin.test.mjs` | Plugin execute path, argv handling, and bundle manifest shape |
+| `tests/permission.test.mjs` | Consent delegate: rule matching, deny-first, trust, audit bounds, atomic write |
 | `src/client/` | Web client surface (Vite scaffold, not yet wired to the host) |
 
 ## Modules
@@ -93,9 +95,9 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **47 Windows golden cases, 57 POSIX golden cases and 13 plugin cases pass**, all
-encoding contracts hold, 86 verbs in the table. 75 of the 86 verbs are implemented on Windows and 36
-on POSIX.
+Current state: **47 Windows golden cases, 57 POSIX golden cases, 13 plugin cases and 18 permission
+cases pass**, all encoding contracts hold, 86 verbs in the table. 75 of the 86 verbs are implemented
+on Windows and 36 on POSIX.
 
 ## Using it from the harness
 
@@ -149,8 +151,12 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
   `service` lifecycle verbs (start/stop/restart), and `permission.grant`/`revoke`/`acl.init`. Every
   one of those verbs is declared in the table and returns a typed `E_NOT_SUPPORTED`, never a silent
   success.
-- The consent-delegate plugin for durable authorization is not written; read-only `permission.*`
-  works, and the protected-path boundary is enforced.
+- The consent delegate (`src/permission/index.js`, row id `dsh-os-permission`) is written and tested:
+  it is the only component that writes `permission.json`, matching is deny-first regardless of rule
+  order, a file whose `updatedBy` is not the delegate is untrusted and falls back to defaults, a
+  wildcard target needs explicit acknowledgement, and writes go through a temp file plus rename so a
+  crash cannot leave a half-written file. The A-layer ACL is NOT implemented, and `selfcheck` reports
+  that honestly rather than claiming enforcement.
 
 ### Verified or not
 

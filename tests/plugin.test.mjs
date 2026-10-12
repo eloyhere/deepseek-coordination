@@ -164,21 +164,25 @@ await check('the package declares the bundle the loader needs', () => {
 await check('the patch row matches the documented bundle shape', () => {
   // Checked structurally rather than by loading a YAML parser: the project has no YAML dependency,
   // and the loader's dialect allows !!js tags that a stock parser would reject. The property that
-  // matters is that the row is an `insert` list whose entries carry a unique id and the package name.
+  // matters is that each row is an `insert` list entry carrying a unique id and the package name.
   const patch = readFileSync(join(rootDir, 'cordis.patch.yml'), 'utf8')
   const lines = patch.split('\n')
   const insertIndex = lines.findIndex((l) => /^- insert:\s*$/.test(l))
   assert.ok(insertIndex >= 0, 'the first document node must be an `insert:` list')
-  const rowId = lines.findIndex((l) => /^\s+-\s+id:\s*\S+/.test(l))
-  assert.ok(rowId > insertIndex, 'the inserted row must declare an id')
-  const rowName = lines.findIndex((l) => /^\s+name:\s*\S+/.test(l))
-  assert.ok(rowName > rowId, 'the inserted row must declare the package name')
-  const declaredName = lines[rowName].split(':')[1].trim().replace(/^['"]|['"]$/g, '')
+  const rowIds = lines.filter((l) => /^\s+-\s+id:\s*\S+/.test(l))
+  assert.ok(rowIds.length >= 1, 'at least one row must declare an id')
   const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'))
-  assert.equal(declaredName, pkg.name, 'the row name must equal the package name the loader resolves')
-  // Only one row, so a second install cannot silently shadow the first.
-  const rows = lines.filter((l) => /^\s+-\s+id:/.test(l))
-  assert.equal(rows.length, 1, 'exactly one plugin row')
+  const names = lines.filter((l) => /^\s+name:\s*\S+/.test(l)).map((l) => l.split(':')[1].trim().replace(/^['"]|['"]$/g, ''))
+  for (const n of names) {
+    assert.equal(n, pkg.name, `row name '${n}' must equal the package name the loader resolves`)
+  }
+  // Ids must be unique, or a second row would silently shadow the first.
+  const ids = rowIds.map((l) => l.split(':')[1].trim())
+  assert.equal(new Set(ids).size, ids.length, 'row ids must be unique')
+  // The delegate row must be present: it is the only component allowed to write permission.json.
+  assert.ok(ids.includes('dsh-os-permission'), 'the permission consent delegate row must be installed')
+  // And the manifest must export a name-based entry point for that row, or the loader cannot import it.
+  assert.equal(pkg.exports['./permission'], './src/permission/index.js')
 })
 
 await check('the plugin is resolvable by its own package name', () => {

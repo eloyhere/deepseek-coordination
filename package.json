@@ -37,6 +37,7 @@
   "main": "src/plugin/index.js",
   "exports": {
     ".": "./src/plugin/index.js",
+    "./permission": "./src/permission/index.js",
     "./package.json": "./package.json"
   },
   "meta": {
@@ -63,6 +64,7 @@
     "src/host/docs/command-original.txt",
     "cordis.patch.yml",
     "src/plugin/index.js",
+    "src/permission/index.js",
     "README.md"
   ],
   "scripts": {
@@ -73,7 +75,8 @@
     "test": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/golden.ps1",
     "test:encoding": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/encoding.ps1",
     "test:plugin": "node tests/plugin.test.mjs",
-    "test:all": "npm run test:encoding && npm run test && npm run test:plugin",
+    "test:permission": "node tests/permission.test.mjs",
+    "test:all": "npm run test:encoding && npm run test && npm run test:plugin && npm run test:permission",
     "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
   },
   "devDependencies": {

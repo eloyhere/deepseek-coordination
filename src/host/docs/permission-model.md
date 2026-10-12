@@ -1,7 +1,11 @@
 # dsh-os 授权模型（permission model）
 
-> 状态：**规范已定，实现待落地**。上游决策见本文件 §7。
+> 状态：**B 层与写入委托已落地**；A 层（ACL）待落地。上游决策见本文件 §7。
 > 关联：`command.txt`（权威动词契约）、`spec/verbs.tsv`（动词表）、`docs/os-spec.md`（总规范）、根目录 `permission.json`（授权数据，当前 0 字节）。
+>
+> **已落地**：读侧规则匹配（`permission query/list/audit`，动词层只读）、写入委托插件
+> `src/permission/index.js`（`dsh-os-permission`），以及 §6 中除 ACL 强度上报外的全部用例，
+> 见 `tests/permission.test.mjs`（18 条）。
 
 ---
 
@@ -157,16 +161,17 @@
 
 ## 6. 测试要求（随实现落地）
 
-| 用例 | 断言 |
-|---|---|
-| 受保护路径 | `file delete permission.json --allow` → `E_PERMISSION_PROTECTED_PATH`，且文件**字节不变** |
-| 脚本自我改写 | `file create bin/dsh-os.ps1 ... --allow` → 同上 |
-| 规则命中 | 存在 `deny-always` 规则时，即使传 `--allow` 也拒绝，返回 `ruleId` |
-| 审计追加 | 每次授权决定后审计条数 +1，且旧条目不被改写 |
-| 委托专属 | 非委托上下文调用 `permission grant` → `E_PERMISSION_DELEGATE_ONLY`，**文件未被修改** |
-| 篡改检出 | 手工把 `updatedBy` 改成别的值 → 读取时 `E_PERMISSION_FILE_UNTRUSTED`，判定退回 `defaults` |
-| fail-closed | 本会话审批策略为 `never` 时，需授权的操作返回 `E_PERMISSION_NO_ANSWERER`，**不产生副作用** |
-| A 层强度上报 | `selfcheck` 的 `aclEnforced` 与真实 ACL 状态一致（不能恒为 true） |
+| 用例 | 断言 | 状态 |
+|---|---|---|
+| 受保护路径 | `file delete permission.json --allow` → `E_PERMISSION_PROTECTED_PATH`，且文件**字节不变** | 已实现（`tests/golden.ps1`） |
+| 脚本自我改写 | `file create bin/dsh-os.ps1 ... --allow` → 同上 | 已实现（`tests/golden.ps1`） |
+| 规则命中 | 存在 `deny-always` 规则时，即使传 `--allow` 也拒绝，返回 `ruleId` | 已实现（委托侧查询；动词侧匹配待接入） |
+| 审计追加 | 每次授权决定后审计条数 +1，且旧条目不被改写 | 已实现（`tests/permission.test.mjs`） |
+| 委托专属 | 非委托上下文调用 `permission grant` → `E_PERMISSION_DELEGATE_ONLY`，**文件未被修改** | 待实现（动词层目前根本不接受该写入） |
+| 篡改检出 | 手工把 `updatedBy` 改成别的值 → 读取时 `E_PERMISSION_FILE_UNTRUSTED`，判定退回 `defaults` | 已实现（`tests/permission.test.mjs`） |
+| fail-closed | 本会话审批策略为 `never` 时，需授权的操作返回 `E_PERMISSION_NO_ANSWERER`，**不产生副作用** | 部分：动词层以 `E_PERMISSION` 拒绝，`E_PERMISSION_NO_ANSWERER` 待接入 |
+| A 层强度上报 | `selfcheck` 的 `aclEnforced` 与真实 ACL 状态一致（不能恒为 true） | **未实现**，`selfcheck` 目前如实报告 ACL 未启用 |
+
 
 ---
 

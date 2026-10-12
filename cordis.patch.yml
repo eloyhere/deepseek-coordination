@@ -4,8 +4,8 @@
 # plugin tree by applying each bundle's patch list over an empty entry list, in the order the profile
 # lists them, then the profile's own patches. This file is that patch list for the host plugin.
 #
-# `insert` with no `id` appends to the root entry list. The plugin itself is a plain Cordis plugin:
-# src/plugin/index.js exports apply/inject/name, and registers one model-facing tool with ctx.tools.
+# `insert` with no `id` appends to the root entry list. Each plugin below is a plain Cordis plugin
+# exporting apply/inject/name.
 - insert:
     - id: dsh-os
       name: deepseek-coordination
@@ -15,3 +15,13 @@
         scriptDir: src/host/bin
         # Default timeout for a single verb invocation, in milliseconds.
         timeoutMs: 120000
+    # The permission consent delegate: the ONLY writer of permission.json. It is a separate row because
+    # the scripts must never write the file - there is no write verb in the verb table - so the row
+    # that can write it is deliberately a distinct component with its own tools.
+    - id: dsh-os-permission
+      name: deepseek-coordination
+      config:
+        # Defaults to <package root>/permission.json. Point it elsewhere to keep a deployment's
+        # durable decisions outside the installed package.
+        # permissionPath: /absolute/path/to/permission.json
+        auditLimit: 200
