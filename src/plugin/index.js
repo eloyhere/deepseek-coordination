@@ -18,7 +18,7 @@
  * core reason this surface exists.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,6 +27,65 @@ export const name = 'dsh-os'
 
 /** The plugin is inert without the tool registry. */
 export const inject = ['tools']
+
+/**
+ * Whether a command can be started at all.
+ *
+ * Used only by the 'auto' edition choice, to decide between the two PowerShell artefacts. It asks the
+ * command itself rather than searching PATH by hand, so a shim, an alias-resolved path and a
+ * .exe-extension lookup on Windows all behave the way an actual spawn would. A failure to start is the
+ * answer being sought, so any error means "not available" and never propagates.
+ */
+function executableAvailable(command) {
+  try {
+    const probe = spawnSync(command, ['-NoLogo', '-NoProfile', '-Command', 'exit 0'], {
+      stdio: 'ignore',
+      timeout: 10000,
+      windowsHide: true,
+    })
+    return probe.error === undefined && probe.status === 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Find a PowerShell 7 executable.
+ *
+ * 'pwsh' alone is not enough. Installing PowerShell 7 does NOT put it on PATH for every process, and
+ * in this very repository's own environment it is at the standard install location while `spawn pwsh`
+ * fails with ENOENT. Requiring a PATH entry would therefore make the 7.6 artefact unreachable on a
+ * machine where it is plainly installed, which is exactly the bug this selection was added to fix.
+ *
+ * So the search is: an explicit DSH_OS_POWERSHELL, then PATH, then the two standard install locations.
+ * The first entry that starts wins, and null means 7.x is genuinely not available here.
+ */
+function findPowerShell7() {
+  const explicit = process.env.DSH_OS_POWERSHELL
+  if (explicit) return executableAvailable(explicit) ? explicit : null
+
+  const candidates = ['pwsh']
+  if (process.platform === 'win32') {
+    const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files'
+    const programFilesX86 = process.env['ProgramFiles(x86)']
+    const localAppData = process.env.LOCALAPPDATA
+    candidates.push(join(programFiles, 'PowerShell', '7', 'pwsh.exe'))
+    if (programFilesX86) candidates.push(join(programFilesX86, 'PowerShell', '7', 'pwsh.exe'))
+    if (localAppData) candidates.push(join(localAppData, 'Microsoft', 'PowerShell', '7', 'pwsh.exe'))
+  } else {
+    candidates.push('/usr/bin/pwsh', '/usr/local/bin/pwsh', '/opt/microsoft/powershell/7/pwsh')
+  }
+
+  for (const candidate of candidates) {
+    // A bare name is left to PATH resolution; an absolute path is checked for existence first so the
+    // probe does not pay for a spawn that cannot succeed.
+    if (candidate.includes('\\') || candidate.includes('/')) {
+      if (!existsSync(candidate)) continue
+    }
+    if (executableAvailable(candidate)) return candidate
+  }
+  return null
+}
 
 // src/plugin/index.js -> package root, which is THREE levels up from the file:
 //   file          <pkg>/src/plugin/index.js
@@ -47,25 +106,73 @@ const PKG_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
  * is an executable and keeps the call shell-free. The .bat shim exists for a human at a cmd prompt,
  * not for this plugin. A .sh is executed by bash for the same reason: the script need not be marked
  * executable in the checkout for the plugin to work.
+ *
+ * TWO PowerShell artefacts exist and BOTH are selectable:
+ *
+ *   bin/dsh-os.ps1   built from src/host/lib/powershell5.1, run by powershell.exe   (Windows PowerShell 5.1)
+ *   bin/dsh-os7.ps1  built from src/host/lib/powershell7.6, run by pwsh             (PowerShell 7)
+ *
+ * The 7.6 artefact was unreachable from here for a while: it existed, was built and was tested, but this
+ * function only ever looked for dsh-os.ps1. The default is unchanged at 5.1 so a deployment that is
+ * already working cannot change behaviour underneath itself; `powershellEdition: '7.6'` or `'auto'`
+ * selects the other one, and DSH_OS_POWERSHELL still overrides the executable. `'auto'` uses 7.6 only
+ * when both the artefact and a pwsh executable are present, and falls back to 5.1 otherwise.
  */
 function resolveInvocation(config) {
   const explicit = config.scriptPath ? [config.scriptPath] : []
   const dir = config.scriptPath
     ? dirname(config.scriptPath)
     : join(PKG_ROOT, config.scriptDir ?? 'src/host/bin')
+
+  // The edition may come from config or the environment; config wins because it is the more specific
+  // statement, and the environment is there for a deployment that cannot edit the profile.
+  const edition = String(config.powershellEdition ?? process.env.DSH_OS_POWERSHELL_EDITION ?? '5.1').toLowerCase()
+
+  const ps51 = { file: 'dsh-os.ps1', command: 'powershell.exe', edition: '5.1' }
+  const ps7 = { file: 'dsh-os7.ps1', command: 'pwsh', edition: '7.6' }
+
+  // The PowerShell 7 executable is located once, because the search probes processes and must not run
+  // per candidate.
+  const ps7Command = process.platform === 'win32' ? findPowerShell7() : null
+
+  // Build the candidate list for this platform. An explicit scriptPath disables the edition choice
+  // entirely: the caller has named a file, so that file is what runs.
+  let powershellCandidates = []
+  if (process.platform === 'win32') {
+    if (edition === '7.6' || edition === '7') {
+      powershellCandidates = ps7Command ? [{ ...ps7, command: ps7Command }, ps51] : [ps51]
+    } else if (edition === 'auto') {
+      const ps7Ready = ps7Command !== null && existsSync(join(dir, ps7.file))
+      powershellCandidates = ps7Ready ? [{ ...ps7, command: ps7Command }, ps51] : [ps51, ps7]
+    } else {
+      powershellCandidates = [ps51, ps7]
+    }
+  }
+
   const candidates = explicit.concat(process.platform === 'win32'
-    ? [join(dir, 'dsh-os.ps1')]
+    ? powershellCandidates.map((c) => join(dir, c.file))
     : [join(dir, 'dsh-os.sh')])
 
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue
     if (candidate.toLowerCase().endsWith('.ps1')) {
+      // The edition is derived from the FILE that was found, not from the request, because the request
+      // may have named the other one and a fallback happened.
+      const chosen = powershellCandidates.find((c) => join(dir, c.file) === candidate)
+      const isSeven = chosen ? chosen.edition === '7.6' : false
+      // -ExecutionPolicy is a Windows PowerShell option. pwsh accepts it on Windows but not everywhere,
+      // so it is only passed to the 5.1 executable. The resolved command is used, not the literal name,
+      // because a located pwsh is an absolute path.
+      const base = ['-NoLogo', '-NoProfile', '-NonInteractive']
       return {
         script: candidate,
-        command: process.env.DSH_OS_POWERSHELL ?? 'powershell.exe',
+        command: process.env.DSH_OS_POWERSHELL ?? (chosen ? chosen.command : ps51.command),
         // -File passes the script and its arguments as separate argv entries. -Command would make
         // PowerShell re-parse a single string, which is exactly the quoting layer this surface avoids.
-        prefix: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', candidate],
+        prefix: isSeven
+          ? [...base, '-File', candidate]
+          : [...base, '-ExecutionPolicy', 'Bypass', '-File', candidate],
+        edition: chosen ? chosen.edition : '5.1',
       }
     }
     if (candidate.toLowerCase().endsWith('.sh')) {
