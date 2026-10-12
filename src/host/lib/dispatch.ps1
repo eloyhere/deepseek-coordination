@@ -136,6 +136,19 @@ function Invoke-Dispatch {
     'clipboard.write' { return (Invoke-ClipboardWrite -Parsed $inner) }
     'wait.ms' { return (Invoke-WaitMs -Parsed $inner) }
     'wait.window' { return (Invoke-WaitWindow -Parsed $inner) }
+    'mouse.click' { return (Invoke-MouseClick -Parsed $inner) }
+    'mouse.context' { return (Invoke-MouseContext -Parsed $inner) }
+    'mouse.over' { return (Invoke-MouseOver -Parsed $inner) }
+    'mouse.wheel' { return (Invoke-MouseWheel -Parsed $inner) }
+    'mouse.down' { return (Invoke-MouseDown -Parsed $inner) }
+    'mouse.up' { return (Invoke-MouseUp -Parsed $inner) }
+    'mouse.cursor' { return (Invoke-MouseCursor -Parsed $inner) }
+    'keyboard.down' { return (Invoke-KeyboardDown -Parsed $inner) }
+    'keyboard.up' { return (Invoke-KeyboardUp -Parsed $inner) }
+    'keyboard.press' { return (Invoke-KeyboardPress -Parsed $inner) }
+    'keyboard.combination' { return (Invoke-KeyboardCombination -Parsed $inner) }
+    'keyboard.type' { return (Invoke-KeyboardType -Parsed $inner) }
+    'keyboard.codes' { return (Invoke-KeyboardCodes -Parsed $inner) }
 
     default {
       throw (New-OsError -Code 'E_NOT_SUPPORTED' -Message ("verb '{0}' is not implemented in this build" -f $target.key) `

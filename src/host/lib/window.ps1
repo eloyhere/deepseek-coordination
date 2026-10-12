@@ -449,6 +449,378 @@ function Invoke-Screenshot {
 }
 
 # ---------------------------------------------------------------------------
+# mouse
+# ---------------------------------------------------------------------------
+#
+# Coordinates are screen pixels, matching what mouse.cursor and window rects report, so a caller can
+# take a rectangle from window.list and click inside it without converting anything. The absolute
+# SendInput form normalises to 0..65535 over the VIRTUAL screen, which is why the metrics lookups
+# below are the virtual-screen ones: using the primary-monitor size would misplace every click on a
+# multi-monitor desktop.
+
+function Get-MouseButtonFlags {
+  param([string]$Button)
+  switch ($Button.ToLowerInvariant()) {
+    'left' { return @{ down = [DshNative]::MOUSEEVENTF_LEFTDOWN; up = [DshNative]::MOUSEEVENTF_LEFTUP } }
+    'right' { return @{ down = [DshNative]::MOUSEEVENTF_RIGHTDOWN; up = [DshNative]::MOUSEEVENTF_RIGHTUP } }
+    'middle' { return @{ down = [DshNative]::MOUSEEVENTF_MIDDLEDOWN; up = [DshNative]::MOUSEEVENTF_MIDDLEUP } }
+    default {
+      throw (New-OsError -Code 'E_USAGE' -Message ("unknown mouse button '{0}'" -f $Button) `
+          -Hint 'accepted: left, right, middle')
+    }
+  }
+}
+
+function Move-CursorTo {
+  param([int]$X, [int]$Y)
+  # The cursor is moved with SetCursorPos rather than a synthetic MOUSEEVENTF_MOVE, so the hit test
+  # performed by the target application sees the real pointer position. Many controls ignore injected
+  # moves and later discard clicks that arrive at a position they do not believe the pointer is at.
+  if (-not [DshNative]::SetCursorPos($X, $Y)) {
+    throw (New-OsError -Code 'E_IO' -Message ("the cursor could not be moved to {0},{1}" -f $X, $Y))
+  }
+}
+
+function Assert-Coordinates {
+  param([int]$X, [int]$Y)
+  # A point outside the virtual screen cannot be clicked, and reporting that is better than injecting
+  # an event that lands nowhere.
+  $vsX = [DshNative]::GetSystemMetrics([DshNative]::SM_XVIRTUALSCREEN)
+  $vsY = [DshNative]::GetSystemMetrics([DshNative]::SM_YVIRTUALSCREEN)
+  $vsW = [DshNative]::GetSystemMetrics([DshNative]::SM_CXVIRTUALSCREEN)
+  $vsH = [DshNative]::GetSystemMetrics([DshNative]::SM_CYVIRTUALSCREEN)
+  if ($X -lt $vsX -or $Y -lt $vsY -or $X -ge ($vsX + $vsW) -or $Y -ge ($vsY + $vsH)) {
+    throw (New-OsError -Code 'E_RANGE' `
+        -Message ("point {0},{1} is outside the virtual screen ({2},{3} {4}x{5})" -f $X, $Y, $vsX, $vsY, $vsW, $vsH))
+  }
+}
+
+function Invoke-MouseClick {
+  param($Parsed, [string]$DefaultButton = 'left')
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'mouse click'
+  Assert-Allowed -Parsed $Parsed -Verb 'mouse click' -Perm 'W'
+  $x = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'x'
+  $y = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 1) -Name 'y'
+  Assert-Desktop
+  Assert-Coordinates -X $x -Y $y
+
+  $button = Get-FlagValue -Parsed $Parsed -Name 'button' -Default $DefaultButton
+  $countText = Get-FlagValue -Parsed $Parsed -Name 'count' -Default '1'
+  $count = Get-IntArg -Text $countText -Name 'count'
+  if ($count -lt 1) {
+    throw (New-OsError -Code 'E_RANGE' -Message ("count must be at least 1, got {0}" -f $count))
+  }
+  $flags = Get-MouseButtonFlags -Button $button
+
+  Move-CursorTo -X $x -Y $y
+  for ($i = 0; $i -lt $count; $i++) {
+    [DshNative]::SendMouse($flags.down, 0, 0, 0)
+    [DshNative]::SendMouse($flags.up, 0, 0, 0)
+  }
+  $cursor = New-Object DshNative+POINT
+  [void][DshNative]::GetCursorPos([ref]$cursor)
+  return [ordered]@{
+    action = $(if ($button -eq 'right') { 'context' } else { 'click' })
+    button = $button
+    count = $count
+    requested = [ordered]@{ x = $x; y = $y }
+    cursor = [ordered]@{ x = $cursor.X; y = $cursor.Y }
+  }
+}
+
+function Invoke-MouseContext {
+  param($Parsed)
+  $inner = @{ positionals = $Parsed.positionals; flags = $Parsed.flags; named = $Parsed.named }
+  return (Invoke-MouseClick -Parsed $inner -DefaultButton 'right')
+}
+
+function Invoke-MouseOver {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'mouse over'
+  Assert-Allowed -Parsed $Parsed -Verb 'mouse over' -Perm 'W'
+  $x = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'x'
+  $y = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 1) -Name 'y'
+  Assert-Desktop
+  Assert-Coordinates -X $x -Y $y
+  Move-CursorTo -X $x -Y $y
+  $cursor = New-Object DshNative+POINT
+  [void][DshNative]::GetCursorPos([ref]$cursor)
+  return [ordered]@{
+    action = 'over'
+    requested = [ordered]@{ x = $x; y = $y }
+    # Read back rather than echoed: the real position proves the move happened.
+    cursor = [ordered]@{ x = $cursor.X; y = $cursor.Y }
+  }
+}
+
+function Invoke-MouseWheel {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'mouse wheel'
+  Assert-Allowed -Parsed $Parsed -Verb 'mouse wheel' -Perm 'W'
+  $x = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'x'
+  $y = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 1) -Name 'y'
+  Assert-Desktop
+  Assert-Coordinates -X $x -Y $y
+  Move-CursorTo -X $x -Y $y
+  # The wheel has to turn where the pointer is, so the pointer is placed first. The x/y pair carries
+  # the scroll distance, under the same convention as the other mouse verbs.
+  $delta = $x
+  [DshNative]::SendMouse([DshNative]::MOUSEEVENTF_WHEEL, 0, 0, [uint32]$delta)
+  return [ordered]@{
+    action = 'wheel'
+    delta = $delta
+    at = [ordered]@{ x = $x; y = $y }
+  }
+}
+
+function Invoke-MouseDown {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'mouse down'
+  Assert-Allowed -Parsed $Parsed -Verb 'mouse down' -Perm 'W'
+  $x = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'x'
+  $y = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 1) -Name 'y'
+  Assert-Desktop
+  Assert-Coordinates -X $x -Y $y
+  $button = Get-FlagValue -Parsed $Parsed -Name 'button' -Default 'left'
+  $flags = Get-MouseButtonFlags -Button $button
+  Move-CursorTo -X $x -Y $y
+  [DshNative]::SendMouse($flags.down, 0, 0, 0)
+  # The button is deliberately left down. A caller that never issues mouse up leaves the desktop with
+  # a held button, which is why mouse up takes no coordinates and always releases.
+  return [ordered]@{
+    action = 'down'
+    button = $button
+    at = [ordered]@{ x = $x; y = $y }
+  }
+}
+
+function Invoke-MouseUp {
+  param($Parsed)
+  Assert-NoExtra -Parsed $Parsed -Expected 0
+  Assert-Allowed -Parsed $Parsed -Verb 'mouse up' -Perm 'W'
+  Assert-Desktop
+  $button = Get-FlagValue -Parsed $Parsed -Name 'button' -Default 'left'
+  $flags = Get-MouseButtonFlags -Button $button
+  [DshNative]::SendMouse($flags.up, 0, 0, 0)
+  $cursor = New-Object DshNative+POINT
+  [void][DshNative]::GetCursorPos([ref]$cursor)
+  return [ordered]@{
+    action = 'up'
+    button = $button
+    cursor = [ordered]@{ x = $cursor.X; y = $cursor.Y }
+  }
+}
+
+function Invoke-MouseCursor {
+  param($Parsed)
+  Assert-NoExtra -Parsed $Parsed -Expected 0
+  Assert-Desktop
+  $cursor = New-Object DshNative+POINT
+  if (-not [DshNative]::GetCursorPos([ref]$cursor)) {
+    throw (New-OsError -Code 'E_IO' -Message 'the cursor position could not be read')
+  }
+  return [ordered]@{
+    cursor = [ordered]@{ x = $cursor.X; y = $cursor.Y }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# keyboard
+# ---------------------------------------------------------------------------
+
+# Accepted key names, mapped to virtual-key codes. A name not in this table is refused rather than
+# guessed at: an unrecognised key that silently became some other key would type the wrong thing, and
+# there is no way for the caller to notice.
+$script:KeyCodes = $null
+function Get-KeyCodeTable {
+  if ($null -ne $script:KeyCodes) { return $script:KeyCodes }
+  $t = @{}
+  # Letters and digits: the code is the character itself, upper-cased.
+  foreach ($c in [char[]]'abcdefghijklmnopqrstuvwxyz') { $t[[string]$c] = [int][char]([string]$c).ToUpperInvariant()[0] }
+  foreach ($d in 0..9) { $t["$d"] = 0x30 + $d }
+  # Function keys.
+  for ($i = 1; $i -le 24; $i++) { $t["f$i"] = 0x6F + $i }
+  $t['backspace'] = 0x08; $t['tab'] = 0x09; $t['enter'] = 0x0D; $t['return'] = 0x0D
+  $t['shift'] = 0x10; $t['ctrl'] = 0x11; $t['control'] = 0x11; $t['alt'] = 0x12
+  $t['pause'] = 0x13; $t['capslock'] = 0x14; $t['escape'] = 0x1B; $t['esc'] = 0x1B
+  $t['space'] = 0x20; $t['pageup'] = 0x21; $t['pagedown'] = 0x22
+  $t['end'] = 0x23; $t['home'] = 0x24; $t['left'] = 0x25; $t['up'] = 0x26
+  $t['right'] = 0x27; $t['down'] = 0x28
+  $t['printscreen'] = 0x2C; $t['insert'] = 0x2D; $t['delete'] = 0x2E; $t['del'] = 0x2E
+  $t['win'] = 0x5B; $t['lwin'] = 0x5B; $t['rwin'] = 0x5C; $t['apps'] = 0x5D
+  $t['numlock'] = 0x90; $t['scrolllock'] = 0x91
+  $t['shiftleft'] = 0xA0; $t['shiftright'] = 0xA1
+  $t['ctrlleft'] = 0xA2; $t['ctrlright'] = 0xA3
+  $t['altleft'] = 0xA4; $t['altright'] = 0xA5
+  # Punctuation by name, so a chord does not depend on the caller's keyboard layout for those keys.
+  $t['semicolon'] = 0xBA; $t['equals'] = 0xBB; $t['comma'] = 0xBC; $t['minus'] = 0xBD
+  $t['period'] = 0xBE; $t['slash'] = 0xBF; $t['backtick'] = 0xC0
+  $t['bracketleft'] = 0xDB; $t['backslash'] = 0xDC; $t['bracketright'] = 0xDD; $t['quote'] = 0xDE
+  # Numpad.
+  $t['num0'] = 0x60; $t['num1'] = 0x61; $t['num2'] = 0x62; $t['num3'] = 0x63; $t['num4'] = 0x64
+  $t['num5'] = 0x65; $t['num6'] = 0x66; $t['num7'] = 0x67; $t['num8'] = 0x68; $t['num9'] = 0x69
+  $t['multiply'] = 0x6A; $t['add'] = 0x6B; $t['subtract'] = 0x6D; $t['decimal'] = 0x6E; $t['divide'] = 0x6F
+  $script:KeyCodes = $t
+  return $t
+}
+
+function Resolve-KeyCode {
+  param([string]$Name)
+  if ([string]::IsNullOrEmpty($Name)) {
+    throw (New-OsError -Code 'E_TYPE' -Message 'a key name is required')
+  }
+  $key = $Name.Trim().ToLowerInvariant()
+  $table = Get-KeyCodeTable
+  if ($table.ContainsKey($key)) { return [int]$table[$key] }
+  throw (New-OsError -Code 'E_TYPE' -Message ("unknown key name '{0}'" -f $Name) `
+      -Hint 'run: dsh-os keyboard codes   (lists every accepted name on this platform)')
+}
+
+function Get-ModifierCodes {
+  param([string[]]$Names)
+  $codes = New-Object System.Collections.ArrayList
+  foreach ($n in $Names) { [void]$codes.Add((Resolve-KeyCode -Name $n)) }
+  return , @($codes)
+}
+
+# Release any modifier this process may have left held. Called before a chord when --clearmodifiers is
+# given, because a modifier the user is physically holding would otherwise combine with the injected
+# chord and produce a different shortcut than the caller asked for.
+function Clear-HeldModifiers {
+  foreach ($vk in @(0x10, 0x11, 0x12, 0x5B, 0x5C)) {
+    [DshNative]::SendKey([uint16]$vk, 0, ([uint32]([DshNative]::KEYEVENTF_KEYUP)))
+  }
+}
+
+function Invoke-KeyboardDown {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'keyboard down'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  Assert-Allowed -Parsed $Parsed -Verb 'keyboard down' -Perm 'W'
+  Assert-Desktop
+  $vk = Resolve-KeyCode -Name (Get-Positional -Parsed $Parsed -Index 0)
+  if (Test-HasFlag -Parsed $Parsed -Name 'clearmodifiers') { Clear-HeldModifiers }
+  [DshNative]::SendKey([uint16]$vk, 0, 0)
+  return [ordered]@{ action = 'down'; key = (Get-Positional -Parsed $Parsed -Index 0); vk = $vk }
+}
+
+function Invoke-KeyboardUp {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'keyboard up'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  Assert-Allowed -Parsed $Parsed -Verb 'keyboard up' -Perm 'W'
+  Assert-Desktop
+  $vk = Resolve-KeyCode -Name (Get-Positional -Parsed $Parsed -Index 0)
+  [DshNative]::SendKey([uint16]$vk, 0, ([uint32]([DshNative]::KEYEVENTF_KEYUP)))
+  return [ordered]@{ action = 'up'; key = (Get-Positional -Parsed $Parsed -Index 0); vk = $vk }
+}
+
+function Invoke-KeyboardPress {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'keyboard press'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  Assert-Allowed -Parsed $Parsed -Verb 'keyboard press' -Perm 'W'
+  Assert-Desktop
+  $name = Get-Positional -Parsed $Parsed -Index 0
+  $vk = Resolve-KeyCode -Name $name
+  if (Test-HasFlag -Parsed $Parsed -Name 'clearmodifiers') { Clear-HeldModifiers }
+  [DshNative]::SendKey([uint16]$vk, 0, 0)
+  [DshNative]::SendKey([uint16]$vk, 0, ([uint32]([DshNative]::KEYEVENTF_KEYUP)))
+  return [ordered]@{ action = 'press'; key = $name; vk = $vk }
+}
+
+# keyboard combination <down|up> key [key ...]
+#
+# The phase is an explicit positional rather than two verbs, so a chord is written the same way
+# whichever direction it goes, and a caller cannot accidentally press a chord without releasing it.
+function Invoke-KeyboardCombination {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'keyboard combination'
+  Assert-Allowed -Parsed $Parsed -Verb 'keyboard combination' -Perm 'W'
+  Assert-Desktop
+  $phase = (Get-Positional -Parsed $Parsed -Index 0).ToLowerInvariant()
+  if ($phase -ne 'down' -and $phase -ne 'up') {
+    throw (New-OsError -Code 'E_USAGE' -Message ("phase must be 'down' or 'up', got '{0}'" -f $phase))
+  }
+  $names = @()
+  $i = 1
+  while ($i -lt @($Parsed.positionals).Count) {
+    $t = [string]$Parsed.positionals[$i]
+    # Accept both "a b c" and "a+b+c" so a chord can be written either way.
+    foreach ($part in ($t -split '\+')) { if ($part -ne '') { $names += $part } }
+    $i++
+  }
+  if ($names.Count -eq 0) {
+    throw (New-OsError -Code 'E_USAGE' -Message 'a chord needs at least one key name')
+  }
+  $codes = Get-ModifierCodes -Names $names
+  if ($phase -eq 'down') {
+    if (Test-HasFlag -Parsed $Parsed -Name 'clearmodifiers') { Clear-HeldModifiers }
+    # Press in order, so modifiers go down before the key they modify.
+    foreach ($vk in $codes) { [DshNative]::SendKey([uint16]$vk, 0, 0) }
+  } else {
+    # Release in reverse, so the modified key comes up before its modifiers.
+    $reversed = @($codes)
+    [array]::Reverse($reversed)
+    foreach ($vk in $reversed) {
+      [DshNative]::SendKey([uint16]$vk, 0, ([uint32]([DshNative]::KEYEVENTF_KEYUP)))
+    }
+  }
+  return [ordered]@{
+    action = 'combination'
+    phase = $phase
+    keys = $names
+    vk = $codes
+  }
+}
+
+function Invoke-KeyboardType {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'keyboard type'
+  Assert-NoExtra -Parsed $Parsed -Expected 1
+  Assert-Allowed -Parsed $Parsed -Verb 'keyboard type' -Perm 'W'
+  Assert-Desktop
+  $text = Get-Positional -Parsed $Parsed -Index 0
+  $intervalText = Get-FlagValue -Parsed $Parsed -Name 'interval' -Default '0'
+  $interval = Get-IntArg -Text $intervalText -Name 'interval'
+  if ($interval -lt 0) {
+    throw (New-OsError -Code 'E_RANGE' -Message ("interval must not be negative, got {0}" -f $interval))
+  }
+  if ($text.Length -eq 0) {
+    throw (New-OsError -Code 'E_NOT_TEXT' -Message 'there is no text to type')
+  }
+
+  # Each character is sent as a Unicode key event, which is why this method is used rather than
+  # synthesising virtual keys: a virtual key depends on the active keyboard layout, so "%" on a German
+  # layout is a different chord than on a US one. Unicode events carry the character itself, so the
+  # same call types the same text on every layout, including non-ASCII.
+  $sent = 0
+  foreach ($ch in $text.ToCharArray()) {
+    [DshNative]::SendUnicodeChar($ch)
+    $sent++
+    if ($interval -gt 0) { Start-Sleep -Milliseconds $interval }
+  }
+  return [ordered]@{
+    action = 'type'
+    method = 'unicode-sendinput'
+    characters = $sent
+    text = $text
+  }
+}
+
+function Invoke-KeyboardCodes {
+  param($Parsed)
+  Assert-NoExtra -Parsed $Parsed -Expected 0
+  $table = Get-KeyCodeTable
+  $names = @($table.Keys | Sort-Object)
+  return [ordered]@{
+    platform = 'win32'
+    count = $names.Length
+    names = $names
+  }
+}
+
+# ---------------------------------------------------------------------------
 # clipboard
 # ---------------------------------------------------------------------------
 

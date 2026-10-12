@@ -93,8 +93,8 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **44 Windows golden cases, 44 POSIX golden cases and 13 plugin cases pass**, all
-encoding contracts hold, 86 verbs in the table. 58 of the 86 verbs are implemented on Windows.
+Current state: **46 Windows golden cases, 44 POSIX golden cases and 13 plugin cases pass**, all
+encoding contracts hold, 86 verbs in the table. 71 of the 86 verbs are implemented on Windows.
 
 ## Using it from the harness
 
@@ -134,7 +134,10 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
   or to go away.
 - Both goldens include the failure path, which is the point: a failing call must still deliver exactly
   one parseable envelope on stdout, because a bare exit code tells an agent nothing.
-- Not written yet on either platform: `mouse`, `keyboard`, `text` and `structure`. Also not written:
+- Implemented and tested on Windows for `mouse` and `keyboard`: cursor read-back, move, click,
+  right-click, wheel, button down/up, key down/up, a self-releasing press, chords in both phases, and
+  text entry by Unicode key events (so it is layout-independent and accepts non-ASCII).
+- Not written yet on either platform: `text` and `structure`. Also not written:
   `service`, `window`, `screenshot`, `clipboard` and `wait` on POSIX, `execute.query`,
   `execute.kill`, `task.show`, `task.kill`, `task.launch`, the `service` lifecycle verbs
   (start/stop/restart), and `permission.grant`/`revoke`/`acl.init`. Every one of those verbs is

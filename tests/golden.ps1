@@ -818,6 +818,52 @@ Assert-Case 'wait/ms-and-window' {
   }
 }
 
+Assert-Case 'keyboard/codes-and-validation' {
+  $c = Invoke-Os @('keyboard', 'codes')
+  if ($c.json.ok) {
+    Assert-True ($c.json.result.count -gt 100) 'a substantial key table is reported'
+    # A few names every platform must accept, so a rename cannot silently break chords.
+    foreach ($k in @('ctrl', 'alt', 'shift', 'escape', 'enter', 'tab', 'f1', 'a', '0', 'left')) {
+      Assert-True (@($c.json.result.names) -contains $k) ("key table contains '$k'")
+    }
+  }
+  # An unknown name is refused rather than guessed at: a silently substituted key would type the
+  # wrong thing and the caller could not tell.
+  Assert-Equal 'E_TYPE' (Assert-OsError (Invoke-Os @('keyboard', 'press', 'notakey', '--allow'))).code 'unknown key name'
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('keyboard', 'press', 'escape'))).code 'press requires authorization'
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('keyboard', 'combination', 'sideways', 'ctrl', 'a', '--allow'))).code 'phase must be down or up'
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('keyboard', 'combination', 'down', '--allow'))).code 'a chord needs keys'
+}
+
+Assert-Case 'mouse/validation-and-readback' {
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('mouse', 'click', '10'))).code 'click needs both coordinates'
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('mouse', 'click', '10', '10'))).code 'click requires authorization'
+  Assert-Equal 'E_TYPE' (Assert-OsError (Invoke-Os @('mouse', 'over', 'abc', '10', '--allow'))).code 'coordinates must be numeric'
+
+  $cur = Invoke-Os @('mouse', 'cursor')
+  if ($cur.json.ok) {
+    Assert-True ($null -ne $cur.json.result.cursor) 'cursor position is reported'
+    # A point far outside any display must be refused rather than injected at a clamped position.
+    $far = Invoke-Os @('mouse', 'over', '999999', '999999', '--allow')
+    if ($far.json.ok) {
+      Assert-True $false 'a point outside the virtual screen must not be accepted'
+    } else {
+      Assert-True (@('E_RANGE', 'E_NO_DISPLAY') -contains $far.json.error.code) 'out-of-range point refused'
+    }
+    # And a real move must be observable: the cursor is read back, not echoed.
+    $x = [int]$cur.json.result.cursor.x
+    $y = [int]$cur.json.result.cursor.y
+    $back = Invoke-Os @('mouse', 'over', "$x", "$y", '--allow')
+    if ($back.json.ok) {
+      Assert-Equal $x $back.json.result.cursor.x 'cursor x read back matches'
+      Assert-Equal $y $back.json.result.cursor.y 'cursor y read back matches'
+    }
+    # The cursor is deliberately left exactly where it was found.
+  } else {
+    Assert-True (@('E_NO_DISPLAY', 'E_NOT_SUPPORTED') -contains $cur.json.error.code) 'typed capability error'
+  }
+}
+
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ("passed: " + $script:Passed + "   failed: " + $script:Failed) -ForegroundColor Cyan
