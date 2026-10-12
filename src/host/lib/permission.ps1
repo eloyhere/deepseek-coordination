@@ -103,17 +103,129 @@ function Invoke-PermissionQuery {
   }
 }
 
+# The well-known SID for "Everyone". Layer A denies write access to it, because denying Everyone
+# covers every context that could open the file, including the automation one, without this process
+# having to know which account the harness runs as.
+$script:EveryoneSid = 'S-1-1-0'
+
 function Test-AclEnforced {
-  # Layer A is only real when the authorization file has an explicit deny for the automation
-  # context. Until acl init has run, this must report false rather than implying protection.
-  $flag = Join-Path $script:RootDir '.temporary\acl-state.json'
-  if (-not (Test-Path -LiteralPath $flag)) { return $false }
+  # Measured from the file's OWN access control list, never from a state file.
+  #
+  # This previously read a flag written under .temporary/acl-state.json, which meant the reported
+  # strength was whatever that file happened to say: a stale or edited flag would report kernel
+  # enforcement that was not in effect. The model requires this to be measured, so the descriptor is
+  # read back and searched for an explicit deny.
+  $path = Get-PermissionFilePath
+  if (-not (Test-Path -LiteralPath $path)) { return $false }
   try {
-    $doc = ([System.IO.File]::ReadAllText($flag, $script:NoBom) | ConvertFrom-Json)
-    if ($null -eq $doc.PSObject.Properties['aclEnforced']) { return $false }
-    return [bool]$doc.aclEnforced
+    Initialize-Native
+    $state = [DshNative]::DescribeDenyState($path, $script:EveryoneSid)
+    return ($state -eq 'DENY')
   } catch {
     return $false
+  }
+}
+
+# The reason, not just the boolean, so selfcheck can explain what is missing.
+function Get-AclEnforcementDetail {
+  $path = Get-PermissionFilePath
+  if (-not (Test-Path -LiteralPath $path)) {
+    return [ordered]@{ enforced = $false; reason = 'permission.json does not exist'; aclState = 'NOFILE' }
+  }
+  try {
+    Initialize-Native
+    $state = [DshNative]::DescribeDenyState($path, $script:EveryoneSid)
+    # if/elseif rather than switch: PowerShell's switch iterates an enumerable input, and a string is
+    # enumerable as characters, which silently runs the body once per character.
+    if ($state -eq 'DENY') { $reason = 'an explicit deny of write access for Everyone is present' }
+    elseif ($state -eq 'NONE') { $reason = 'the file has a DACL but no deny entry for Everyone; run: dsh-os permission acl init' }
+    elseif ($state -eq 'NODACL') { $reason = 'the file has no DACL, so nothing is being denied' }
+    else { $reason = "the access control list could not be read ($state)" }
+    return [ordered]@{ enforced = ($state -eq 'DENY'); reason = $reason; aclState = "$state"; sid = $script:EveryoneSid }
+  } catch {
+    return [ordered]@{ enforced = $false; reason = ("the ACL could not be read: {0}" -f $_.Exception.Message); aclState = 'ERROR' }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# permission.grant / revoke / acl init
+# ---------------------------------------------------------------------------
+
+# Both write verbs are delegate-only, and that is enforced by there being no implementation here at
+# all rather than by a permission check that could be argued with. The authorization file is written
+# by the consent delegate plugin, which can reach the user's approval UI; a script cannot, so a script
+# must not be able to create a durable grant. E_PERMISSION_DELEGATE_ONLY names the component that can.
+function Invoke-PermissionGrant {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 3 -Verb 'permission grant'
+  Assert-Allowed -Parsed $Parsed -Verb 'permission grant' -Perm 'W'
+  throw (New-OsError -Code 'E_PERMISSION_DELEGATE_ONLY' `
+      -Message 'permission grant can only be performed by the consent delegate' `
+      -Hint 'this verb needs the user approval dialog, which the delegate plugin owns; a script cannot reach it')
+}
+
+function Invoke-PermissionRevoke {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'permission revoke'
+  Assert-Allowed -Parsed $Parsed -Verb 'permission revoke' -Perm 'W'
+  throw (New-OsError -Code 'E_PERMISSION_DELEGATE_ONLY' `
+      -Message 'permission revoke can only be performed by the consent delegate' `
+      -Hint 'revoking a durable decision also needs the user approval dialog')
+}
+
+# permission acl init - idempotently apply layer A.
+#
+# Idempotent in the sense that matters here: running it twice leaves the same access control list, and
+# running it on a file that already carries the deny reports that nothing changed rather than adding a
+# second identical entry.
+#
+# It requires elevation because rewriting the security descriptor of a protected object is a
+# privileged operation. A refusal is reported as E_ELEVATION_REQUIRED rather than being swallowed.
+function Invoke-PermissionAclInit {
+  param($Parsed)
+  Assert-NoExtra -Parsed $Parsed -Expected 0
+  Assert-Allowed -Parsed $Parsed -Verb 'permission acl init' -Perm 'W'
+  $path = Get-PermissionFilePath
+  if (-not (Test-Path -LiteralPath $path)) {
+    throw (New-OsError -Code 'E_NOT_FOUND' -Message ("permission.json does not exist at {0}" -f $path) `
+        -Hint 'create the file first; the repository ships an empty one as the documented initial state')
+  }
+  Initialize-Native
+
+  $before = Get-AclEnforcementDetail
+  if ($before.enforced) {
+    # Already protected. Reported as a no-op rather than re-applying, which is what makes a second run
+    # safe to call from anywhere.
+    return [ordered]@{
+      path = $path
+      changed = $false
+      enforced = $true
+      sid = $script:EveryoneSid
+      reason = $before.reason
+    }
+  }
+
+  if (-not (Test-IsElevated)) {
+    throw (New-OsError -Code 'E_ELEVATION_REQUIRED' `
+        -Message 'setting the security descriptor of a protected file requires elevation' `
+        -Hint 'this operation needs an elevated context; nothing was changed')
+  }
+
+  $result = [DshNative]::ApplyDeny($path, $script:EveryoneSid)
+  if ($result -ne 'OK') {
+    throw (New-OsError -Code 'E_IO' -Message ("the access control list could not be updated: {0}" -f $result))
+  }
+
+  # Read back rather than trusting the call: the point of layer A is what the kernel will enforce, so
+  # the result reports the DACL as it now stands.
+  $after = Get-AclEnforcementDetail
+  return [ordered]@{
+    path = $path
+    changed = $true
+    enforced = $after.enforced
+    sid = $script:EveryoneSid
+    reason = $after.reason
+    aclState = $after.aclState
   }
 }
 
@@ -169,12 +281,18 @@ function Invoke-Selfcheck {
       [void]$verbs.Add([ordered]@{ verb = $f[0]; positionals = $f[1]; flags = $f[2]; perm = $f[3] })
     }
   }
+  $enforcement = Get-AclEnforcementDetail
   return [ordered]@{
     script = 'bin/dsh-os.ps1'
     powershell = $PSVersionTable.PSVersion.ToString()
     clrVersion = $PSVersionTable.CLRVersion.ToString()
     encodesPlainStdout = $true
     capabilities = Get-PlatformCapabilities
+    # The permission model requires selfcheck to report which enforcement strength is actually in
+    # effect. It is MEASURED from the authorization file's security descriptor, and the reason is
+    # reported next to the boolean so a false can be acted on instead of just wondered about.
+    aclEnforced = $enforcement.enforced
+    aclReason = $enforcement.reason
     verbCount = $verbs.Count
     verbs = $verbs.ToArray()
   }

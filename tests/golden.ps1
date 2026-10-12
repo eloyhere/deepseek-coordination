@@ -902,6 +902,31 @@ Assert-Case 'accessibility/text-and-structure' {
   }
 }
 
+Assert-Case 'permission/delegate-only-and-acl-reporting' {
+  # The two write verbs must be DELEGATE_ONLY. The enforcement is structural: there is no
+  # implementation in the script at all, because creating a durable grant needs the user approval
+  # dialog that only the delegate plugin can reach.
+  Assert-Equal 'E_PERMISSION_DELEGATE_ONLY' (Assert-OsError (Invoke-Os @('permission', 'grant', 'file.delete', 'x', 'allow-always', '--allow'))).code 'grant is delegate-only'
+  Assert-Equal 'E_PERMISSION_DELEGATE_ONLY' (Assert-OsError (Invoke-Os @('permission', 'revoke', 'r-0001', '--allow'))).code 'revoke is delegate-only'
+  # Authorization is still checked first, so an unauthorized attempt does not reach the delegate rule.
+  Assert-Equal 'E_PERMISSION' (Assert-OsError (Invoke-Os @('permission', 'grant', 'file.delete', 'x', 'allow-always'))).code 'grant needs authorization'
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('permission', 'grant', 'file.delete'))).code 'grant needs its arguments'
+
+  # selfcheck must report the enforcement strength it is actually operating at, measured from the
+  # authorization file's security descriptor rather than from a stored flag.
+  $sc = Invoke-Os @('selfcheck')
+  Assert-True ($null -ne $sc.json.result.PSObject.Properties['aclEnforced']) 'selfcheck reports aclEnforced'
+  Assert-True ($sc.json.result.aclEnforced -is [bool]) 'aclEnforced is a boolean, not a string'
+  Assert-True ($null -ne $sc.json.result.PSObject.Properties['aclReason']) 'selfcheck explains the ACL state'
+  Assert-True ($sc.json.result.aclReason.Length -gt 0) 'the reason is not empty'
+
+  # The measured value must equal the measurement, so a claim of enforcement cannot come from a file.
+  $list = Invoke-Os @('permission', 'list')
+  Assert-Equal $sc.json.result.aclEnforced $list.json.result.aclEnforced 'selfcheck and permission list agree'
+  $query = Invoke-Os @('permission', 'query', 'file.delete', 'x')
+  Assert-Equal $sc.json.result.aclEnforced $query.json.result.aclEnforced 'and permission query agrees'
+}
+
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ("passed: " + $script:Passed + "   failed: " + $script:Failed) -ForegroundColor Cyan

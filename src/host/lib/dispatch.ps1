@@ -122,6 +122,9 @@ function Invoke-Dispatch {
     'permission.query' { return (Invoke-PermissionQuery -Parsed $inner) }
     'permission.list' { return (Invoke-PermissionList -Parsed $inner) }
     'permission.audit' { return (Invoke-PermissionAudit -Parsed $inner) }
+    'permission.grant' { return (Invoke-PermissionGrant -Parsed $inner) }
+    'permission.revoke' { return (Invoke-PermissionRevoke -Parsed $inner) }
+    'permission.acl.init' { return (Invoke-PermissionAclInit -Parsed $inner) }
     'window.list' { return (Invoke-WindowList -Parsed $inner) }
     'window.find' { return (Invoke-WindowFind -Parsed $inner) }
     'window.active' { return (Invoke-WindowActive -Parsed $inner) }

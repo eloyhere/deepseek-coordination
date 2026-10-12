@@ -960,6 +960,177 @@ public static class DshNative
     [DllImport("user32.dll")]
     public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
 
+    // -- security descriptors (layer A enforcement) ------------------------
+    //
+    // Used to give permission.json an explicit DENY for the automation context's write access. Read
+    // side is what matters most: the enforcement strength is measured from the file's real DACL, so a
+    // report can never claim protection the kernel is not applying.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TRUSTEE
+    {
+        public IntPtr pMultipleTrustee;
+        public int MultipleTrusteeOperation;
+        public int TrusteeForm;
+        public int TrusteeType;
+        public IntPtr ptstrName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct EXPLICIT_ACCESS
+    {
+        public int grfAccessPermissions;
+        public int grfAccessMode;
+        public int grfInheritance;
+        public TRUSTEE Trustee;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetNamedSecurityInfoW(
+        string objectName, int objectType, int securityInfo,
+        out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint SetNamedSecurityInfoW(
+        string objectName, int objectType, int securityInfo,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ConvertStringSidToSidW(string stringSid, out IntPtr sid);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint SetEntriesInAclW(int count, EXPLICIT_ACCESS[] entries, IntPtr oldAcl, out IntPtr newAcl);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetExplicitEntriesFromAclW(IntPtr acl, out uint count, out IntPtr entries);
+
+    [DllImport("advapi32.dll")]
+    public static extern bool IsValidAcl(IntPtr acl);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern IntPtr GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
+
+    // LocalFree is exported by kernel32, NOT by advapi32. Declaring it under advapi32 produced
+    // "Unable to find an entry point named 'LocalFree'", which surfaced only at cleanup time - after
+    // the deny had already been applied - so the operation looked like a failure while having partly
+    // succeeded.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr LocalFree(IntPtr handle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr stringSid);
+
+    public const int SE_FILE_OBJECT = 1;
+    public const int DACL_SECURITY_INFORMATION = 4;
+    public const int PROTECTED_DACL_SECURITY_INFORMATION = unchecked((int)0x80000000);
+    public const int TRUSTEE_IS_SID = 0;
+    public const int TRUSTEE_IS_WELL_KNOWN_GROUP = 5;
+    public const int TRUSTEE_IS_USER = 1;
+    public const int DENY_ACCESS = 3;
+    public const int GRANT_ACCESS = 1;
+    public const int NO_INHERITANCE = 0;
+    public const int WRITE_ACCESS = 0x00000002 | 0x00000004 | 0x00000010 | 0x00000100 | 0x00010000 | 0x00040000;
+    public const int FILE_GENERIC_WRITE = 0x00120116;
+    public const int DELETE = 0x00010000;
+    public const int WRITE_DAC = 0x00040000;
+    public const int WRITE_OWNER = 0x00080000;
+    public const int ACCESS_DENIED_ACE_TYPE = 1;
+    public const int ACCESS_ALLOWED_ACE_TYPE = 0;
+
+    // One deny check plus one presence check, without exposing the descriptor layout to PowerShell:
+    // parsing the ACL here keeps the ACE walk in the same place as the declarations it depends on.
+    public static string DescribeDenyState(string path, string sid)
+    {
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint rc = GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            out owner, out group, out dacl, out sacl, out descriptor);
+        if (rc != 0) { return "ERROR:" + rc; }
+        try
+        {
+            if (dacl == IntPtr.Zero) { return "NODACL"; }
+            // Walk the ACL: ACE_HEADER is AceType(1) AceFlags(1) AceSize(2), then the mask, then the SID.
+            int aceCount = Marshal.ReadInt16(dacl, 4);
+            IntPtr p = (IntPtr)(dacl.ToInt64() + 8);
+            try
+            {
+                IntPtr target = IntPtr.Zero;
+                ConvertStringSidToSidW(sid, out target);
+                if (target == IntPtr.Zero) { return "BADSID"; }
+                try
+                {
+                    int targetLen = 8 + Marshal.ReadByte(target, 1) * 4;
+                    for (int i = 0; i < aceCount; i++)
+                    {
+                        byte aceType = Marshal.ReadByte(p, 0);
+                        int aceSize = Marshal.ReadInt16(p, 2);
+                        int mask = Marshal.ReadInt32(p, 4);
+                        IntPtr aceSid = (IntPtr)(p.ToInt64() + 8);
+                        int sidLen = 8 + Marshal.ReadByte(aceSid, 1) * 4;
+                        bool sameSid = sidLen == targetLen && CompareMemory(aceSid, target, sidLen);
+                        // Only an explicit DENY matters for layer A; an allow for someone else does not
+                        // protect anything.
+                        if (sameSid && aceType == ACCESS_DENIED_ACE_TYPE && (mask & FILE_GENERIC_WRITE) != 0)
+                        {
+                            return "DENY";
+                        }
+                        p = (IntPtr)(p.ToInt64() + aceSize);
+                    }
+                }
+                finally { if (target != IntPtr.Zero) LocalFree(target); }
+            }
+            finally { }
+            return "NONE";
+        }
+        finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); }
+    }
+
+    public static bool CompareMemory(IntPtr a, IntPtr b, int length)
+    {
+        for (int i = 0; i < length; i++)
+        {
+            if (Marshal.ReadByte(a, i) != Marshal.ReadByte(b, i)) { return false; }
+        }
+        return true;
+    }
+
+    // Apply an explicit DENY for one SID, preserving the existing DACL.
+    public static string ApplyDeny(string path, string sid)
+    {
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint rc = GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            out owner, out group, out dacl, out sacl, out descriptor);
+        if (rc != 0) { return "GET:" + rc; }
+        IntPtr sidPtr = IntPtr.Zero;
+        IntPtr newAcl = IntPtr.Zero;
+        try
+        {
+            if (!ConvertStringSidToSidW(sid, out sidPtr) || sidPtr == IntPtr.Zero) { return "BADSID"; }
+            EXPLICIT_ACCESS[] ea = new EXPLICIT_ACCESS[1];
+            ea[0].grfAccessPermissions = FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER;
+            ea[0].grfAccessMode = DENY_ACCESS;
+            ea[0].grfInheritance = NO_INHERITANCE;
+            ea[0].Trustee.pMultipleTrustee = IntPtr.Zero;
+            ea[0].Trustee.MultipleTrusteeOperation = 0;
+            ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+            ea[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+            ea[0].Trustee.ptstrName = sidPtr;
+            uint arc = SetEntriesInAclW(1, ea, dacl, out newAcl);
+            if (arc != 0) { return "SETENTRIES:" + arc; }
+            uint src = SetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                IntPtr.Zero, IntPtr.Zero, newAcl, IntPtr.Zero);
+            if (src != 0) { return "SETINFO:" + src; }
+            return "OK";
+        }
+        finally
+        {
+            if (newAcl != IntPtr.Zero) LocalFree(newAcl);
+            if (sidPtr != IntPtr.Zero) LocalFree(sidPtr);
+            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+        }
+    }
+
     // -- helpers ----------------------------------------------------------
     public static string WindowText(IntPtr hWnd)
     {
@@ -2683,17 +2854,129 @@ function Invoke-PermissionQuery {
   }
 }
 
+# The well-known SID for "Everyone". Layer A denies write access to it, because denying Everyone
+# covers every context that could open the file, including the automation one, without this process
+# having to know which account the harness runs as.
+$script:EveryoneSid = 'S-1-1-0'
+
 function Test-AclEnforced {
-  # Layer A is only real when the authorization file has an explicit deny for the automation
-  # context. Until acl init has run, this must report false rather than implying protection.
-  $flag = Join-Path $script:RootDir '.temporary\acl-state.json'
-  if (-not (Test-Path -LiteralPath $flag)) { return $false }
+  # Measured from the file's OWN access control list, never from a state file.
+  #
+  # This previously read a flag written under .temporary/acl-state.json, which meant the reported
+  # strength was whatever that file happened to say: a stale or edited flag would report kernel
+  # enforcement that was not in effect. The model requires this to be measured, so the descriptor is
+  # read back and searched for an explicit deny.
+  $path = Get-PermissionFilePath
+  if (-not (Test-Path -LiteralPath $path)) { return $false }
   try {
-    $doc = ([System.IO.File]::ReadAllText($flag, $script:NoBom) | ConvertFrom-Json)
-    if ($null -eq $doc.PSObject.Properties['aclEnforced']) { return $false }
-    return [bool]$doc.aclEnforced
+    Initialize-Native
+    $state = [DshNative]::DescribeDenyState($path, $script:EveryoneSid)
+    return ($state -eq 'DENY')
   } catch {
     return $false
+  }
+}
+
+# The reason, not just the boolean, so selfcheck can explain what is missing.
+function Get-AclEnforcementDetail {
+  $path = Get-PermissionFilePath
+  if (-not (Test-Path -LiteralPath $path)) {
+    return [ordered]@{ enforced = $false; reason = 'permission.json does not exist'; aclState = 'NOFILE' }
+  }
+  try {
+    Initialize-Native
+    $state = [DshNative]::DescribeDenyState($path, $script:EveryoneSid)
+    # if/elseif rather than switch: PowerShell's switch iterates an enumerable input, and a string is
+    # enumerable as characters, which silently runs the body once per character.
+    if ($state -eq 'DENY') { $reason = 'an explicit deny of write access for Everyone is present' }
+    elseif ($state -eq 'NONE') { $reason = 'the file has a DACL but no deny entry for Everyone; run: dsh-os permission acl init' }
+    elseif ($state -eq 'NODACL') { $reason = 'the file has no DACL, so nothing is being denied' }
+    else { $reason = "the access control list could not be read ($state)" }
+    return [ordered]@{ enforced = ($state -eq 'DENY'); reason = $reason; aclState = "$state"; sid = $script:EveryoneSid }
+  } catch {
+    return [ordered]@{ enforced = $false; reason = ("the ACL could not be read: {0}" -f $_.Exception.Message); aclState = 'ERROR' }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# permission.grant / revoke / acl init
+# ---------------------------------------------------------------------------
+
+# Both write verbs are delegate-only, and that is enforced by there being no implementation here at
+# all rather than by a permission check that could be argued with. The authorization file is written
+# by the consent delegate plugin, which can reach the user's approval UI; a script cannot, so a script
+# must not be able to create a durable grant. E_PERMISSION_DELEGATE_ONLY names the component that can.
+function Invoke-PermissionGrant {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 3 -Verb 'permission grant'
+  Assert-Allowed -Parsed $Parsed -Verb 'permission grant' -Perm 'W'
+  throw (New-OsError -Code 'E_PERMISSION_DELEGATE_ONLY' `
+      -Message 'permission grant can only be performed by the consent delegate' `
+      -Hint 'this verb needs the user approval dialog, which the delegate plugin owns; a script cannot reach it')
+}
+
+function Invoke-PermissionRevoke {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 1 -Verb 'permission revoke'
+  Assert-Allowed -Parsed $Parsed -Verb 'permission revoke' -Perm 'W'
+  throw (New-OsError -Code 'E_PERMISSION_DELEGATE_ONLY' `
+      -Message 'permission revoke can only be performed by the consent delegate' `
+      -Hint 'revoking a durable decision also needs the user approval dialog')
+}
+
+# permission acl init - idempotently apply layer A.
+#
+# Idempotent in the sense that matters here: running it twice leaves the same access control list, and
+# running it on a file that already carries the deny reports that nothing changed rather than adding a
+# second identical entry.
+#
+# It requires elevation because rewriting the security descriptor of a protected object is a
+# privileged operation. A refusal is reported as E_ELEVATION_REQUIRED rather than being swallowed.
+function Invoke-PermissionAclInit {
+  param($Parsed)
+  Assert-NoExtra -Parsed $Parsed -Expected 0
+  Assert-Allowed -Parsed $Parsed -Verb 'permission acl init' -Perm 'W'
+  $path = Get-PermissionFilePath
+  if (-not (Test-Path -LiteralPath $path)) {
+    throw (New-OsError -Code 'E_NOT_FOUND' -Message ("permission.json does not exist at {0}" -f $path) `
+        -Hint 'create the file first; the repository ships an empty one as the documented initial state')
+  }
+  Initialize-Native
+
+  $before = Get-AclEnforcementDetail
+  if ($before.enforced) {
+    # Already protected. Reported as a no-op rather than re-applying, which is what makes a second run
+    # safe to call from anywhere.
+    return [ordered]@{
+      path = $path
+      changed = $false
+      enforced = $true
+      sid = $script:EveryoneSid
+      reason = $before.reason
+    }
+  }
+
+  if (-not (Test-IsElevated)) {
+    throw (New-OsError -Code 'E_ELEVATION_REQUIRED' `
+        -Message 'setting the security descriptor of a protected file requires elevation' `
+        -Hint 'this operation needs an elevated context; nothing was changed')
+  }
+
+  $result = [DshNative]::ApplyDeny($path, $script:EveryoneSid)
+  if ($result -ne 'OK') {
+    throw (New-OsError -Code 'E_IO' -Message ("the access control list could not be updated: {0}" -f $result))
+  }
+
+  # Read back rather than trusting the call: the point of layer A is what the kernel will enforce, so
+  # the result reports the DACL as it now stands.
+  $after = Get-AclEnforcementDetail
+  return [ordered]@{
+    path = $path
+    changed = $true
+    enforced = $after.enforced
+    sid = $script:EveryoneSid
+    reason = $after.reason
+    aclState = $after.aclState
   }
 }
 
@@ -2749,12 +3032,18 @@ function Invoke-Selfcheck {
       [void]$verbs.Add([ordered]@{ verb = $f[0]; positionals = $f[1]; flags = $f[2]; perm = $f[3] })
     }
   }
+  $enforcement = Get-AclEnforcementDetail
   return [ordered]@{
     script = 'bin/dsh-os.ps1'
     powershell = $PSVersionTable.PSVersion.ToString()
     clrVersion = $PSVersionTable.CLRVersion.ToString()
     encodesPlainStdout = $true
     capabilities = Get-PlatformCapabilities
+    # The permission model requires selfcheck to report which enforcement strength is actually in
+    # effect. It is MEASURED from the authorization file's security descriptor, and the reason is
+    # reported next to the boolean so a false can be acted on instead of just wondered about.
+    aclEnforced = $enforcement.enforced
+    aclReason = $enforcement.reason
     verbCount = $verbs.Count
     verbs = $verbs.ToArray()
   }
@@ -4200,6 +4489,9 @@ function Invoke-Dispatch {
     'permission.query' { return (Invoke-PermissionQuery -Parsed $inner) }
     'permission.list' { return (Invoke-PermissionList -Parsed $inner) }
     'permission.audit' { return (Invoke-PermissionAudit -Parsed $inner) }
+    'permission.grant' { return (Invoke-PermissionGrant -Parsed $inner) }
+    'permission.revoke' { return (Invoke-PermissionRevoke -Parsed $inner) }
+    'permission.acl.init' { return (Invoke-PermissionAclInit -Parsed $inner) }
     'window.list' { return (Invoke-WindowList -Parsed $inner) }
     'window.find' { return (Invoke-WindowFind -Parsed $inner) }
     'window.active' { return (Invoke-WindowActive -Parsed $inner) }

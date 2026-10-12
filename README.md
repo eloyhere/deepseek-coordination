@@ -95,8 +95,8 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **47 Windows golden cases, 57 POSIX golden cases, 13 plugin cases and 18 permission
-cases pass**, all encoding contracts hold, 86 verbs in the table. 75 of the 86 verbs are implemented
+Current state: **48 Windows golden cases, 57 POSIX golden cases, 13 plugin cases and 18 permission
+cases pass**, all encoding contracts hold, 86 verbs in the table. 78 of the 86 verbs are implemented
 on Windows and 36 on POSIX.
 
 ## Using it from the harness
@@ -155,8 +155,11 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
   it is the only component that writes `permission.json`, matching is deny-first regardless of rule
   order, a file whose `updatedBy` is not the delegate is untrusted and falls back to defaults, a
   wildcard target needs explicit acknowledgement, and writes go through a temp file plus rename so a
-  crash cannot leave a half-written file. The A-layer ACL is NOT implemented, and `selfcheck` reports
-  that honestly rather than claiming enforcement.
+  crash cannot leave a half-written file.
+- The A layer (kernel ACL enforcement) is implemented on Windows: `permission acl init` appends an
+  explicit deny for Everyone to the authorization file DACL, is idempotent, requires elevation
+  (reporting `E_ELEVATION_REQUIRED` rather than failing silently), and `selfcheck` reports the strength
+  it MEASURED from the file security descriptor plus a reason, never a stored flag.
 
 ### Verified or not
 

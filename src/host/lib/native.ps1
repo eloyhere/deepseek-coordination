@@ -214,6 +214,177 @@ public static class DshNative
     [DllImport("user32.dll")]
     public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
 
+    // -- security descriptors (layer A enforcement) ------------------------
+    //
+    // Used to give permission.json an explicit DENY for the automation context's write access. Read
+    // side is what matters most: the enforcement strength is measured from the file's real DACL, so a
+    // report can never claim protection the kernel is not applying.
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TRUSTEE
+    {
+        public IntPtr pMultipleTrustee;
+        public int MultipleTrusteeOperation;
+        public int TrusteeForm;
+        public int TrusteeType;
+        public IntPtr ptstrName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct EXPLICIT_ACCESS
+    {
+        public int grfAccessPermissions;
+        public int grfAccessMode;
+        public int grfInheritance;
+        public TRUSTEE Trustee;
+    }
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetNamedSecurityInfoW(
+        string objectName, int objectType, int securityInfo,
+        out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint SetNamedSecurityInfoW(
+        string objectName, int objectType, int securityInfo,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool ConvertStringSidToSidW(string stringSid, out IntPtr sid);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint SetEntriesInAclW(int count, EXPLICIT_ACCESS[] entries, IntPtr oldAcl, out IntPtr newAcl);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetExplicitEntriesFromAclW(IntPtr acl, out uint count, out IntPtr entries);
+
+    [DllImport("advapi32.dll")]
+    public static extern bool IsValidAcl(IntPtr acl);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern IntPtr GetSecurityDescriptorDacl(IntPtr descriptor, out bool present, out IntPtr dacl, out bool defaulted);
+
+    // LocalFree is exported by kernel32, NOT by advapi32. Declaring it under advapi32 produced
+    // "Unable to find an entry point named 'LocalFree'", which surfaced only at cleanup time - after
+    // the deny had already been applied - so the operation looked like a failure while having partly
+    // succeeded.
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr LocalFree(IntPtr handle);
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr stringSid);
+
+    public const int SE_FILE_OBJECT = 1;
+    public const int DACL_SECURITY_INFORMATION = 4;
+    public const int PROTECTED_DACL_SECURITY_INFORMATION = unchecked((int)0x80000000);
+    public const int TRUSTEE_IS_SID = 0;
+    public const int TRUSTEE_IS_WELL_KNOWN_GROUP = 5;
+    public const int TRUSTEE_IS_USER = 1;
+    public const int DENY_ACCESS = 3;
+    public const int GRANT_ACCESS = 1;
+    public const int NO_INHERITANCE = 0;
+    public const int WRITE_ACCESS = 0x00000002 | 0x00000004 | 0x00000010 | 0x00000100 | 0x00010000 | 0x00040000;
+    public const int FILE_GENERIC_WRITE = 0x00120116;
+    public const int DELETE = 0x00010000;
+    public const int WRITE_DAC = 0x00040000;
+    public const int WRITE_OWNER = 0x00080000;
+    public const int ACCESS_DENIED_ACE_TYPE = 1;
+    public const int ACCESS_ALLOWED_ACE_TYPE = 0;
+
+    // One deny check plus one presence check, without exposing the descriptor layout to PowerShell:
+    // parsing the ACL here keeps the ACE walk in the same place as the declarations it depends on.
+    public static string DescribeDenyState(string path, string sid)
+    {
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint rc = GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            out owner, out group, out dacl, out sacl, out descriptor);
+        if (rc != 0) { return "ERROR:" + rc; }
+        try
+        {
+            if (dacl == IntPtr.Zero) { return "NODACL"; }
+            // Walk the ACL: ACE_HEADER is AceType(1) AceFlags(1) AceSize(2), then the mask, then the SID.
+            int aceCount = Marshal.ReadInt16(dacl, 4);
+            IntPtr p = (IntPtr)(dacl.ToInt64() + 8);
+            try
+            {
+                IntPtr target = IntPtr.Zero;
+                ConvertStringSidToSidW(sid, out target);
+                if (target == IntPtr.Zero) { return "BADSID"; }
+                try
+                {
+                    int targetLen = 8 + Marshal.ReadByte(target, 1) * 4;
+                    for (int i = 0; i < aceCount; i++)
+                    {
+                        byte aceType = Marshal.ReadByte(p, 0);
+                        int aceSize = Marshal.ReadInt16(p, 2);
+                        int mask = Marshal.ReadInt32(p, 4);
+                        IntPtr aceSid = (IntPtr)(p.ToInt64() + 8);
+                        int sidLen = 8 + Marshal.ReadByte(aceSid, 1) * 4;
+                        bool sameSid = sidLen == targetLen && CompareMemory(aceSid, target, sidLen);
+                        // Only an explicit DENY matters for layer A; an allow for someone else does not
+                        // protect anything.
+                        if (sameSid && aceType == ACCESS_DENIED_ACE_TYPE && (mask & FILE_GENERIC_WRITE) != 0)
+                        {
+                            return "DENY";
+                        }
+                        p = (IntPtr)(p.ToInt64() + aceSize);
+                    }
+                }
+                finally { if (target != IntPtr.Zero) LocalFree(target); }
+            }
+            finally { }
+            return "NONE";
+        }
+        finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); }
+    }
+
+    public static bool CompareMemory(IntPtr a, IntPtr b, int length)
+    {
+        for (int i = 0; i < length; i++)
+        {
+            if (Marshal.ReadByte(a, i) != Marshal.ReadByte(b, i)) { return false; }
+        }
+        return true;
+    }
+
+    // Apply an explicit DENY for one SID, preserving the existing DACL.
+    public static string ApplyDeny(string path, string sid)
+    {
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint rc = GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+            out owner, out group, out dacl, out sacl, out descriptor);
+        if (rc != 0) { return "GET:" + rc; }
+        IntPtr sidPtr = IntPtr.Zero;
+        IntPtr newAcl = IntPtr.Zero;
+        try
+        {
+            if (!ConvertStringSidToSidW(sid, out sidPtr) || sidPtr == IntPtr.Zero) { return "BADSID"; }
+            EXPLICIT_ACCESS[] ea = new EXPLICIT_ACCESS[1];
+            ea[0].grfAccessPermissions = FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER;
+            ea[0].grfAccessMode = DENY_ACCESS;
+            ea[0].grfInheritance = NO_INHERITANCE;
+            ea[0].Trustee.pMultipleTrustee = IntPtr.Zero;
+            ea[0].Trustee.MultipleTrusteeOperation = 0;
+            ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+            ea[0].Trustee.TrusteeType = TRUSTEE_IS_USER;
+            ea[0].Trustee.ptstrName = sidPtr;
+            uint arc = SetEntriesInAclW(1, ea, dacl, out newAcl);
+            if (arc != 0) { return "SETENTRIES:" + arc; }
+            uint src = SetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                IntPtr.Zero, IntPtr.Zero, newAcl, IntPtr.Zero);
+            if (src != 0) { return "SETINFO:" + src; }
+            return "OK";
+        }
+        finally
+        {
+            if (newAcl != IntPtr.Zero) LocalFree(newAcl);
+            if (sidPtr != IntPtr.Zero) LocalFree(sidPtr);
+            if (descriptor != IntPtr.Zero) LocalFree(descriptor);
+        }
+    }
+
     // -- helpers ----------------------------------------------------------
     public static string WindowText(IntPtr hWnd)
     {
