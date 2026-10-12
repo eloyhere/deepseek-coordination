@@ -89,6 +89,16 @@ main() {
     # implemented here. The other window/mouse/keyboard/clipboard/observe verbs are deliberately absent
     # from this table and fall through to the default arm, which reports a typed E_NOT_SUPPORTED.
     'wait.ms') dispatch cmd_wait_ms ;;
+    # mouse.* drives X11 through xdotool. Each verb checks for a display and for the tool before it
+    # injects anything, so on a machine without either it reports E_NO_DISPLAY or E_NOT_SUPPORTED rather
+    # than appearing to act.
+    'mouse.click') dispatch cmd_mouse_click ;;
+    'mouse.context') dispatch cmd_mouse_context ;;
+    'mouse.over') dispatch cmd_mouse_over ;;
+    'mouse.wheel') dispatch cmd_mouse_wheel ;;
+    'mouse.down') dispatch cmd_mouse_down ;;
+    'mouse.up') dispatch cmd_mouse_up ;;
+    'mouse.cursor') dispatch cmd_mouse_cursor ;;
     'permission.list') dispatch cmd_permission_list ;;
     'permission.query') dispatch cmd_permission_query ;;
     'permission.audit') dispatch cmd_permission_audit ;;

@@ -163,8 +163,56 @@ cmd_selfcheck() {
   done <<EOF
 $(sed -n "s/^    '\([a-z0-9.-]*\)') dispatch .*/\1/p" "$SELF_PATH")
 EOF
-  printf '{"script":"src/host/bin/dsh-os.sh","platform":%s,"locale":%s,"verbCount":%s,"implementedCount":%s,"implemented":[%s],"capabilities":{"inputInjection":"unavailable","clipboard":"unavailable","screenshot":"unavailable","accessibility":"unavailable","trash":"%s"},"aclEnforced":%s,"aclReason":%s}' \
+  printf '{"script":"src/host/bin/dsh-os.sh","platform":%s,"locale":%s,"verbCount":%s,"implementedCount":%s,"implemented":[%s],"capabilities":{"inputInjection":%s,"clipboard":%s,"screenshot":%s,"accessibility":%s,"trash":%s},"aclEnforced":%s,"aclReason":%s}' \
     "$(jstr "$(platform_name)")" "$(jstr "${LC_ALL:-C}")" "$verbs" "$count" "$impl" \
-    "$(command -v trash-put >/dev/null 2>&1 && echo available || echo unavailable)" \
+    "$(capability_input_injection)" "$(capability_clipboard)" "$(capability_screenshot)" \
+    "$(capability_accessibility)" \
+    "$(command -v trash-put >/dev/null 2>&1 && echo '"available"' || echo '"unavailable"')" \
     "$(acl_enforced)" "$(acl_reason)"
+}
+
+# ---------------------------------------------------------------------------
+# Capability reporting.
+#
+# Each of these is MEASURED, not a constant. They were four hardcoded "unavailable" strings, which was
+# accurate for input injection and screen capture on a machine with no display server but would have
+# stayed "unavailable" on a fully equipped desktop - a caller reading selfcheck would have concluded a
+# working capability did not exist. This is the same failure the implemented list above already had and
+# was fixed for, so the same rule applies: report what is measured.
+#
+# The strings are the tool names the verbs actually use, so a caller can act on the answer, and
+# "unavailable" is reported only when nothing usable is present.
+# ---------------------------------------------------------------------------
+capability_input_injection() {
+  if [ -z "${DISPLAY:-}" ]; then printf '"unavailable"'; return 0; fi
+  if command -v xdotool >/dev/null 2>&1; then printf '"xdotool"'; return 0; fi
+  printf '"unavailable"'
+}
+
+capability_clipboard() {
+  if command -v xclip >/dev/null 2>&1; then printf '"xclip"'; return 0; fi
+  if command -v xsel >/dev/null 2>&1; then printf '"xsel"'; return 0; fi
+  # wl-copy needs a Wayland session, not merely the binary.
+  if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy >/dev/null 2>&1; then printf '"wl-copy"'; return 0; fi
+  printf '"unavailable"'
+}
+
+capability_screenshot() {
+  if [ -z "${DISPLAY:-}" ]; then printf '"unavailable"'; return 0; fi
+  if command -v import >/dev/null 2>&1; then printf '"import"'; return 0; fi
+  if command -v scrot >/dev/null 2>&1; then printf '"scrot"'; return 0; fi
+  printf '"unavailable"'
+}
+
+capability_accessibility() {
+  # The AT-SPI bus is what an accessibility client talks to on Linux. Its presence in the session bus
+  # is the evidence; a missing dbus tool means it cannot be determined, which is reported as such
+  # rather than guessed at.
+  if command -v dbus-send >/dev/null 2>&1; then
+    if dbus-send --session --dest=org.a11y.Bus --print-reply /org/a11y/bus org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1; then
+      printf '"at-spi2"'; return 0
+    fi
+    printf '"unavailable"'; return 0
+  fi
+  printf '"unknown"'
 }

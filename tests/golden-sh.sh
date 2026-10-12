@@ -362,7 +362,7 @@ fi
 # success or merely an exit code. This machine has no display server, which is exactly the condition
 # under test.
 echo "== unavailable desktop verbs must be typed errors, never empty successes =="
-for v in "window list" "keyboard codes" "mouse cursor" "clipboard read" "screenshot 0 0 10 10"; do
+for v in "window list" "keyboard codes" "clipboard read" "screenshot 0 0 10 10"; do
   out="$(cd "$ROOT_DIR" && bash "$SH" $v 2>/dev/null)"
   rc=$?
   ok=1
@@ -377,6 +377,47 @@ for v in "window list" "keyboard codes" "mouse cursor" "clipboard read" "screens
     printf '  FAIL  %-46s rc=%-3s\n' "$v" "$rc"
   fi
 done
+
+echo "== mouse.*: implemented, and typed when there is no display =="
+# These ARE dispatched now, so they must report the missing display rather than falling through to the
+# unimplemented arm. On a machine WITH a display they would act, so the assertion is on the error code
+# for the condition that actually holds here: E_NO_DISPLAY when DISPLAY is unset, otherwise an envelope.
+if [ -z "${DISPLAY:-}" ]; then
+  want_mouse=E_NO_DISPLAY
+else
+  want_mouse=ANY
+fi
+for v in "mouse cursor" "mouse over 10 20 --allow" "mouse click 10 20 --allow" \
+         "mouse context 10 20 --allow" "mouse wheel 10 20 --allow" "mouse down 10 20 --allow" \
+         "mouse up --allow"; do
+  out="$(cd "$ROOT_DIR" && bash "$SH" $v 2>/dev/null)"
+  rc=$?
+  ok=1
+  [ -n "$out" ] || ok=0
+  case "$out" in '{'*) ;; *) ok=0 ;; esac
+  if [ "$want_mouse" = "E_NO_DISPLAY" ]; then
+    case "$out" in *'"code":"E_NO_DISPLAY"'*) ;; *) ok=0 ;; esac
+  fi
+  if [ "$ok" = "1" ]; then
+    PASS=$((PASS+1)); printf '  PASS  %-46s rc=%-3s %s\n' "$v" "$rc" "$want_mouse"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - $v (rc=$rc, envelope=$( [ -n "$out" ] && echo present || echo MISSING ))"
+    printf '  FAIL  %-46s rc=%-3s\n' "$v" "$rc"
+  fi
+done
+
+# The mouse verbs are dispatched, so they must be reported as implemented; selfcheck derives that list
+# from the dispatch table, and a verb that is dispatched but unlisted is the drift this guards against.
+out="$(cd "$ROOT_DIR" && bash "$SH" selfcheck 2>/dev/null)"
+mc="$(printf '%s' "$out" | grep -o '"mouse\.[a-z]*"' | sort -u | wc -l | tr -d ' ')"
+if [ "$mc" = "7" ]; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s 7/7 listed\n' "selfcheck lists every mouse verb"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - selfcheck lists every mouse verb (found $mc, expected 7)"
+  printf '  FAIL  %-46s %s/7 listed\n' "selfcheck lists every mouse verb" "$mc"
+fi
 
 echo "== every envelope must be well-formed JSON =="
 # An unquoted field produced a malformed envelope that a shell-based check did not notice, because the
