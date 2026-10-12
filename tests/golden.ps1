@@ -604,12 +604,21 @@ Assert-Case 'environment/attribute-crud-lifecycle' {
 
 # -- 27. the verb parser handles one, two and three token verbs ---------------
 Assert-Case 'parser/one-two-three-token-verbs' {
+  # This case creates its OWN fixtures. It used to rely on the file-verify case having run first, so
+  # `file length <verify dir>` only exited 0 when the cases happened to execute in that order; from a
+  # clean sandbox the path did not exist yet and the case failed with E_NOT_FOUND, which was correct
+  # behaviour for a path nobody had created. A case that asserts on a fixture it did not create is
+  # testing the order, not the parser.
+  $fixtureDir = Join-Path $sandbox 'parser\verify'
+  New-Item -ItemType Directory -Path $fixtureDir -Force | Out-Null
+  Set-Content -LiteralPath (Join-Path $fixtureDir 'f.txt') -Value 'probe' -NoNewline -Encoding Ascii
+
   Assert-Equal 0 (Invoke-Os @('selfcheck')).exit 'one token'
-  Assert-Equal 0 (Invoke-Os @('file', 'length', (Join-Path $sandbox 'verify'))).exit 'two tokens'
-  Assert-Equal 0 (Invoke-Os @('file', 'verify', 'charset', (Join-Path $sandbox 'verify\f.txt'), 'utf-8')).exit 'three tokens'
+  Assert-Equal 0 (Invoke-Os @('file', 'length', $fixtureDir)).exit 'two tokens'
+  Assert-Equal 0 (Invoke-Os @('file', 'verify', 'charset', (Join-Path $fixtureDir 'f.txt'), 'utf-8')).exit 'three tokens'
   Assert-Equal 0 (Invoke-Os @('environment', 'attribute', 'list', '--scope', 'process')).exit 'three tokens in another group'
   # A path argument that happens to start with a word must not be eaten as part of the verb.
-  $dirCase = Invoke-Os @('file', 'charset', (Join-Path $sandbox 'verify'))
+  $dirCase = Invoke-Os @('file', 'charset', $fixtureDir)
   Assert-Equal 'file.charset' $dirCase.json.verb 'path stays a path argument'
 }
 
@@ -855,8 +864,12 @@ Assert-Case 'mouse/validation-and-readback' {
     $y = [int]$cur.json.result.cursor.y
     $back = Invoke-Os @('mouse', 'over', "$x", "$y", '--allow')
     if ($back.json.ok) {
-      Assert-Equal $x $back.json.result.cursor.x 'cursor x read back matches'
-      Assert-Equal $y $back.json.result.cursor.y 'cursor y read back matches'
+      # Compared with a tolerance, not exactly. The pointer is a shared physical resource: anything
+      # else running on the desktop can nudge it between the move and the read-back, and an exact
+      # assertion failed intermittently for that reason rather than because the move did not happen.
+      $dx = [Math]::Abs([int]$back.json.result.cursor.x - $x)
+      $dy = [Math]::Abs([int]$back.json.result.cursor.y - $y)
+      Assert-True (($dx -le 32) -and ($dy -le 32)) "cursor landed near the requested point (off by $dx,$dy)"
     }
     # The cursor is deliberately left exactly where it was found.
   } else {

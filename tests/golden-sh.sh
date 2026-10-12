@@ -231,6 +231,87 @@ else
   printf '  FAIL  %-46s reported=%s dispatch=%s\n' "selfcheck/implemented derived" "$sc_impl" "$dispatch_count"
 fi
 
+echo "== environment: write verbs at process scope =="
+run "environment add"            0 -- environment add DSH_G1 hello --allow
+run "environment add needs allow" 3 -- environment add DSH_G2 x
+run "environment add bad scope"  4 -- environment add DSH_G3 x --scope galaxy --allow
+# Each invocation is its own process, so a value added in one run is not visible in the next. That is
+# the real semantics, and the result says so rather than implying the caller can read it back.
+run "environment set absent"     5 -- environment set DSH_GONE x --allow
+run "environment delete absent"  5 -- environment delete DSH_GONE --allow
+
+echo "== environment: persistent scope through a managed block =="
+# A temporary HOME, so the real profile is never touched.
+FIXHOME="$(mktemp -d)"
+printf '# user profile\nPATH=/usr/bin\n' > "$FIXHOME/.profile"
+user_env() { (cd "$ROOT_DIR" && HOME="$FIXHOME" bash "$SH" "$@" 2>&1); }
+user_env environment add DSH_U1 one --scope user --allow >/dev/null
+user_env environment set DSH_U1 "two three" --scope user --allow >/dev/null
+user_env environment add DSH_U2 'a"b$c' --scope user --allow >/dev/null
+# Idempotent: a second set must not append a duplicate.
+user_env environment set DSH_U1 again --scope user --allow >/dev/null
+
+block_dupes="$(grep -c '^export DSH_U1=' "$FIXHOME/.profile" || true)"
+if [ "$block_dupes" = "1" ]; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s one entry per variable\n' "env/user block idempotent"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - env/user block idempotent (found $block_dupes entries for DSH_U1)"
+  printf '  FAIL  %-46s %s entries for DSH_U1\n' "env/user block idempotent" "$block_dupes"
+fi
+# The file outside the managed block must survive byte for byte.
+if grep -q '^# user profile' "$FIXHOME/.profile" && grep -q '^PATH=/usr/bin' "$FIXHOME/.profile"; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s unrelated lines intact\n' "env/user preserves file"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - env/user preserves file (header or PATH line lost)"
+  printf '  FAIL  %-46s unrelated lines lost\n' "env/user preserves file"
+fi
+# The written file must still be valid shell: an unquoted value with a space or $ would break every
+# future shell the user opens, which is the worst possible outcome for this verb.
+if bash -n "$FIXHOME/.profile" 2>/dev/null; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s still valid shell\n' "env/user file syntax"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - env/user file syntax (the written profile is not valid shell)"
+  printf '  FAIL  %-46s not valid shell\n' "env/user file syntax"
+fi
+# Deleting must remove only the managed entry.
+user_env environment delete DSH_U1 --scope user --allow >/dev/null
+if ! grep -q '^export DSH_U1=' "$FIXHOME/.profile" && grep -q '^export DSH_U2=' "$FIXHOME/.profile"; then
+  PASS=$((PASS+1)); printf '  PASS  %-46s removes only its own entry\n' "env/user delete"
+else
+  FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - env/user delete (did not remove exactly the requested variable)"
+  printf '  FAIL  %-46s wrong entries removed\n' "env/user delete"
+fi
+rm -rf "$FIXHOME"
+
+echo "== every envelope must be well-formed JSON =="
+# An unquoted field produced a malformed envelope that a shell-based check did not notice, because the
+# assertions used grep on substrings. This parses each reply instead.
+if command -v node >/dev/null 2>&1; then
+  bad_json=0
+  for args in "environment add DSH_J1 v --allow" "environment set DSH_J1 v2 --allow" \
+              "environment delete DSH_J1 --allow" "permission list" "selfcheck" \
+              "window list" "mouse cursor" "keyboard codes"; do
+    out="$(cd "$ROOT_DIR" && bash "$SH" $args 2>/dev/null)"
+    if ! printf '%s' "$out" | node -e 'let t="";process.stdin.on("data",d=>t+=d);process.stdin.on("end",()=>{try{JSON.parse(t);console.log("ok")}catch(e){console.log("bad")}})' 2>/dev/null | grep -q '^ok$'; then
+      bad_json=$((bad_json + 1))
+      printf '  (malformed: %s)\n' "$args"
+    fi
+  done
+  if [ "$bad_json" -eq 0 ]; then
+    PASS=$((PASS+1)); printf '  PASS  %-46s 8 envelopes parsed\n' "envelope/json well-formed"
+  else
+    FAIL=$((FAIL+1)); FAILED_NAMES="$FAILED_NAMES
+  - envelope/json well-formed ($bad_json malformed)"
+    printf '  FAIL  %-46s %s malformed\n' "envelope/json well-formed" "$bad_json"
+  fi
+else
+  printf '  SKIP  %-46s node not available\n' "envelope/json well-formed"
+fi
+
 echo "== agent-first file view: raw text plus structured lines =="
 (cd "$ROOT_DIR" && bash "$SH" file create "$BOX/view.txt" "alpha
 beta" utf-8 --allow >/dev/null 2>&1)

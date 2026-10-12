@@ -77,6 +77,9 @@ main() {
     'execute.kill') dispatch cmd_execute_kill ;;
     'environment.list') dispatch cmd_environment_list ;;
     'environment.get') dispatch cmd_environment_get ;;
+    'environment.add') dispatch cmd_environment_add ;;
+    'environment.set') dispatch cmd_environment_set ;;
+    'environment.delete') dispatch cmd_environment_delete ;;
     'environment.attribute.list') dispatch cmd_environment_attribute_list ;;
     'environment.attribute.get') dispatch cmd_environment_attribute_get ;;
     'permission.list') dispatch cmd_permission_list ;;
@@ -133,6 +136,18 @@ set -e
 if [ "$STATUS" -ne 0 ]; then
   if [ -s "$DSH_ERR_FILE" ]; then
     cat "$DSH_ERR_FILE"
+    # The exit status is taken from the ENVELOPE's error code, not from the status the process happened
+    # to end with.
+    #
+    # This matters because fail() is reachable from inside a command substitution, and an `exit` there
+    # ends only the subshell: the caller carries on, usually hits a second unrelated failure, and that
+    # second status is what the process would otherwise report. A bad --scope produced an
+    # E_NOT_SUPPORTED envelope (class 4) with exit 5, so the two halves of the same reply disagreed
+    # about the failure class. The envelope is the documented authority, so it decides.
+    envelope_code="$(sed -n 's/.*"error":{"code":"\([A-Z_]*\)".*/\1/p' "$DSH_ERR_FILE" | head -1)"
+    if [ -n "$envelope_code" ]; then
+      STATUS="$(exit_code_for "$envelope_code")"
+    fi
   else
     # A failure that produced no envelope would leave the caller with nothing to parse, so one is
     # synthesised rather than returning a bare non-zero exit.
