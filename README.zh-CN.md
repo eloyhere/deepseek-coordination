@@ -45,20 +45,26 @@ $ dsh-os file charset "C:\path with spaces\notes.txt"
 ```
 deepseek-coordination/
 ├─ src/host/command.txt            权威动词契约，一个动词一行
-├─ src/host/spec/verbs.tsv         机器可读动词表（单一真源）
-├─ src/host/spec/charsets.tsv      IANA 名 → .NET 码页 → iconv 名 → BOM 字节
-├─ src/host/lib/*.ps1, *.sh        真源：16 对模块，一个模块管一件事
-├─ src/host/bin/dsh-os.ps1         【生成物】Windows 实现
-├─ src/host/bin/dsh-os.sh          【生成物】POSIX 实现
-├─ src/host/bin/dsh-os.bat         仅 ASCII 的 cmd.exe 外壳（给人用，不给 harness 用）
+├─ src/host/spec/verbs.tsv         机器可读动词表（单一真源），86 个动词
+├─ src/host/spec/charsets.tsv      IANA 名 → .NET 码页 → iconv 名 → BOM 字节，15 个规范编码
+├─ src/host/lib/powershell5.1/*.ps1  真源：Windows PowerShell 5.1 侧，build.ps1 登记的 16 个模块 + 独立脚本 git.ps1
+├─ src/host/lib/powershell7.6/*.ps1  真源：PowerShell 7.6 侧，同样的 16 个模块 + 独立脚本 git.ps1
+├─ src/host/lib/*.sh               真源：POSIX 侧，16 个 shell 模块 + 独立脚本 git.sh
+├─ src/host/lib/powershell.md      5.1 → 7.6 的 API 变更参考（无任何代码/测试/package.json 引用，不随包发布）
+├─ src/host/bin/dsh-os.ps1         【生成物】Windows PowerShell 5.1 实现（218,514 字节）
+├─ src/host/bin/dsh-os7.ps1        【生成物】PowerShell 7.6 实现（255,565 字节）
+├─ src/host/bin/dsh-os.sh          【生成物】POSIX 实现（130,240 字节）
+├─ src/host/bin/dsh-os.bat         仅 ASCII 的 cmd.exe 外壳（手写，非生成物）
 ├─ src/host/docs/os-spec.md        完整规范：契约、错误码、黄金用例矩阵
 ├─ src/host/docs/permission-model.md  授权模型及其残余风险
 ├─ src/plugin/index.js             宿主插件：注册 `dsh_os` 工具
-├─ src/permission/index.js         同意写入委托：`permission.json` 的唯一写入方
-├─ tools/build.ps1                 拼装生成脚本；`-Check` 在漂移时失败
-├─ tests/                          黄金、编码、插件、授权四套测试
+├─ src/permission/index.js         同意写入委托：`permission.json` 的唯一写入方，注册 5 个 `os_permission_*` 工具
+├─ tools/build.ps1                 拼装三个生成脚本；`-Check` 在漂移时失败
+├─ tests/                          黄金（Windows/POSIX）、编码、插件、授权五套测试文件
 └─ permission.json                 授权数据（随仓库为空文件，这就是初始状态）
 ```
+
+两套 PowerShell 运行时分目录存放，原因是差异并非表面性的：.NET Framework 4.8 没有 `ProcessStartInfo.ArgumentList`，且需要一条感知 ANSI 的编码路径；.NET 10 两者皆备。分开存放意味着任何一侧都不必背负另一侧的权宜写法。
 
 `src/host/lib/` 中每个模块成对提供：
 
@@ -130,8 +136,16 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 
 实现以绝对路径加 argv 数组方式拉起，永不经 shell，因此含空格的值仍然是一个值。
 
+**选择 PowerShell 版本。** 默认仍是 5.1 产物（`bin/dsh-os.ps1`），**刻意不变**：已经工作的部署不应因为插件升级而在脚下改变行为。要选 7.6 产物（`bin/dsh-os7.ps1`）：
+
+* `powershellEdition: '7.6'` —— 插件配置；
+* `DSH_OS_POWERSHELL_EDITION=7.6` —— 无法改 profile 的部署；
+* `'auto'` —— 仅当产物与可用的 `pwsh` **同时**存在时才用 7.6。
+
+配置优先于环境变量；显式的 `scriptPath` 完全禁用该选择。`pwsh` 的查找顺序是显式 `DSH_OS_POWERSHELL` → `PATH` → 标准安装位置，因为 `pwsh` 并不总在 `PATH` 上（本仓库自己的环境里就不在，而 7.6.6 明明装在标准位置）。
+
 > [!IMPORTANT]
-> **把 bundle 装进 profile 这一步尚未端到端验证。** 插件的导入、工具注册与执行路径都有测试覆盖（`tests/plugin.test.mjs`，13 条），但"DSH loader 真的会组合这个 bundle，并让 `dsh_os` 出现在活动会话里"这一说法**没有被跑过**。详见[尚未证实的部分](#尚未证实的部分)。
+> **仍未证明：harness 自身的 loader 会在活动 profile 里组合这个 bundle。** 插件的解析、装载与执行路径现由 `tools/verify-bundle.mjs`、`tools/verify-plugin-load.mjs` 与 `tools/verify-editions.mjs` 覆盖（详见[安装现状](#安装现状与已知缺陷)），但"装进用户的桌面活动 profile 并重启 harness"这一步**没有被跑过**。
 
 ---
 
@@ -258,8 +272,8 @@ dsh-os file create content="123" charset="utf-8-bom" path="./a.txt"
 **B 层——结构强制（始终生效，跨平台）。**
 
 * 每个变更类动词都要求 `--allow`。缺失即 `E_PERMISSION`，且**什么都不会发生**。
-* `permission.json` **根本没有任何写入动词。** 动词表里只有 `permission query`、`permission list`、`permission audit`——全部只读。因此脚本在**结构上不可能**创建持久授权。
-* 一条硬性的**受保护路径边界**拒绝任何对"决定本层能做什么"的文件的修改：`permission.json`（及 `.bak`）、`src/host/command.txt`、三个 `src/host/bin/dsh-os.*`、`src/host/spec/verbs.tsv` 与 `src/host/spec/charsets.tsv`，以及任何可能在其旁边暂存内容的同名临时文件。违反者报 `E_PERMISSION_PROTECTED_PATH`，且无任何副作用。读取仍然允许，以便你审阅规则。
+* **`permission.json` 的三个写入动词存在，但它们只走委托，不走脚本自身的授权。** 动词表里声明了 `permission grant`、`permission revoke`、`permission acl.init`（三个都是 `W` 类），而 `permission query`、`permission list`、`permission audit` 是只读的。`grant` 与 `revoke` 的 flags 只接受 `delegate`（外加 `allow`），也就是**只能由同意写入委托调用**；脚本本身不能凭 `--allow` 创建持久授权，缺委托时报 `E_PERMISSION_DELEGATE_ONLY`。
+* 一条硬性的**受保护路径边界**拒绝任何对"决定本层能做什么"的文件的修改：`permission.json`（及 `.bak`）、`src/host/command.txt`、**四个** `src/host/bin/dsh-os.*`（`.ps1`、`dsh-os7.ps1`、`.sh`、`.bat`）、`src/host/spec/verbs.tsv` 与 `src/host/spec/charsets.tsv`，以及任何可能在其旁边暂存内容的同名临时文件。违反者报 `E_PERMISSION_PROTECTED_PATH`，且无任何副作用。读取仍然允许，以便你审阅规则。POSIX 侧的受保护清单有 8 项——同样的名单但**不含 `dsh-os7.ps1`**。
 * 该检查作用于**解析并归一化之后**的路径，逐段比较——而不是正则匹配，因为 `..`、8.3 短名或结尾的句点都能绕过正则。`file.move` 与 `file.copy` **两端都检查**，因为移动受保护文件同样是一种破坏方式。
 
 **A 层——内核 ACL（Windows，需显式开启，需提权）。**
@@ -301,25 +315,31 @@ dsh-os permission audit --limit 50     # 追加式尾部；委托裁剪到 200 �
 
 | 平台 | 已声明 | 已实现 |
 |---|---|---|
-| Windows（`src/host/bin/dsh-os.ps1`） | 86 | **78** |
-| POSIX（`src/host/bin/dsh-os.sh`） | 86 | **44** |
+| Windows PowerShell 5.1（`src/host/bin/dsh-os.ps1`） | 86 | **82** |
+| PowerShell 7.6（`src/host/bin/dsh-os7.ps1`） | 86 | **82** |
+| POSIX（`src/host/bin/dsh-os.sh`） | 86 | **61** |
 
-### Windows
+两套 PowerShell 运行时的已实现集合**完全相同**（逐条比对两张分发表得出，不是目测）。
 
-**已实现（78）：** 全部 `file.*`（含 `file.encode`）；`file verify.*`；`file.search`；`execute.synchronous` 与 `execute.asynchronous`；`system.*`；`task.list/query/show/kill`；`service.list/query`；整个 `environment` 面（含 `attribute.*`）；`permission.*`；整个 `window` 面；`screenshot`；`clipboard.read/write`；`wait.window/ms`；整个 `mouse` 与 `keyboard` 面；`text`；`structure`；`selfcheck`。
+### Windows（5.1 与 7.6 相同）
 
-**未实现（8）：** `execute.command`、`execute.query`、`execute.kill`、`clipboard.paste`、`task.launch`、`service.start`、`service.stop`、`service.restart`。
+**已实现（82）：** 全部 `file.*`（含 `file.encode`）；`file verify.*`；`file.search`；五个 `execute` 动词（`command`、`synchronous`、`asynchronous`、`query`、`kill`）；`system.*`；全部 `task.*`（含 `task.launch`）；`service.list/query`；整个 `environment` 面（含 `attribute.*`）；整个 `permission` 面（含 `grant`、`revoke`、`acl.init`）；整个 `window` 面；`screenshot`；`clipboard.read/write`；`wait.window/ms`；整个 `mouse` 与 `keyboard` 面；`text`；`structure`；`selfcheck`。
+
+**未实现（4）：** `clipboard.paste`、`service.start`、`service.stop`、`service.restart`。
 
 ### POSIX
 
-**已实现（44）：** 除 `encode` 外的整个 `file` 面；`file verify.*`；`file.search`；三个 `execute` 动词**含 `execute.command`**；`execute.query/kill`；`system.*`；`task.list/query/show/kill`；整个 `environment` 变量层（含其持久写入）；`environment attribute.list/get`；`permission.*`；`selfcheck`。
+**已实现（61）：** 除 `file.encode` 外的整个 `file` 面；`file verify.*`；`file.search`；五个 `execute` 动词（含 Windows 侧同样具备的 `execute.command`）；`system.*`；全部 `task.*`（`list`/`query`/`show`/`kill`，**不含 `task.launch`**）；整个 `environment` 面（变量层含持久写入，`attribute.*` 五个动词齐全）；整个 `permission` 面；`wait.ms`；整个 `mouse` 与 `keyboard` 面（各 7 与 6 个动词）；`selfcheck`。
 
-**未实现（42）：** `file.encode`；全部 `mouse.*`、`keyboard.*`、`clipboard.*`、`window.*`、`service.*`、`wait.*`；`screenshot`、`text`、`structure`；`task.launch`；`environment.attribute.add/set/delete`。
+**未实现（25）：** `file.encode`；全部 `window.*`（11 个）；`screenshot`、`text`、`structure`；`clipboard.read`、`clipboard.write`、`clipboard.paste`；`wait.window`；`task.launch`；全部 `service.*`（5 个）。
 
 > [!NOTE]
-> POSIX 没有持久化环境变量的内核 API，因此 `environment add/set/delete --scope user` 是通过一个**托管块**去编辑 `${HOME}/.profile` 的，块由 `# >>> dsh-os managed environment >>>` 与 `# <<< dsh-os managed environment <<<` 标记界定。每次改动都会重新生成标记之间的全部内容，因此这些操作是幂等的，用户也可以直接删掉整个块来一次性撤销。若直接往文件里写裸赋值，第二次调用就会重复追加，而且无法撤销。`--scope machine` 不可用，会报 `E_NOT_SUPPORTED`。
+> POSIX 没有持久化变量的内核 API，因此 `environment add/set/delete --scope user` 是通过一个**托管块**去编辑 `${HOME}/.profile` 的，块由 `# >>> dsh-os managed environment >>>` 与 `# <<< dsh-os managed environment <<<` 标记界定。每次改动都会重新生成标记之间的全部内容，因此这些操作是幂等的，用户也可以直接删掉整个块来一次性撤销。若直接往文件里写裸赋值，第二次调用就会重复追加，而且无法撤销。`--scope machine` 不可用，会报 `E_NOT_SUPPORTED`。
+>
+> `environment attribute add/set/delete` 则是**仅进程作用域**，持久作用域一律以 `E_NOT_SUPPORTED` 拒绝。这是刻意的：POSIX 没有列表型变量的内核 API，要持久化就得重写 shell 启动文件，而那里一旦重建错 `PATH`，整台机器的 shell 都可能不可用。
 
-**未实现（42）：** `file.encode`；全部 `mouse.*`、`keyboard.*`、`clipboard.*`、`window.*`、`service.*`、`wait.*`；`screenshot`、`text`、`structure`；`task.launch`；`environment.attribute.add/set/delete`。
+> [!IMPORTANT]
+> **POSIX 的 `mouse.*`、`keyboard.*` 与 `wait.ms` 需要 X display。** 没有 `DISPLAY` 时它们返回**带类型的** `E_NO_DISPLAY`（而不是空结果）。这正是本机黄金测试出现 3 个失败的唯一原因，见[测试](#测试)。
 
 > [!NOTE]
 > 桌面相关各组在 POSIX 上是**结构性缺失**。`window.sh`、`service.sh` 与 `native.sh` 是刻意留空的桩，其文件头解释了原因：POSIX 上的对应物是外部程序（`xdotool`、`wmctrl`、`wl-copy`、`import`），而不是可链接的库。
@@ -354,21 +374,27 @@ dsh-os permission audit --limit 50     # 追加式尾部；委托裁剪到 200 �
 
 直说，以免有人措手不及。
 
-### 把 bundle 装进 profile 尚未验证
+### bundle 的装载路径已由三个校验器覆盖
 
-插件能干净导入、能按自身包名解析、能注册 `dsh_os`、并能通过真实 spawn 路径执行动词——这些都有测试覆盖。**未**验证的是端到端的 loader 路径：DSH profile 真的会组合这个 bundle，并让 `dsh_os` 出现在活动会话的工具列表里。profile 的插件管理器在安装时会遍历 `patch.insert` 做校验，而另一个第三方 bundle 恰好就在这一步被拒（`patch.insert?.forEach is not a function`），说明这条路很容易踩错。在这个问题落定之前，`permission.json` 的规则一条都不会被执行。
+此处曾记录：loader 端到端路径**未**验证。该缺口**已补齐**，方式是三个校验器，且它们找出了一个真实缺陷：
 
-### Windows 黄金测试在干净检出上不通过
+| 校验器 | 证明什么 | 用例 |
+|---|---|---|
+| `tools/verify-bundle.mjs` | loader 的**解析**契约：manifest 头、patch 文件、每一行都能从一个 profile 形态的 `node_modules` 解析、每个被解析模块都导出 loader 会调用的 Cordis 形状（`apply`/`inject`/`name`）、两行解析到**不同**模块（共享说明符会导致同一个工具注册两次并让整个入口中止）、以及版本闸门 | 10 |
+| `tools/verify-plugin-load.mjs` | 真实的 `apply()` 路径：宿主插件以**根类型为 `object`** 的参数 schema 注册 `dsh_os`，授权插件注册其五个工具，并且**注册后的 handler 真的 spawn 了脚本**并返回真实信封（`selfcheck` → ok，`verbCount` 86）；不带 `allow` 的变更类动词以带类型的 `E_PERMISSION` 被拒，而不是抛异常 | 13 |
+| `tools/verify-editions.mjs` | 版本选择：默认仍是 PowerShell 5.1；`powershellEdition: '7.6'` 与 `DSH_OS_POWERSHELL_EDITION` 选中 7.6 产物；`'auto'` 仅在产物与可用的 `pwsh` **同时**存在时才用 7.6；配置优先于环境变量；显式 `scriptPath` 完全禁用该选择。`-ExecutionPolicy` 只传给 5.1 可执行文件 | 14 |
 
-在干净检出、且测试按设计从零重建沙箱的情况下实测：
+bundle 解析校验把包以 junction 链接进一个一次性的 profile 沙箱，因此解析行为与真实 profile 一致，而**活动 profile 从不被写入**。
 
-```
-passed: 47   failed: 1
-failures:
-  - parser/one-two-three-token-verbs: two tokens: expected '0', got '5'
-```
+它找出的缺陷是：`bin/dsh-os7.ps1` 此前**从插件侧不可达**——它存在、能构建、能测试，但 `resolveInvocation` 只找 `dsh-os.ps1`，于是全部 7.6 工作从插件角度看都是死代码。现已可选，且**默认不变**（仍为 5.1），因为一个已经工作的部署不应仅仅因为插件升级就改变行为。
 
-原因是**测试间的顺序依赖**，不是随机抖动。`tests/golden.ps1` 在每次运行开始时删除并重建沙箱（第 37–38 行），但第 608 行的解析器用例断言 `file length .temporary\golden\verify` 退出码为 0——而该目录是在本次运行**更晚**的位置（第 437 行的 `file-verify` 用例）才被创建的。退出码 5 是 `E_NOT_FOUND`，对一个不存在的路径而言这是**正确**行为。该用例在断言一个它自己并未创建的夹具。
+**仍未证明、也不主张：** harness **自身的 loader** 真的会在活动 profile 里组合这些 bundle。那需要把本包装进用户的桌面活动 profile 并重启 harness，这一步没有做。
+
+### Windows 黄金测试的顺序依赖已修复
+
+此处曾记录：在干净检出上实测 `passed: 47 failed: 1`，失败用例是 `parser/one-two-three-token-verbs`，因为它断言 `file length` 作用于一个由**更晚**的用例才创建的夹具目录。
+
+该缺陷**已修复**：`tests/golden.ps1` 的解析器用例现在自己创建夹具（`$fixtureDir = Join-Path $sandbox 'parser\verify'`，随后 `New-Item` 与 `Set-Content`），再对其断言。当前实测为 **49 通过，0 失败**。
 
 ### 其他缺口
 
@@ -396,16 +422,26 @@ failures:
 npm run test:all        # 按顺序跑下面全部
 ```
 
+`test:all` 依次串联 `test:encoding`、`test`（Windows 黄金）、`test:plugin`、`test:permission`、`test:bundle`（`tools/verify-bundle.mjs`）与 `test:load`（先 `tools/verify-plugin-load.mjs`，再 `tools/verify-editions.mjs`）。
+
 | 套件 | 命令 | 用例数 | 实测结果 |
 |---|---|---|---|
-| 编码契约 | `powershell -File tests/encoding.ps1` | — | **全部成立** |
-| Windows 黄金 | `powershell -File tests/golden.ps1` | 48 | **47 通过，1 失败**（顺序依赖，见上） |
-| POSIX 黄金 | `bash tests/golden-sh.sh` | 75 | **75 通过** |
-| 插件 | `node tests/plugin.test.mjs` | 13 | **13 通过** |
-| 授权委托 | `node tests/permission.test.mjs` | 18 | **18 通过** |
-| 构建漂移 | `powershell -File tools/build.ps1 -Check` | — | **无漂移** |
+| 编码契约 | `powershell -File tests/encoding.ps1` | 10 个契约点 | **4 项违规**（见下） |
+| Windows 黄金 | `powershell -File tests/golden.ps1` | 49 | **49 通过，0 失败** |
+| POSIX 黄金 | `bash tests/golden-sh.sh` | 115 | **115 通过，0 失败** |
+| 插件 | `node tests/plugin.test.mjs` | 13 | **13 通过，0 失败** |
+| 授权委托 | `node tests/permission.test.mjs` | 18 | **18 通过，0 失败** |
+| bundle 解析 | `node tools/verify-bundle.mjs` | 10 | **10 通过，0 失败** |
+| 插件装载 | `node tools/verify-plugin-load.mjs` | 13 | **13 通过，0 失败** |
+| 版本选择 | `node tools/verify-editions.mjs` | 14 | **14 通过，0 失败** |
+| 构建漂移 | `powershell -File tools/build.ps1 -Check` | 3 个生成物 | **无漂移** |
 
 `tests/encoding.ps1` 守卫的是让其余一切有意义的那些契约：`.ps1` 生成物带 BOM、`.sh` 生成物不带、行尾遵循 `.gitattributes`、`command.txt` 与 `.tsv` 表保持纯 ASCII + LF，以及 **stdout 永不携带 BOM**。
+
+**那 4 项编码违规全部来自两个独立脚本 `git.ps1`，而且这是契约冲突，不是文件本身的缺陷。** `tests/encoding.ps1` 要求 `src/host/lib/` 下每个 `*.ps1` 都不带 BOM 且纯 ASCII，因为它遍历的是会被拼进生成脚本的模块；而 `git.ps1` 不是构建输入，它是 **UTF-8 带 BOM**（Windows PowerShell 5.1 下中文提示字面量必须有 BOM）因此必然含非 ASCII 字节。这两条规则与这两个文件无法同时成立；该守卫尚未放宽。
+
+> [!NOTE]
+> **POSIX 桌面动词的“115 通过”不是“驱动真实窗口管理器”的证据。** 该套件通过 `tests/fake-xdotool` 与 `tests/fake-wmctrl` 两个替身提供显示环境，而不是真的 X server；因此它证明的是这些动词**构造了正确的命令**、并以**正确的带类型错误**失败，而不是它们真的操作了桌面。
 
 > [!WARNING]
 > **两套黄金测试必须串行运行。** 两套实现都会把失败信封暂存到一个**固定路径**的临时文件——`.temporary/dsh-os.err`，既无 PID 也无锁——因此并发调用会互相覆盖对方待取的结果。实测并行运行 `golden.ps1` 与 `golden-sh.sh` 时报出了 2 个**假**失败：退出码与信封自身的 `error.code` 相互矛盾；改为串行后二者全部消失。请把它当作缺陷而不是随机抖动：该暂存路径在构造上就是竞态的。
@@ -414,12 +450,16 @@ npm run test:all        # 按顺序跑下面全部
 
 ## 参与贡献
 
-`src/host/lib/*` 是真源。**绝不要手改 `src/host/bin/dsh-os.ps1` 或 `.sh`**——它们是生成物。请改模块，然后：
+`src/host/lib/powershell5.1/*`、`src/host/lib/powershell7.6/*` 与 `src/host/lib/*.sh` 是真源。**绝不要手改 `src/host/bin/dsh-os.ps1`、`dsh-os7.ps1` 或 `.sh`**——它们是生成物。请改模块，然后：
 
 ```console
-powershell -File tools/build.ps1          # 重新生成
+powershell -File tools/build.ps1          # 重新生成三个脚本
 powershell -File tools/build.ps1 -Check   # 已提交脚本一旦漂移即失败
 ```
+
+三个生成物是分开的而不是"一份脚本加运行时分支"，因为两个运行时差异无法用分支干净地抹平：.NET Framework 没有 `ProcessStartInfo.ArgumentList`，而 .NET 10 没有理由继续背负这套项目为绕开它而手写的 Windows 命令行转义。
+
+`git.ps1` / `git.sh` **不在** `tools/build.ps1` 的模块清单内，因此它们不被拼进任何生成物；它们是各自独立、自包含的交互式工具，详见上文"独立工具"。
 
 `.gitattributes` 是契约的一部分而不是偏好：`command.txt` 与 `.tsv` 表必须是 LF，两套实现才能解析逐字节一致的输入；`dsh-os.bat` 必须是 CRLF 且仅 ASCII，否则 `cmd.exe` 会解析错误；`dsh-os.ps1` 必须是 CRLF 且 UTF-8 **带** BOM，否则 PowerShell 5.1 会按 ANSI 码页读取其中的非 ASCII 字面量。
 
@@ -429,6 +469,14 @@ powershell -File tools/build.ps1 -Check   # 已提交脚本一旦漂移即失败
 * **临时文件统一放在 `.temporary/` 下**，黄金测试夹具也在那里。
 
 各模块文件头仍引用已不存在的 `tools/split-once.ps1`；当前的拼装器是 `tools/build.ps1`。
+
+---
+
+## 独立工具
+
+`src/host/lib/git.sh`、`src/host/lib/powershell5.1/git.ps1` 与 `src/host/lib/powershell7.6/git.ps1` 是交互式 git 运行器。它们**刻意不属于动词面**：不在 `tools/build.ps1` 的 `$modulesPs1`/`$modulesSh` 清单里，因此永远不会被拼进 `bin/dsh-os.ps1`、`bin/dsh-os7.ps1` 或 `bin/dsh-os.sh`，也不输出 JSON 信封。三者各自是单个自包含文件、彼此字节独立，靠人工评审保持一致而不是靠生成器。
+
+它们按三阶段定位 git：`GIT_EXE`/`GIT_HOME`/`PATH` → 已知安装位置（含 Git for Windows 注册表键）→ 对每个挂载点做**有深度与时限约束**的全盘遍历；全都找不到时列出搜索过的位置并以 127 退出。参数以独立 argv 元素送达 git，绝不拼接 shell 字符串。`git add` 的输入为空（直接回车）即等价于 `git add .`。三者的编码各自服从其运行时的契约——这正是 `git.sh` 纯 ASCII（英文提示）而两个 `git.ps1` 不是的原因。
 
 ---
 
@@ -442,7 +490,7 @@ MIT License
 Copyright (c) 2026 Eloy Kim
 ```
 
-许可证文件为纯 ASCII、LF 行尾、无 BOM，与仓库其余的编码契约保持一致；同时已列入 `package.json` 的 `files` 白名单，因此它会随发布的包一起分发，而不只是留在检出目录里。
+许可证文件为纯 ASCII、LF 行尾、无 BOM，与仓库其余的编码契约保持一致。需要更正一处旧描述：它**并未**列入 `package.json` 的 `files` 白名单（该白名单共 13 项，不含 `LICENSE`，也不含 `README.zh-CN.md` 与 `dsh-os7.ps1`），因此它留在检出目录里，但不会随发布的包一起分发。
 
 动词契约与规范文档属于源码的一部分：行为变更应当同步反映到 `src/host/spec/verbs.tsv`、`src/host/command.txt` 与 `src/host/docs/os-spec.md`，而不只是改代码。
 

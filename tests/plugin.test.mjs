@@ -54,7 +54,19 @@ const { def } = await loadPlugin()
 await check('registers a tool named dsh_os', () => {
   assert.equal(def.name, 'dsh_os')
   assert.equal(typeof def.execute, 'function')
-  assert.ok(def.parameters.verb.required === true, 'verb is required')
+  // `parameters` must be a COMPLETE JSON Schema with an object root.
+  //
+  // The registry's register() does NOT compile the { name: {...} } property map that the internal
+  // defineTool accepts, so handing it the bare map ships a schema whose root has no `type`, and the
+  // provider rejects the whole request with:
+  //   Invalid schema for function 'dsh_os': schema must be a JSON Schema of 'type: "object"',
+  //   got 'type: null'
+  // These assertions are deliberately about the root, because that is where the defect lived.
+  assert.equal(def.parameters.type, 'object', 'the parameter schema root must declare type: object')
+  assert.ok(def.parameters.properties, 'the schema must carry a properties map')
+  assert.ok(!def.parameters.verb, 'a bare property map is not a schema: properties must be nested')
+  // Requiredness lives in the root `required` array, not a per-property `required: true` flag.
+  assert.deepEqual(def.parameters.required, ['verb'], 'verb is the only required parameter')
 })
 
 await check('declares the output shape an agent parses', () => {
@@ -173,8 +185,22 @@ await check('the patch row matches the documented bundle shape', () => {
   assert.ok(rowIds.length >= 1, 'at least one row must declare an id')
   const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'))
   const names = lines.filter((l) => /^\s+name:\s*\S+/.test(l)).map((l) => l.split(':')[1].trim().replace(/^['"]|['"]$/g, ''))
+  // A row name is a package SPECIFIER: the bare package name, or the package plus a subpath export.
+  // Two rows naming the same specifier would import one module twice, and the second import throws
+  // `tool "dsh_os" is already registered` - which aborts the whole entry. So the names must be
+  // distinct, and every one must address this package.
   for (const n of names) {
-    assert.equal(n, pkg.name, `row name '${n}' must equal the package name the loader resolves`)
+    assert.ok(
+      n === pkg.name || n.startsWith(pkg.name + '/'),
+      `row name '${n}' must address the package '${pkg.name}', optionally through a subpath export`,
+    )
+  }
+  assert.equal(new Set(names).size, names.length, 'row names must be distinct, or a module loads twice')
+  // The subpath each row names must actually be exported, or the loader cannot import it.
+  for (const n of names) {
+    if (n === pkg.name) continue
+    const subpath = './' + n.slice(pkg.name.length + 1)
+    assert.ok(pkg.exports[subpath], `row name '${n}' needs an exports entry for '${subpath}'`)
   }
   // Ids must be unique, or a second row would silently shadow the first.
   const ids = rowIds.map((l) => l.split(':')[1].trim())

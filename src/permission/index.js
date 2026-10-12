@@ -41,17 +41,25 @@ const AUDIT_LIMIT = 200
 /** Written into every file this delegate produces, so a reader can tell who last wrote it. */
 const WRITER = 'consent-delegate'
 
-export const Config = {
-  type: 'object',
-  properties: {
-    permissionPath: {
-      type: 'string',
-      description: 'Absolute path to permission.json. Defaults to <package root>/permission.json.',
-    },
-    auditLimit: { type: 'number', description: `Audit entries to keep (default ${AUDIT_LIMIT}).` },
-  },
-  additionalProperties: false,
-}
+// NOTE: there is deliberately NO `Config` export here, and adding one back needs care.
+//
+// Cordis applies a plugin's `Config` export as a Standard Schema (a schemastery `z.object({...})`):
+//   resolveConfig: if (!runtime.Config) return config
+//                  const result = runtime.Config['~standard'].validate(config)
+// A plain JavaScript object carrying JSON-Schema-shaped keys therefore fails at activation with
+//   TypeError: Cannot read properties of undefined (reading 'validate')
+// because `Config['~standard']` is undefined. Declaring the shape in JSON Schema does not make it a
+// validator, so the object that used to live here was worse than nothing: it described the config
+// truthfully while breaking every mount.
+//
+// Omitting `Config` is the correct choice for this package. The row's config is passed through
+// unvalidated, and every field is optional with a default applied in `permissionPathOf`/`apply`, so
+// there is nothing to validate. The alternative - exporting a schemastery schema - would add a runtime
+// dependency to a package whose whole premise is that it has none.
+//
+// The config keys a deployment may set are:
+//   permissionPath  absolute path to permission.json (default: <package root>/permission.json)
+//   auditLimit      audit entries to keep (default: 200)
 
 function permissionPathOf(config) {
   return config?.permissionPath ?? join(PKG_ROOT, 'permission.json')
@@ -313,9 +321,18 @@ export function apply(ctx, config = {}) {
   }
 
   // The service other plugins and the tool layer consume.
+  //
+  // `ctx.provide` REGISTERS it; `ctx.set` only OVERWRITES the value of a service that was already
+  // provided. Calling `set` first - as this used to - throws
+  //   Error: cannot set property "dsh-os-permission" without provide
+  // because the name is not yet in the fiber's property table, and that aborted the whole entry.
+  // `provide` is also the form that returns a disposer, so the registration unwinds with the fiber.
   const service = { path, grant, revoke, query, list, audit, readDocument, evaluate }
-  ctx.set?.('dsh-os-permission', service)
-  ctx.provide?.('dsh-os-permission', service)
+  const disposeService = ctx.provide?.('dsh-os-permission', service)
+  // `provide` runs inside a fiber effect, which is the documented place to register a resource. A
+  // context that offers no `provide` (the unit tests' stand-in) is tolerated, but the service is then
+  // simply not published, which is honest rather than silently half-registered.
+  void disposeService
 
   const tool = (spec) => {
     if (typeof ctx.tools?.register !== 'function') return

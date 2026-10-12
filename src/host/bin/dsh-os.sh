@@ -2568,6 +2568,14 @@ window_require_tool() {
 
 # Coordinates arrive as text and must be signed integers before anything is injected. Checking here
 # rather than letting xdotool fail keeps the error code the same as on Windows: E_TYPE for a non-integer.
+# Validated coordinate. Sets WINDOW_INT rather than printing it.
+#
+# THIS ASSIGNS A GLOBAL RATHER THAN PRINTING, AND THAT IS LOAD-BEARING. Called as
+# `x="$(window_int_arg ...)"` the whole function runs in a subshell, so its `fail` would `exit` only that
+# subshell: the verb would carry on with an empty value and INJECT ANYWAY. That was a real defect here -
+# `mouse over abc 20` moved the pointer and returned ok - and it is the same trap the environment module
+# documents for env_resolve_scope. A validator that can reject must be called in the caller's own shell.
+WINDOW_INT=""
 window_int_arg() {
   local value="$1" label="$2"
   local digits="$value"
@@ -2576,7 +2584,7 @@ window_int_arg() {
   # '-5' is a range or type question rather than "not an integer".
   case "$digits" in -*) digits="${digits#-}" ;; esac
   case "$digits" in ''|*[!0-9]*) fail E_TYPE "<$label> must be an integer, got '$value'" ;; esac
-  printf '%s' "$value"
+  WINDOW_INT="$value"
 }
 
 # ---------------------------------------------------------------------------
@@ -2586,15 +2594,18 @@ window_int_arg() {
 # 3 is right, 4 and 5 are the vertical wheel. The --button flag accepts a name or a number so a caller
 # writing portable code can keep using names.
 # ---------------------------------------------------------------------------
+# Validated X11 button number. Sets WINDOW_BUTTON rather than printing it, for the same subshell reason
+# as window_int_arg: a rejection inside $(...) would not stop the verb.
+WINDOW_BUTTON=""
 window_button_number() {
   local b="$1"
   case "$b" in
-    ''|left|1) printf '1' ;;
-    middle|2) printf '2' ;;
-    right|3) printf '3' ;;
-    wheel-up|4) printf '4' ;;
-    wheel-down|5) printf '5' ;;
-    [0-9]*) printf '%s' "$b" ;;
+    ''|left|1) WINDOW_BUTTON='1' ;;
+    middle|2) WINDOW_BUTTON='2' ;;
+    right|3) WINDOW_BUTTON='3' ;;
+    wheel-up|4) WINDOW_BUTTON='4' ;;
+    wheel-down|5) WINDOW_BUTTON='5' ;;
+    [0-9]*) WINDOW_BUTTON="$b" ;;
     *) fail E_TYPE "<button> must be left, middle, right or a number, got '$b'" ;;
   esac
 }
@@ -2629,8 +2640,8 @@ cmd_mouse_over() {
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'mouse over'
   local x y
-  x="$(window_int_arg "$(pos 0)" x)"
-  y="$(window_int_arg "$(pos 1)" y)"
+  window_int_arg "$(pos 0)" x; x="$WINDOW_INT"
+  window_int_arg "$(pos 1)" y; y="$WINDOW_INT"
   xdotool mousemove --sync "$x" "$y" >/dev/null 2>&1 || fail E_IO "xdotool could not move the cursor to $x,$y"
   # The position is read back rather than assumed: a movement can be clamped by the screen edge or
   # overridden by a window manager, and reporting where the cursor actually is is the useful answer.
@@ -2648,14 +2659,21 @@ cmd_mouse_click() {
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'mouse click'
   local x y button count cm
-  x="$(window_int_arg "$(pos 0)" x)"
-  y="$(window_int_arg "$(pos 1)" y)"
-  button="$(window_button_number "$(flag_value button 'left')")"
+  window_int_arg "$(pos 0)" x; x="$WINDOW_INT"
+  window_int_arg "$(pos 1)" y; y="$WINDOW_INT"
+  # The button and count are resolved and validated HERE, before any injection. Both were originally
+  # computed after the cursor had already been moved, so a rejected --count left the pointer somewhere
+  # else - a failed call that had still changed the machine.
+  window_button_number "$(flag_value button 'left')"; button="$WINDOW_BUTTON"
   count="$(flag_value count '1')"
   case "$count" in ''|*[!0-9]*) fail E_TYPE "<count> must be an integer, got '$count'" ;; esac
   [ "$count" -ge 1 ] || fail E_RANGE "<count> must be at least 1, got '$count'"
   cm="$(window_clearmod_flag)"
 
+  # EVERY argument is validated before anything is injected. An earlier version validated the button and
+  # count after moving the cursor, so a bad --count still moved the pointer: a rejected call had already
+  # changed the machine's state. The Windows side validates first for the same reason, and a test that
+  # asserted "nothing was injected" is what caught it.
   xdotool mousemove --sync "$x" "$y" >/dev/null 2>&1 || fail E_IO "xdotool could not move the cursor to $x,$y"
   # xdotool click takes a repeat count, which is one process instead of a loop of one process per click.
   # shellcheck disable=SC2086
@@ -2670,8 +2688,8 @@ cmd_mouse_context() {
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'mouse context'
   local x y cm
-  x="$(window_int_arg "$(pos 0)" x)"
-  y="$(window_int_arg "$(pos 1)" y)"
+  window_int_arg "$(pos 0)" x; x="$WINDOW_INT"
+  window_int_arg "$(pos 1)" y; y="$WINDOW_INT"
   cm="$(window_clearmod_flag)"
   xdotool mousemove --sync "$x" "$y" >/dev/null 2>&1 || fail E_IO "xdotool could not move the cursor to $x,$y"
   # Button 3 is the right button, which is what opens a context menu.
@@ -2687,8 +2705,8 @@ cmd_mouse_wheel() {
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'mouse wheel'
   local x y
-  x="$(window_int_arg "$(pos 0)" x)"
-  y="$(window_int_arg "$(pos 1)" y)"
+  window_int_arg "$(pos 0)" x; x="$WINDOW_INT"
+  window_int_arg "$(pos 1)" y; y="$WINDOW_INT"
 
   # The x argument carries the scroll distance, exactly as it does on Windows, where the wheel delta IS
   # x. --space overrides how many notches that distance is worth, for a caller that wants a smaller
@@ -2733,9 +2751,9 @@ cmd_mouse_down() {
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'mouse down'
   local x y button
-  x="$(window_int_arg "$(pos 0)" x)"
-  y="$(window_int_arg "$(pos 1)" y)"
-  button="$(window_button_number "$(flag_value button 'left')")"
+  window_int_arg "$(pos 0)" x; x="$WINDOW_INT"
+  window_int_arg "$(pos 1)" y; y="$WINDOW_INT"
+  window_button_number "$(flag_value button 'left')"; button="$WINDOW_BUTTON"
   xdotool mousemove --sync "$x" "$y" >/dev/null 2>&1 || fail E_IO "xdotool could not move the cursor to $x,$y"
   xdotool mousedown "$button" >/dev/null 2>&1 || fail E_IO "xdotool could not press button $button"
   # The button is deliberately NOT released: that is what mouse up is for. A drag is down, move, up.
@@ -2748,7 +2766,7 @@ cmd_mouse_up() {
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'mouse up'
   local button
-  button="$(window_button_number "$(flag_value button 'left')")"
+  window_button_number "$(flag_value button 'left')"; button="$WINDOW_BUTTON"
   xdotool mouseup "$button" >/dev/null 2>&1 || fail E_IO "xdotool could not release button $button"
   printf '{"button":%s,"held":false,"tool":"xdotool"}' "$button"
 }
@@ -2766,42 +2784,43 @@ cmd_mouse_up() {
 # keyboard type: a key is not a character, and 'Return' versus 'Enter' is exactly the kind of difference
 # that makes a script work on one machine and silently do nothing on another.
 # ---------------------------------------------------------------------------
+WINDOW_KEY=""
 window_key_name() {
   local key="$1"
   case "$key" in
     '' ) fail E_TYPE '<code> must not be empty' ;;
     # Single characters and function keys are already keysyms.
-    [A-Za-z0-9]) printf '%s' "$key" ;;
-    F[0-9]|F1[0-2]) printf '%s' "$key" ;;
+    [A-Za-z0-9]) WINDOW_KEY="$key" ;;
+    F[0-9]|F1[0-2]) WINDOW_KEY="$key" ;;
     # Windows spelling -> X keysym spelling.
-    enter|Enter|ENTER|return|Return|RETURN) printf 'Return' ;;
-    esc|Esc|ESC|escape|Escape|ESCAPE) printf 'Escape' ;;
-    backspace|Backspace|BACKSPACE|back|Back|BACK) printf 'BackSpace' ;;
-    del|Del|DEL|delete|Delete|DELETE) printf 'Delete' ;;
-    ins|Ins|INS|insert|Insert|INSERT) printf 'Insert' ;;
-    space|Space|SPACE) printf 'space' ;;
-    tab|Tab|TAB) printf 'Tab' ;;
-    ctrl|Ctrl|CTRL|control|Control|CONTROL) printf 'ctrl' ;;
-    shift|Shift|SHIFT) printf 'shift' ;;
-    alt|Alt|ALT) printf 'alt' ;;
-    win|Win|WIN|super|Super|SUPER|meta|Meta|META) printf 'super' ;;
-    up|Up|UP) printf 'Up' ;;
-    down|Down|DOWN) printf 'Down' ;;
-    left|Left|LEFT) printf 'Left' ;;
-    right|Right|RIGHT) printf 'Right' ;;
-    home|Home|HOME) printf 'Home' ;;
-    end|End|END) printf 'End' ;;
-    pageup|PageUp|PAGEUP|pgup|PgUp|PGUP) printf 'Prior' ;;
-    pagedown|PageDown|PAGEDOWN|pgdn|PgDn|PGDN) printf 'Next' ;;
-    printscreen|PrintScreen|PRINTSCREEN) printf 'Print' ;;
-    capslock|CapsLock|CAPSLOCK) printf 'Caps_Lock' ;;
-    numlock|NumLock|NUMLOCK) printf 'Num_Lock' ;;
-    scrolllock|ScrollLock|SCROLLLOCK) printf 'Scroll_Lock' ;;
-    pause|Pause|PAUSE) printf 'Pause' ;;
+    enter|Enter|ENTER|return|Return|RETURN) WINDOW_KEY='Return' ;;
+    esc|Esc|ESC|escape|Escape|ESCAPE) WINDOW_KEY='Escape' ;;
+    backspace|Backspace|BACKSPACE|back|Back|BACK) WINDOW_KEY='BackSpace' ;;
+    del|Del|DEL|delete|Delete|DELETE) WINDOW_KEY='Delete' ;;
+    ins|Ins|INS|insert|Insert|INSERT) WINDOW_KEY='Insert' ;;
+    space|Space|SPACE) WINDOW_KEY='space' ;;
+    tab|Tab|TAB) WINDOW_KEY='Tab' ;;
+    ctrl|Ctrl|CTRL|control|Control|CONTROL) WINDOW_KEY='ctrl' ;;
+    shift|Shift|SHIFT) WINDOW_KEY='shift' ;;
+    alt|Alt|ALT) WINDOW_KEY='alt' ;;
+    win|Win|WIN|super|Super|SUPER|meta|Meta|META) WINDOW_KEY='super' ;;
+    up|Up|UP) WINDOW_KEY='Up' ;;
+    down|Down|DOWN) WINDOW_KEY='Down' ;;
+    left|Left|LEFT) WINDOW_KEY='Left' ;;
+    right|Right|RIGHT) WINDOW_KEY='Right' ;;
+    home|Home|HOME) WINDOW_KEY='Home' ;;
+    end|End|END) WINDOW_KEY='End' ;;
+    pageup|PageUp|PAGEUP|pgup|PgUp|PGUP) WINDOW_KEY='Prior' ;;
+    pagedown|PageDown|PAGEDOWN|pgdn|PgDn|PGDN) WINDOW_KEY='Next' ;;
+    printscreen|PrintScreen|PRINTSCREEN) WINDOW_KEY='Print' ;;
+    capslock|CapsLock|CAPSLOCK) WINDOW_KEY='Caps_Lock' ;;
+    numlock|NumLock|NUMLOCK) WINDOW_KEY='Num_Lock' ;;
+    scrolllock|ScrollLock|SCROLLLOCK) WINDOW_KEY='Scroll_Lock' ;;
+    pause|Pause|PAUSE) WINDOW_KEY='Pause' ;;
     # A Windows virtual key number means nothing to X, so saying so beats sending a literal "13".
     [0-9]*) fail E_TYPE "<code> '$key' is a virtual key number, which has no X equivalent" \
         'use a name such as Return, Escape, ctrl or F5' ;;
-    *) printf '%s' "$key" ;;
+    *) WINDOW_KEY="$key" ;;
   esac
 }
 
@@ -2838,7 +2857,7 @@ cmd_keyboard_down() {
   require_allow 'keyboard down' "${#POSITIONALS[@]}"
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard down'
-  local key; key="$(window_key_name "$(pos 0)")"
+  local key; window_key_name "$(pos 0)"; key="$WINDOW_KEY"
   local cm; cm="$(window_clearmod_flag)"
   # shellcheck disable=SC2086
   xdotool keydown $cm "$key" >/dev/null 2>&1 || fail E_IO "xdotool could not press '$key' down"
@@ -2850,7 +2869,7 @@ cmd_keyboard_up() {
   require_allow 'keyboard up' "${#POSITIONALS[@]}"
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard up'
-  local key; key="$(window_key_name "$(pos 0)")"
+  local key; window_key_name "$(pos 0)"; key="$WINDOW_KEY"
   local cm; cm="$(window_clearmod_flag)"
   # shellcheck disable=SC2086
   xdotool keyup $cm "$key" >/dev/null 2>&1 || fail E_IO "xdotool could not release '$key'"
@@ -2862,8 +2881,13 @@ cmd_keyboard_press() {
   require_allow 'keyboard press' "${#POSITIONALS[@]}"
   window_require_display
   window_require_tool "$HAVE_XDOTOOL" xdotool 'keyboard press'
-  local key; key="$(window_key_name "$(pos 0)")"
+  # The key name and the interval are validated before the injection, so a rejected call has not already
+  # pressed something.
+  local key; window_key_name "$(pos 0)"; key="$WINDOW_KEY"
   local interval; interval="$(flag_value interval '')"
+  if [ -n "$interval" ]; then
+    case "$interval" in ''|*[!0-9]*) fail E_TYPE "<interval> must be an integer, got '$interval'" ;; esac
+  fi
   local cm; cm="$(window_clearmod_flag)"
   # A press is xdotool key, which presses AND releases. The key is always released even if the
   # injection fails, because a key left down makes the machine unusable until it is pressed again.
@@ -2895,7 +2919,7 @@ cmd_keyboard_combination() {
   done
   local keys=()
   local k
-  for k in $keys_raw; do keys+=("$(window_key_name "$k")"); done
+  for k in $keys_raw; do window_key_name "$k"; keys+=("$WINDOW_KEY"); done
   [ "${#keys[@]}" -eq 0 ] && fail E_TYPE '<keys> must name at least one key'
 
   local chord; chord="$(printf '%s+' "${keys[@]}")"; chord="${chord%+}"

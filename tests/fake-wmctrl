@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# fake-wmctrl - a stand-in wmctrl, for the same reason as fake-xdotool.
+#
+# The window verbs are not implemented on POSIX yet, so nothing calls this today. It exists so that when
+# they are written they can be verified on a machine with no display, which is the only condition
+# available here.
+set -u
+
+log="${FAKE_WMCTRL_LOG:-/dev/null}"
+printf '%s\n' "$*" >>"$log"
+
+if [ -n "${FAKE_WMCTRL_FAIL:-}" ]; then
+  printf 'fake-wmctrl: forced failure\n' >&2
+  exit 1
+fi
+
+case "${1:-}" in
+  -lp)
+    # id desktop pid host title
+    printf '0x03e00003  0 %s host Example Window\n' "${FAKE_WMCTRL_PID:-1234}"
+    ;;
+esac
+exit 0

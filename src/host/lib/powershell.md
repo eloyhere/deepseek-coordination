@@ -6,26 +6,26 @@
 2. **面向脚本的 API**——cmdlet、参数、`$PSVersionTable` 键、自动变量、偏好变量、实验性特性开关；
 3. **语言语法**——运算符、语句、AST/解析器可见的语法结构。
 
-文中标注 `⚠️` 的条目为**破坏性变更**。每条关键结论都附官方来源；文末列出[参考来源](#10-参考来源)与[版本归属的说明](#9-版本归属的说明与已知不确定项)。
+文中标注 `⚠️` 的条目为**破坏性变更**。每条关键结论都附官方来源；文末列出[参考来源](#8-参考来源)与[版本归属的说明](#9-版本归属的说明与已知不确定项)。
 
 ---
 
 ## 1. 版本速查矩阵
 
-| 版本 | 发布日期 | 结束支持 | 支持级别 | .NET 基线 |
-| --- | :---: | :---: | :---: | --- |
-| Windows PowerShell 5.1 | 2016-08 | 随 Windows 生命周期 | Windows 组件 | .NET Framework 4.5+ |
-| PowerShell 6.0 | 2018-01-20 | 2019-02-13 | 已退役 | .NET Core 2.0 |
-| PowerShell 6.1 | 2018-09-13 | 2019-09-28 | 已退役 | .NET Core 2.1 |
-| PowerShell 6.2 | 2019-03-29 | 2020-09-04 | 已退役 | .NET Core 2.1 |
-| PowerShell 7.0 | 2020-03-04 | 2022-12-03 | LTS（已退役） | .NET Core 3.1 |
-| PowerShell 7.1 | 2020-11-11 | 2022-05-08 | 已退役 | .NET 5.0 |
-| PowerShell 7.2 | 2021-11-08 | 2024-11-08 | LTS（已退役） | .NET 6.0 |
-| PowerShell 7.3 | 2022-11-09 | 2024-05-08 | 已退役 | .NET 7.0 |
-| PowerShell 7.4 | 2023-11-16 | 2026-11-10 | LTS | .NET 8.0 |
-| PowerShell 7.5 | 2025-01-23 | 2026-11-10 | Stable | .NET 9.0 |
-| **PowerShell 7.6** | **2026-03-18** | **2028-11-14** | **LTS（当前）** | **.NET 10.0** |
-| PowerShell 7.7 | 预览中（7.7-preview.3） | — | Preview | .NET 11.0 |
+| 版本 | 发布日期 | 结束支持 | 支持级别 | .NET 基线 | 平台 |
+| --- | :---: | :---: | :---: | --- | --- |
+| Windows PowerShell 5.1 | 2016-08 | 随 Windows 生命周期 | Windows 组件 | .NET Framework 4.5+ | 仅 Windows |
+| PowerShell 6.0 | 2018-01-20 | 2019-02-13 | 已退役 | .NET Core 2.0 | Win / macOS / Linux |
+| PowerShell 6.1 | 2018-09-13 | 2019-09-28 | 已退役 | .NET Core 2.1 | 同上 |
+| PowerShell 6.2 | 2019-03-29 | 2020-09-04 | 已退役 | .NET Core 2.1 | 同上 |
+| PowerShell 7.0 | 2020-03-04 | 2022-12-03 | LTS（已退役） | .NET Core 3.1 | 同上 |
+| PowerShell 7.1 | 2020-11-11 | 2022-05-08 | 已退役 | .NET 5.0 | 同上 |
+| PowerShell 7.2 | 2021-11-08 | 2024-11-08 | LTS（已退役） | .NET 6.0 | 同上（含 ARM64） |
+| PowerShell 7.3 | 2022-11-09 | 2024-05-08 | 已退役 | .NET 7.0 | 同上（**不再支持 Windows 7**） |
+| PowerShell 7.4 | 2023-11-16 | 2026-11-10 | LTS | .NET 8.0 | 同上 |
+| PowerShell 7.5 | 2025-01-23 | 2026-11-10 | Stable | .NET 9.0 | 同上 |
+| **PowerShell 7.6** | **2026-03-18** | **2028-11-14** | **LTS（当前）** | **.NET 10.0** | 同上 |
+| PowerShell 7.7 | 预览中（7.7-preview.3） | — | Preview | .NET 11.0 | 同上 |
 
 来源：[PowerShell Support Lifecycle](https://learn.microsoft.com/en-us/powershell/scripting/install/powershell-support-lifecycle)、[Differences between Windows PowerShell 5.1 and PowerShell 7.x](https://learn.microsoft.com/en-us/powershell/scripting/whats-new/differences-from-windows-powershell)。
 
@@ -102,12 +102,26 @@
 | 项 | 5.1 | 7.x |
 | --- | --- | --- |
 | 引擎程序集 | `System.Management.Automation.dll`（.NET Framework / GAC） | `$PSHOME` 下的 `System.Management.Automation.dll`（.NET） |
-| 编译目标 | .NET Framework 的 SMA 引用程序集，或 `Microsoft.PowerShell.5.1.ReferenceAssemblies` | **`PowerShellStandard.Library`**（当前版本 **5.1.1**，目标框架 `netstandard2.0` 与 `net452`） |
+| 编译目标 | `Microsoft.PowerShell.5.1.ReferenceAssemblies`（仅面向 5.1） | **`PowerShellStandard.Library`**（跨 5.1 与 7.x） |
 | 版本判别 | `$PSVersionTable.PSEdition` = `Desktop` | `PSEdition` = `Core` |
 | 程序集加载顺序 | 先 GAC 后模块基路径 | **先模块基路径后 GAC** |
 | 运行空间 API | `RunspaceConfiguration` 或 `InitialSessionState` | **仅 `InitialSessionState`** |
 
-`PowerShellStandard.Library` 版本历史：`5.1.0`（2018-11-30）、**`5.1.1`（2019-03-07，当前最新）**；更早还有 `3.0.0-preview-*`。包说明为 "Contains the reference assemblies for PowerShell Standard 5"。来源：[NuGet: PowerShellStandard.Library](https://www.nuget.org/packages/PowerShellStandard.Library)。
+**两个引用程序集包的分工**（容易混淆，务必区分）：
+
+| 包 | 版本 | 目标框架 | 用途 | 来源 |
+| --- | --- | --- | --- | --- |
+| **`PowerShellStandard.Library`** | **5.1.1**（2019-03-07） | `netstandard2.0` + `net452` | PowerShell Standard 5 的引用程序集；代表 **5.1 与 Core/7.x 的公共 API 交集**，用于"同时面向 5.1 与 7.x"的编译期兼容校验 | [NuGet](https://www.nuget.org/packages/PowerShellStandard.Library) |
+| `Microsoft.PowerShell.5.1.ReferenceAssemblies` | 1.0.0（2018-12-03） | `net461` | Windows PowerShell 5.1 程序集的引用程序集，**含 5.1 程序集的 XML 文档**；只能用于编译"仅 5.1"的模块 | [NuGet](https://www.nuget.org/packages/Microsoft.PowerShell.5.1.ReferenceAssemblies) |
+
+> 早期版本：`PowerShellStandard.Library` 还有 `5.1.0`（2018-11-30）以及 `3.0.0-preview-*`。
+
+**关键推论**：PowerShell Standard 是**交集**，因此
+
+- 只有 5.1 具备的能力（WMI v1、snap-in、workflow 相关类型）**不在其中**；
+- 只有 7.x 新增的 API（例如 7.2 的 `PSStyle` / `StringDecorated`、7.3 的 `clean` 块相关 AST）**也不在其中**。
+
+若必须使用 7.x 专有 API，只能改为引用 7.x 的 `System.Management.Automation` 引用程序集，并放弃 5.1 兼容。此外，**编译期校验无法发现跨版本的"行为"差异**，官方要求用 Pester 在目标版本上实测。
 
 ---
 
@@ -204,9 +218,12 @@ PowerShell 直接暴露底层 .NET 类型，因此 .NET 的重载变化会直接
 
 ### 3.8 与 Windows PowerShell 的互操作
 
-- **`Import-Module -UseWindowsPowerShell`**：在 7.x 中创建代理模块，隐式调用本地 Windows PowerShell 进程运行该模块的 cmdlet（Windows 专用兼容层）。
+- **`Import-Module -UseWindowsPowerShell`**：在 7.x 中创建代理模块，隐式调用本地 Windows PowerShell 进程（后台 5.1 进程中的 `WinPSCompatSession`）运行该模块的 cmdlet。这是**隐式远程**通道，因此参数与返回值会被**序列化**、只使用**单一 runspace**，且仅限**本地 Windows**、要求已安装 5.1。
+  - 相关配置：`WindowsPowerShellCompatibilityModuleDenyList`（默认含 `PSScheduledJob`、`BestPractices`、`UpdateServices`）与 `DisableImplicitWinCompat`。
+  - 注意：**该参数并未被弃用或移除**（截至 7.6 的官方文档与各版本 What's New 中都没有弃用说明）。
 - **`Import-Module -SkipEditionCheck`**：允许列出/导入 `CompatiblePSEdition` 未声明 `Core` 的模块。
 - PowerShell 启动时把 `$windir\System32` 加入 `PSModulePath`，但**只暴露 `CompatiblePSEdition` 含 `Core` 的模块**；`Get-Module` 输出新增 `PSEdition` 属性。
+- **`CompatiblePSEditions` 的强制执行范围有区别**：对**随 Windows 提供**的模块（位于 `%windir%\system32\WindowsPowerShell\v1.0\Modules`），6.1+ 会强制检查——未声明 `Core` 时 `Import-Module` 与 `Get-Module -ListAvailable` 会拒绝，需 `-SkipEditionCheck`（官方警告此后仍可能在运行期失败）；对**从 Gallery 安装的自定义模块**，该字段**仅作信息展示**，不强制。省略该字段等同 `Desktop`。
 - 隐式远程代理 cmdlet 现在正确作用于通用参数（7.5 修正，[#20367](https://github.com/PowerShell/PowerShell/pull/20367)）。
 
 ### 3.9 Web cmdlet 底层改写（6.0）⚠️
@@ -232,123 +249,343 @@ PowerShell 直接暴露底层 .NET 类型，因此 .NET 的重载变化会直接
 
 ### 4.1 PowerShell 6.0（2018-01-20，.NET Core 2.0）
 
-跨平台化起点，破坏面最大的一次迁移。
+跨平台化起点，破坏面最大的一次迁移。PowerShell Core 使用 **.NET Core 2.0** 作为运行时，并**暴露 .NET Core 2.0 所提供的 API 集合**；与 .NET Framework 的交集由 **.NET Standard 2.0** 定义，这是二进制兼容性的基础。
+
+> **发布日期说明**：`CHANGELOG/6.0.md` 的标题写作 `2018-01-10`，但 Learn 生命周期表与 [Microsoft Lifecycle](https://learn.microsoft.com/en-us/lifecycle/products/powershell) 均记为 **2018-01-20**。本文以生命周期表为准。
 
 **宿主与命令行**
 
-- `powershell.exe` → `pwsh`；首个位置参数 `-Command` → `-File`；新增 `-i`；移除 `-ImportSystemModules` / `-PSConsoleFile`（详见 2.2）。
-- **移除自定义管理单元（snap-in）**支持。
-- **移除 `RunspaceConfiguration` 支持**：编程创建运行空间只能用 `InitialSessionState`。
+- `powershell.exe` → `pwsh`；首个位置参数 `-Command` → `-File`（[#4019](https://github.com/PowerShell/PowerShell/pull/4019)）；新增 `-i` / `-Interactive`（[#3558](https://github.com/PowerShell/PowerShell/pull/3558)）；移除 `-importsystemmodules` 与 `-psconsoleFile`（[#4995](https://github.com/PowerShell/PowerShell/pull/4995)）（详见 2.2）。
+- **移除自定义管理单元（snap-in）**支持（这直接破坏了 Windows 上的 `ActiveDirectory` 与 `DnsClient` 模块）。
+- **移除 `RunspaceConfiguration` 支持**：编程创建运行空间只能用 `InitialSessionState`（[#4942](https://github.com/PowerShell/PowerShell/pull/4942)）。
+- 新增 `$PSHome/powershell.config.json` 配置文件，用于存放启动前所需的设置（如 `ExecutionPolicy`）。
 
 **引擎与 API**
 
-- `Add-Type`：移除 `AddTypeCommandBase` 类；**移除 Visual Basic 语言支持**。
-- **`$PSVersionTable` 移除 `ClrVersion` 与 `BuildVersion`**，改用 `GitCommitId`。
-- `CommandInvocationIntrinsics.InvokeScript`：参数绑定到 **`$input`** 而非 `$args`（原为参数位置错误导致的行为）。
-- 清理工作流相关 API：`WorkflowInfo` 公开构造函数改 internal；移除 `System.Management.Automation.DebugSource` 类型；移除 `Debugger` / `RemotingJobDebugger` 中仅用于工作流调试的 `SetParent` 重载。
-- `ScriptBlock` 转换为委托时**不再把结果包装为 `PSObject`**。
+- `Add-Type`：**移除 `AddTypeCommandBase` 类**（[#5407](https://github.com/PowerShell/PowerShell/pull/5407)）；移除 `-ShowWindow` 相关 WPF 依赖；新增 `CSharpVersion7` 支持（[#3933](https://github.com/PowerShell/PowerShell/pull/3933)）。
+  - ⚠️ **版本冲突**：该移除在官方 What's New 6.0 页面的 "API changes" 中列为 6.0，而 `CHANGELOG/6.1.md` 把它放在 6.1.0-preview.1。两处证据矛盾，以 6.0 的 What's New 页面为准但需知悉此分歧。
+- **`ScriptBlock` 转换为委托时不再把返回值包装为 `PSObject`**（官方差异文档列为 6.0 的 "API changes"；7.1 的 changelog 也以 [#10619](https://github.com/PowerShell/PowerShell/pull/10619) 记录了同一变更，本文按差异文档归入 6.0，并在此标注两处证据的差异）。
+- **`$PSVersionTable` 新增 4 个属性**（[#3877](https://github.com/PowerShell/PowerShell/pull/3877)）：
+  - `PSEdition`（Core 上为 `Core`，Windows PowerShell 上为 `Desktop`）
+  - `GitCommitId`（构建所用的 Git 提交 ID）
+  - `OS`（来自 `[System.Runtime.InteropServices.RuntimeInformation]::OSDescription`）
+  - `Platform`（来自 `[System.Environment]::OSVersion.Platform`；Windows 为 `Win32NT`，macOS 与 Linux 为 `Unix`）
+- **移除 `BuildVersion`**（[#3877](https://github.com/PowerShell/PowerShell/pull/3877)/[#1415](https://github.com/PowerShell/PowerShell/pull/1415)）与 **`ClrVersion`**（[#4027](https://github.com/PowerShell/PowerShell/pull/4027)）。
+- `CommandInvocationIntrinsics.InvokeScript`：参数绑定到 **`$input`** 而非 `$args`（[#4923](https://github.com/PowerShell/PowerShell/pull/4923)）。
+- 新增自动变量 **`$IsWindows`、`$IsMacOS`、`$IsLinux`**；`$IsOSX` 更名为 `$IsMacOS`（[#4700](https://github.com/PowerShell/PowerShell/pull/4700)）。
+- **语义化版本 API**：新增 `semver` 类型加速器（对应 `System.Management.Automation.SemanticVersion`，[#4142](https://github.com/PowerShell/PowerShell/pull/4142)）；`SemanticVersion` 兼容 **SemVer 2.0**（[#5037](https://github.com/PowerShell/PowerShell/pull/5037)）；支持 `SemanticVersion` 与仅含 `Major.Minor` 的 `Version` 比较；`New-ModuleManifest` 默认 `ModuleVersion` 改为 `0.0.1`。
+- **属性/验证 API 增补**：`ValidateDriveAttribute.ValidRootDrives`（[#3510](https://github.com/PowerShell/PowerShell/pull/3510)）；通过自定义 `ValidateSetValueGenerator` 生成动态 `ValidateSet` 值（[#3784](https://github.com/PowerShell/PowerShell/pull/3784)）；`ValidatePatternAttribute` / `ValidateSetAttribute` / `ValidateScriptAttribute` 支持自定义错误消息（[#2728](https://github.com/PowerShell/PowerShell/pull/2728)）；新增 **`ArgumentCompletionsAttribute`**（[#4835](https://github.com/PowerShell/PowerShell/pull/4835)）。
+- **类型数据（ETS）变化**：为 `System.Diagnostics.Process` 新增 **`CodeProperty "Parent"`**（暴露父进程，[#2850](https://github.com/PowerShell/PowerShell/pull/2850)）；`Get-Service` 返回的 `ServiceController` 新增 `UserName`、`Description`、`DelayedAutoStart`、`BinaryPathName`、`StartupType`（[#4907](https://github.com/PowerShell/PowerShell/pull/4907)）；**移除 `System.Array` 的 `AliasProperty "Count"`**（[#3231](https://github.com/PowerShell/PowerShell/pull/3231)）。
+- 工作流堆栈整体移除：`Remove Workflow code`（[#4777](https://github.com/PowerShell/PowerShell/pull/4777)）、`Remove remainder of Utility.Activities`（[#4880](https://github.com/PowerShell/PowerShell/pull/4880)）、移除 `Microsoft.PowerShell.CoreCLR.AssemblyLoadContext.dll`（[#4868](https://github.com/PowerShell/PowerShell/pull/4868)）。
+  - 同一批清理还包括 `WorkflowInfo` 公开构造函数改 internal、移除 `System.Management.Automation.DebugSource` 类型、移除 `Debugger` / `RemotingJobDebugger` 中仅用于工作流调试的 `SetParent` 重载。
 - 二进制模块程序集加载顺序：**先模块基路径，后 GAC**。
-- 实现 **Unicode 转义解析**：`` `u#### `` / `` `u{####} ``；输出字面 `` `u `` 需写 `` ``u ``。
-- 新增自动变量 `$IsCoreCLR`、`$IsWindows`、`$IsLinux`、`$IsMacOS`。
-- 引入 `-SkipEditionCheck` 与 `PSEdition` 模块属性支持。
+- 实现 **Unicode 转义解析**：`` `u#### `` / `` `u{####} ``（[#3958](https://github.com/PowerShell/PowerShell/pull/3958)）；输出字面 `` `u `` 需写 `` ``u ``。
+- 引入 `-SkipEditionCheck` 与 `PSEdition` 模块属性支持的基础机制。
 
 **语言与语义**
 
-- PSCustomObject 新增 **`Count` / `Length` 属性**以及 **`ForEach` / `Where` 方法**。
-- 支持把 **`PSMethod` 转换为委托**（可把静态方法作为委托传给 .NET API）。
-- 范围运算符 `..` **新增字符范围**支持（`'a'..'f'`）。
+- **`&`（行尾后台作业运算符）**（[#3360](https://github.com/PowerShell/PowerShell/pull/3360)）：官方 6.0 What's New 明确 **"Support backgrounding of pipelines with ampersand (`&`)"**。管道作为 PowerShell 作业运行并返回 job 对象；变量（进程相关变量除外）自动复制；作业在当前目录而非用户主目录运行。
+- 新增 **ESC 转义 `` `e ``**。
+- **枚举到字符串的转换**（[#4318](https://github.com/PowerShell/PowerShell/pull/4318)）。
+- **范围运算符 `..` 新增字符范围重载**：`'a'..'z'`（[#5026](https://github.com/PowerShell/PowerShell/pull/5026)）。
+- `-split` 支持 `'Singleline, Multiline'` 选项（[#4721](https://github.com/PowerShell/PowerShell/pull/4721)）。
+- 修正单元素数组到泛型集合的强制转换（[#3170](https://github.com/PowerShell/PowerShell/pull/3170)）；修正变量赋值不再覆盖只读变量。
+- **`ValueFromRemainingArguments` 现在返回数组**（[#2035](https://github.com/PowerShell/PowerShell/pull/2035)）。
 - `$?` 语义修正（ParenExpression / SubExpression / ArrayExpression）。
-- `Group-Object` 输出排序；`Measure-Object` 新增 `StandardDeviation`。
-- `$PSCulture` 一致反映会话内的区域性变更（修正 5.1 的缓存行为）。
+- `Group-Object` 输出排序；`Measure-Object` 新增 `StandardDeviation`（这两项亦列于 6.0 的差异文档）。
+- `$PSCulture` 一致反映会话内的区域性变更。
 
-**新 cmdlet**：`Get-Uptime`、`Remove-Alias`、`Remove-Service`。
+**新 cmdlet**：`Get-Uptime`、`Remove-Alias`（[#5143](https://github.com/PowerShell/PowerShell/pull/5143)）、`Remove-Service`（[#4858](https://github.com/PowerShell/PowerShell/pull/4858)）。
 
-**Web cmdlet**：底层改写为 `HttpClient`（详见 3.9）；新增 `-AllowUnencryptedAuthentication`、`-Authentication`、`-CustomMethod`、`-NoProxy`。
+**新增参数（择要）**：`ConvertFrom-Json -AsHashtable`（[#5043](https://github.com/PowerShell/PowerShell/pull/5043)）；`Sort-Object -Top` / `-Bottom`；`Split-Path -Extension` / `-LeafBase`（[#2721](https://github.com/PowerShell/PowerShell/pull/2721)）；`Out-String -NoNewLine`（[#5056](https://github.com/PowerShell/PowerShell/pull/5056)）；`Get-Credential -Title`；`Test-Connection -TimeOut`（[#2492](https://github.com/PowerShell/PowerShell/pull/2492)）；`ConvertTo-Html -Meta` / `-Charset` / `-Transitional`（[#4184](https://github.com/PowerShell/PowerShell/pull/4184)）；`Get-Verb -Group`；`Start-Process -WhatIf`（[#4735](https://github.com/PowerShell/PowerShell/pull/4735)）；`Get-ChildItem -FollowSymlink`（[#4020](https://github.com/PowerShell/PowerShell/pull/4020)）。
+
+**Web cmdlet**：底层改写为 `HttpClient`（详见 3.9）；新增 `-CustomMethod`、`-SslProtocol`、`-NoProxy`、`-Authentication`（Basic/OAuth/Bearer）、`-Token`、`-AllowUnencryptedAuthentication`、`-ResponseHeadersVariable`、`-SkipHeaderValidation`、`-FollowRelLink` / `-MaximumFollowRelLink`、多 Link 头支持、证书认证；UserAgent 由 `WindowsPowerShell` 改为 `PowerShell`。
+
+**输出、编码与文件行为变化**
+
+- `Get-Content -Delimiter` 不再把分隔符包含在返回行中（[#3706](https://github.com/PowerShell/PowerShell/pull/3706)）。
+- `Format-Hex` 用 C# 重写，**`-Raw` 变为无操作**（[#3320](https://github.com/PowerShell/PowerShell/pull/3320)）。
+- **`Export-Csv` / `ConvertTo-Csv` 默认 `-NoTypeInformation`**（[#5164](https://github.com/PowerShell/PowerShell/pull/5164)）；`Import-Csv` 支持 W3C Extended Log File Format（[#2482](https://github.com/PowerShell/PowerShell/pull/2482)）并支持 `PSTypeName`（[#5389](https://github.com/PowerShell/PowerShell/pull/5389)）。
+- **所有使用 `-Encoding` 的内置 cmdlet 默认改为 `UTF8NoBOM`**，且 `-Encoding` 统一接受 `System.Text.Encoding`（[#5080](https://github.com/PowerShell/PowerShell/pull/5080)）：`Add-Content`、`Export-Clixml`、`Export-Csv`、`Export-PSSession`、`Format-Hex`、`Get-Content`、`Import-Csv`、`Out-File`、`Select-String`、`Send-MailMessage`、`Set-Content`。
+- **`$OutputEncoding` 默认由 ASCII 改为 `UTF-8 NoBOM`**（[#5369](https://github.com/PowerShell/PowerShell/pull/5369)）。
+- `New-ModuleManifest` 在**非 Windows** 平台生成 UTF-8 无 BOM 的 `.psd1`（Windows 上仍为 UTF-16 带 BOM，[#3940](https://github.com/PowerShell/PowerShell/pull/3940)）。
+- `Get-Item -LiteralPath a*b` 不存在时报错（[#5197](https://github.com/PowerShell/PowerShell/pull/5197)）。
+- `Get-ChildItem` 递归时返回符号链接但**不进入**其目标（向 `ls -R` / `dir /S` 靠拢，[#3780](https://github.com/PowerShell/PowerShell/pull/3780)），并新增 `-FollowSymlink`（[#4020](https://github.com/PowerShell/PowerShell/pull/4020)）。
+- **移除大多数默认别名的 `AllScope`**（[#5268](https://github.com/PowerShell/PowerShell/pull/5268)）。
+- `-Verbose` / `-Debug` 不再覆盖 `$ErrorActionPreference`（[#5113](https://github.com/PowerShell/PowerShell/pull/5113)）。
+- 退出码对齐 Unix 约定（[#4573](https://github.com/PowerShell/PowerShell/pull/4573)）。
+- `Get-ComputerInfo` 的 `BiosSeralNumber` 更正为 `BiosSerialNumber`（[#3167](https://github.com/PowerShell/PowerShell/pull/3167)）。
+- `Get-ComputerInfo` 新增 `WindowsUBR` / `WindowsVersion`；`Get-Process` 内存列由 KB 改为 MB。
+- 非 Windows 上**忽略 `-ExecutionPolicy`**（脚本签名当时不受支持，[#3481](https://github.com/PowerShell/PowerShell/pull/3481)）。
+- **对以下 cmdlet 传 `$null` 现在报错**（[#2672](https://github.com/PowerShell/PowerShell/pull/2672)）：`Get-Credential -UserName`、`Get-Event -SourceIdentifier`、`Get-EventSubscriber -SourceIdentifier`、`Get-Help -Name`、`Get-PSBreakpoint -Script`、`Get-PSProvider -PSProvider`、`Get-PSSessionConfiguration -Name`、`Get-PSSnapin -Name`、`Get-Runspace -Name`、`Get-RunspaceDebug -RunspaceName`、`Get-Service -Name`、`Get-TraceSource -Name`、`Get-Variable -Name`（以及当时尚存的 `Get-WmiObject -Class` / `-Property`）。
+- 哈希算法 `MACTripleDES`、`RIPEMD160` 被 .NET 移除，影响 `Get-FileHash`（[#3024](https://github.com/PowerShell/PowerShell/pull/3024)）。
+- `cd` 无参数等价于 `cd ~`；路径支持超过 260 字符（[#3960](https://github.com/PowerShell/PowerShell/pull/3960)）；`Remove-Item` 支持注册表路径中的 `*`（[#4866](https://github.com/PowerShell/PowerShell/pull/4866)）。
+- **遥测**：新增控制台遥测（上报 OS 平台与 `GitCommitId`，[#3620](https://github.com/PowerShell/PowerShell/pull/3620)）；通过环境变量 `POWERSHELL_TELEMETRY_OPTOUT`（`true` / `1` / `yes`）退出。
+- 自动变量 `$IsOSX` 更名为 **`$IsMacOS`**，以符合 Apple 的 macOS 命名（[#4700](https://github.com/PowerShell/PowerShell/pull/4700)）。
+
+**⚠️ 6.0 未提供（后续版本陆续恢复）**：
+
+- 因使用不受支持的 API 而移除：`Get-Clipboard` / `Set-Clipboard`、`Get-HotFix`、`Clear-RecycleBin`、`Update-List`、`Out-Printer`、`ConvertFrom-String` / `Convert-String`、`*-Counter`（`Get-Counter`）、`Microsoft.PowerShell.LocalAccounts`、`*-EventLog` 等。
+  - 其中 `Get-Counter`、`Out-Printer`、`Get-HotFix`、`Clear-RecycleBin`、`Update-List`、跨平台 `Get-Clipboard` / `Set-Clipboard` 都在 **7.0 回归**。
+- **非 Windows 平台上的安全类 cmdlet 不可用**：`Get-Acl`、`Set-Acl`、`Get-AuthenticodeSignature`、`Set-AuthenticodeSignature`、`Get-CmsMessage`、`Protect-CmsMessage`、`Unprotect-CmsMessage`、`New-FileCatalog`、`Test-FileCatalog`。
+- **WPF 相关**（`Show-Command`、`Out-GridView`、`Get-Help -ShowWindow`）不可用，已在 7.0 恢复。
+- 类型加速器 `[adsi]`、`[adsisearcher]`、`[wmi]`、`[wmiclass]`、`[wmisearcher]` 在 6.0 中**不存在**，6.1 在 Windows 上恢复（[#7085](https://github.com/PowerShell/PowerShell/pull/7085)）。
 
 ### 4.2 PowerShell 6.1（2018-09-13，.NET Core 2.1）
 
-- 新增 Markdown 系列：`ConvertFrom-Markdown`、`Get-MarkdownOption`、`Set-MarkdownOption`、`Show-Markdown`。
-- 新增 **`Test-Json`**（可选用 JSON Schema 校验）。
-- 新增 `Import-Csv` 的 W3C 扩展日志格式支持等。
-- **`Enable-PSRemoting` 为预览版本创建独立会话配置**（如 `PowerShell.6.2-preview.1`、`PowerShell.6-preview`）。
-- SSH 远程处理支持 `user@host:port` 连接串。
-- Web cmdlet 新增 **`-Form`**（简化 `multipart/form-data`）。
-
-### 4.3 PowerShell 6.2（2019-03-29，.NET Core 2.1）
-
-- **引入实验性特性（Experimental Features）框架**，新增 `Get-ExperimentalFeature`、`Enable-ExperimentalFeature`、`Disable-ExperimentalFeature`。这是后续所有新 API 的"孵化通道"，也是理解 7.x 演进的关键。
-- 新增 **`Join-String`**。
-- `Select-Object` 新增 `-SkipIndex`（文档写作"Windows PowerShell 6.0"）。
-- `ConvertFrom-Json` 新增 **`-Depth`**（默认 1024）。
-- `-Encoding` 支持数字代码页 ID 或代码页名称。
-- Web cmdlet：JSON 响应默认 UTF-8（RFC 8259）；新增 `-SkipHeaderValidation`、`-Resume`。
-
-### 4.4 PowerShell 7.0（2020-03-04，.NET Core 3.1，LTS）
-
-**语言与运算符**——这一批是 5.1 用户感知最直接的变化
-
-| 语法 | 说明 | 5.1 |
-| --- | --- | --- |
-| `??` | null 合并；左侧非 null 时不计算右侧 | ❌ |
-| `??=` | null 合并赋值 | ❌ |
-| `? :` | 三元运算符 | ❌ |
-| `&&` / `||` | 管道链运算符，依据左侧管道成败条件执行右侧 | ❌ |
-| `&`（行尾） | 后台作业运算符 | ❌ |
-| `?.` / `?[]` | null 条件访问（**7.0 实验性 → 7.1 转正式**，见 4.5） | ❌ |
+迁移到 **.NET Core 2.1**，并引入 **Windows Compatibility Pack 2.0.0**（[#6958](https://github.com/PowerShell/PowerShell/pull/6958)）——这正是"让 Windows 模块能在 PowerShell Core 里跑"的关键一步。
 
 **引擎与 API**
 
-- `ForEach-Object` 新增 **`-Parallel`** 与 **`-ThrottleLimit`**。
-- 默认错误视图 **ConciseView**；`$Host.PrivateData` 新增 `ErrorAccentColor`。
-- 新增 **`Get-Error`** cmdlet。
-- **恢复 WPF 相关功能**：`Show-Command`、`Out-GridView`、`Get-Help -ShowWindow`。
-- **`Invoke-DscResource` 以实验性特性形式回归**。
-- 引入 **`Import-Module -UseWindowsPowerShell`** 兼容层。
+- **Windows Compatibility Pack 带来的可用性跃升**：官方 What's New 明确"为随 Windows 10 October 2018 Update 与 Windows Server 2019 提供的**超过 1900 个 cmdlet** 提供支持"。
+- `$windir\System32` 自动加入 `PSModulePath`，并按 `CompatiblePSEditions` 过滤；新增 `Get-Module -SkipEditionCheck` 与 `Get-Module` 输出的 `PSEdition` 列（[#7183](https://github.com/PowerShell/PowerShell/pull/7183)、[#7083](https://github.com/PowerShell/PowerShell/pull/7083)、RFC0025）。
+- **引入实验性特性框架**（RFC0029）：`Add support to experimental features`（[#7242](https://github.com/PowerShell/PowerShell/pull/7242)）。官方 6.1 What's New 明确写出用 `Get-ExperimentalFeature` 列出特性，并用 `Enable-ExperimentalFeature` / `Disable-ExperimentalFeature` 启停。
+  - 公开 API 层面为 **`Experimental` 特性**（`[Experimental(Name, ExperimentAction)]`）与 **`ExperimentalFeature.IsEnabled()`**。
+  - ⚠️ **版本细节**：6.2 的 changelog 把 `Enable-ExperimentalFeature` / `Disable-ExperimentalFeature` 的加入记为 `#8318`（6.2）。两处证据略有出入，可理解为 6.1 引入框架与 `Get-ExperimentalFeature`、6.2 补齐启停 cmdlet；引用时建议以"6.1 引入实验性特性机制、6.2 完善"表述。
+- **`PSCustomObject` 新增 `Count` 与 `Length` 属性**（[#5745](https://github.com/PowerShell/PowerShell/pull/5745)），以及 **`ForEach` 与 `Where` 方法**（[#5756](https://github.com/PowerShell/PowerShell/pull/5756)）——即常说的"PSCustomObject 也有 Count/Length 和 ForEach/Where 了"。
+- 支持把 **`PSMethod` 转换为委托**（[#5287](https://github.com/PowerShell/PowerShell/pull/5287)，后续 [#6570](https://github.com/PowerShell/PowerShell/pull/6570)、[#6851](https://github.com/PowerShell/PowerShell/pull/6851) 改进）。
+- 新增 `LanguagePrimitives.TryCompare`（[#7438](https://github.com/PowerShell/PowerShell/pull/7438)）；`LanguagePrimitives.GetEnumerable` 把 `DataTable` 视为可枚举（[#6511](https://github.com/PowerShell/PowerShell/pull/6511)）。
+- `HistoryInfo.Duration` 属性（[#5208](https://github.com/PowerShell/PowerShell/pull/5208)）。
+- **`Microsoft.PowerShell.Commands.SetDateCommand.SystemTime` 由 class 改为 struct**（[#6006](https://github.com/PowerShell/PowerShell/pull/6006)）。
+- 序列化互操作：从序列化代码的 `knowntypes` 列表**移除 `SemanticVersion`**，以改善 Windows PowerShell 与 PowerShell Core 之间的互操作（[#7016](https://github.com/PowerShell/PowerShell/pull/7016)）。
+- `Group-Object -AsHashTable` 以 `PSObject` 的基对象作为键（[#7123](https://github.com/PowerShell/PowerShell/pull/7123)）。
+- **`Add-Type`：移除 Visual Basic 语言支持**（[#7284](https://github.com/PowerShell/PowerShell/pull/7284)）；`Add-Type` 整体重构（[#6141](https://github.com/PowerShell/PowerShell/pull/6141)），并移除部分错误字符串与全限定错误 ID；枚举 `Language` 中不受支持的成员被移除（[#5829](https://github.com/PowerShell/PowerShell/pull/5829)）。
+- 清理 `CommandTypes.Workflow` 与 `WorkflowInfo` 的使用（[#6708](https://github.com/PowerShell/PowerShell/pull/6708)）。
+- **在 Windows 上恢复类型加速器** `[adsi]`、`[adsisearcher]`、`[wmi]`、`[wmiclass]`、`[wmisearcher]`（[#7085](https://github.com/PowerShell/PowerShell/pull/7085)）——它们在 6.0 中不存在。
+- 类（class）引擎增强：可从 PowerShell 类中非虚调用基类的 "family or assembly" 方法（[#7624](https://github.com/PowerShell/PowerShell/pull/7624)）；支持 `System.Tuple` / `System.ValueTuple` 的索引操作（[#7633](https://github.com/PowerShell/PowerShell/pull/7633)）；优雅处理 `ByRef-like` 类型（[#7533](https://github.com/PowerShell/PowerShell/pull/7533)）；返回类型为 `[object]` 的方法在空结果时返回 `null`（[#7138](https://github.com/PowerShell/PowerShell/pull/7138)）。
+- **`Enable-PSRemoting` 创建 `PowerShell.6` 与具体版本两类会话配置**（[#6519](https://github.com/PowerShell/PowerShell/pull/6519)、[#7202](https://github.com/PowerShell/PowerShell/pull/7202)）。
+- 新增 `ThreadJob` 模块（[#7169](https://github.com/PowerShell/PowerShell/pull/7169)）。
+- 把 `Microsoft.PowerShell.MarkdownRender` 加入受信任程序集列表（[#7280](https://github.com/PowerShell/PowerShell/pull/7280)）；移植 AppLocker / Device Guard UMCI 允许列表（[#6133](https://github.com/PowerShell/PowerShell/pull/6133)）；把 `System.Windows.Forms` 加入阻止列表以防崩溃（[#6822](https://github.com/PowerShell/PowerShell/pull/6822)）。
+
+**新增 cmdlet**
+
+- Markdown 系列：`ConvertFrom-Markdown`、`Get-MarkdownOption`、`Set-MarkdownOption`、`Show-Markdown`（[#6926](https://github.com/PowerShell/PowerShell/pull/6926)）。
+- **`Test-Json`**（基于 NJsonSchema，[#5229](https://github.com/PowerShell/PowerShell/pull/5229)）。
+- 新增参数与行为：`Where-Object -Not`（[#6464](https://github.com/PowerShell/PowerShell/pull/6464)）；**`Measure-Object` 新增标准差**（[#6238](https://github.com/PowerShell/PowerShell/pull/6238)）与 `-AllStats`（[#7220](https://github.com/PowerShell/PowerShell/pull/7220)）；**`Get-PfxCertificate -Password`**（[#6113](https://github.com/PowerShell/PowerShell/pull/6113)）；`Select-Object -SkipIndex`（[#7483](https://github.com/PowerShell/PowerShell/pull/7483)）；**`-lp` 成为所有 `-LiteralPath` 的别名**（[#6770](https://github.com/PowerShell/PowerShell/pull/6770)）；`ConvertTo-Json -AsArray`（[#6438](https://github.com/PowerShell/PowerShell/pull/6438)）；**`Update-Help` 默认保存到用户范围目录**（[#6352](https://github.com/PowerShell/PowerShell/pull/6352)）；**`cd -` 返回上一目录**（[#5051](https://github.com/PowerShell/PowerShell/pull/5051)）；**移除 `more` 函数**（[#6059](https://github.com/PowerShell/PowerShell/pull/6059)）。
+
+**语言**
+
+- **`-replace` 运算符接受脚本块（scriptblock）**（[#6029](https://github.com/PowerShell/PowerShell/pull/6029)）。
+  - ⚠️ **版本歧义**：`about_Comparison_Operators` 写的是 "In PowerShell 6 and later"，而 changelog 把它放在 6.1.0-preview.1。6.0 还是 6.1 由这些来源无法定论，引用时需注明。
+- 除上述外，6.1 **没有**新增其他运算符或关键字。
+
+**破坏性变更**
+
+- MSI 安装路径变为 `$env:ProgramFiles\PowerShell\6\`（稳定版）与 `…\6-preview\`（预览版）（RFC0026）。
+- **遥测只能通过环境变量 `POWERSHELL_TELEMETRY_OPTOUT` 关闭**；删除 `DELETE_ME_TO_DISABLE_CONSOLEHOST_TELEMETRY` 文件的方式不再有效。
+- Unix 上的远程处理禁止通过 HTTP 使用 Basic 认证（[#6787](https://github.com/PowerShell/PowerShell/pull/6787)）。
+- 对随 Windows 提供的 `System32` 模块强制执行 `CompatiblePSEditions`（[#7183](https://github.com/PowerShell/PowerShell/pull/7183)）。
+- `Group-Object` 输出排序（[#7409](https://github.com/PowerShell/PowerShell/pull/7409)）。
+- `New-TemporaryFile` 抛出**终止性**错误（[#6182](https://github.com/PowerShell/PowerShell/pull/6182)）。
+- `Add-Type` 移除全限定错误 ID。
+
+
+### 4.3 PowerShell 6.2（2019-03-29，.NET Core 2.1）
+
+官方把这一版定位为"性能改进、缺陷修复，以及较小的 cmdlet 与语言增强"。
+
+> `CHANGELOG/6.2.md` 标题写作 `2019-03-28`，生命周期表记为 **29-Mar-2019**。
+
+**引擎与 .NET API（本版本是 6.x 中 API 面变化最大的一版）**
+
+- **`PSVersionInfo.PSVersion` 与 `PSVersionInfo.PSEdition` 公开**（[#8054](https://github.com/PowerShell/PowerShell/pull/8054)）。
+- **`System.Management.Automation.PowerShell` 新增 5 个 `InvokeAsync` 重载与 `StopAsync`**（[#8056](https://github.com/PowerShell/PowerShell/pull/8056)）；新增接受 `Runspace` 的 **`PowerShell.Create` 重载**（[#8057](https://github.com/PowerShell/PowerShell/pull/8057)）；**`PowerShell.GetSteppablePipeline` 公开**（[#8055](https://github.com/PowerShell/PowerShell/pull/8055)）；基于任务的异步 API"直接返回 `Task` 对象"（[#9079](https://github.com/PowerShell/PowerShell/pull/9079)）。
+- **`ConvertTo-Json` 重构，把 `JsonObject.ConvertToJson` 暴露为公开 API**（[#8682](https://github.com/PowerShell/PowerShell/pull/8682)）；`ConvertToJson` 中 `StoppingException` 由 `OperationCancellationException` 取代（[#8920](https://github.com/PowerShell/PowerShell/pull/8920)）。
+- **移除类型**：不再使用的 `RunspaceConfigurationEntry` 系列类型（[#8424](https://github.com/PowerShell/PowerShell/pull/8424)）；`PSSnapInInfo()` 的旧 `customPSSnapInType` 参数（[#8333](https://github.com/PowerShell/PowerShell/pull/8333)）；若干未使用的缓存类型（[#9015](https://github.com/PowerShell/PowerShell/pull/9015)）。
+- **PowerShell 开始自带引用程序集（reference assemblies）**：为 `Microsoft.PowerShell.Commands.Utility.dll` 生成并部署引用程序集（[#8716](https://github.com/PowerShell/PowerShell/pull/8716)），引用程序集构建目标改为 `netcoreapp2.1`（[#8729](https://github.com/PowerShell/PowerShell/pull/8729)）——这正是 `Add-Type` 与模块作者后来消费的机制。
+- **类型系统**：枚举支持用户指定基础类型（[#8329](https://github.com/PowerShell/PowerShell/pull/8329)）；新增 `ushort` / `uint` / `ulong` / `short` 的 C# 风格类型加速器与字面量后缀（[#7813](https://github.com/PowerShell/PowerShell/pull/7813)）；字节字面量（[#7901](https://github.com/PowerShell/PowerShell/pull/7901)）；支持调用带 `ByRef-like` 类型参数的方法（[#7721](https://github.com/PowerShell/PowerShell/pull/7721)、[#7788](https://github.com/PowerShell/PowerShell/pull/7788)）；`.exe` 可作为 IL 二进制模块（[#7281](https://github.com/PowerShell/PowerShell/pull/7281)）。
+- 类型推断（供补全使用）覆盖 `Select-Object`、`Group-Object`、`PSObject`、`Hashtable`（[#7231](https://github.com/PowerShell/PowerShell/pull/7231)）；`catch{}` 中的 `$_` / `$PSItem`（[#8020](https://github.com/PowerShell/PowerShell/pull/8020)）。
+- **程序集加载顺序改为"先模块基路径，后 GAC"**（[#8073](https://github.com/PowerShell/PowerShell/pull/8073)）。
+- 序列化/远程：修正 `CustomSerializer.WriteMemberInfoCollection()` 的 XML 嵌套缺陷（[#8476](https://github.com/PowerShell/PowerShell/pull/8476)）；修正 `FormatTable` 的远程反序列化回归（[#9116](https://github.com/PowerShell/PowerShell/pull/9116)）。
+- 宿主相关行为：非 Windows 上 `SecureString` cmdlet 通过存储明文来启用（[#9199](https://github.com/PowerShell/PowerShell/pull/9199)）；**在 PowerShell 被宿主（hosting）时 `Start-Job` 抛终止性错误**（[#9128](https://github.com/PowerShell/PowerShell/pull/9128)）；`Add-Type` 可在宿主 PowerShell 的应用中使用（[#10587](https://github.com/PowerShell/PowerShell/pull/10587)，列在 6.2.4）。
+- 引入 **dotnet 全局工具（global tool）** 形式的 PowerShell（[#8984](https://github.com/PowerShell/PowerShell/pull/8984)、[#9163](https://github.com/PowerShell/PowerShell/pull/9163)）。
 
 **cmdlet 变化**
 
-- `-lp` 统一为所有 `-LiteralPath` 的别名。
-- `Start-Job` 使用当前目录作为工作目录。
-- 从 `Rename-Computer` / `Restart-Computer` / `Stop-Computer` 移除 `-Protocol`（**DCOM 不再支持**）。
-- 从 `*-Service` cmdlet 移除 `-ComputerName`（改用 `Invoke-Command`）。
-- `Get-Content -Delimiter` 不再返回分隔符；`Format-Hex -Raw` 变为无操作。
-- `Export-Csv` 默认 `-NoTypeInformation`；`Import-Csv` 支持 W3C 格式并应用 `pstypenames`。
-- `Update-Help` 不再需要管理员权限，默认保存到用户范围目录。
-- `Where-Object` 新增 `-Not`。
-- `Get-PfxCertificate` 新增 `-Password`（`SecureString`），使其可非交互使用。
-- 移除 `more` 函数；`help` 改用 `more.com`（Windows）或 `$Env:PAGER`（非 Windows）。
-- **对以下 cmdlet 传 `$null` 现在报错**（原为返回所有对象）：`Get-Credential -UserName`、`Get-Event -SourceIdentifier`、`Get-EventSubscriber -SourceIdentifier`、`Get-Help -Name`、`Get-PSBreakpoint -Script`、`Get-PSProvider -PSProvider`、`Get-PSSessionConfiguration -Name`、`Get-Runspace -Name`、`Get-RunspaceDebug -RunspaceName`、`Get-Service -Name`、`Get-TraceSource -Name`、`Get-Variable -Name`。
-- 哈希算法 `MACTripleDES`、`RIPEMD160` 被 .NET 移除，影响 `Get-FileHash`。
+- 新增 **`Join-String`**（[#7660](https://github.com/PowerShell/PowerShell/pull/7660)）。
+- `ConvertFrom-Json` 新增 **`-Depth`**（默认 1024，[#8199](https://github.com/PowerShell/PowerShell/pull/8199)）；`ConvertTo-Json -EscapeHandling`（[#7775](https://github.com/PowerShell/PowerShell/pull/7775)）。
+- `Format-Hex -Offset` / `-Count`（[#7877](https://github.com/PowerShell/PowerShell/pull/7877)），并移除其 `ShouldProcess`（[#8178](https://github.com/PowerShell/PowerShell/pull/8178)）。
+- `Get-Culture -Name` / `-NoUserOverrides` / `-ListAvailable`（[#7702](https://github.com/PowerShell/PowerShell/pull/7702)）；`Start-Transcript -UseMinimalHeader`（[#8402](https://github.com/PowerShell/PowerShell/pull/8402)）；`Send-MailMessage -ReplyTo`（[#8727](https://github.com/PowerShell/PowerShell/pull/8727)）并被标记为过时（[#9178](https://github.com/PowerShell/PowerShell/pull/9178)）。
+- `pwsh` 与 `Enter-PSHostProcess` 新增 `-CustomPipeName`（[#8889](https://github.com/PowerShell/PowerShell/pull/8889)）；`Get-PSHostProcessInfo` / `Enter-PSHostProcess` 支持 Unix（[#8232](https://github.com/PowerShell/PowerShell/pull/8232)）。
+- 非 Windows 上移除 `New-PSDrive -Persist`（[#8291](https://github.com/PowerShell/PowerShell/pull/8291)）。
+- **`-Encoding` 支持数字代码页 ID 或代码页名称**（见官方 `Select-String` 文档："Beginning with PowerShell 6.2, the **Encoding** parameter also allows numeric IDs of registered code pages"）。
+
+**实验性特性**
+
+- **新增 `Enable-ExperimentalFeature` 与 `Disable-ExperimentalFeature` cmdlet**（[#8318](https://github.com/PowerShell/PowerShell/pull/8318)）——至此实验性特性机制才完整；同时 **`Get-ExperimentalFeature` 失去 `-ListAvailable`**（破坏性）。
+- 简化新实验性特性的声明方式（[#8726](https://github.com/PowerShell/PowerShell/pull/8726)）。
+- 本版本新增的实验性特性：`PSCommandNotFoundSuggestion`（[#8458](https://github.com/PowerShell/PowerShell/pull/8458)）、`PSImplicitRemotingBatching`（[#8038](https://github.com/PowerShell/PowerShell/pull/8038)）、**`PSTempDrive`**（[#8696](https://github.com/PowerShell/PowerShell/pull/8696)）、`PSUseAbbreviationExpansion`（[#8109](https://github.com/PowerShell/PowerShell/pull/8109)）。
+
+**语言**
+
+- **没有新增运算符或关键字**；本版本的语法层面增补是字面量与类型层面的（枚举基础类型、数字字面量后缀与字节字面量，见上）。
+
+**破坏性变更**
+
+- `Write-Output -NoEnumerate` 行为一致性（[#9069](https://github.com/PowerShell/PowerShell/pull/9069)）。
+- `Join-String -InputObject 1,2,3` 等价于 `1,2,3 | Join-String`（[#8611](https://github.com/PowerShell/PowerShell/pull/8611)）。
+- 新增 `Sort-Object -Stable`，改变排序语义（[#7862](https://github.com/PowerShell/PowerShell/pull/7862)）。
+- `Start-Sleep` 接受小数秒（[#8537](https://github.com/PowerShell/PowerShell/pull/8537)）。
+- **哈希表比较改为所有区域性下的 `OrdinalIgnoreCase`**（[#8566](https://github.com/PowerShell/PowerShell/pull/8566)）。
+- `Import-Csv -LiteralPath` 绑定 `Get-ChildItem` 输出（[#8277](https://github.com/PowerShell/PowerShell/pull/8277)）。
+- **`-Debug` 把 `$DebugPreference` 设为 `Continue`（原为 `Inquire`）**（[#8195](https://github.com/PowerShell/PowerShell/pull/8195)）。
+- `-OutputFormat` 在重定向/编码的非交互式 `pwsh` 中生效（[#8115](https://github.com/PowerShell/PowerShell/pull/8115)）。
+- `-WorkingDirectory` 在 profile 之前处理（[#8079](https://github.com/PowerShell/PowerShell/pull/8079)）；Unix 上不再追加 `PATHEXT`（[#7697](https://github.com/PowerShell/PowerShell/pull/7697)）。
+- 锁定模式（lockdown）下禁用调试器（6.2.1/6.2.2），并在 6.2.2 中禁用 `Enter-PSHostProcess`。
+- Linux 预览包的包名移除波浪号（[#8244](https://github.com/PowerShell/PowerShell/pull/8244)）。
+
+
+**Web cmdlet**：JSON 响应默认使用 UTF-8（RFC 8259）；新增 **`-Form`**（简化 `multipart/form-data`，见官方 `Invoke-WebRequest` 文档标注 "This feature was added in PowerShell 6.1.0"）与 `-Resume`。
+
+### 4.4 PowerShell 7.0（2020-03-04，.NET Core 3.1，LTS）
+
+迁移到 **.NET Core 3.1**，官方表述为"显著提升了对既有 Windows PowerShell 模块的向后兼容性"。这是第一个 **LTS** 版本，安装在 `%ProgramFiles%\PowerShell\7`，并对 6.x 做**原地升级**。
+
+**语言与运算符**——这一批是 5.1 用户感知最直接的变化
+
+| 语法 | 说明 | 引入时的状态 |
+| --- | --- | --- |
+| `??` | null 合并；左侧非 null 时不计算右侧 | 7.0 preview.5 实验性 → GA 正式（[#10636](https://github.com/PowerShell/PowerShell/pull/10636)） |
+| `??=` | null 合并赋值 | 同上 |
+| `? :` | 三元运算符（实验性特性名 `PSTernaryOperator`） | 7.0 GA 正式 |
+| `&&` / `\|\|` | 管道链运算符，依据左侧管道成败条件执行右侧 | 7.0 preview.5 实验性 → GA 正式（[#9849](https://github.com/PowerShell/PowerShell/pull/9849)） |
+| `?.` / `?[]` | null 条件访问 | **7.0 全程实验性**（`PSNullConditionalOperators`，[#10960](https://github.com/PowerShell/PowerShell/pull/10960)）→ **7.1 转正式** |
+| `&`（行尾） | 后台作业运算符 | **6.0 起已有**，不是 7.0 新增 |
+
+> 官方在 7.0.0-rc.1 通过 `Make approved features non-experimental`（[#11303](https://github.com/PowerShell/PowerShell/pull/11303)）把一批特性转正，三元、`??`、`??=`、`&&`、`||`、ConciseView、`Get-Error` 都在其中；**`?.` / `?[]` 不在其列**。
+
+其他语言/解析器增补：管道位于**行首**时的续行支持（[#8938](https://github.com/PowerShell/PowerShell/pull/8938)）；`-split` 支持负数（[#8960](https://github.com/PowerShell/PowerShell/pull/8960)）；补全 `TokenKind.QuestionMark` 的 token 文本（[#10706](https://github.com/PowerShell/PowerShell/pull/10706)）；`$?` 在 ParenExpression / SubExpression / ArrayExpression 中的保留（[#11040](https://github.com/PowerShell/PowerShell/pull/11040)）。
+
+**引擎与 API**
+
+- `ForEach-Object` 新增 **`-Parallel`** 与 **`-ThrottleLimit`**（[#10454](https://github.com/PowerShell/PowerShell/pull/10454)、[#10455](https://github.com/PowerShell/PowerShell/pull/10455)）。
+- 默认错误视图 **ConciseView**（[#10641](https://github.com/PowerShell/PowerShell/pull/10641)、[#10724](https://github.com/PowerShell/PowerShell/pull/10724)）；新增 **`Get-Error`** cmdlet（7.0 期间为实验性，RC.2 移除其清单声明 [#11369](https://github.com/PowerShell/PowerShell/pull/11369)）；`Get-Error` 增加 `OutputType`、保留原始 `TypeNames`（[#10856](https://github.com/PowerShell/PowerShell/pull/10856)）与异常 `Type` 成员（[#11076](https://github.com/PowerShell/PowerShell/pull/11076)）；`$Host.PrivateData` 新增 `ErrorAccentColor`。
+- **恢复 WPF 相关功能**：新增 **`Microsoft.PowerShell.GraphicalHost` 程序集**以启用 `Out-GridView`、`Show-Command`、`Get-Help -ShowWindow`（[#10899](https://github.com/PowerShell/PowerShell/pull/10899)）。
+- **引入 `Import-Module -UseWindowsPowerShell`（WinCompat）**代理模块机制（实验性起点 [#10973](https://github.com/PowerShell/PowerShell/pull/10973)）；`WindowsPS` 版本检查（[#11148](https://github.com/PowerShell/PowerShell/pull/11148)）；新增禁用隐式 WinPS 模块加载的设置（[#11332](https://github.com/PowerShell/PowerShell/pull/11332)）。
+- **断点与运行空间 API**：为运行空间新增断点管理 API，并支持不使用 `BreakAll` 附加到进程（[#10338](https://github.com/PowerShell/PowerShell/pull/10338)）；新增 `New-PSBreakpoint` cmdlet 与 `Debug-Runspace -Breakpoint`（[#8923](https://github.com/PowerShell/PowerShell/pull/8923)）；远程场景断点 API 改进（[#11312](https://github.com/PowerShell/PowerShell/pull/11312)）；修正 PowerShell 类定义泄漏到其他运行空间（[#11273](https://github.com/PowerShell/PowerShell/pull/11273)）。
+- **枚举/偏好 API**：新增 `ActionPreference.Break`（[#8205](https://github.com/PowerShell/PowerShell/pull/8205)）；`ActionPreference.Suspend` 变为保留/不支持状态，并解除偏好变量中使用 `ActionPreference.Ignore` 的限制（[#10317](https://github.com/PowerShell/PowerShell/pull/10317)）。
+- **运行空间/宿主**：**`InitialSessionState.ImportPSSnapIn` 标记为过时（Obsolete）**（[#11399](https://github.com/PowerShell/PowerShell/pull/11399)）；`ConsoleShell.Start` 可接受 `InitialSessionState`（[#9802](https://github.com/PowerShell/PowerShell/pull/9802)）。
+- 补全/格式化/反射公开 API：`TabExpansion2` 不再要求 `-CursorColumn`（[#10849](https://github.com/PowerShell/PowerShell/pull/10849)）；`CompletionCompleters` 公开方法的空引用修正（[#11274](https://github.com/PowerShell/PowerShell/pull/11274)）；`PSObject` 格式化基元优化（[#8785](https://github.com/PowerShell/PowerShell/pull/8785)）；`ParameterMetadata.GetProxyAttributeData` 支持 `ValidateRangeKind`（[#9059](https://github.com/PowerShell/PowerShell/pull/9059)）。
+- 绑定器/序列化：`LanguagePrimitives.IsNullLike()` 求值顺序修正（[#10781](https://github.com/PowerShell/PowerShell/pull/10781)）；`ConvertFrom-Json` 默认展开集合（[#10861](https://github.com/PowerShell/PowerShell/pull/10861)）；移除引发格式化问题的 `SourceLength` 远程属性（[#10765](https://github.com/PowerShell/PowerShell/pull/10765)）。
+- API 恢复/移除：恢复 `SetBreakpoints` API（[#11622](https://github.com/PowerShell/PowerShell/pull/11622)）；以 `ObsoleteAttribute` 恢复 `PowerShellStreamType` 枚举（[#11836](https://github.com/PowerShell/PowerShell/pull/11836)）；恢复 #10338 中丢失的调试 API（[#10808](https://github.com/PowerShell/PowerShell/pull/10808)）；移除 `CommaDelimitedStringCollection` 的未使用类型转换器（[#11000](https://github.com/PowerShell/PowerShell/pull/11000)）；移除 `WorkflowJobSourceAdapter` 引用（[#10326](https://github.com/PowerShell/PowerShell/pull/10326)）；内部 `HelpCategory.Workflow` 枚举标记过时（[#10319](https://github.com/PowerShell/PowerShell/pull/10319)）。
+- 引用程序集目标框架改为 `netcoreapp3.0`（[#9747](https://github.com/PowerShell/PowerShell/pull/9747)）；新增 ConsoleHost 引用程序集（[#11545](https://github.com/PowerShell/PowerShell/pull/11545)）；NuGet 打包开始包含 `cimcmdlets.dll` 与多数内置模块（[#11832](https://github.com/PowerShell/PowerShell/pull/11832)）。
+
+**cmdlet 变化**
+
+- `-lp` 统一为所有 `-LiteralPath` 的别名（6.1 已开始）。
+- `Start-Job` 使用当前目录作为工作目录（[#10920](https://github.com/PowerShell/PowerShell/pull/10920)），并新增 `-WorkingDirectory`（[#10324](https://github.com/PowerShell/PowerShell/pull/10324)）。
+- 从 `Rename-Computer` / `Restart-Computer` / `Stop-Computer` 移除 `-Protocol`（**DCOM 不再支持**，[#5277](https://github.com/PowerShell/PowerShell/pull/5277)）。
+- 从 `*-Service` cmdlet 移除 `-ComputerName`（[#5094](https://github.com/PowerShell/PowerShell/pull/5094)）。
+- **回归的 Windows cmdlet**：`Get-Counter`（[#10933](https://github.com/PowerShell/PowerShell/pull/10933)）、`Out-Printer`（[#10906](https://github.com/PowerShell/PowerShell/pull/10906)）、`Get-HotFix`（[#10740](https://github.com/PowerShell/PowerShell/pull/10740)）、`Clear-RecycleBin`（[#10909](https://github.com/PowerShell/PowerShell/pull/10909)）、`Update-List`（[#10922](https://github.com/PowerShell/PowerShell/pull/10922)）；**跨平台 `Get-Clipboard` / `Set-Clipboard`**（[#10340](https://github.com/PowerShell/PowerShell/pull/10340)）。
+- `ConvertFrom-SecureString -AsPlainText`（[#11142](https://github.com/PowerShell/PowerShell/pull/11142)）；`ConvertFrom-StringData -Delimiter`（[#10665](https://github.com/PowerShell/PowerShell/pull/10665)）；`Select-String -Culture`（[#10943](https://github.com/PowerShell/PowerShell/pull/10943)）与 `-NoEmphasis`（[#8963](https://github.com/PowerShell/PowerShell/pull/8963)）；`New-Service -SecurityDescriptorSDDL`（[#10483](https://github.com/PowerShell/PowerShell/pull/10483)）。
+- `Get-Item -LiteralPath a*b` 不存在时报错（[#5197](https://github.com/PowerShell/PowerShell/pull/5197)）。
+- `Get-ChildItem` 递归时返回符号链接但**不进入**其目标（向 `ls -R` / `dir /S` 靠拢，[#3780](https://github.com/PowerShell/PowerShell/pull/3780)）。
+- **对以下 cmdlet 传 `$null` 现在报错**（[#2672](https://github.com/PowerShell/PowerShell/pull/2672)）：`Get-Credential -UserName`、`Get-Event -SourceIdentifier`、`Get-EventSubscriber -SourceIdentifier`、`Get-Help -Name`、`Get-PSBreakpoint -Script`、`Get-PSProvider -PSProvider`、`Get-PSSessionConfiguration -Name`、`Get-PSSnapin -Name`、`Get-Runspace -Name`、`Get-RunspaceDebug -RunspaceName`、`Get-Service -Name`、`Get-TraceSource -Name`、`Get-Variable -Name`（以及当时尚存的 `Get-WmiObject -Class` / `-Property`）。
+- 哈希算法 `MACTripleDES`、`RIPEMD160` 被 .NET 移除，影响 `Get-FileHash`（[#3024](https://github.com/PowerShell/PowerShell/pull/3024)）。
 - `Select-String` 开始使用 ANSI 序列高亮匹配（见 `about_ANSI_Terminals`）。
 - `Test-Path` 对空白字符串返回 `$false`。
+- `$env:__SuppressAnsiEscapeSequences`（[#10814](https://github.com/PowerShell/PowerShell/pull/10814)）。
+- 新增更新通知开关 **`$Env:POWERSHELL_UPDATECHECK`**（`Default` / `Off` / `LTS`，[#11132](https://github.com/PowerShell/PowerShell/pull/11132)，属破坏性变更）。
+- `Add-Type` 在存在同名类型时抛错（[#9609](https://github.com/PowerShell/PowerShell/pull/9609)）。
+
 
 ### 4.5 PowerShell 7.1（2020-11-11，.NET 5.0）
 
-- **null 条件运算符 `?.` / `?[]` 由实验性转为正式**。
-- **字符串比较行为变化** ⚠️：.NET 5 起，固定区域性（culture-invariant）字符串比较**忽略不可打印控制字符**。例如 `'Food' -eq "Foo`ad"` 返回 `True`（`` `a `` 为 Ctrl-G / `[char]7`）。
+构建于 **.NET 5.0**（GA 构建 `5.0.100-rtm.20526.5`）。随附 **PSReadLine 2.1.0**（Predictive IntelliSense），并提供 Microsoft Store 包。
+
+**语言**
+
+- **null 条件运算符 `?.` / `?[]` 由实验性转为正式**（`Move PSNullConditionalOperators feature out of experimental`，[#13529](https://github.com/PowerShell/PowerShell/pull/13529)）。这是 `?.` / `?[]` 的版本边界：**7.0 全程实验性 → 7.1 正式**。
+- `??` 语义收紧：确保左侧只求值一次（[#12667](https://github.com/PowerShell/PowerShell/pull/12667)）。
+- `-replace` 的文化处理：使用固定区域性（invariant culture）做字符串转换（[#10954](https://github.com/PowerShell/PowerShell/pull/10954)）——7.1 中作为破坏性变更列出，同时受实验性特性 `PSCultureInvariantReplaceOperator` 控制；到 **7.2 才成为默认行为**（`about_Comparison_Operators` 记载为 "Beginning in PowerShell 7.2"）。
+- 解析器：`default` 的 switch 条件子句标记为关键字（[#10487](https://github.com/PowerShell/PowerShell/pull/10487)）。
+
+**引擎与 API**
+
+- **子系统插件模型（subsystem plugin model）起步**：`Initial work of the subsystem plugin model (for minimal powershell)`（[#13186](https://github.com/PowerShell/PowerShell/pull/13186)），新增 **`Get-PSSubsystem`**（RC.2 由 `Get-Subsystem` 更名，[#13765](https://github.com/PowerShell/PowerShell/pull/13765)）。该特性的目标是把 `System.Management.Automation.dll` 的部分内容拆分为独立程序集（实验性特性 `PSSubsystemPluginModel`）。
+- 解析器 API：补齐 `PSToken` token 表项以修复 `PSParser` API（[#13779](https://github.com/PowerShell/PowerShell/pull/13779)）。
+- AST 访问器 API：访问器接口与类新增 **`DefaultVisit`** 方法（[#13258](https://github.com/PowerShell/PowerShell/pull/13258)）。
+- **`ScriptBlock` 转换为委托时不再把返回值包装为 `PSObject`**（[#10619](https://github.com/PowerShell/PowerShell/pull/10619)，破坏性；官方差异文档把它列在 API changes 中）。
+- COM 互操作（.NET 5）：重新启用并刷新 `ComInterop` 代码（[#13304](https://github.com/PowerShell/PowerShell/pull/13304)、[#13533](https://github.com/PowerShell/PowerShell/pull/13533)）；**移除 `ComEnumerator`**，因为 .NET 5.0 已支持使用 `IEnumerator` 的 COM 对象（[#13259](https://github.com/PowerShell/PowerShell/pull/13259)）。
+- 公开 API 调整：`ConsoleHost` 公开 API 的 `args` 参数改为非空（[#13429](https://github.com/PowerShell/PowerShell/pull/13429)）；`Command.Clone()` 复制 `CommandInfo`（[#12301](https://github.com/PowerShell/PowerShell/pull/12301)）；恢复 `PSHostProcessInfo.MainWindowTitle`（[#11885](https://github.com/PowerShell/PowerShell/pull/11885)）。
+- 参数绑定/引擎：**显式命名参数覆盖 splatting 中的同名参数**（[#13162](https://github.com/PowerShell/PowerShell/pull/13162)，破坏性，会改变 `$args` 顺序）；`BigInteger` 数字字面量的字符串参数绑定修正（[#11634](https://github.com/PowerShell/PowerShell/pull/11634)，破坏性）；模块清单 `FileList` 中列出的程序集不再被加载（[#12968](https://github.com/PowerShell/PowerShell/pull/12968)）；发现由 `Assembly.Load(byte[])` / `Assembly.LoadFile` 加载的程序集（[#12203](https://github.com/PowerShell/PowerShell/pull/12203)）。
+- `using module` 的相对路径**允许使用 `/`**（[#7424](https://github.com/PowerShell/PowerShell/pull/7424)/[#12492](https://github.com/PowerShell/PowerShell/pull/12492)）。
+- 并发：**`ForEach-Object -Parallel` 复用运行空间**（[#12122](https://github.com/PowerShell/PowerShell/pull/12122)）；修复可能泄漏 PowerShell 对象释放的竞态（[#12227](https://github.com/PowerShell/PowerShell/pull/12227)）；进程外作业使用专用线程读取重定向的输出与错误流（[#11713](https://github.com/PowerShell/PowerShell/pull/11713)）。
+- Web/IO：`Invoke-RestMethod` 使用异步流（[#11095](https://github.com/PowerShell/PowerShell/pull/11095)）；Web cmdlet 支持 **TLS 1.3**（[#13409](https://github.com/PowerShell/PowerShell/pull/13409)）；**`-OutFile` 改为类似 `-LiteralPath`，不处理通配符**（[#11701](https://github.com/PowerShell/PowerShell/pull/11701)，破坏性）；忽略值为 null 的头（[#11424](https://github.com/PowerShell/PowerShell/pull/11424)）。
+- `Add-Type -OutputType` 不再支持 `ConsoleApplication` 与 `WindowsApplication`（[#13440](https://github.com/PowerShell/PowerShell/pull/13440)）。
+
+**cmdlet 变化**
+
+- `Get-Date` 新增 `-AsUTC`（[#11611](https://github.com/PowerShell/PowerShell/pull/11611)）；`-FromUnixTime`（[#12179](https://github.com/PowerShell/PowerShell/pull/12179)）在 preview.6 更名为 **`-UnixTimeSeconds`**（[#13084](https://github.com/PowerShell/PowerShell/pull/13084)）。
+- `Test-Json -SchemaFile`（[#11934](https://github.com/PowerShell/PowerShell/pull/11934)）。
+- `Read-Host -MaskInput`（[#10908](https://github.com/PowerShell/PowerShell/pull/10908)），后续改为返回纯文本（[#13256](https://github.com/PowerShell/PowerShell/pull/13256)）。
+- `Get-Random -Shuffle`（[#11093](https://github.com/PowerShell/PowerShell/pull/11093)）。
+- `Process` 新增 **`CommandLine`** 属性（[#12288](https://github.com/PowerShell/PowerShell/pull/12288)）。
+- 恢复 Certificate provider 的参数（[#10622](https://github.com/PowerShell/PowerShell/pull/10622)）。
+- `Stop-Computer` 支持 Linux/macOS（[#11151](https://github.com/PowerShell/PowerShell/pull/11151)）；`Restart-Computer` 为 Unix/macOS 重构（[#11319](https://github.com/PowerShell/PowerShell/pull/11319)）。
+- `ConvertTo-Json` 超出 `-Depth` 时发出警告（[#13692](https://github.com/PowerShell/PowerShell/pull/13692)）。
 - 指定 `utf7` 编码时发出警告。
-- Web cmdlet 的 **`-OutFile` 改为类似 `-LiteralPath`**，**不处理通配符**。
+- `Select-Object` 对 `Keys` 等哈希表成员的修正（[#11097](https://github.com/PowerShell/PowerShell/pull/11097)）。
+
+**实验性特性**
+
+- 新增：`Microsoft.PowerShell.Utility.PSManageBreakpointsInRunspace`（`*-PSBreakpoint` 全部新增 `-Runspace` 参数，[#10492](https://github.com/PowerShell/PowerShell/pull/10492)）、`PSNativePSPathResolution`（[#12386](https://github.com/PowerShell/PowerShell/pull/12386)；preview.7 曾转正式 [#13522](https://github.com/PowerShell/PowerShell/pull/13522)，RC.2 又回退为实验性 [#13734](https://github.com/PowerShell/PowerShell/pull/13734)）、`PSCultureInvariantReplaceOperator`、`PSSubsystemPluginModel`。
+- 转正式：`PSNullConditionalOperators`、`PSUnixFileStat`。
+
+**破坏性变更** ⚠️
+
+- **字符串比较行为变化**：.NET 5 起，固定区域性（culture-invariant）字符串比较**忽略不可打印控制字符**。例如 `'Food' -eq "Foo`ad"` 返回 `True`（`` `a `` 为 Ctrl-G / `[char]7`）。
+- **原生命令只写 `stderr` 不再使 `$?` 为 `$false`**（[#13395](https://github.com/PowerShell/PowerShell/pull/13395)）。
+- **`$ErrorActionPreference` 不再作用于原生命令的 `stderr`**（[#13361](https://github.com/PowerShell/PowerShell/pull/13361)）。
+- `-FromUnixTime` 更名为 `-UnixTimeSeconds`（[#13084](https://github.com/PowerShell/PowerShell/pull/13084)）。
+- 显式命名参数覆盖 splatting 中的同名参数（[#13162](https://github.com/PowerShell/PowerShell/pull/13162)）。
+- `Split-Path -Qualifier` 不再是位置参数（[#12960](https://github.com/PowerShell/PowerShell/pull/12960)）。
+- `Start-Process` 未指定的工作目录按字面路径解析（[#11946](https://github.com/PowerShell/PowerShell/pull/11946)）；Windows 上的环境行为与 `-UseNewEnvironment`（[#10830](https://github.com/PowerShell/PowerShell/pull/10830)）。
+- Web cmdlet `-OutFile` 按字面路径处理（[#11701](https://github.com/PowerShell/PowerShell/pull/11701)）。
+- `pwsh -inputformat` 的简写由 `-in` 改为 **`-inp`**，以避免与 `-interactive` 冲突（[#13205](https://github.com/PowerShell/PowerShell/pull/13205)）。
 
 ### 4.6 PowerShell 7.2（2021-11-08，.NET 6.0，LTS）
 
 **破坏性变更** ⚠️
 
-- **`PSDesiredStateConfiguration` 移出 PowerShell 7 安装包**，改发布到 PowerShell Gallery，产品与 DSC 解耦。安装时**必须限制主版本**，例如 `Install-Module PSDesiredStateConfiguration -Repository PSGallery -MaximumVersion 2.99`（否则会装到差异很大的 v3+）。
-- `FileSystemInfo.Target` 由 **CodeProperty** 改为指向 `FileSystemInfo.LinkTarget` 的 **AliasProperty**。
-- `ConvertTo-Json` 超出 `-Depth` 时**发出警告**。
-- 移除 `-Directory` 的别名 `D`。
-- 在 **NoLanguage** 模式下锁定环境中限制 `New-Object`。
-- 改进可变值类型（mutable value type）检测。
-- 在 Execution Policy Bypass 之前先强制执行 AppLocker Deny 配置。
+- **`PSDesiredStateConfiguration` 移出 PowerShell 7 安装包**，改发布到 PowerShell Gallery，产品与 DSC 解耦；跨平台 DSC 代码改为引擎子系统（[#15536](https://github.com/PowerShell/PowerShell/pull/15536)、[#15127](https://github.com/PowerShell/PowerShell/pull/15127)）。安装时**必须限制主版本**，例如 `Install-Module PSDesiredStateConfiguration -Repository PSGallery -MaximumVersion 2.99`（否则会装到差异很大的 v3+）。
+- **`FileSystemInfo.Target` 由 CodeProperty 改为**指向 `FileSystemInfo.LinkTarget` 的 **AliasProperty**（[#16165](https://github.com/PowerShell/PowerShell/pull/16165)）。
+- **公共 API 破坏性整理**：为满足 CA1052，把"只含静态方法的公共类"改为 `static`——**对二进制模块可见**（[#15775](https://github.com/PowerShell/PowerShell/pull/15775)）。
+- `ConvertTo-Json` 超出 `-Depth` 时**发出警告**（[#13692](https://github.com/PowerShell/PowerShell/pull/13692)）；`-Depth` 最小值改为 **0**（[#14830](https://github.com/PowerShell/PowerShell/pull/14830)）；**`DateTime` / `string` 的 ETS 属性不再序列化进 JSON**（[#15665](https://github.com/PowerShell/PowerShell/pull/15665)，重要行为变更）。
+- `ConvertTo-Csv` / `Export-Csv` 支持 `IDictionary`（[#11029](https://github.com/PowerShell/PowerShell/pull/11029)）；`-UseQuotes AsNeeded` 时对含引号/换行的字段加引号（[#15765](https://github.com/PowerShell/PowerShell/pull/15765)）。
+- 移除 `-Directory` 的别名 `D`（[#15171](https://github.com/PowerShell/PowerShell/pull/15171)）。
+- **命令行参数禁止混用 `-` 与 `/` 前缀**（[#15142](https://github.com/PowerShell/PowerShell/pull/15142)）。
+- **Windows 上 `pwsh.exe -File` 只接受 `.ps1` 文件**（[#15859](https://github.com/PowerShell/PowerShell/pull/15859)）。
+- `Get-Date -UFormat` 的 `%G` / `%g`（[#14555](https://github.com/PowerShell/PowerShell/pull/14555)）与 `%u`（[#14549](https://github.com/PowerShell/PowerShell/pull/14549)）按 ISO 8601 修正。
+- 安全 / 锁定语义收紧：AppLocker Deny 先于 Execution Policy Bypass 生效（[#15035](https://github.com/PowerShell/PowerShell/pull/15035)）；**NoLanguage** 模式下限制 `New-Object`（[#14140](https://github.com/PowerShell/PowerShell/pull/14140)）、锁定机器上禁用 `Add-Type`（[#16245](https://github.com/PowerShell/PowerShell/pull/16245)）；AppLocker 锁定时禁用全部 COM（[#16268](https://github.com/PowerShell/PowerShell/pull/16268)）；脚本签名校验逻辑对齐 `Get-AuthenticodeSignature`（[#14849](https://github.com/PowerShell/PowerShell/pull/14849)）。
+- 改进可变值类型（mutable value type）检测（[#12495](https://github.com/PowerShell/PowerShell/pull/12495)）。
 - `-PipelineVariable` 保证对脚本 cmdlet 的所有输出生效（[#12766](https://github.com/PowerShell/PowerShell/pull/12766)）。
 - 允许从**原生代码加载程序集**的实验性特性 `PSLoadAssemblyFromNativeCode`；引擎新增 `LoadAssemblyFromNativeMemory`，使原生 PowerShell 宿主可从内存加载程序集（[#14652](https://github.com/PowerShell/PowerShell/pull/14652)）。
+- **`$ErrorView` 新增 `DetailedView`**（[#15609](https://github.com/PowerShell/PowerShell/pull/15609)）。
+- **`PSHostUserInterface.GetOutputString()` 与 `GetFormatStyleString()` 上移为公共 API**（[#16075](https://github.com/PowerShell/PowerShell/pull/16075)、[#14397](https://github.com/PowerShell/PowerShell/pull/14397)）——影响自定义 host 及继承 `PSHostUserInterface` 的实现。
+- **新增 `IArgumentCompleterFactory`**，用于需要构造参数的 ArgumentCompleter（[#12605](https://github.com/PowerShell/PowerShell/pull/12605)）。
 
 **新增/转正**
 
 - 实验性特性转正式：`PSAnsiRendering`、`PSAnsiProgress`、`PSCultureInvariantReplaceOperator`、`PSNotApplyErrorActionToStderr`、`PSUnixFileStat`、`Microsoft.PowerShell.Utility.PSImportPSDataFileSkipLimitCheck`、`Microsoft.PowerShell.Utility.PSManageBreakpointsInRunspace`。
 - 新增实验性特性：**`PSNativeCommandArgumentPassing`**（改用 `StartProcessInfo.ArgumentList` 而非重建字符串，并新增自动变量 `$PSNativeCommandArgumentPassing`）、**`PSAnsiRenderingFileInfo`**、`PSLoadAssemblyFromNativeCode`。
 - **引入自动变量 `$PSStyle`** 与 ANSI 渲染引擎改动：格式化系统遵循 `$PSStyle.OutputRendering`；新增 `StringDecorated` 类型处理含 ANSI 转义的字符串（`IsDecorated` 属性、`Length` 返回不含转义序列的文本长度、`Substring(int contentLength)`、`ToString(bool Ansi)`、`FormatHyperlink(string text, uri link)`）。
-  - `$PSStyle.OutputRendering` 取值：`ANSI` / `PlainText` / `Host`（默认）。
+  - `$PSStyle.OutputRendering` 取值：`ANSI` / `PlainText` / `Host`；原有的 `Automatic` 在 7.2 preview.9 被**移除**（[#15882](https://github.com/PowerShell/PowerShell/pull/15882)）。
+  - **关于默认值的版本细节**（容易记错）：7.2 preview.9 一度设为 `Host`，**7.2 服务版（7.2.1 起）为 `Ansi`**（即重定向输出会带 ANSI 转义序列），**7.3 起才是 `Host`**。
+- **`PSStyle` 同时是公开 .NET API**：`System.Management.Automation.PSStyle` 提供单例 `PSStyle.Instance` 供 C# 宿主使用。
+
+**其他新增参数（择要）**
+
+- `Import-PowerShellDataFile -SkipLimitCheck`（[#13672](https://github.com/PowerShell/PowerShell/pull/13672)）。
+- `Set-Clipboard -PassThru`（[#13713](https://github.com/PowerShell/PowerShell/pull/13713)）。
+- `Tee-Object -Encoding`（[#12135](https://github.com/PowerShell/PowerShell/pull/12135)）。
+- `Write-Error -Exception` / `-ErrorRecord` 改为位置 0（[#13813](https://github.com/PowerShell/PowerShell/pull/13813)）。
+- **`New-PSSession -ConnectingTimeout`**（文档明确标注 "This parameter was introduced in PowerShell 7.2"）。
+- `Start-Transcript` 默认编码改为 UTF-8 无 BOM（[#13732](https://github.com/PowerShell/PowerShell/pull/13732)）。
+- `$PSStyle.Progress.UseOSCIndicator`（[#14927](https://github.com/PowerShell/PowerShell/pull/14927)）；Unix 下 DECCKM 处理（[#14943](https://github.com/PowerShell/PowerShell/pull/14943)）。
+- `Start-Process` 移除环境块 32767 字符限制（[#14111](https://github.com/PowerShell/PowerShell/pull/14111)）。
+
+**语言**：**7.2 没有新增任何语言语法特性**（`??` / `??=` / `?.` / `? :` 等来自 7.0 / 7.1）。
 - 支持 **Microsoft Update**（MSI 参数 `USE_MU`、`ENABLE_MU`）。
 - **Linux 通用安装包**：把原先 8 个发行版包合并为一个，自动安装所需依赖。
 - 支持 Windows / macOS 的 **ARM64**，以及 Debian / Ubuntu 的 **ARM32 与 ARM64**。
@@ -358,32 +595,48 @@ PowerShell 直接暴露底层 .NET 类型，因此 .NET 的重载变化会直接
 
 **破坏性变更** ⚠️
 
-- **不再支持 Windows 7**（合规相关的 Windows API 更新/移除）。
-- PowerShell Direct for Hyper-V 仅支持 Windows 10 1804 及以上。
-- **`$PSStyle.OutputRendering` 默认值改为 `Host`**。
-- `Out-String` / `Out-File` 对字符串输入**保持原样**（不再重排换行）。
-- **`System.Security.AccessControl.ObjectSecurity` 的类型数据（type data）移入 `Microsoft.PowerShell.Security` 模块**：使用其代码属性/代码方法前**必须显式导入该模块**（[#16355](https://github.com/PowerShell/PowerShell/pull/16355)）。
+- **不再支持 Windows 7**（合规相关的 Windows API 更新/移除）；PowerShell Direct for Hyper-V 仅支持 Windows 10 1809 及以上。
+- **`$PSStyle.OutputRendering` 默认值改为 `Host`**（7.2 服务版为 `Ansi`，见 4.6）。
+- `Out-String` / `Out-File` 对纯字符串输入**保持原样**（不再重排换行，[#17455](https://github.com/PowerShell/PowerShell/pull/17455)；相较 7.2 为破坏性）。
+- **`System.Security.AccessControl.ObjectSecurity` 的类型数据（type data）移入 `Microsoft.PowerShell.Security` 模块**：使用其代码属性/代码方法前**必须显式导入该模块**（[#16355](https://github.com/PowerShell/PowerShell/pull/16355)、[#17771](https://github.com/PowerShell/PowerShell/pull/17771)）。
 - `Test-Connection` 因 .NET 7 的有意破坏性变更而失效（跟踪于 [#17018](https://github.com/PowerShell/PowerShell/issues/17018)）。
 
-**语言**：script block 新增 **`clean` 块**，与 `begin` / `process` / `end` 并列，用于资源清理（[#15177](https://github.com/PowerShell/PowerShell/pull/15177)）。
+**语言**：script block 新增 **`clean` 块**，与 `begin` / `process` / `end` 并列（[#15177](https://github.com/PowerShell/PowerShell/pull/15177)）。
+
+> 官方 `about_Language_Keywords` 明确：`clean` 关键字在 PowerShell 7.3 加入；它在 `begin` / `process` / `end` 之后**保证执行**——与 `end` 不同，**即使其他块发生终止性错误也总会执行**。这正是它作为资源清理机制的价值所在。
+
+**引擎与 API**
+
+- **PSRP 序列化移除 `BinaryFormatter`**（安全驱动，[#17133](https://github.com/PowerShell/PowerShell/pull/17133)）。
+- **新增自定义远程连接（Custom Remote Connections）功能**，提供连接类型的可扩展点（[#17011](https://github.com/PowerShell/PowerShell/pull/17011)）。
+- **支持带泛型类型实参调用 .NET 方法**（[#12412](https://github.com/PowerShell/PowerShell/pull/12412)、[#16822](https://github.com/PowerShell/PowerShell/pull/16822)，解析修正 [#16937](https://github.com/PowerShell/PowerShell/pull/16937)）。
+- 文件系统项新增 **`.ResolvedTarget`**，把符号链接目标解析为 `FileSystemInfo`（[#16490](https://github.com/PowerShell/PowerShell/pull/16490)）。
+- **`Set-AuthenticodeSignature` 默认哈希算法改为 SHA256**（[#17560](https://github.com/PowerShell/PowerShell/pull/17560)）。
+- 错误格式化改用 `$PSStyle.Formatting` 中的颜色（[#17987](https://github.com/PowerShell/PowerShell/pull/17987)）；`AnsiRegex` 支持 Hyperlink 序列（[#17442](https://github.com/PowerShell/PowerShell/pull/17442)）。
+- `Add-Type -PassThru` 过滤编译器生成的类型（[#18095](https://github.com/PowerShell/PowerShell/pull/18095)）。
+- `Measure-Object` 默认忽略缺失属性（除非 strict mode，[#16589](https://github.com/PowerShell/PowerShell/pull/16589)）；`Sort-Object -Stable -Unique` 真正稳定排序（[#17189](https://github.com/PowerShell/PowerShell/pull/17189)）。
+- 7.3.8 安全修复：**受限远程会话禁止从网络位置获取帮助**（后续 7.5 正式列入破坏性变更）。
 
 **远程处理**
 
 - PSRP over SSH 新增 **`-Options`**，可直传 OpenSSH 选项（[#12802](https://github.com/PowerShell/PowerShell/pull/12802)）。
 - `pwsh` 新增 **`-ConfigurationFile`**，可用 `.pssc` 文件定义会话配置启动新进程（[#17447](https://github.com/PowerShell/PowerShell/pull/17447)）。
-- `New-PSSessionConfigurationFile` 支持非 Windows 平台。
+- `New-PSSessionConfigurationFile` 支持非 Windows 平台（[#17447](https://github.com/PowerShell/PowerShell/pull/17447)）。
+- 隐式远程生成的模块保持对 5.1 的向后兼容（[#17227](https://github.com/PowerShell/PowerShell/pull/17227)）。
 
 **cmdlet 变化**
 
-- Web cmdlet 新增 `-HttpVersion`。
-- `ConvertTo-Json -Depth` 上限放宽到 **100**（[#16197](https://github.com/PowerShell/PowerShell/pull/16197)）。
-- `Invoke-Command` 新增 `-StrictMode`；改进 `$using:` 变量处理。
-- **`ConvertFrom-Json -AsHashtable` 改为返回有序哈希表 `OrderedHashtable`**（[#17405](https://github.com/PowerShell/PowerShell/pull/17405)）——该参数本身自 6.0 起存在，此前返回普通 `Hashtable`。
-- `Get-CimClass` 新增 `-Amended`。
-- `New-TimeSpan` 新增 `-Milliseconds`。
-- `Set-AuthenticodeSignature -TimeStampServer` 支持 HTTPS。
-- 新增类型加速器 **`ordered`**（`OrderedDictionary`）。
-- `pwsh` 新增 `-NoProfileLoadTime`。
+- **新增 `Switch-Process`**（别名 `exec`），提供非 Windows 上的 `exec` 兼容（[#16462](https://github.com/PowerShell/PowerShell/pull/16462)）；7.3.1 把 `exec` 从别名改为包装函数，并把 `sqlcmd.exe` 加入 legacy 传参名单。
+- Web cmdlet 新增 `-HttpVersion`（[#15853](https://github.com/PowerShell/PowerShell/pull/15853)）。
+- `ConvertTo-Json -Depth` 上限修正为 **100**（[#16197](https://github.com/PowerShell/PowerShell/pull/16197)）。
+- `Invoke-Command` 新增 `-StrictMode`（[#16545](https://github.com/PowerShell/PowerShell/pull/16545)）；改进 `$using:` 变量处理（[#16113](https://github.com/PowerShell/PowerShell/pull/16113)）。
+- **`ConvertFrom-Json -AsHashtable` 改为返回 `OrderedHashtable`**（[#17405](https://github.com/PowerShell/PowerShell/pull/17405)）——该参数本身自 6.0 起存在，此前返回普通 `Hashtable`。
+- `Get-CimClass` 新增 `-Amended`（[#17477](https://github.com/PowerShell/PowerShell/pull/17477)）。
+- `New-TimeSpan` 新增 `-Milliseconds`（[#17621](https://github.com/PowerShell/PowerShell/pull/17621)）；**`Start-Sleep` 新增 `-Duration`（`TimeSpan`）**（[#16185](https://github.com/PowerShell/PowerShell/pull/16185)）。
+- `Set-AuthenticodeSignature -TimeStampServer` 支持 HTTPS（[#16134](https://github.com/PowerShell/PowerShell/pull/16134)）。
+- 新增类型加速器 **`ordered`**（`OrderedDictionary`，[#17804](https://github.com/PowerShell/PowerShell/pull/17804)）。
+- `pwsh` 新增 `-NoProfileLoadTime`（[#17535](https://github.com/PowerShell/PowerShell/pull/17535)）。
+- `find.exe` 加入 Windows 上的 legacy 传参名单（[#17715](https://github.com/PowerShell/PowerShell/pull/17715)）；`Test-Json` 支持根为非对象类型（[#17741](https://github.com/PowerShell/PowerShell/pull/17741)）。
 - 显示方法定义/重载时展示可选参数。
 - 移除 `Out-GridView` 收到的字符串中的 ANSI 转义序列。
 - 表格中的十进制数字按当前区域性渲染。
@@ -391,9 +644,11 @@ PowerShell 直接暴露底层 .NET 类型，因此 .NET 的重载变化会直接
 
 **实验性特性**
 
-- 转正式：`PSAnsiRenderingFileInfo`、`PSCleanBlock`、`PSAMSIMethodInvocationLogging`、**`PSNativeCommandArgumentPassing`**、`PSExec`（新增 `Switch-Process` cmdlet，别名 `exec`）。
-- 新增：`PSNativeCommandErrorActionPreference`。
-- **移除**：`PSNativePSPathResolution`、`PSStrictModeAssignment`。
+- 转正式：`PSAnsiRenderingFileInfo`、`PSCleanBlock`、`PSAMSIMethodInvocationLogging`、**`PSNativeCommandArgumentPassing`**、`PSExec`、`PSRemotingSSHTransportErrorHandling`。
+- 新增：`PSNativeCommandErrorActionPreference`（引入 `$PSNativeCommandUseErrorActionPreference`）。
+- **移除**：`PSNativePSPathResolution`（[#17670](https://github.com/PowerShell/PowerShell/pull/17670)）、`PSStrictModeAssignment`（[#18040](https://github.com/PowerShell/PowerShell/pull/18040)）。
+
+> **`PSNativeCommandArgumentPassing` 转正式的连锁影响**：该特性默认对所有用户启用新的原生命令传参机制（改用 `StartProcessInfo.ArgumentList` 而非重建字符串），仅 `find.exe`、`sqlcmd.exe` 等保留 legacy 行为。这是 7.3 中最容易影响既有脚本的变更之一。
 
 ### 4.8 PowerShell 7.4（2023-11-16，.NET 8.0，LTS）
 
@@ -640,17 +895,26 @@ PowerShell 直接暴露底层 .NET 类型，因此 .NET 的重载变化会直接
 
 ### 5.2 语言语法引入版本
 
-| 语法 | 引入版本 | 备注 |
+| 语法 | 引入版本 | 引入时的状态 / 备注 |
 | --- | --- | --- |
-| `using namespace` / `using assembly` / `using module` | 5.0 | 5.1 基线已具备 |
+| `using namespace` / `using assembly` / `using module` | 5.0 | 5.1 基线已具备；7.1 起 `using module` 的相对路径允许 `/` |
 | 类（`class`）、枚举（`enum`） | 5.0 | 5.1 基线已具备 |
-| `??`、`??=`、`&&`、`\|\|`、`? :` | **7.0** | 5.1 完全没有 |
-| `?.` / `?[]`（null 条件访问） | **7.0 实验性 → 7.1 正式** | 需写 `${var}` 形式 |
-| `&`（行尾后台作业运算符） | 7.0 | 同时是语句终止符 |
-| 字符范围 `'a'..'f'` | 6.0 | 数字范围更早已有 |
-| Unicode 转义 `` `u{...} `` | 6.0 | — |
+| **`&`（行尾后台作业运算符）** | **6.0** | 正式（[#3360](https://github.com/PowerShell/PowerShell/pull/3360)）；同时是语句终止符 |
+| ESC 转义 `` `e `` | 6.0 | 正式 |
+| Unicode 转义 `` `u{...} `` / `` `u#### `` | 6.0 | 正式（[#3958](https://github.com/PowerShell/PowerShell/pull/3958)） |
+| 枚举到字符串的转换 | 6.0 | 正式（[#4318](https://github.com/PowerShell/PowerShell/pull/4318)） |
+| 字符范围 `'a'..'z'` | 6.0 | 正式（[#5026](https://github.com/PowerShell/PowerShell/pull/5026)）；数字范围更早已有 |
+| `-split` 支持 `'Singleline, Multiline'` | 6.0 | 正式（[#4721](https://github.com/PowerShell/PowerShell/pull/4721)） |
+| `-replace` 接受脚本块 | 6.1（存疑） | changelog 记为 6.1（[#6029](https://github.com/PowerShell/PowerShell/pull/6029)），官方 `about_Comparison_Operators` 写 "PowerShell 6 and later"，两者不一致 |
+| 数字字面量后缀 `short`/`ushort`/`uint`/`ulong`、字节字面量、枚举自定义基础类型 | 6.2 | 正式（[#7813](https://github.com/PowerShell/PowerShell/pull/7813)、[#7901](https://github.com/PowerShell/PowerShell/pull/7901)、[#8329](https://github.com/PowerShell/PowerShell/pull/8329)） |
+| `??`、`??=` | **7.0** | preview.5 实验性 → GA 正式（[#10636](https://github.com/PowerShell/PowerShell/pull/10636)） |
+| `&&`、`\|\|`（管道链） | **7.0** | preview.5 实验性 → GA 正式（[#9849](https://github.com/PowerShell/PowerShell/pull/9849)） |
+| `? :`（三元运算符） | **7.0** | 实验性特性名 `PSTernaryOperator`；GA 正式 |
+| **`?.` / `?[]`（null 条件访问）** | **7.0 实验性 → 7.1 正式** | 7.0 全程实验性（[#10960](https://github.com/PowerShell/PowerShell/pull/10960)），7.1 转正（[#13529](https://github.com/PowerShell/PowerShell/pull/13529)）；需写 `${var}` 形式 |
+| 管道位于行首时的续行 | 7.0 | 正式（[#8938](https://github.com/PowerShell/PowerShell/pull/8938)） |
+| `-replace` 使用固定区域性转换 | 7.1 实验性 → **7.2 默认** | `PSCultureInvariantReplaceOperator` |
 | `ForEach-Object -Parallel` / `-ThrottleLimit` | 7.0 | 5.1 无并行管道 |
-| **`clean` 块** | **7.3** | 与 `begin`/`process`/`end` 并列（[#15177](https://github.com/PowerShell/PowerShell/pull/15177)） |
+| **`clean` 块** | **7.3** | 与 `begin`/`process`/`end` 并列；**即使其他块发生终止性错误也总会执行**（[#15177](https://github.com/PowerShell/PowerShell/pull/15177)） |
 
 ### 5.3 远程处理与 PSRP
 
@@ -668,6 +932,10 @@ PowerShell 直接暴露底层 .NET 类型，因此 .NET 的重载变化会直接
 | PSRP 会话密钥交换 | 使用 | **7.6 起在新客户端/新服务端之间弃用**（[#25774](https://github.com/PowerShell/PowerShell/pull/25774)） |
 
 **兼容性提示**：PowerShell 7 的 `Enable-PSRemoting` 为**主版本**（如 `PowerShell.7`）、**具体版本**（如 `PowerShell.7.6.0`）以及**预览版本**分别创建会话配置。跨大版本远程连接时要明确指定目标配置名。
+
+**WinRM 端点的复用**：在已启用 WinRM 的机器上，**PowerShell 7 默认复用 5.1 的 `Microsoft.PowerShell` endpoint**；只有运行 `Enable-PSRemoting` 后才会生成 7 自己的 endpoint。这解释了"7 装好了但 `Enter-PSSession` 连过去还是 5.1"的现象。
+
+**PSRP 协议版本**：官方示例显示 `PSRemotingProtocolVersion = 2.3`、`SerializationVersion = 1.1.0.1`、`WSManStackVersion = 3.0`（见 `about_PowerShell_Editions` 的 7.3.9 示例）。7.2 / 7.3 的 CHANGELOG 中没有协议版本升级条目，故 2.3 在这些版本间保持一致。
 
 ### 5.4 序列化与 JSON
 
@@ -733,7 +1001,7 @@ $PSVersionTable.GitCommitId          # 精确构建版本（5.1 无此键）
 
 ### 5.7 实验性特性总览
 
-实验性特性机制自 **6.2** 引入，是理解 7.x API 演进的关键：新功能先以实验性特性交付，获得反馈后再转正式。**实验性特性可能在后续版本被改名、转正甚至移除**（例如 7.3 移除了 `PSNativePSPathResolution` 与 `PSStrictModeAssignment`），因此不应在生产环境依赖。
+实验性特性机制自 **6.1 引入**（RFC0029，[#7242](https://github.com/PowerShell/PowerShell/pull/7242)），并在 **6.2 补齐启停 cmdlet**（[#8318](https://github.com/PowerShell/PowerShell/pull/8318)），是理解 7.x API 演进的关键：新功能先以实验性特性交付，获得反馈后再转正式。**实验性特性可能在后续版本被改名、转正甚至移除**（例如 7.3 移除了 `PSNativePSPathResolution` 与 `PSStrictModeAssignment`），因此不应在生产环境依赖。
 
 ```powershell
 Get-ExperimentalFeature                              # 列出全部
@@ -742,14 +1010,21 @@ Disable-ExperimentalFeature -Name PSRedirectToVariable
 $EnabledExperimentalFeatures                         # 已启用的特性名列表
 ```
 
+公开 API 层面：`Experimental` 特性（`[Experimental(Name, ExperimentAction)]`）与 `ExperimentalFeature.IsEnabled()`。
+
 | 版本 | 新增实验性特性 | 转为正式 |
 | --- | --- | --- |
-| 6.2 | 机制本身 | — |
-| 7.2 | `PSNativeCommandArgumentPassing`、`PSAnsiRenderingFileInfo`、`PSLoadAssemblyFromNativeCode` | `PSAnsiRendering`、`PSAnsiProgress`、`PSCultureInvariantReplaceOperator`、`PSNotApplyErrorActionToStderr`、`PSUnixFileStat`、`PSImportPSDataFileSkipLimitCheck`、`PSManageBreakpointsInRunspace` |
-| 7.3 | `PSNativeCommandErrorActionPreference` | `PSAnsiRenderingFileInfo`、`PSCleanBlock`、`PSAMSIMethodInvocationLogging`、`PSNativeCommandArgumentPassing`、`PSExec` |
+| 6.1 | 机制本身 + `Get-ExperimentalFeature` | — |
+| 6.2 | `Enable-`/`Disable-ExperimentalFeature` cmdlet；`PSCommandNotFoundSuggestion`、`PSImplicitRemotingBatching`、`PSTempDrive`、`PSUseAbbreviationExpansion` | — |
+| 7.0 | `?.`/`?[]`（`PSNullConditionalOperators`）、`PSTernaryOperator` 等 | `??`、`??=`、`&&`、`\|\|`、`? :`、ConciseView、`Get-Error`（`Make approved features non-experimental`，[#11303](https://github.com/PowerShell/PowerShell/pull/11303)） |
+| 7.1 | `PSManageBreakpointsInRunspace`、`PSNativePSPathResolution`、`PSCultureInvariantReplaceOperator`、`PSSubsystemPluginModel` | `PSNullConditionalOperators`、`PSUnixFileStat` |
+| 7.2 | `PSNativeCommandArgumentPassing`、`PSAnsiRenderingFileInfo`、`PSLoadAssemblyFromNativeCode` | `PSAnsiRendering`、`PSAnsiProgress`、`PSCultureInvariantReplaceOperator`、`PSNotApplyErrorActionToStderr`、`PSUnixFileStat`、`PSImportPSDataFileSkipLimitCheck`、`PSManageBreakpointsInRunspace`；**移除** `PSImplicitRemotingBatching` |
+| 7.3 | `PSNativeCommandErrorActionPreference` | `PSAnsiRenderingFileInfo`、`PSCleanBlock`、`PSAMSIMethodInvocationLogging`、`PSNativeCommandArgumentPassing`、`PSExec`、`PSRemotingSSHTransportErrorHandling`；**移除** `PSNativePSPathResolution`、`PSStrictModeAssignment` |
 | 7.4 | `PSFeedbackProvider`、`PSModuleAutoLoadSkipOfflineFiles`、`PSCommandWithArgs` | `PSConstrainedAuditLogging`、`PSCustomTableHeaderLabelDecoration`、`PSNativeCommandErrorActionPreference`、`PSNativeCommandPreserveBytePipe`、`PSWindowsNativeCommandArgPassing` |
 | 7.5 | `PSRedirectToVariable`、`PSNativeWindowsTildeExpansion`、`PSSerializeJSONLongEnumAsNumber` | `PSCommandNotFoundSuggestion`、`PSCommandWithArgs`、`PSModuleAutoLoadSkipOfflineFiles` |
 | 7.6 | `PSSerializeJSONLongEnumAsNumber`、`PSProfileDSCResource` | `PSFeedbackProvider`、`PSNativeWindowsTildeExpansion`、`PSRedirectToVariable`、`PSSubsystemPluginModel` |
+
+> ⚠️ 7.5 / 7.6 之间关于 `ConvertTo-Json` 大枚举按数字（`PSSerializeJSONLongEnumAsNumber`）的正式化节点，官方两处表述重叠，见[第 9 节](#9-版本归属的说明与已知不确定项)。
 
 ---
 
@@ -815,14 +1090,14 @@ else {
 | 版本 | 关键变化 |
 | --- | --- |
 | 5.1 | 基线：Windows-only、.NET Framework、管理单元、WMI v1、工作流、`powershell.exe` |
-| 6.0 | 跨平台化：`pwsh`、.NET Core 2.0，移除 snap-in / 工作流 / WMI v1 / `RunspaceConfiguration` |
-| 6.1 | Markdown cmdlet、`Test-Json`、SSH `user@host:port`、Web cmdlet `-Form` |
-| 6.2 | **实验性特性框架**、`Join-String`、`ConvertFrom-Json -Depth` |
-| 7.0 | **`??` / `??=` / `? :` / `&&` / `\|\|` / `&`**、`ForEach-Object -Parallel`、ConciseView、`Get-Error`、WPF 恢复、DSC 实验性回归 |
-| 7.1 | `?.` / `?[]` 转正式、.NET 5 字符串比较语义变化、Web `-OutFile` 字面化 |
-| 7.2 | **`$PSStyle`**、DSC 移出产品、原生参数传递实验性特性、Microsoft Update |
-| 7.3 | **`clean` 块**、`$PSStyle.OutputRendering` 默认 `Host`、`ObjectSecurity` 类型数据迁移、`ConvertFrom-Json -AsHashtable` 有序化、`ConvertTo-Json -Depth` 上限 100 |
-| 7.4 | **通用参数 `ProgressAction`**、`Test-Json` 换引擎（弃 Draft 4）、`ValidateNotNullOrWhiteSpace`、`-ConnectionTimeoutSeconds`、`Get-SecureRandom`、字节流保留转正 |
+| 6.0 | 跨平台化：`pwsh`、.NET Core 2.0，移除 snap-in / 工作流 / WMI v1 / `RunspaceConfiguration`；新增 `&` 后台运算符、字符范围、`$PSVersionTable` 4 个新键 |
+| 6.1 | Windows Compatibility Pack（1900+ cmdlet 可用）、**实验性特性机制**、`PSCustomObject.Count/Length/ForEach/Where`、Markdown cmdlet、`Test-Json`、SSH `user@host:port`、Web cmdlet `-Form` |
+| 6.2 | **`Enable-`/`Disable-ExperimentalFeature`**、`Join-String`、`ConvertFrom-Json -Depth`、`PowerShell.InvokeAsync`/`StopAsync` 公开、哈希表改 `OrdinalIgnoreCase`、`-Debug` 改 `Continue` |
+| 7.0 | **`??` / `??=` / `? :` / `&&` / `\|\|`**、`ForEach-Object -Parallel`、ConciseView、`Get-Error`、WPF 恢复、`Import-Module -UseWindowsPowerShell`、`POWERSHELL_UPDATECHECK` |
+| 7.1 | **`?.` / `?[]` 转正式**、.NET 5 字符串比较语义变化、`ScriptBlock`→委托不再包 `PSObject`、splatting 覆盖规则、Web `-OutFile` 字面化、`Get-PSSubsystem` |
+| 7.2 | **`$PSStyle`**、DSC 移出产品、原生参数传递实验性特性、Microsoft Update、`PSHostUserInterface` 新公开方法、`IArgumentCompleterFactory` |
+| 7.3 | **`clean` 块**、`$PSStyle.OutputRendering` 默认 `Host`、`ObjectSecurity` 类型数据迁移、`ConvertFrom-Json -AsHashtable` 有序化、`ConvertTo-Json -Depth` 上限 100、PSRP 弃用 `BinaryFormatter`、`Set-AuthenticodeSignature` 默认 SHA256 |
+| 7.4 | **通用参数 `ProgressAction`**、`Test-Json` 换引擎（弃 Draft 4）、`ValidateNotNullOrWhiteSpace`、`NoRunspaceAffinity`、`-ConnectionTimeoutSeconds`、`Get-SecureRandom`、字节流保留转正 |
 | 7.5 | **`ConvertTo-CliXml` / `ConvertFrom-CliXml`**、`MatchInfo.LineNumber` → `ulong`、`Test-Path` 日期范围修正、`ConvertFrom-Json -DateKind`、`+=` 性能大幅提升 |
 | **7.6** | **`Cmdlet.PipelineStopToken`**、**`Join-Path -ChildPath` → `string[]`**、**`ThreadJob` 改名**、`SystemPolicy` 跨平台可见、AppContainer 支持、PSRP 弃用会话密钥交换 |
 
@@ -838,14 +1113,22 @@ else {
 - [What's New in PowerShell 7.3](https://learn.microsoft.com/en-us/powershell/scripting/whats-new/what-s-new-in-powershell-73)
 - [What's New in PowerShell 7.2](https://learn.microsoft.com/en-us/powershell/scripting/whats-new/what-s-new-in-powershell-72)
 - [What's New in PowerShell 7.0](https://learn.microsoft.com/en-us/powershell/scripting/whats-new/what-s-new-in-powershell-70)
+- [What's New in PowerShell Core 6.2](https://learn.microsoft.com/en-us/previous-versions/powershell/scripting/whats-new/what-s-new-in-powershell-core-62)
+- [What's New in PowerShell Core 6.1](https://learn.microsoft.com/en-us/previous-versions/powershell/scripting/whats-new/what-s-new-in-powershell-core-61)
+- [What's New in PowerShell Core 6.0](https://learn.microsoft.com/en-us/previous-versions/powershell/scripting/whats-new/what-s-new-in-powershell-core-60)
 - [Differences between Windows PowerShell 5.1 and PowerShell 7.x](https://learn.microsoft.com/en-us/powershell/scripting/whats-new/differences-from-windows-powershell)
 - [PowerShell Support Lifecycle](https://learn.microsoft.com/en-us/powershell/scripting/install/powershell-support-lifecycle)
+- [Microsoft Lifecycle — PowerShell（含 PT 时区的精确支持日期）](https://learn.microsoft.com/en-us/lifecycle/products/powershell)
+- [Choosing the right PowerShell NuGet package for your .NET project](https://learn.microsoft.com/en-us/powershell/scripting/dev-cross-plat/choosing-the-right-nuget-package)
 - [about_Automatic_Variables](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_automatic_variables)
 - [about_Operators](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_operators)
+- [about_PowerShell_Editions](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_editions)
+- [about_Language_Keywords](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_language_keywords)
 - [about_ANSI_Terminals（`$PSStyle`）](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_ansi_terminals)
 - [about_Experimental_Features](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_experimental_features)
 - [Using Experimental Features](https://learn.microsoft.com/en-us/powershell/scripting/learn/experimental-features)
 - [about_Windows_PowerShell_Compatibility](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_windows_powershell_compatibility)
+- [Migrating from Windows PowerShell 5.1 to PowerShell 7](https://learn.microsoft.com/en-us/powershell/scripting/whats-new/migrating-from-windows-powershell-51-to-powershell-7)
 - [PowerShell 7 module compatibility](https://aka.ms/PSModuleCompat)
 - [Breaking changes for migration from .NET Framework to .NET Core](https://learn.microsoft.com/en-us/dotnet/core/compatibility/fx-core)
 - [Behavior changes when comparing strings on .NET 5+](https://learn.microsoft.com/en-us/dotnet/standard/base-types/string-comparison-net-5-plus)
@@ -869,8 +1152,11 @@ else {
 - [PowerShell/PowerShell CHANGELOG 目录](https://github.com/PowerShell/PowerShell/blob/master/CHANGELOG/)
 - [7.6 Changelog](https://github.com/PowerShell/PowerShell/blob/master/CHANGELOG/7.6.md)
 - [7.5 Changelog](https://github.com/PowerShell/PowerShell/blob/master/CHANGELOG/7.5.md)
+- [7.3 Changelog](https://github.com/PowerShell/PowerShell/blob/master/CHANGELOG/7.3.md)
+- [7.2 Changelog](https://github.com/PowerShell/PowerShell/blob/master/CHANGELOG/7.2.md)
 - [PowerShell Releases](https://github.com/PowerShell/PowerShell/releases)
 - [NuGet: PowerShellStandard.Library](https://www.nuget.org/packages/PowerShellStandard.Library)
+- [NuGet: Microsoft.PowerShell.5.1.ReferenceAssemblies](https://www.nuget.org/packages/Microsoft.PowerShell.5.1.ReferenceAssemblies)
 - [.NET 支持策略](https://dotnet.microsoft.com/platform/support/policy/dotnet-core)
 
 ---
@@ -880,11 +1166,22 @@ else {
 本文的写法遵循"**能在官方文档中逐条核对才下断言**"的原则。以下条目需要读者注意其证据强度：
 
 1. **7.6 的补丁版本日期**：官方 `CHANGELOG/7.6.md` 未逐条标注日期，本文只给出 7.6 GA 日期（2026-03-18，来自 Support Lifecycle 表格）。7.6.1–7.6.6 的具体发布日期未列出。
-2. **`$PSVersionTable` 的完整键集合**：7.x 的官方键清单取自 `about_Automatic_Variables`（列出 9 个键）。5.1 的 `BuildVersion` / `CLRVersion` 存在性与移除依据的是官方 "Differences from Windows PowerShell" 文档的明确表述；但该文档未给出 5.1 的完整键清单，若需精确对比建议在真实 5.1 会话中执行 `$PSVersionTable` 实测。
-3. **`Microsoft.PowerShell.5.1.ReferenceAssemblies`**：该 NuGet 包确实存在（在 `MatchInfo.LineNumber` 的 .NET API 文档中被列为程序集来源之一，版本 `v1.0.0`），但本文未逐一核对其内容与目标框架。
-4. **7.5 与 7.6 之间关于"大枚举按数字"的正式化节点**：7.5 changelog 将其列为该版本的破坏性变更（预览阶段），而 7.6 的 What's New 把 `PSSerializeJSONLongEnumAsNumber` 列为**7.6 新增实验性特性**、同时把 `ConvertTo-Json` 大枚举按数字列入 7.6 破坏性变更。两处表述存在重叠，实际行为请以目标版本实测为准。
-5. **`Select-Object -SkipIndex` / `-Wait` 的版本标注**：官方文档分别写作 "introduced in Windows PowerShell 6.0" 与 "introduced in Windows PowerShell 3.0"，用词不统一（"Windows PowerShell 6.0" 实际指 PowerShell 6.0），本文照抄原文并加注。
-6. **逐 PR 级别的完整 API 差异清单**：本文按"官方 What's New + 5.1→7.x 差异文档 + 关键 cmdlet/API 页面"汇总，未穷举每个 PR。若需要逐条精度，建议比对 GitHub CHANGELOG 与 `System.Management.Automation` 的公开 API 差异报告（APIScan）。
+2. **`$PSVersionTable` 的完整键集合**：7.x 的官方键清单取自 `about_Automatic_Variables`（列出 9 个键）。5.1 的 `BuildVersion` / `CLRVersion` 存在性与移除依据的是官方 "Differences from Windows PowerShell" 文档的明确表述；但该文档未给出 5.1 的完整键清单，且这两项的具体值随 OS / 补丁变化，官方没有对照表。若需精确对比，建议在真实 5.1 会话中执行 `$PSVersionTable` 实测。
+3. **`$PSStyle.OutputRendering` 默认值的变迁细节**：官方 What's New 7.3 写"默认改为 `Host`"，但 7.3 的 CHANGELOG 只有 preview.1 的"改为 `Ansi`"一条，**缺少最终改为 `Host` 的那条 PR 记录**。本文的表述（7.2 preview.9 曾为 `Host` → 7.2 服务版 `Ansi` → 7.3 起 `Host`）综合了 What's New、CHANGELOG 与现行 `about_ANSI_Terminals` 三处，请以目标版本实测为准。
+4. **7.2 / 7.3 的 .NET 补丁号**：官方文档只写 ".NET 6.0" / ".NET 7.0"。7.2 的 GA SDK 为 `6.0.100-rtm.21527.11`，据此推断运行时为 .NET 6.0.0；7.3 使用内部 .NET 7 GA 构建。补丁号未在文档中明写。
+5. **7.5 与 7.6 之间关于"大枚举按数字"的正式化节点**：7.5 changelog 将其列为该版本的破坏性变更（预览阶段），而 7.6 的 What's New 把 `PSSerializeJSONLongEnumAsNumber` 列为**7.6 新增实验性特性**、同时把 `ConvertTo-Json` 大枚举按数字列入 7.6 破坏性变更。两处表述存在重叠，实际行为请以目标版本实测为准。
+6. **`clean` 块相关的 AST 类型名**：`CleanBlockAst` 来自引擎实现。Microsoft Learn 的 .NET API 浏览器**不收录 `System.Management.Automation` 命名空间**（`PSStyle` 同样查不到），因此引擎内部的公开类型名无法从官方 API 文档逐一核实。
+7. **PowerShell Standard 5.1 的成员级 API 面**：本文只确认了两个引用程序集包的定位与目标框架，**未逐成员枚举** PowerShell Standard 5.1 的 API 集合。如需精确判断某个成员是否可用，请直接引包编译验证。
+8. **`Select-Object -SkipIndex` / `-Wait` 的版本标注**：官方文档分别写作 "introduced in Windows PowerShell 6.0" 与 "introduced in Windows PowerShell 3.0"，用词不统一（"Windows PowerShell 6.0" 实际指 PowerShell 6.0），本文照原文引用。
+9. **`Export-Clixml` / `Import-Clixml`**：7.2 与 7.3 的 CHANGELOG 中**未发现**变更条目——这属于"未发现"，不等于"确认未变"。
+10. **6.0 / 6.2 的 GA 日期冲突**：`CHANGELOG/6.0.md` 标题写 `2018-01-10`，`CHANGELOG/6.2.md` 标题写 `2019-03-28`；而 Learn 生命周期表与 Microsoft Lifecycle 分别为 `2018-01-20` 与 `2019-03-29`。本文统一采用生命周期表的日期。此外，**结束支持日期在两个官方页面间会差一天**，原因是 Microsoft Lifecycle 以太平洋时间（PT）呈现。
+11. **`AddTypeCommandBase` 的移除版本冲突**：官方 What's New **6.0** 页面把它列在 "API changes"，而 `CHANGELOG/6.1.md` 把它列在 6.1.0-preview.1。
+12. **`Enable-ExperimentalFeature` / `Disable-ExperimentalFeature` 的引入版本**：6.1 的 What's New 正文提到了这两个 cmdlet，而 6.2 的 changelog 把它们的加入记为 `#8318`。本文表述为"6.1 引入机制、6.2 完善"。
+13. **`-replace` 接受脚本块的版本**：changelog 记为 6.1（`#6029`），官方 `about_Comparison_Operators` 写 "In PowerShell 6 and later"。
+14. **`DebugSource` 类型的移除**：该类型是真实存在的公开类型（`Script`、`ScriptFile`、`XamlDefinition`），但 Learn 的 .NET API 浏览器**只为 `Microsoft.PowerShell.5.1.ReferenceAssemblies` 提供该页面**（查询 7.x SDK 视图会回退到 5.1 页面），且 **6.0–7.1 的 changelog 中没有任何条目点名 `DebugSource`**。因此"它随工作流堆栈在 6.0 一并移除"是**推断**，不是官方明文。
+15. **`Cmdlet` / `PSCmdlet` 基类成员集的变化**：在 6.0–7.1 的官方文档与 changelog 中**未发现**任何关于基类成员集变化的记录（`Cmdlet.PipelineStopToken` 是 7.6 的新增）。若需要断言"未变化"，本节的准确表述是"这些版本中没有记录此类变化"。
+16. **PSRP 协议版本**：官方示例确认 `PSRemotingProtocolVersion = 2.3`、`SerializationVersion = 1.1.0.1`、`WSManStackVersion = 3.0`（7.3.9 示例）；**未找到 5.1 的官方对照页面**，因此"5.1 也是 2.3"属业界通说而非官方明文。
+17. **逐 PR 级别的完整 API 差异清单**：本文按"官方 What's New + 5.1→7.x 差异文档 + 关键 cmdlet/API 页面"汇总，未穷举每个 PR。若需要逐条精度，建议比对 GitHub CHANGELOG 与 `System.Management.Automation` 的公开 API 差异报告（APIScan）。
 
 ---
 
