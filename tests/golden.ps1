@@ -864,6 +864,44 @@ Assert-Case 'mouse/validation-and-readback' {
   }
 }
 
+Assert-Case 'accessibility/text-and-structure' {
+  # Argument and range handling does not depend on the environment, so it is asserted unconditionally.
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('text', '700'))).code 'text needs both coordinates'
+  Assert-Equal 'E_USAGE' (Assert-OsError (Invoke-Os @('text', '700', '400', '--source', 'bogus'))).code 'unknown source'
+  Assert-Equal 'E_NOT_SUPPORTED' (Assert-OsError (Invoke-Os @('text', '700', '400', '--source', 'msaa'))).code 'msaa is not implemented'
+  Assert-Equal 'E_RANGE' (Assert-OsError (Invoke-Os @('structure', '700', '400', '--depth', '99'))).code 'depth is capped'
+  Assert-Equal 'E_TYPE' (Assert-OsError (Invoke-Os @('text', 'abc', '400'))).code 'coordinates must be numeric'
+
+  # Then the environment-dependent part: with a display and UI Automation, the result must be
+  # well formed; without one, the verb must say which capability is missing.
+  $r = Invoke-Os @('text', '700', '400')
+  if ($r.json.ok) {
+    Assert-True ($null -ne $r.json.result.PSObject.Properties['found']) 'reports whether text was found'
+    Assert-True (@('uia') -contains $r.json.result.source) 'reports the source used'
+    if ($r.json.result.found) {
+      Assert-True ($r.json.result.text.Length -gt 0) 'found text is non-empty'
+      Assert-Equal $r.json.result.text.Length $r.json.result.length 'length matches the text'
+    }
+  } else {
+    Assert-True (@('E_NO_DISPLAY', 'E_ACCESSIBILITY_UNAVAILABLE', 'E_ACCESSIBILITY_DENIED', 'E_NOT_FOUND') -contains $r.json.error.code) 'typed capability error'
+  }
+
+  $s = Invoke-Os @('structure', '700', '400', '--depth', '1')
+  if ($s.json.ok) {
+    Assert-True ($null -ne $s.json.result.root) 'a root node is returned'
+    Assert-True ($s.json.result.nodeCount -ge 1) 'at least the root was counted'
+    # The tree has to be nested objects, not a flattened string: an earlier version returned the
+    # ancestors as concatenated text because a pipeline unrolled the dictionaries into their keys.
+    Assert-True ($null -ne $s.json.result.root.PSObject.Properties['type']) 'root carries a control type'
+    Assert-True ($null -ne $s.json.result.root.PSObject.Properties['ancestors']) 'ancestors are reported'
+    foreach ($a in @($s.json.result.root.ancestors)) {
+      Assert-True ($null -ne $a.PSObject.Properties['type']) 'each ancestor is an object with a type'
+    }
+  } else {
+    Assert-True (@('E_NO_DISPLAY', 'E_ACCESSIBILITY_UNAVAILABLE', 'E_ACCESSIBILITY_DENIED', 'E_NOT_FOUND') -contains $s.json.error.code) 'typed capability error'
+  }
+}
+
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host ("passed: " + $script:Passed + "   failed: " + $script:Failed) -ForegroundColor Cyan

@@ -151,6 +151,8 @@ function Invoke-Dispatch {
     'keyboard.combination' { return (Invoke-KeyboardCombination -Parsed $inner) }
     'keyboard.type' { return (Invoke-KeyboardType -Parsed $inner) }
     'keyboard.codes' { return (Invoke-KeyboardCodes -Parsed $inner) }
+    'text' { return (Invoke-TextAtPoint -Parsed $inner) }
+    'structure' { return (Invoke-StructureAtPoint -Parsed $inner) }
 
     default {
       throw (New-OsError -Code 'E_NOT_SUPPORTED' -Message ("verb '{0}' is not implemented in this build" -f $target.key) `

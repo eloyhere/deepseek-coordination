@@ -93,8 +93,8 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 npm run test:all     # encoding contracts, then the golden suite
 ```
 
-Current state: **46 Windows golden cases, 57 POSIX golden cases and 13 plugin cases pass**, all
-encoding contracts hold, 86 verbs in the table. 73 of the 86 verbs are implemented on Windows and 36
+Current state: **47 Windows golden cases, 57 POSIX golden cases and 13 plugin cases pass**, all
+encoding contracts hold, 86 verbs in the table. 75 of the 86 verbs are implemented on Windows and 36
 on POSIX.
 
 ## Using it from the harness
@@ -140,7 +140,11 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
 - Implemented and tested on Windows for `mouse` and `keyboard`: cursor read-back, move, click,
   right-click, wheel, button down/up, key down/up, a self-releasing press, chords in both phases, and
   text entry by Unicode key events (so it is layout-independent and accepts non-ASCII).
-- Not written yet on either platform: `text`, `structure` and `task.launch`. Also not written:
+- Implemented and tested on Windows for `text` and `structure` through UI Automation: the element at a
+  point, its text via ValuePattern / TextPattern / LegacyIAccessiblePattern / Name in that order, and
+  the control tree around it. Both are honest about the environment - a missing UIA stack or a refusal
+  is a typed E_ACCESSIBILITY_UNAVAILABLE / E_ACCESSIBILITY_DENIED, never an empty result.
+- Not written yet on either platform: `task.launch`. Also not written:
   `service`, `window`, `screenshot`, `clipboard`, `wait`, `mouse` and `keyboard` on POSIX, the
   `service` lifecycle verbs (start/stop/restart), and `permission.grant`/`revoke`/`acl.init`. Every
   one of those verbs is declared in the table and returns a typed `E_NOT_SUPPORTED`, never a silent

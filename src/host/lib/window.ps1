@@ -1000,3 +1000,312 @@ function Invoke-WaitWindow {
     Start-Sleep -Milliseconds $interval
   }
 }
+
+# ---------------------------------------------------------------------------
+# text / structure - accessibility
+# ---------------------------------------------------------------------------
+#
+# Both verbs ask the accessibility layer what is at a point, which is why the verb table lists
+# E_ACCESSIBILITY_DENIED and E_ACCESSIBILITY_UNAVAILABLE: the API can be absent from the framework, or
+# present but refusing to answer. Those are reported as distinct typed errors rather than as an empty
+# result, because "there is no text here" and "I am not allowed to look" lead a caller to opposite
+# next actions.
+#
+# The assemblies are loaded on first use, not at startup: Add-Type is expensive and most verbs never
+# touch accessibility.
+
+$script:UiaReady = $null
+function Initialize-Uia {
+  if ($null -ne $script:UiaReady) {
+    if (-not $script:UiaReady) {
+      throw (New-OsError -Code 'E_ACCESSIBILITY_UNAVAILABLE' `
+          -Message 'UI Automation is not available in this PowerShell installation' `
+          -Hint 'the text and structure verbs need UIAutomationClient and UIAutomationTypes')
+    }
+    return
+  }
+  try {
+    Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+    Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+    # AutomationElement.FromPoint takes a System.Windows.Point, which lives in WindowsBase and is NOT
+    # pulled in by the two UIA assemblies. Without this the call fails with "Cannot find type
+    # [System.Windows.Point]", which looks like an accessibility refusal but is really a missing
+    # assembly - and it was being reported as E_ACCESSIBILITY_DENIED until this was found.
+    Add-Type -AssemblyName WindowsBase -ErrorAction Stop
+    $script:UiaReady = $true
+  } catch {
+    $script:UiaReady = $false
+    throw (New-OsError -Code 'E_ACCESSIBILITY_UNAVAILABLE' `
+        -Message ("UI Automation could not be loaded: {0}" -f $_.Exception.Message) `
+        -Hint 'the text and structure verbs need UIAutomationClient, UIAutomationTypes and WindowsBase')
+  }
+  Assert-Desktop
+}
+
+function Resolve-SourceFlag {
+  param($Parsed)
+  $source = Get-FlagValue -Parsed $Parsed -Name 'source' -Default 'auto'
+  $source = $source.ToLowerInvariant()
+  if (@('auto', 'uia', 'msaa') -notcontains $source) {
+    throw (New-OsError -Code 'E_USAGE' -Message ("unknown source '{0}'" -f $source) `
+        -Hint 'accepted: auto, uia, msaa')
+  }
+  # Only the UIA backend is implemented. Saying so is better than silently answering from UIA when
+  # the caller explicitly asked for MSAA, which reports a different element tree.
+  if ($source -eq 'msaa') {
+    throw (New-OsError -Code 'E_NOT_SUPPORTED' -Message 'the msaa source is not implemented in this build' `
+        -Hint 'use source=uia or source=auto')
+  }
+  return $(if ($source -eq 'auto') { 'uia' } else { $source })
+}
+
+function Get-ElementAtPoint {
+  param([int]$X, [int]$Y)
+  try {
+    $point = New-Object System.Windows.Point($X, $Y)
+    $el = [System.Windows.Automation.AutomationElement]::FromPoint($point)
+  } catch {
+    throw (New-OsError -Code 'E_ACCESSIBILITY_DENIED' `
+        -Message ("UI Automation refused to inspect the point {0},{1}: {2}" -f $X, $Y, $_.Exception.Message) `
+        -Hint 'elevated windows can refuse inspection from a lower-privilege process')
+  }
+  if ($null -eq $el) {
+    throw (New-OsError -Code 'E_NOT_FOUND' -Message ("no accessible element at {0},{1}" -f $X, $Y))
+  }
+  return $el
+}
+
+function Get-ElementField {
+  param($Element, [string]$Field)
+  # Every property read can throw when an element disappears mid-walk, which happens constantly on a
+  # live desktop. A missing field is reported as null rather than aborting the whole query.
+  #
+  # This is an if/elseif chain and NOT a switch. PowerShell's switch iterates its input when the input
+  # is enumerable, and a STRING is enumerable as characters, so `switch ($Field)` ran the body once per
+  # character: every case that matched some letter contributed a value and the result came back as an
+  # array that the [string] cast then concatenated. That is why type/class/framework/automationId
+  # arrived as long repeated strings while name (a property of only one case) looked correct.
+  try {
+    if ($Field -eq 'name') { return [string]$Element.Current.Name }
+    if ($Field -eq 'class') { return [string]$Element.Current.ClassName }
+    # ControlType needs its ProgrammaticName: casting the object gives the type name, not the control.
+    if ($Field -eq 'type') { return [string]$Element.Current.ControlType.ProgrammaticName }
+    if ($Field -eq 'automationId') { return [string]$Element.Current.AutomationId }
+    if ($Field -eq 'framework') { return [string]$Element.Current.FrameworkId }
+    if ($Field -eq 'enabled') { return [bool]$Element.Current.IsEnabled }
+    if ($Field -eq 'offscreen') { return [bool]$Element.Current.IsOffscreen }
+    return $null
+  } catch {
+    return $null
+  }
+}
+
+function Get-ElementRectValue {
+  param($Element)
+  try {
+    $r = $Element.Current.BoundingRectangle
+    if ($r.IsEmpty) { return $null }
+    return [ordered]@{ x = [int]$r.X; y = [int]$r.Y; width = [int]$r.Width; height = [int]$r.Height }
+  } catch {
+    return $null
+  }
+}
+
+function ConvertTo-ElementObject {
+  param($Element, [int]$Depth = 0)
+  return [ordered]@{
+    type = (Get-ElementField -Element $Element -Field 'type')
+    name = (Get-ElementField -Element $Element -Field 'name')
+    class = (Get-ElementField -Element $Element -Field 'class')
+    automationId = (Get-ElementField -Element $Element -Field 'automationId')
+    framework = (Get-ElementField -Element $Element -Field 'framework')
+    enabled = (Get-ElementField -Element $Element -Field 'enabled')
+    offscreen = (Get-ElementField -Element $Element -Field 'offscreen')
+    rect = (Get-ElementRectValue -Element $Element)
+    depth = $Depth
+  }
+}
+
+# The text an element exposes, trying the patterns in order of how specific they are.
+function Get-ElementText {
+  param($Element)
+  # ValuePattern is the right answer for an input control: it gives the content, not the label.
+  try {
+    $vp = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
+      $v = ([System.Windows.Automation.ValuePattern]$vp).Current.Value
+      if (-not [string]::IsNullOrEmpty($v)) { return @{ text = [string]$v; via = 'ValuePattern' } }
+    }
+  } catch { }
+  # TextPattern for documents and read-only text.
+  try {
+    $tp = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$tp)) {
+      $t = ([System.Windows.Automation.TextPattern]$tp).DocumentRange.GetText(-1)
+      if (-not [string]::IsNullOrEmpty($t)) { return @{ text = [string]$t; via = 'TextPattern' } }
+    }
+  } catch { }
+  # LegacyIAccessible carries a value for older controls that expose nothing else.
+  try {
+    $lp = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern, [ref]$lp)) {
+      $v = ([System.Windows.Automation.LegacyIAccessiblePattern]$lp).Current.Value
+      if (-not [string]::IsNullOrEmpty($v)) { return @{ text = [string]$v; via = 'LegacyIAccessiblePattern' } }
+    }
+  } catch { }
+  # The Name property is the last resort and is really a label, so it is reported with its source so
+  # a caller can tell a control's content from its label.
+  $name = Get-ElementField -Element $Element -Field 'name'
+  if (-not [string]::IsNullOrEmpty($name)) { return @{ text = [string]$name; via = 'Name' } }
+  return @{ text = ''; via = 'none' }
+}
+
+# Ancestors up to a limit, nearest first. Bounded because a walk can otherwise leave the window and
+# climb to the desktop root, reporting text from an unrelated window.
+function Get-AncestorChain {
+  param($Element, [int]$Max = 8)
+  $chain = New-Object System.Collections.ArrayList
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  $current = $Element
+  for ($i = 0; $i -lt $Max; $i++) {
+    try { $current = $walker.GetParent($current) } catch { break }
+    if ($null -eq $current) { break }
+    [void]$chain.Add($current)
+  }
+  return , @($chain)
+}
+
+function Invoke-TextAtPoint {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'text'
+  Assert-NoExtra -Parsed $Parsed -Expected 2
+  $x = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'x'
+  $y = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 1) -Name 'y'
+  $source = Resolve-SourceFlag -Parsed $Parsed
+  $maxText = Get-FlagValue -Parsed $Parsed -Name 'max-chars' -Default '4096'
+  $maxChars = Get-IntArg -Text $maxText -Name 'max-chars'
+  if ($maxChars -lt 1) {
+    throw (New-OsError -Code 'E_RANGE' -Message ("max-chars must be at least 1, got {0}" -f $maxChars))
+  }
+
+  Initialize-Uia
+  $element = Get-ElementAtPoint -X $x -Y $y
+  $hit = ConvertTo-ElementObject -Element $element
+
+  # Search the element, then its ancestors. A click lands on the innermost element, which for a text
+  # editor is often a child that exposes nothing; the text lives on an ancestor.
+  $probe = $element
+  $via = 'none'
+  $text = ''
+  $sourceElement = $null
+  $depthFound = 0
+  $candidates = @($element) + @(Get-AncestorChain -Element $element)
+  foreach ($candidate in $candidates) {
+    $got = Get-ElementText -Element $candidate
+    if ($got.text -ne '') {
+      $text = $got.text
+      $via = $got.via
+      $sourceElement = ConvertTo-ElementObject -Element $candidate
+      break
+    }
+    $depthFound++
+  }
+
+  $truncated = $false
+  if ($text.Length -gt $maxChars) {
+    $text = $text.Substring(0, $maxChars)
+    $truncated = $true
+  }
+
+  if ($via -eq 'none') {
+    # Nothing exposed text. That is a real answer, but an empty string would be indistinguishable
+    # from a broken query, so the fields that were found are returned alongside it.
+    return [ordered]@{
+      point = [ordered]@{ x = $x; y = $y }
+      source = $source
+      found = $false
+      reason = 'no element at this point exposes text'
+      element = $hit
+      ancestorsSearched = $depthFound
+      text = ''
+      via = 'none'
+    }
+  }
+
+  return [ordered]@{
+    point = [ordered]@{ x = $x; y = $y }
+    source = $source
+    found = $true
+    text = $text
+    length = $text.Length
+    truncated = $truncated
+    via = $via
+    element = $hit
+    # The element that actually supplied the text, which differs from the hit element when the search
+    # walked up. Without it a caller cannot tell which control the text came from.
+    textElement = $sourceElement
+  }
+}
+
+function Invoke-StructureAtPoint {
+  param($Parsed)
+  Assert-MinPositionals -Parsed $Parsed -Min 2 -Verb 'structure'
+  Assert-NoExtra -Parsed $Parsed -Expected 2
+  $x = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 0) -Name 'x'
+  $y = Get-IntArg -Text (Get-Positional -Parsed $Parsed -Index 1) -Name 'y'
+  $source = Resolve-SourceFlag -Parsed $Parsed
+  $depthText = Get-FlagValue -Parsed $Parsed -Name 'depth' -Default '3'
+  $depth = Get-IntArg -Text $depthText -Name 'depth'
+  if ($depth -lt 0) {
+    throw (New-OsError -Code 'E_RANGE' -Message ("depth must not be negative, got {0}" -f $depth))
+  }
+  if ($depth -gt 12) {
+    # A deep walk of a busy window is thousands of elements and a large envelope; the limit keeps a
+    # single call from producing something unusable.
+    throw (New-OsError -Code 'E_RANGE' -Message ("depth must be at most 12, got {0}" -f $depth) `
+        -Hint 'a deep accessibility tree of a real window can be thousands of elements')
+  }
+
+  Initialize-Uia
+  $element = Get-ElementAtPoint -X $x -Y $y
+
+  $count = 0
+  function ConvertTo-StructureNode {
+    param($Node, [int]$Level)
+    $script:StructureCount++
+    $obj = ConvertTo-ElementObject -Element $Node -Depth $Level
+    $children = New-Object System.Collections.ArrayList
+    if ($Level -lt $depth) {
+      try {
+        $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+        $child = $walker.GetFirstChild($Node)
+        while ($null -ne $child) {
+          [void]$children.Add((ConvertTo-StructureNode -Node $child -Level ($Level + 1)))
+          try { $child = $walker.GetNextSibling($child) } catch { break }
+        }
+      } catch { }
+    }
+    $obj['childCount'] = $children.Count
+    if ($children.Count -gt 0) { $obj['children'] = $children.ToArray() }
+    return $obj
+  }
+
+  $script:StructureCount = 0
+  $tree = ConvertTo-StructureNode -Node $element -Level 0
+  # Collected with an explicit loop, not a pipeline. ConvertTo-ElementObject returns an ordered
+  # dictionary, and a pipeline unrolls a dictionary into its KEYS, so the ForEach-Object form produced
+  # raw strings joined together instead of one object per ancestor.
+  $ancestors = New-Object System.Collections.ArrayList
+  foreach ($a in (Get-AncestorChain -Element $element)) {
+    [void]$ancestors.Add((ConvertTo-ElementObject -Element $a))
+  }
+  $tree['ancestors'] = $ancestors.ToArray()
+
+  return [ordered]@{
+    point = [ordered]@{ x = $x; y = $y }
+    source = $source
+    depth = $depth
+    nodeCount = $script:StructureCount
+    root = $tree
+  }
+}

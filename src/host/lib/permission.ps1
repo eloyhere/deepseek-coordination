@@ -128,7 +128,11 @@ function Get-PlatformCapabilities {
     inputInjection = 'add-type-user32'
     clipboard = 'user32'
     screenshot = 'gdi32-bitblt'
-    accessibility = 'unavailable'
+    # Probed rather than asserted. This said 'unavailable' as a hardcoded string until the text and
+    # structure verbs were implemented, so a caller reading selfcheck would have concluded that
+    # accessibility could never work here. A capability report that is not measured is a guess.
+    accessibility = 'uia'
+    accessibilityDetail = $null
     fonts = $null
   }
   try {
@@ -137,6 +141,18 @@ function Get-PlatformCapabilities {
     $caps['screens'] = [System.Windows.Forms.Screen]::AllScreens.Count
   } catch {
     $caps['screens'] = $null
+  }
+  try {
+    Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+    Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+    Add-Type -AssemblyName WindowsBase -ErrorAction Stop
+    # Reaching the root element proves the layer answers, not merely that the assemblies loaded.
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $caps['accessibility'] = 'uia'
+    $caps['accessibilityDetail'] = ('root=' + $root.Current.ClassName)
+  } catch {
+    $caps['accessibility'] = 'unavailable'
+    $caps['accessibilityDetail'] = $_.Exception.Message
   }
   return $caps
 }
