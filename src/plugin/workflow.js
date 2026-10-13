@@ -1405,12 +1405,17 @@ export function workflowToolDefinition(handlers) {
   }
 }
 
-export function apply(ctx, config = {}) {
-  const root = typeof config.workflowRoot === 'string' && config.workflowRoot.trim() !== ''
-    ? config.workflowRoot
+export function apply(ctx, config) {
+  // `config ?? {}` rather than a `config = {}` default parameter, because the two are NOT equivalent:
+  // a default parameter only fires for `undefined`, and Cordis hands the row's config through as `null`
+  // when the row declares none. The shipped 0.1.5 read `config.workflowRoot` off that null and the row
+  // failed to activate with "Cannot read properties of null".
+  const resolved = config ?? {}
+  const root = typeof resolved.workflowRoot === 'string' && resolved.workflowRoot.trim() !== ''
+    ? resolved.workflowRoot
     : workflowRoot()
-  const autoCompact = config.autoCompact !== false
-  const maxCheckpoints = Number.isInteger(config.maxCheckpoints) && config.maxCheckpoints > 0 ? config.maxCheckpoints : 20
+  const autoCompact = resolved.autoCompact !== false
+  const maxCheckpoints = Number.isInteger(resolved.maxCheckpoints) && resolved.maxCheckpoints > 0 ? resolved.maxCheckpoints : 20
 
   // The engine's own automatic compaction is named in the checkpoint result rather than invoked: this
   // plugin holds no session handle, and a call into a service whose context contract is not published
@@ -1446,14 +1451,28 @@ export function apply(ctx, config = {}) {
 
   if (typeof ctx.tools?.register === 'function') ctx.tools.register(workflowToolDefinition(handlers))
 
-  // The prompt half is registered only when the registry is present, so a deployment without it loses
-  // the section rather than the feature. The text is a constant: no state is read, nothing is looked up,
-  // and the model's cached prefix survives every phase of every workflow. See SECTION_TEXT.
-  if (typeof ctx.systemPrompt?.section === 'function') {
-    ctx.systemPrompt.section({
-      name: 'dsh-os:workflow',
-      order: sectionOrder(ctx.systemPrompt),
-      text: SECTION_TEXT,
+  // The prompt half is registered through `ctx.inject`, NOT by reading `ctx.systemPrompt` directly.
+  //
+  // Reading it directly is what broke the shipped 0.1.5: Cordis resolves a service property through an
+  // enforcing proxy, so an undeclared service does not read as `undefined` — it THROWS
+  //   Error: cannot get property "systemPrompt" without inject
+  // and a guard of the form `typeof ctx.systemPrompt?.section === 'function'` never gets to run, because
+  // the property access itself is the throw. The row then failed to activate entirely, losing the tool
+  // as well as the section.
+  //
+  // `ctx.inject` is the first-party pattern for an optional service (`dsh-tool-fs` registers its image
+  // tool the same way): the callback runs when the service is present and unwinds when it goes away, and
+  // a deployment without a system prompt keeps the tool instead of losing everything.
+  //
+  // The text is a constant: no state is read, nothing is looked up, and the model's cached prefix
+  // survives every phase of every workflow. See SECTION_TEXT.
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['systemPrompt'], (scoped) => {
+      scoped.systemPrompt.section({
+        name: 'dsh-os:workflow',
+        order: sectionOrder(scoped.systemPrompt),
+        text: SECTION_TEXT,
+      })
     })
   }
 

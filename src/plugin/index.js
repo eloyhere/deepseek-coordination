@@ -27,7 +27,11 @@ export const name = 'dsh-os'
 /** The plugin is inert without the tool registry. */
 export const inject = ['tools']
 
-export function apply(ctx, config = {}) {
+export function apply(ctx, rawConfig) {
+  // `?? {}` rather than a default parameter: Cordis passes a row's config as `null` when the row declares
+  // none, and a default parameter only fires for `undefined`. Every entry point in this package guards the
+  // same way, so a row whose config is trimmed degrades to defaults instead of failing to activate.
+  const config = rawConfig ?? {}
   const timeoutMs = config.timeoutMs ?? 120000
 
   ctx.tools.register({

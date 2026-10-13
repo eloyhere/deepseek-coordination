@@ -110,9 +110,15 @@ export function writeSettings(file, settings) {
  * second one is evidence that the feature works.
  */
 export class SettingsService {
-  constructor(ctx, config = {}) {
+  constructor(ctx, config) {
     this.ctx = ctx
-    this.file = config.settingsPath ?? settingsPath()
+    // `config ?? {}` rather than a default parameter: Cordis passes the row's config as `null` when the
+    // row declares none, and a default parameter does not fire for null. This is exactly what made the
+    // shipped 0.1.5 fail to activate with "Cannot read properties of null (reading 'settingsPath')".
+    const resolved = config ?? {}
+    this.file = typeof resolved.settingsPath === 'string' && resolved.settingsPath.trim() !== ''
+      ? resolved.settingsPath
+      : settingsPath()
     this.settings = readSettings(this.file)
     this.activity = []
     this.listeners = new Set()
@@ -312,8 +318,11 @@ export function makeSettingsRoutes(service) {
  */
 export const name = 'dsh-os-settings'
 
-export function apply(ctx, config = {}) {
-  const service = new SettingsService(ctx, config)
+export function apply(ctx, rawConfig) {
+  // `?? {}` rather than a default parameter: Cordis passes a row's config as `null` when the row declares
+  // none, and a default parameter only fires for `undefined`. This row ships WITHOUT a config, which is
+  // what made the shipped 0.1.5 fail with "Cannot read properties of null (reading 'settingsPath')".
+  const service = new SettingsService(ctx, rawConfig ?? {})
 
   // `ctx.provide` REGISTERS the service and returns a disposer; `ctx.set` only overwrites the value of a
   // service that was already provided, and calling it first throws

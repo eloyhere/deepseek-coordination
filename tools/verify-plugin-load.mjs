@@ -153,6 +153,11 @@ process.env.DSH_HOME = dshHome
 const wfTools = []
 const wfSections = []
 const wfAsked = []
+const wfSystemPrompt = {
+  section(section) { wfSections.push(section); return () => {} },
+  getSectionOrder: () => 100,
+  tools: () => () => {},
+}
 const wfCtx = {
   tools: {
     register(tool) {
@@ -161,6 +166,20 @@ const wfCtx = {
       return tool
     },
   },
+  // The prompt section is registered through `ctx.inject(['systemPrompt'], …)` rather than by reading
+  // `ctx.systemPrompt` directly, because Cordis THROWS on an undeclared service instead of returning
+  // undefined. This mock therefore has to run the callback, or it would report "no section registered"
+  // for a plugin that registers one correctly — which is exactly what this case did until the plugin
+  // stopped reading the service directly and the mock was taught to follow it.
+  inject(names, callback) {
+    if (names.every((name) => name === 'systemPrompt' || name === 'tools' || name === 'userQuestions')) {
+      callback(wfCtx)
+    }
+    return () => {}
+  },
+  effect(fn) { const d = fn(); return () => { if (typeof d === 'function') d() } },
+  on() { return () => {} },
+  logger: { warn() {}, info() {}, error() {} },
   userQuestions: {
     ask: async (request) => {
       wfAsked.push(request)
@@ -173,10 +192,7 @@ const wfCtx = {
       }
     },
   },
-  systemPrompt: {
-    section(section) { wfSections.push(section); return () => {} },
-    getSectionOrder: () => 100,
-  },
+  systemPrompt: wfSystemPrompt,
 }
 
 try {

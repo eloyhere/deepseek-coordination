@@ -388,7 +388,11 @@ function eligible(tool, args) {
   }
 }
 
-export function apply(ctx, config = {}) {
+export function apply(ctx, rawConfig) {
+  // `?? {}` rather than a default parameter: Cordis passes a row's config as `null` when the row declares
+  // none, and a default parameter only fires for `undefined`, so the first property read threw and the
+  // row never activated. This row is shipped WITHOUT a config, so it hit exactly that.
+  const config = rawConfig ?? {}
   const toolTimeoutMs = config.timeoutMs ?? 120000
   // Mirrors the `tool-fs` row's `readLimit` (2000 by default): the interception must not quietly apply
   // a different window size than the built-in it replaced.

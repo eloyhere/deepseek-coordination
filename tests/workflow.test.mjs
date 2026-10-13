@@ -75,6 +75,19 @@ async function harness(respond) {
     const asked = []
     const ctx = {
       tools: { register: (spec) => { tools.set(spec.name, spec); return () => tools.delete(spec.name) } },
+      // `inject` MUST run its callback for the services present, because the plugin registers its prompt
+      // section through `ctx.inject(['systemPrompt'], …)` rather than reading `ctx.systemPrompt` directly.
+      // Cordis throws on an undeclared service, so the indirection is required in production; a mock whose
+      // `inject` is a no-op therefore reports "the prompt section was not registered" for a plugin that
+      // registers it correctly. Every mock in this repository has to model that.
+      inject(names, callback) {
+        const available = { tools: ctx.tools, userQuestions: ctx.userQuestions, systemPrompt: ctx.systemPrompt }
+        if (names.every((name) => available[name] !== undefined)) callback({ ...ctx, ...available })
+        return () => {}
+      },
+      effect(fn) { const d = fn(); return () => { if (typeof d === 'function') d() } },
+      on() { return () => {} },
+      logger: { warn() {}, info() {}, error() {} },
       userQuestions: {
         ask: async (request) => {
           asked.push(request)

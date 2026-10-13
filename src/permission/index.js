@@ -192,7 +192,12 @@ function nextRuleId(document) {
   return `r-${String(max + 1).padStart(4, '0')}`
 }
 
-export function apply(ctx, config = {}) {
+export function apply(ctx, rawConfig) {
+  // `?? {}` rather than a default parameter: Cordis passes a row's config as `null` when the row declares
+  // none, and a default parameter only fires for `undefined`. This row happens to ship with a config, so
+  // it never hit the fault — but the fix belongs here too, or a deployment that trims the row's config
+  // takes the consent delegate down with it.
+  const config = rawConfig ?? {}
   const path = permissionPathOf(config)
   const auditLimit = config.auditLimit ?? AUDIT_LIMIT
 

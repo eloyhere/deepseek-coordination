@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "type": "module",
   "description": "Cross-platform atomic OS-interaction surface for the DeepSeek Harness: one argument-stable verb set implemented natively on each OS, with byte-exact charset, BOM and line-ending handling.",
@@ -93,6 +93,7 @@
     "test:encoding": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/encoding.ps1",
     "test:conformance": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/conformance.ps1",
     "test:plugin": "node tests/plugin.test.mjs",
+    "test:activation": "node tests/activation.test.mjs",
     "test:takeover": "node tests/takeover.test.mjs",
     "test:permission": "node tests/permission.test.mjs",
     "test:workflow": "node tests/workflow.test.mjs",

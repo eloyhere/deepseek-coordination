@@ -113,7 +113,11 @@ export const DEFAULT_SCRIPT_DIR = 'src/host/bin'
  * DSH_OS_POWERSHELL still overrides the executable. `'auto'` uses 7.6 only when both the artefact and
  * a pwsh executable are present, and falls back to 5.1 otherwise.
  */
-export function resolveInvocation(config = {}) {
+export function resolveInvocation(rawConfig) {
+  // `?? {}` rather than a default parameter. Cordis passes a row's config through as `null` when the row
+  // declares none, and a default parameter only fires for `undefined` — so `config.scriptPath` on that
+  // null threw and the plugin row failed to activate. Every caller may pass null.
+  const config = rawConfig ?? {}
   const explicit = config.scriptPath ? [config.scriptPath] : []
   const dir = config.scriptPath
     ? dirname(config.scriptPath)
@@ -192,7 +196,8 @@ export function resolveInvocation(config = {}) {
 }
 
 /** The directory an invocation would search, for error messages that name a real path. */
-export function searchedDirectory(config = {}) {
+export function searchedDirectory(rawConfig) {
+  const config = rawConfig ?? {}
   return config.scriptPath ?? join(PKG_ROOT, config.scriptDir ?? DEFAULT_SCRIPT_DIR)
 }
 
