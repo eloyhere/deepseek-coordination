@@ -544,6 +544,27 @@ await check('the prompt section is one constant: the plugin induces ZERO prompt 
   } finally { env.dispose() }
 })
 
+await check('the tool description names the tool and spells out each call', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    const tool = env.tools.get('workflow_plan')
+    assert.ok(tool, 'the tool is registered under its real name')
+    const description = tool.description
+    assert.ok(description.includes('workflow_plan'), 'the description must name the tool it is describing')
+    // Since the prompt section is frozen, this description is the only place a model learns how to drive the
+    // workflow. It therefore has to spell each call as tool(action: "..."). An earlier version listed
+    // `start` / `plan` / `choose` / `run` bare, which reads as four tool names that do not exist — and it
+    // shipped that way in 0.1.5, because only the packed tarball check caught it.
+    for (const action of ['start', 'plan', 'choose', 'run']) {
+      assert.ok(
+        description.includes(`workflow_plan(action: "${action}")`),
+        `the description must spell the "${action}" call, got: ${description.slice(0, 200)}`,
+      )
+    }
+    assert.ok(description.length < 2200, `the description must not bloat the cached prefix: ${description.length} chars`)
+  } finally { env.dispose() }
+})
+
 await check('the phase and the next call travel in the tool result, not in the prompt', async () => {
   const env = await harness(chooseFirst)
   try {

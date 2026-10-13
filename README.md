@@ -85,7 +85,7 @@ deepseek-coordination/
 ├─ tests/                          golden (Windows/POSIX/desktop injection), table conformance, encoding, plugin, permission, takeover, workflow suites
 │  ├─ conformance.ps1              command.txt and spec/verbs.tsv must describe the same surface (5 cases)
 │  ├─ takeover.test.mjs            byte-level format preservation, read windowing, eligibility (41 cases)
-│  ├─ workflow.test.mjs            phase gates, the user's choice, and the KV-cache invariant (30 cases)
+│  ├─ workflow.test.mjs            phase gates, the user's choice, and the KV-cache invariant (31 cases)
 │  ├─ smoke-desktop-sh.sh          what the POSIX desktop verbs actually inject (52 cases)
 │  └─ fake-xdotool, fake-wmctrl    recording stand-ins, so the desktop verbs can be verified with no X server
 └─ permission.json                 authorization data (an empty file in the repository; that is the initial state)
@@ -914,7 +914,7 @@ npm run test:all        # runs everything below, in order
 | Plugin | `node tests/plugin.test.mjs` | 13 | **13 passed, 0 failed** |
 | Takeover interceptions | `node tests/takeover.test.mjs` | 41 | **41 passed, 0 failed** |
 | Permission delegate | `node tests/permission.test.mjs` | 18 | **18 passed, 0 failed** |
-| Workflow | `node tests/workflow.test.mjs` | 30 | **30 passed, 0 failed** |
+| Workflow | `node tests/workflow.test.mjs` | 31 | **31 passed, 0 failed** |
 | Bundle resolution | `node tools/verify-bundle.mjs` | 16 | **16 passed, 0 failed** |
 | Package completeness | `node tools/verify-package.mjs` | 21 | **21 passed, 0 failed** |
 | Plugin load | `node tools/verify-plugin-load.mjs` | 30 | **30 passed, 0 failed** |
@@ -1068,10 +1068,11 @@ Copyright (c) 2026 Eloy Kim
 ```
 
 The licence file is pure ASCII, LF-terminated and BOM-free, consistent with the rest of the
-repository's encoding contracts. One earlier description needs correcting: it is **not** listed in
-`package.json`'s `files` whitelist (which has 20 entries; it includes `src/host/bin/dsh-os7.ps1` but
-neither `LICENSE` nor `README.zh-CN.md`), so the file stays in a checkout but is not distributed with
-the published package.
+repository's encoding contracts. An earlier description here claimed it was **not** distributed because it
+is not listed in `package.json`'s `files` whitelist. That was wrong, and the published tarball proves it:
+`npm pack deepseek-coordination@0.1.5` contains `package/LICENSE` **and** `package/README.zh-CN.md`, because
+npm always includes those two names regardless of `files`. The whitelist has 20 entries and includes
+`src/host/bin/dsh-os7.ps1`; the two files simply do not need to be in it.
 
 The verb contract and the specification documents are part of the source: a behaviour change should be
 reflected in `src/host/spec/verbs.tsv`, `src/host/command.txt` and `src/host/docs/os-spec.md`, not only

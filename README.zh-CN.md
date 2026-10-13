@@ -603,7 +603,7 @@ npm run test:all        # 按顺序跑下面全部
 | 插件 | `node tests/plugin.test.mjs` | 13 | **13 通过，0 失败** |
 | 接管拦截 | `node tests/takeover.test.mjs` | 41 | **41 通过，0 失败** |
 | 授权委托 | `node tests/permission.test.mjs` | 18 | **18 通过，0 失败** |
-| 工作流 | `node tests/workflow.test.mjs` | 30 | **30 通过，0 失败** |
+| 工作流 | `node tests/workflow.test.mjs` | 31 | **31 通过，0 失败** |
 | bundle 解析 | `node tools/verify-bundle.mjs` | 16 | **16 通过，0 失败** |
 | 打包完整性 | `node tools/verify-package.mjs` | 21 | **21 通过，0 失败** |
 | 插件装载 | `node tools/verify-plugin-load.mjs` | 30 | **30 通过，0 失败** |

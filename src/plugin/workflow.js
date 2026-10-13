@@ -1199,20 +1199,31 @@ export function workflowSectionText() {
  * The tool description.
  *
  * This is now the ONLY discovery path, because the prompt section is a frozen constant and cannot carry
- * guidance. It is in the tool catalog, which sits inside the cached prefix and is sent once — so clarity
- * here is cheaper than brevity, but it still has to be short enough not to bloat the prefix.
+ * guidance. Two consequences it has to honour, and the first version of this text failed the first one:
+ *
+ *   1. it must NAME the tool. The earlier text said "Four calls:" and then listed `start` / `plan` /
+ *      `choose` / `run`, which reads as four tool names — a model following it would call tools that do not
+ *      exist. Caught by verifying the packed tarball rather than the checkout.
+ *   2. every call in the shortest path is spelled as `workflow_plan(action: "...")`, so the model never has
+ *      to guess how the pieces fit together. The per-phase guidance is deliberately not here: it travels in
+ *      each result's `next` field, which is appended history and therefore costs the cache nothing.
+ *
+ * It lives in the tool catalog, inside the cached prefix, sent once and unchanged for the session.
  */
 const TOOL_DESCRIPTION = [
-  'Intent-first workflow: agree on what is wanted and how it will be done, before doing it. Use it when a',
-  'request is more than one obvious step, or when you would have to guess the user\'s intent, their',
-  'preferred approach, or where the work belongs. Four calls:',
-  '"start" (the prompt verbatim, plus 1-3 questions about intent OR the assumptions you are making) ->',
-  '"plan" (approach and process, at least two alternatives with pros and cons, your recommendation) ->',
-  '"choose" (ASKS THE USER; you cannot answer it for them) ->',
-  '"run" (execute the chosen option; add "outcome" to close the workflow in the same call).',
-  'Then "note" for a decision, "checkpoint" at a boundary. Long documents go to files and only a line',
-  'returns, so the conversation stays small; results list the files. A step out of order is refused, and the',
-  'refusal names the phase to record first. Every result carries "next", the one call to make. Also "status", "reset".',
+  'workflow_plan: agree on what is wanted and how it will be done, before doing it. Use it when a request is',
+  'more than one obvious step, or when you would have to guess the user\'s intent, their preferred approach,',
+  'or where the work belongs. Call it four times:',
+  '1. workflow_plan(action: "start") — the user\'s prompt verbatim, plus 1-3 questions about intent OR the',
+  'assumptions you are making.',
+  '2. workflow_plan(action: "plan") — the approach and process, at least two alternatives with pros and cons,',
+  'and which one you recommend.',
+  '3. workflow_plan(action: "choose") — ASKS THE USER; their answer is recorded and you cannot answer it for them.',
+  '4. workflow_plan(action: "run") — execute the chosen option; add "outcome" to close the workflow in this call.',
+  'Each result carries "next", the one call to make. Then workflow_plan(action: "note") for a decision, or',
+  '"checkpoint" at a boundary. Long documents go to files and only a line comes back, so the conversation stays',
+  'small; results list the files. A step out of order is refused, and the refusal names the phase to record',
+  'first. Also available: "status", "reset".',
 ].join(' ')
 
 const QUESTION_SCHEMA = {
