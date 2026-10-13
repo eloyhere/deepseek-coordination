@@ -3159,7 +3159,16 @@ function Invoke-PermissionList {
   return [ordered]@{
     path = $state.path
     exists = $state.exists
-    empty = $(if ($null -ne $state.empty) { $state.empty } else { $false })
+    # Read through PSObject.Properties, NOT as $state.empty.
+    #
+    # Under Set-StrictMode -Version Latest, READING a property that does not exist THROWS, so
+    #     if ($null -ne $state.empty) { ... }        # the test IS the throwing read
+    # is not a guard. A caller whose permission.json does not exist got
+    #     E_INTERNAL  The property 'empty' cannot be found on this object
+    # because one path returns a state without an `empty` key. PSObject.Properties is a dictionary
+    # lookup, so a missing name is simply absent and does not throw. Same fix as the 7.6 module, and
+    # the same idiom already used below for $state.document.PSObject.Properties['rules'].
+    empty = $(if ($null -ne $state.PSObject.Properties['empty']) { [bool]$state.empty } else { $false })
     trusted = $state.trusted
     count = $items.Count
     rules = $items.ToArray()

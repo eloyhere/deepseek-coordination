@@ -572,7 +572,7 @@ by a **later** case.
 
 That defect is **fixed**: the parser case in `tests/golden.ps1` now creates its own fixture
 (`$fixtureDir = Join-Path $sandbox 'parser\verify'`, then `New-Item` and `Set-Content`) and asserts
-against it. The current measurement is **49 passed, 0 failed**.
+against it. The current measurement is **50 passed, 0 failed**.
 
 ### Two real POSIX defects found by `tests/smoke-desktop-sh.sh`
 
@@ -638,6 +638,13 @@ stand-in tools exposed both:
   no acceptance step depends on it. (The plugin's *installation* path does: the package manager
   resolves the repository with `git ls-remote`, so a machine where the harness cannot find `git` on
   `PATH` cannot install the bundle.)
+* **PowerShell 7.6 is exercised, but not across the whole surface.** The 7.6 artefact definitely runs:
+  driving the plugin's real `resolveInvocation` path with `DSH_OS_POWERSHELL_EDITION=7.6` selects
+  `bin/dsh-os7.ps1` and the runtime that answers is **PowerShell 7.6.6**, while the default stays on
+  5.1.19041.3031 — that is what `tools/verify-editions.mjs` asserts and what the 14 cases measured here
+  confirm. What has *not* been done is a run of every verb against `dsh-os7.ps1`; its fidelity as a port
+  rests on the identical 82-verb dispatch sets, a per-module function-name comparison and the window
+  group's golden cases. That is a real gap in the evidence, not a claim of full parity.
 
 ### What is not proven
 
@@ -667,7 +674,7 @@ npm run test:all        # runs everything below, in order
 |---|---|---|---|
 | Table conformance | `powershell -File tests/conformance.ps1` | 5 | **5 passed, 0 failed** |
 | Encoding contracts | `powershell -File tests/encoding.ps1` | 32 build modules | **all contracts hold** |
-| Windows golden | `powershell -File tests/golden.ps1` | 49 | **49 passed, 0 failed** |
+| Windows golden | `powershell -File tests/golden.ps1` | 50 | **50 passed, 0 failed** |
 | POSIX golden | `bash tests/golden-sh.sh` | 116 | **116 passed, 0 failed** |
 | POSIX desktop injection | `bash tests/smoke-desktop-sh.sh` | 52 | **52 passed, 0 failed** |
 | Plugin | `node tests/plugin.test.mjs` | 13 | **13 passed, 0 failed** |

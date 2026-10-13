@@ -74,7 +74,22 @@ function Invoke-PermissionList {
   return [ordered]@{
     path = $state.path
     exists = $state.exists
-    empty = ($state.empty ?? $false)
+    # Read through PSObject.Properties, NOT as $state.empty.
+    #
+    # Under Set-StrictMode -Version Latest, READING a property that does not exist THROWS. So the obvious
+    # guard is not a guard at all:
+    #     empty = ($state.empty ?? $false)          # throws before ?? can help
+    # and neither is testing it first, because the test itself is the throwing read. That is exactly how
+    # this shipped broken: `permission list` returned
+    #     E_INTERNAL  The property 'empty' cannot be found on this object
+    # for every caller whose permission.json did not exist - which is every fresh install, because the
+    # package ships no permission.json. It worked in the repository, where the file is present, so no
+    # test here could see it.
+    #
+    # PSObject.Properties is a dictionary lookup rather than a property read, so a missing name is simply
+    # absent and returns $false without throwing. This is the same idiom already used above for
+    # `$doc.PSObject.Properties['updatedBy']`.
+    empty = $(if ($null -ne $state.PSObject.Properties['empty']) { [bool]$state.empty } else { $false })
     trusted = $state.trusted
     count = $items.Count
     rules = $items.ToArray()

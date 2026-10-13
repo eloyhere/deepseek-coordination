@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "type": "module",
   "description": "Cross-platform atomic OS-interaction surface for the DeepSeek Harness: one argument-stable verb set implemented natively on each OS, with byte-exact charset, BOM and line-ending handling.",

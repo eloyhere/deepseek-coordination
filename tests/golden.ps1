@@ -262,6 +262,43 @@ Assert-Case 'permission/read-only-verbs-never-require-allow' {
   }
 }
 
+# The missing-file branch of the permission state, run from a directory that has NO permission.json.
+#
+# This is the state every INSTALLED copy is in, because the package ships no permission.json - and that
+# is exactly where `permission list` was broken: it read `$state.empty` directly, and under
+# Set-StrictMode -Version Latest reading a property that does not exist THROWS, so a guard written as
+# `if ($null -ne $state.empty)` was itself the throwing read. Callers got
+#   E_INTERNAL  The property 'empty' cannot be found on this object
+# while every test in this repository passed, because tests run from the repository, where the file is
+# present. The case is therefore driven from a COPY of the script in a tree that has no permission.json.
+Assert-Case 'permission/missing-file-is-not-an-internal-error' {
+  $iso = Join-Path $sandbox 'no-permjson'
+  New-Item -ItemType Directory -Path (Join-Path $iso 'src\host\bin') -Force | Out-Null
+  New-Item -ItemType Directory -Path (Join-Path $iso 'src\host\spec') -Force | Out-Null
+  Copy-Item -LiteralPath $ps1 -Destination (Join-Path $iso 'src\host\bin\dsh-os.ps1') -Force
+  Copy-Item -LiteralPath (Join-Path $rootDir 'src\host\spec\verbs.tsv') -Destination (Join-Path $iso 'src\host\spec') -Force
+  # Find-RepoDir looks for a directory holding package.json and src/host, so the marker is needed for
+  # the copy to be treated as a root at all.
+  Copy-Item -LiteralPath (Join-Path $rootDir 'package.json') -Destination $iso -Force
+  $isoScript = Join-Path $iso 'src\host\bin\dsh-os.ps1'
+  Assert-True (-not (Test-Path -LiteralPath (Join-Path $iso 'permission.json'))) 'the copy must have no permission.json'
+
+  $stdout = & $pwshExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $isoScript 'permission' 'list' 2>$null
+  $text = ($stdout -join "`n")
+  $parsed = $text | ConvertFrom-Json
+  Assert-Equal $true $parsed.ok ("permission list must succeed without the file, got: " + $text)
+  Assert-Equal $false $parsed.result.exists 'and must report that the file is absent'
+  Assert-Equal $false $parsed.result.empty 'and must report it as not-empty rather than throwing'
+
+  # The same three read-only views must all survive the absent file.
+  foreach ($argv in @(@('permission', 'audit'), @('permission', 'query', 'file.delete', 'x'))) {
+    $o = & $pwshExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $isoScript @argv 2>$null
+    $t = ($o -join "`n")
+    $j = $t | ConvertFrom-Json
+    Assert-Equal $true $j.ok (($argv -join ' ') + " must succeed without permission.json, got: " + $t)
+  }
+}
+
 # -- 13. typed errors for guards -----------------------------------------
 Assert-Case 'errors/typed-codes' {
   $dir = Join-Path $sandbox 'errors'

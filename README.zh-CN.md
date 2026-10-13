@@ -410,7 +410,7 @@ bundle 解析校验把包以 junction 链接进一个一次性的 profile 沙箱
 
 此处曾记录：在干净检出上实测 `passed: 47 failed: 1`，失败用例是 `parser/one-two-three-token-verbs`，因为它断言 `file length` 作用于一个由**更晚**的用例才创建的夹具目录。
 
-该缺陷**已修复**：`tests/golden.ps1` 的解析器用例现在自己创建夹具（`$fixtureDir = Join-Path $sandbox 'parser\verify'`，随后 `New-Item` 与 `Set-Content`），再对其断言。当前实测为 **49 通过，0 失败**。
+该缺陷**已修复**：`tests/golden.ps1` 的解析器用例现在自己创建夹具（`$fixtureDir = Join-Path $sandbox 'parser\verify'`，随后 `New-Item` 与 `Set-Content`），再对其断言。当前实测为 **50 通过，0 失败**。
 
 ### `tests/smoke-desktop-sh.sh` 查出的两个 POSIX 真实缺陷
 
@@ -457,7 +457,7 @@ npm run test:all        # 按顺序跑下面全部
 |---|---|---|---|
 | 两表一致性 | `powershell -File tests/conformance.ps1` | 5 | **5 通过，0 失败** |
 | 编码契约 | `powershell -File tests/encoding.ps1` | 32 个构建模块 | **全部契约成立** |
-| Windows 黄金 | `powershell -File tests/golden.ps1` | 49 | **49 通过，0 失败** |
+| Windows 黄金 | `powershell -File tests/golden.ps1` | 50 | **50 通过，0 失败** |
 | POSIX 黄金 | `bash tests/golden-sh.sh` | 116 | **116 通过，0 失败** |
 | POSIX 桌面注入 | `bash tests/smoke-desktop-sh.sh` | 52 | **52 通过，0 失败** |
 | 插件 | `node tests/plugin.test.mjs` | 13 | **13 通过，0 失败** |
