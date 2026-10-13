@@ -186,9 +186,9 @@ try {
   bad(`apply() threw: ${e.message}`)
 }
 
-const wfTool = wfTools.find((t) => t.name === 'workflow')
+const wfTool = wfTools.find((t) => t.name === 'workflow_plan')
 if (!wfTool) {
-  bad('the workflow tool was not registered')
+  bad('the workflow_plan tool was not registered')
 } else {
   ok('tool name is workflow')
   if (wfTool.parameters?.type === 'object') ok('parameters is a JSON Schema with type "object"')

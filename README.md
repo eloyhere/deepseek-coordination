@@ -71,7 +71,7 @@ deepseek-coordination/
 ├─ src/plugin/invoke.js            shared invocation layer: artefact/edition resolution, spawn, envelope parsing
 ├─ src/plugin/settings.js          settings service + the panel's two HTTP routes (`/api/dsh-os/*`)
 ├─ src/plugin/takeover.js          `tools/execute` interception: answers the built-in read/write/edit/pwsh through dsh-os
-├─ src/plugin/workflow.js          intent-first workflow: the `workflow` tool, its phase gates and its prompt section
+├─ src/plugin/workflow.js          intent-first workflow: the `workflow_plan` tool, its phase gates and its prompt section
 ├─ client.js                       browser half: the `dsh.client` artifact that renders the settings panel
 ├─ src/permission/index.js         consent delegate: the only writer of permission.json, registers five `os_permission_*` tools
 ├─ tools/build.ps1                 assembles the three generated scripts; `-Check` fails on drift
@@ -177,7 +177,7 @@ registered` and aborts the whole entry. That is why the subpath exports exist.
 |---|---|
 | `dsh_os` | Run one verb of the surface and return its JSON envelope verbatim |
 | `os_permission_*` | Read, grant, revoke and audit durable authorization decisions |
-| `workflow` | Run one phase of the intent-first workflow (see [The workflow](#the-workflow)) |
+| `workflow_plan` | Run one phase of the intent-first workflow (see [The workflow](#the-workflow)) |
 
 One tool rather than one per verb, for three reasons: the verb table is the contract and lives in
 `src/host/spec/verbs.tsv`, so no schema needs regenerating when a verb is added; an agent discovers the
@@ -262,7 +262,7 @@ Every other row in this package makes an OS call **correct**. This one makes a *
 is executed. The failure mode it removes is a request that was never a specification: the model starts
 editing files, and the divergence is discovered at review — after the tokens have been spent.
 
-`dsh-os-workflow` registers one tool, `workflow`, and one system-prompt section.
+`dsh-os-workflow` registers one tool, `workflow_plan`, and one system-prompt section.
 
 ```
 intake -> plan -> choose -> run -> done
@@ -277,6 +277,15 @@ intake -> plan -> choose -> run -> done
 | — | `note` | a remark or a decision made during execution |
 | — | `checkpoint` | folds the record into one file and reports a summary |
 | — | `status`, `reset` | read the state; discard it and start again |
+
+> [!IMPORTANT]
+> **The tool is named `workflow_plan`, not `workflow`, and the reason is a real collision.** A host
+> composition already exposes a built-in `workflow` tool — the JavaScript multi-agent orchestrator from
+> `@deepseek-ai/dsh-tool-workflow`. Two tools sharing one name in one scope collide: the second
+> registration aborts, or both resolve and the model is offered two unrelated tools under one name. Since
+> this row's tool lives in the host plane while `workflow` is mounted per agent preset, no test in this
+> repository would have caught it; it was caught by reading the live tool catalog. `_plan` also says what
+> this tool is: the planning half of a workflow.
 
 **The gates are real.** A phase whose entry has not been recorded is refused, and the refusal names the
 phase that must run first. `choose` cannot be answered by the model: the question goes to the user through
@@ -348,7 +357,7 @@ fix is structural, not cosmetic:
 
 * the section is a constant, so this row's **cache effect is `prefix-stable`**: zero prompt changes per
   workflow, asserted by `tests/workflow.test.mjs` against the registered text at every phase;
-* the phase and the **one next call** travel in the `workflow` tool's own result instead — appended history,
+* the phase and the **one next call** travel in the `workflow_plan` tool's own result instead — appended history,
   which the measurement above prices at 98.7%;
 * a step taken out of order is refused, and the refusal names the phase to record first, so the model can
   recover from a stale plan without the prompt having told it anything;

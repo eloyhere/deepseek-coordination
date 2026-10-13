@@ -139,7 +139,7 @@ export function sessionKeyOfExecution(exec) {
   const id = agent?.session?.header?.id ?? agent?.id
   if (id === undefined || id === null || String(id).trim() === '') {
     throw new Error(
-      'the workflow tool needs an owning agent session: it keys its state, its artifacts and its prompt ' +
+      'the workflow_plan tool needs an owning agent session: it keys its state, its artifacts and its prompt ' +
       'section by session, and a call with no session would share one plan with every other caller',
     )
   }
@@ -372,7 +372,7 @@ export function assertPhase(state, required) {
     throw new Error(
       required === 'intake'
         ? 'this session has no workflow yet'
-        : `no workflow is active for this session: call workflow with action "start" and the user's own prompt before "${required}"`,
+        : `no workflow is active for this session: call workflow_plan with action "start" and the user's own prompt before "${required}"`,
     )
   }
   const current = PHASES.indexOf(state.phase)
@@ -427,13 +427,13 @@ function envelope(parts) {
 function nextInstruction(state) {
   switch (state?.phase) {
     case 'intake':
-      return 'call workflow with action "start": the user\'s prompt verbatim, plus 1-3 questions about intent or the assumptions you are making'
+      return 'call workflow_plan with action "start": the user\'s prompt verbatim, plus 1-3 questions about intent or the assumptions you are making'
     case 'plan':
-      return 'call workflow with action "plan": the approach and process, at least two alternatives with pros and cons, and which one you recommend'
+      return 'call workflow_plan with action "plan": the approach and process, at least two alternatives with pros and cons, and which one you recommend'
     case 'choose':
-      return 'call workflow with action "choose": the user picks, and their answer is recorded — do not decide for them'
+      return 'call workflow_plan with action "choose": the user picks, and their answer is recorded — do not decide for them'
     case 'run':
-      return 'call workflow with action "run" with the outcome to close it, or "note" for a decision worth keeping'
+      return 'call workflow_plan with action "run" with the outcome to close it, or "note" for a decision worth keeping'
     default:
       return null
   }
@@ -1105,7 +1105,7 @@ export function makeHandlers({ root, ask, compact, logger = () => {} }) {
     return envelope({
       phase: 'none',
       summary: `workflow discarded (was at "${state.phase}")`,
-      next: 'call workflow with action "start" and the user\'s own prompt to begin again',
+      next: 'call workflow_plan with action "start" and the user\'s own prompt to begin again',
     })
   }
 
@@ -1168,7 +1168,7 @@ export function sectionOrder(prompt) {
  * and the fix was to move the changing fact out of the prompt entirely
  * (https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-09-02-in-history-system-prompt-replacement.md).
  *
- * So the phase is NOT here. The single next call is returned in the `workflow` tool's own result, which is
+ * So the phase is NOT here. The single next call is returned in the `workflow_plan` tool's own result, which is
  * appended history and therefore free — and a call made out of order is refused with the phase named. The
  * prompt only has to say that the tool exists and when to reach for it.
  *
@@ -1180,7 +1180,7 @@ export function sectionOrder(prompt) {
 export const SECTION_TEXT = [
   '## Workflow',
   'For a request that is more than one obvious step, or whose shape you would have to guess, use the',
-  '`workflow` tool: it records the request, asks the user what they actually want, lays out the alternatives',
+  '`workflow_plan` tool: it records the request, asks the user what they actually want, lays out the alternatives',
   'with their pros and cons, has the user choose, and only then executes. Its own results carry what to do',
   'next, and a step taken out of order is refused with the phase that must run first. For a single obvious',
   'step, skip it.',
@@ -1276,10 +1276,21 @@ export const COST_MODEL = {
   previous: { toolCalls: 8, humanInteractions: 2, promptChangesPerWorkflow: 3 },
 }
 
+/**
+ * The model-facing tool name.
+ *
+ * NOT `workflow`. A host composition already exposes a built-in tool by that name — the JavaScript
+ * multi-agent orchestrator from `@deepseek-ai/dsh-tool-workflow` — and two tools sharing one name within a
+ * scope collide: whoever registers second aborts, or both resolve and the model is offered two unrelated
+ * `workflow` tools. `_plan` also says what this one is: the planning half of a workflow, leaving
+ * `workflow` for the orchestrator.
+ */
+export const TOOL_NAME = 'workflow_plan'
+
 /** Exported so a test can assert the tool contract without a live registry. */
 export function workflowToolDefinition(handlers) {
   return {
-    name: 'workflow',
+    name: TOOL_NAME,
     description: TOOL_DESCRIPTION,
     parameters: {
       type: 'object',
@@ -1409,7 +1420,7 @@ export function apply(ctx, config = {}) {
     ask: async (questions, exec) => {
       const userQuestions = ctx.userQuestions
       if (userQuestions === undefined) {
-        throw new Error('the workflow tool needs the userQuestions service to ask the user, and this deployment has none')
+        throw new Error('the workflow_plan tool needs the userQuestions service to ask the user, and this deployment has none')
       }
       const request = {
         questions,

@@ -58,7 +58,7 @@
         auditLimit: 200
     # The intent-first workflow: start -> clarify -> design -> options -> choose -> execute -> finish.
     # Its own row because it is its own concern: the rows above make an OS call correct, and this one
-    # makes a request decided before it is executed. It registers the `workflow` tool and a system-prompt
+    # makes a request decided before it is executed. It registers the `workflow_plan` tool and a system-prompt
     # section that is empty until a workflow is started, so a profile that never uses it pays nothing.
     - id: dsh-os-workflow
       name: deepseek-coordination/workflow

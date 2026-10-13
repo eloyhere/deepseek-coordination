@@ -87,7 +87,7 @@ async function harness(respond) {
       },
     }
     const handlers = mod.apply(ctx, {})
-    const tool = tools.get('workflow')
+    const tool = tools.get('workflow_plan')
     const env = { home, mod, handlers, tools, sections, asked, ctx, tool, calls: 0 }
 
     env.call = async (args) => {

@@ -156,7 +156,7 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 |---|---|
 | `dsh_os` | 执行动词面上的一个动词，并原样返回其 JSON 信封 |
 | `os_permission_*` | 读取、授予、撤销与审计持久授权决定 |
-| `workflow` | 执行意图优先工作流的一个阶段（见[工作流](#工作流)） |
+| `workflow_plan` | 执行意图优先工作流的一个阶段（见[工作流](#工作流)） |
 
 只注册一个工具而非每个动词一个，理由有三：动词表就是契约且存放在 `src/host/spec/verbs.tsv`，新增动词时无需重新生成 schema；agent 用一次 `verb: "selfcheck"` 调用就能发现整个动词面；信封本身已是稳定的结果形状，不会出现第二份会与脚本漂移的契约。
 
@@ -204,7 +204,7 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 
 本包其余各行让一次**操作系统调用**变正确；这一行让一个**需求**在被执行之前就被决定。它消除的失效模式是：一个从未成为规格的需求——模型直接开始改文件，等到评审时才发现方向偏了，而 token 已经花掉。
 
-`dsh-os-workflow` 注册一个工具 `workflow`，以及一个系统提示词小节。
+`dsh-os-workflow` 注册一个工具 `workflow_plan`，以及一个系统提示词小节。
 
 ```
 intake -> plan -> choose -> run -> done
@@ -219,6 +219,9 @@ intake -> plan -> choose -> run -> done
 | — | `note` | 执行期间记下的一条备注或一个决定 |
 | — | `checkpoint` | 把记录折叠进一个文件，并回传摘要 |
 | — | `status`、`reset` | 读取状态；丢弃并重新开始 |
+
+> [!IMPORTANT]
+> **工具名是 `workflow_plan` 而不是 `workflow`，原因是真实存在的命名冲突。** 宿主组合里已经有一个内置的 `workflow` 工具——来自 `@deepseek-ai/dsh-tool-workflow` 的 JavaScript 多 agent 编排器。同一作用域内两个工具同名会相撞：后注册者中止，或者两者都解析成功、模型在同一名字下拿到两个互不相关的工具。由于本行的工具位于 host 层，而 `workflow` 是按 agent preset 挂载的，本仓库里没有任何测试能发现这一点；它是在读取**实时工具目录**时发现的。`_plan` 同时也说明了这个工具是什么：工作流的规划那一半。
 
 **门是硬的。** 入口尚未记录的阶段会被拒绝，且拒绝信息会点明必须先跑哪个阶段。`choose` 无法由模型自己回答：问题经与 `ask_user_question` 相同的缝交给用户，除此之外没有任何路径能进入 `run`。
 
