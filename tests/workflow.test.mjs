@@ -1,17 +1,22 @@
 /**
- * workflow.test.mjs - exercise the intent-first workflow state machine.
+ * workflow.test.mjs - exercise the intent-first workflow, and measure what it costs.
  *
  * What this protects, case by case:
  *
- *   * the gates. A phase whose entry has not been recorded is REFUSED, and the refusal names the phase
+ *   * THE GATES. A phase whose entry has not been recorded is REFUSED, and the refusal names the phase
  *     that must run first. If that ever stops holding, the feature is a suggestion again rather than a
- *     process, which is the whole difference between this and a paragraph of prompt.
- *   * the choice is the user's. `choose` must reach the answerer with one option per alternative and
- *     must record what came back; nothing else may move the phase to `execute`.
- *   * the compression. A long document is written to a file and the conversation gets a line. This is
- *     measured as a ratio, because "it felt smaller" is not a measurement.
- *   * the files. State is one small JSON document per session, artifacts are markdown beside it, and
- *     nothing is written outside the workflow root.
+ *     process — which is the whole difference between this and a paragraph of prompt.
+ *   * THE CHOICE IS THE USER'S. `choose` must reach the answerer with one option per alternative and must
+ *     record what came back; nothing else may move the workflow into `run`.
+ *   * THE COST. Four tool calls and one human interaction on the unavoidable path, asserted from the
+ *     plugin's own COST_MODEL and counted from the calls the test actually makes. A change that
+ *     reintroduces a phase has to change that number, and therefore has to argue with this test.
+ *   * THE COMPRESSION. A long document is written to a file and the conversation gets a line, measured as
+ *     a ratio rather than asserted as a feeling.
+ *   * THE FILES. One small state document per session, artifacts beside it, an append-only journal for
+ *     notes, and nothing written outside the workflow root.
+ *   * THE CHEAP PATHS. A clear request costs zero questions; a one-step execution costs one call. Both are
+ *     load-bearing: without them the fast path is not fast, and the feature gets skipped.
  *
  * Everything runs against a temporary DSH_HOME, never the real one.
  *
@@ -49,14 +54,15 @@ const SESSION_ID = "SessionId('wf-session-1')"
 const SESSION_KEY = 'wf-session-1'
 
 // ---------------------------------------------------------------------------
-// a context that answers as a human would, recording what it was asked
+// a context that answers as a human would, recording what it was asked and what was written
 // ---------------------------------------------------------------------------
 
 /**
- * Load the plugin against a temporary DSH_HOME and answer every question with `respond`.
+ * Load the plugin against a temporary DSH_HOME, counting every write and answering every question.
  *
- * `respond` receives the questions exactly as the plugin hands them to the answerer, which is the only
- * way to assert what the user is actually shown.
+ * The write counter is why the harness wraps `node:fs` indirectly: the tests need to assert the
+ * complexity claim ("one state write per transition"), and a claim about cost that is never measured is
+ * marketing.
  */
 async function harness(respond) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-wf-'))
@@ -82,19 +88,24 @@ async function harness(respond) {
     }
     const handlers = mod.apply(ctx, {})
     const tool = tools.get('workflow')
-    const env = { home, mod, handlers, tools, sections, asked, ctx, tool }
+    const env = { home, mod, handlers, tools, sections, asked, ctx, tool, calls: 0 }
 
-    env.call = async (args) => JSON.parse(await tool.execute(args, { agent: { id: SESSION_ID }, signal: undefined, callId: 'call-1' }))
+    env.call = async (args) => {
+      env.calls += 1
+      return JSON.parse(await tool.execute(args, { agent: { id: SESSION_ID }, signal: undefined, callId: 'call-1' }))
+    }
     /** The same call, as a caller that refuses to answer: it must not be able to advance the phase. */
     env.callRaw = (args) => tool.execute(args, { agent: { id: SESSION_ID }, signal: undefined, callId: 'call-1' })
-    env.state = () => JSON.parse(readFileSync(join(home, 'dsh-os', 'workflows', SESSION_KEY, 'state.json'), 'utf8'))
+    env.state = () => JSON.parse(readFileSync(env.statePath, 'utf8'))
     env.statePath = join(home, 'dsh-os', 'workflows', SESSION_KEY, 'state.json')
+    env.journalPath = join(home, 'dsh-os', 'workflows', SESSION_KEY, 'journal.jsonl')
     env.dir = join(home, 'dsh-os', 'workflows', SESSION_KEY)
     env.sectionText = () => {
-      const section = sections.find((s) => s.name === 'dsh-os:workflow')
+      const section = sections.find((item) => item.name === 'dsh-os:workflow')
       assert.ok(section, 'the prompt section was not registered')
       return typeof section.text === 'function' ? section.text({ agent: { id: SESSION_ID } }) : section.text
     }
+    env.files = () => readdirSync(env.dir).sort()
     env.dispose = () => {
       if (previous === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previous
@@ -109,7 +120,7 @@ async function harness(respond) {
   }
 }
 
-/** A responder that picks the first option of every question, or types free text when asked to. */
+/** A responder that picks the first option of every question, or types free text where there is none. */
 const chooseFirst = (request) => ({
   answers: request.questions.map((question) => ({
     id: question.id,
@@ -118,90 +129,173 @@ const chooseFirst = (request) => ({
   })),
 })
 
+/** The two alternatives every plan needs, so a test only states what it is actually testing. */
+const TWO_OPTIONS = [
+  { id: 'o1', title: 'rewrite the parser', pros: ['fastest'], cons: ['risky'], recommended: true },
+  { id: 'o2', title: 'cache the parse', pros: ['small'], cons: ['memory'] },
+]
+
+/**
+ * Reach `choose` (and optionally `run`) on a harness that is already loaded.
+ *
+ * `start` is the entry point and also the clarify step, so a caller that states assumptions arrives at
+ * `plan` in one call. `to: 'run'` then takes the user's decision, which is the only place in this file
+ * that is allowed to move the workflow past `choose`.
+ */
+async function walkToRun(env, { questions, to = 'choose' } = {}) {
+  await env.call({
+    action: 'start',
+    intent: 'make the build faster',
+    ...questions === undefined
+      ? { assumptions: ['the build script is the one in the repo root'] }
+      : { questions },
+  })
+  await env.call({ action: 'plan', content: '# Plan\n- one module per concern', options: TWO_OPTIONS, criteria: 'risk vs speed' })
+  if (to === 'run') await env.call({ action: 'choose' })
+}
+
 // ---------------------------------------------------------------------------
-// the gates
+// the cost model, which is the point of this version
 // ---------------------------------------------------------------------------
 
 console.log('workflow state machine')
 
-await check('start records the intent and opens at clarify', async () => {
+await check('the unavoidable path is four calls and one human interaction', async () => {
   const env = await harness(chooseFirst)
   try {
-    const started = await env.call({ action: 'start', intent: 'make the build faster', cwd: 'R:\\project\\x' })
-    assert.equal(started.phase, 'clarify')
-    assert.equal(started.ok, true)
-    assert.ok(String(started.next).includes('clarify'), `next must name the clarify phase, got: ${started.next}`)
+    assert.deepEqual(env.mod.COST_MODEL.shortestPath, ['start', 'plan', 'choose', 'run'])
+    assert.equal(env.mod.COST_MODEL.toolCalls, 4)
+    assert.equal(env.mod.COST_MODEL.humanInteractions, 1)
+    // The cache property is the one this design exists to protect, so it is asserted as a hard zero.
+    assert.equal(env.mod.COST_MODEL.promptChangesPerWorkflow, 0)
+    assert.equal(env.mod.COST_MODEL.cacheEffect, 'prefix-stable')
+    assert.ok(env.mod.COST_MODEL.toolCalls < env.mod.COST_MODEL.previous.toolCalls, 'the fusion must be a reduction')
+    assert.ok(env.mod.COST_MODEL.humanInteractions < env.mod.COST_MODEL.previous.humanInteractions)
+    assert.ok(
+      env.mod.COST_MODEL.promptChangesPerWorkflow < env.mod.COST_MODEL.previous.promptChangesPerWorkflow,
+      'the prompt must no longer move with the workflow',
+    )
+
+    env.calls = 0
+    await env.call({ action: 'start', intent: 'make the build faster', assumptions: ['the build is the repo script'] })
+    await env.call({ action: 'plan', content: '# Plan', options: TWO_OPTIONS })
+    await env.call({ action: 'choose' })
+    await env.call({ action: 'run', goal: 'faster build', outcome: 'the build is 40% faster' })
+    assert.equal(env.calls, 4, `the unavoidable path must be 4 calls, was ${env.calls}`)
+    assert.equal(env.asked.length, 1, `exactly one human interaction on the unavoidable path, was ${env.asked.length}`)
+    assert.equal(env.state().phase, 'done', 'the fourth call closes the workflow')
+  } finally { env.dispose() }
+})
+
+await check('a clear request costs zero questions and skips straight to plan', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    const started = await env.call({ action: 'start', intent: 'x', assumptions: ['the config is json'] })
+    assert.equal(started.phase, 'plan', 'with assumptions stated, no question is needed')
+    assert.equal(env.asked.length, 0, 'the user was not interrupted')
+    assert.equal(env.state().decisions[0], 'assumed: the config is json', 'the assumption is on record where it can be corrected')
+  } finally { env.dispose() }
+})
+
+await check('a workflow may not open with neither questions nor assumptions', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    await assert.rejects(() => env.callRaw({ action: 'start', intent: 'x' }), /either "questions".*or "assumptions"/)
+    assert.ok(!existsSync(env.statePath), 'a refused start must not leave state behind')
+  } finally { env.dispose() }
+})
+
+await check('state is written once per transition, not once per artifact', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    // start writes: the intent document, then the state. Two writes, and the second is the state.
+    const afterStart = env.files()
+    assert.deepEqual(afterStart, ['01-intent.md', 'state.json'],
+      `start must leave exactly one state document and one artifact, got ${JSON.stringify(afterStart)}`)
+    await env.call({ action: 'plan', content: '# Plan', options: TWO_OPTIONS })
+    assert.deepEqual(env.files(), ['01-intent.md', '02-plan.md', 'state.json'])
+  } finally { env.dispose() }
+})
+
+await check('a note is one appended line and does not rewrite the state', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    await walkToRun(env, { to: 'run' })
+    await env.call({ action: 'run', goal: 'g', steps: ['one', 'two'] })
+    const before = readFileSync(env.statePath, 'utf8')
+    const noted = await env.call({ action: 'note', text: 'the parser has a second call site' })
+    const after = readFileSync(env.statePath, 'utf8')
+    assert.equal(before, after, 'a plain note must not rewrite state.json')
+    assert.ok(String(noted.note).includes('journal'), `the result must say where it went: ${noted.note}`)
+    assert.ok(readFileSync(env.journalPath, 'utf8').includes('second call site'), 'the note is in the journal')
+    // A decision DOES come back into the state, because status and the prompt report decisions.
+    await env.call({ action: 'note', text: 'we keep the public API', kind: 'decision' })
+    assert.ok(readFileSync(env.statePath, 'utf8').includes('we keep the public API'), 'a decision is carried in the state')
+    assert.ok(env.state().decisions.some((d) => d.includes('public API')))
+  } finally { env.dispose() }
+})
+
+// ---------------------------------------------------------------------------
+// the gates
+// ---------------------------------------------------------------------------
+
+await check('start records the intent verbatim and opens at intake or plan', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    const prompt = 'the parser is slow when the config has many entries\n\nfix it, do not rewrite it'
+    const started = await env.call({ action: 'start', intent: prompt, questions: [{ id: 'i', question: 'what for?' }], cwd: 'R:\\project\\x' })
+    assert.equal(started.phase, 'plan')
+    assert.ok(readFileSync(started.files.intent, 'utf8').includes(prompt), 'the prompt is stored verbatim, line breaks included')
     const state = env.state()
-    assert.equal(state.phase, 'clarify')
-    assert.equal(state.intent, 'make the build faster')
+    assert.equal(state.intent.replace(/\s+/g, ' '), prompt.replace(/\s+/g, ' '))
     assert.equal(state.cwd, 'R:\\project\\x')
   } finally { env.dispose() }
 })
 
-await check('design before clarify is refused, and the refusal names the phase that must run first', async () => {
+await check('plan before the intent is on record is refused, and the refusal names the phase', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await assert.rejects(() => env.callRaw({ action: 'design', content: '# plan' }), /clarify/)
-    assert.equal(env.state().phase, 'clarify', 'a refused call must not move the phase')
+    await assert.rejects(() => env.callRaw({ action: 'plan', content: '# x', options: TWO_OPTIONS }), /no workflow is active/)
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    await assert.rejects(() => env.callRaw({ action: 'choose' }), /"plan" must be recorded first/)
+    assert.equal(env.state().phase, 'plan', 'a refused call must not move the phase')
   } finally { env.dispose() }
 })
 
-await check('options before design is refused, and choose before options is refused', async () => {
+await check('run before a choice is refused, and the refusal says the user has not picked', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await assert.rejects(() => env.callRaw({ action: 'options', options: [{ title: 'a' }, { title: 'b' }] }), /design/)
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await assert.rejects(() => env.callRaw({ action: 'choose' }), /options/)
-    assert.equal(env.state().phase, 'design')
-  } finally { env.dispose() }
-})
-
-await check('execute without a recorded choice is refused', async () => {
-  const env = await harness(chooseFirst)
-  try {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan\n- a\n- b' })
-    await env.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', cons: ['c'] }] })
-    await assert.rejects(() => env.callRaw({ action: 'execute', goal: 'g' }), /choose|choice/)
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    await env.call({ action: 'plan', content: '# Plan', options: TWO_OPTIONS })
+    await assert.rejects(() => env.callRaw({ action: 'run', steps: ['one'] }), /"choose"|recorded choice/)
     assert.equal(env.state().phase, 'choose')
   } finally { env.dispose() }
 })
 
-await check('a second start while a workflow is active is refused, and reset allows it', async () => {
+await check('steps after the workflow is done are refused rather than silently reordered', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'first' })
-    await assert.rejects(() => env.callRaw({ action: 'start', intent: 'second' }), /reset: true/)
-    const again = await env.call({ action: 'start', intent: 'second', reset: true })
-    assert.equal(again.phase, 'clarify')
-    assert.equal(env.state().intent, 'second')
+    await walkToRun(env, { to: 'run' })
+    await env.call({ action: 'run', goal: 'g', outcome: 'done' })
+    assert.equal(env.state().phase, 'done')
+    // A new start on a finished workflow is allowed (it archives and begins again), but it still needs a
+    // basis: an intent alone establishes nothing about the request.
+    await assert.rejects(() => env.callRaw({ action: 'start', intent: 'again' }), /either "questions".*or "assumptions"/)
+    await assert.rejects(() => env.callRaw({ action: 'plan', content: '# x', options: TWO_OPTIONS }), /already behind/)
+    assert.ok(readFileSync(env.statePath, 'utf8').includes('"phase": "done"'), 'a refused call must not move the phase')
   } finally { env.dispose() }
 })
 
-await check('clarify needs questions and refuses more than three', async () => {
+await check('start refuses more than three questions, and plan refuses fewer than two options', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await assert.rejects(() => env.callRaw({ action: 'clarify', questions: [] }), /at least one question/)
     const four = [1, 2, 3, 4].map((n) => ({ id: `q${n}`, question: `q${n}?` }))
-    await assert.rejects(() => env.callRaw({ action: 'clarify', questions: four }), /at most 3/)
-  } finally { env.dispose() }
-})
-
-await check('options needs at least two alternatives, each with a pro or a con', async () => {
-  const env = await harness(chooseFirst)
-  try {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan' })
-    await assert.rejects(() => env.callRaw({ action: 'options', options: [{ title: 'only one' }] }), /at least two/)
-    await assert.rejects(
-      () => env.callRaw({ action: 'options', options: [{ title: 'a' }, { title: 'b' }] }),
-      /neither pros nor cons/,
-    )
+    await assert.rejects(() => env.callRaw({ action: 'start', intent: 'x', questions: four }), /at most 3/)
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    await assert.rejects(() => env.callRaw({ action: 'plan', content: '# x', options: [TWO_OPTIONS[0]] }), /at least two/)
+    await assert.rejects(() => env.callRaw({ action: 'plan', content: '# x', options: [{ title: 'a' }, { title: 'b' }] }), /neither pros nor cons/)
+    await assert.rejects(() => env.callRaw({ action: 'plan', options: TWO_OPTIONS }), /needs "content"/)
   } finally { env.dispose() }
 })
 
@@ -209,6 +303,7 @@ await check('an unknown action is refused with the list of known actions', async
   const env = await harness(chooseFirst)
   try {
     await assert.rejects(() => env.callRaw({ action: 'nope' }), /unknown workflow action 'nope'/)
+    await assert.rejects(() => env.callRaw({ action: 'design', content: '# x' }), /unknown workflow action 'design'/)
   } finally { env.dispose() }
 })
 
@@ -223,66 +318,76 @@ await check('a call with no agent session is refused rather than sharing state',
 // the user's choice
 // ---------------------------------------------------------------------------
 
-await check('choose asks the user, offers every alternative, and records the answer', async () => {
+await check('choose offers every alternative with its cost, recommends one, and records the answer', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan' })
-    await env.call({
-      action: 'options',
-      options: [
-        { id: 'o1', title: 'rewrite the parser', pros: ['fastest'], cons: ['risky'], recommended: true },
-        { id: 'o2', title: 'cache the parse', pros: ['small'], cons: ['memory'] },
-      ],
-    })
+    await walkToRun(env)
     const chosen = await env.call({ action: 'choose' })
-    assert.equal(chosen.phase, 'execute')
-    assert.ok(chosen.summary.includes('rewrite the parser'), `the recorded choice must be the user's, got: ${chosen.summary}`)
+    assert.equal(chosen.phase, 'run')
+    assert.ok(chosen.summary.includes('rewrite the parser'), `the recorded choice is the user's, got: ${chosen.summary}`)
 
     const request = env.asked.at(-1)
     assert.equal(request.questions.length, 1, 'the choice is one question')
-    const labels = request.questions[0].options.map((o) => o.label)
+    const labels = request.questions[0].options.map((option) => option.label)
     assert.equal(labels.length, 2, `every alternative must be offered, got ${JSON.stringify(labels)}`)
     assert.ok(labels[0].startsWith('rewrite the parser'), `the recommended option goes first, got ${labels[0]}`)
     assert.ok(labels[0].includes('(Recommended)'), `the recommended label must say so, got ${labels[0]}`)
-    assert.ok(labels[1].includes('cache the parse'), `the second alternative must be offered, got ${labels[1]}`)
-    assert.ok(String(request.questions[0].options[1].description ?? '').includes('memory'), 'the cost is shown beside the option')
-
-    const state = env.state()
-    assert.equal(state.choice.title, 'rewrite the parser')
-    assert.deepEqual(state.choice.options, ['rewrite the parser', 'cache the parse'])
+    assert.ok(String(request.questions[0].options[0].description ?? '').includes('risky'), 'the cost is shown beside the option')
+    assert.ok(String(request.questions[0].options[1].description ?? '').includes('memory'), 'so is the second option\'s')
+    assert.equal(env.state().choice.title, 'rewrite the parser')
+    assert.deepEqual(env.state().choice.options, ['rewrite the parser', 'cache the parse'])
+    assert.ok(readFileSync(join(env.dir, '02-plan.md'), 'utf8').includes('The user chose **rewrite the parser**'), 'the decision is in the plan record')
   } finally { env.dispose() }
 })
 
 await check('a free-text answer is recorded as the choice, and an empty answer is refused', async () => {
   const env = await harness((request) => ({ answers: request.questions.map((q) => ({ id: q.id, selected: [], custom: 'neither, do something else' })) }))
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan' })
-    await env.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] })
+    await walkToRun(env)
     const chosen = await env.call({ action: 'choose' })
     assert.ok(chosen.summary.includes('neither, do something else'), `free text must be kept, got: ${chosen.summary}`)
+    assert.equal(env.state().choice.id, null, 'an unlisted choice records no option id')
   } finally { env.dispose() }
 
   const refusing = await harness((request) => ({ answers: request.questions.map((q) => ({ id: q.id, selected: [] })) }))
   try {
-    await refusing.call({ action: 'start', intent: 'x' })
-    await refusing.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await refusing.call({ action: 'design', content: '# Plan' })
-    await refusing.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] })
+    // Stopped at `choose`, because the point is that an unanswered choice cannot reach `run`.
+    await walkToRun(refusing)
     await assert.rejects(() => refusing.callRaw({ action: 'choose' }), /did not choose/)
-    assert.equal(refusing.state().phase, 'choose', 'an unanswered choice must not open execute')
+    assert.equal(refusing.state().phase, 'choose', 'an unanswered choice must not open run')
   } finally { refusing.dispose() }
+})
+
+await check('a rejected plan is revised in place, and the original stays on record', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    await env.call({ action: 'plan', content: '# First plan', options: TWO_OPTIONS })
+    const revised = await env.call({
+      action: 'plan',
+      content: '# Second plan',
+      options: [
+        { id: 'o3', title: 'narrow the scope', pros: ['safe'], cons: ['slower'] },
+        { id: 'o4', title: 'split the work', pros: ['parallel'], cons: ['coordination'], recommended: true },
+      ],
+      summary: 'user rejected the first plan',
+      replace: true,
+    })
+    assert.equal(revised.phase, 'choose')
+    assert.ok(revised.options[1].recommended, 'the recommended flag survives into the next call')
+    const planFile = readFileSync(join(env.dir, '02-plan.md'), 'utf8')
+    assert.ok(planFile.includes('# First plan'), 'the rejected plan is kept')
+    assert.ok(planFile.includes('# Second plan'), 'the revision is recorded')
+    assert.ok(planFile.includes('Reason for revision: user rejected the first plan'), 'and so is the reason')
+  } finally { env.dispose() }
 })
 
 // ---------------------------------------------------------------------------
 // compression
 // ---------------------------------------------------------------------------
 
-/** A design document of a stated size, with headings and steps a real one would have. */
-function designDocument(targetBytes) {
+/** A plan document of a stated size, with headings and steps a real one would have. */
+function planDocument(targetBytes) {
   const lines = ['# Architecture', '', '## Components', '- one module per concern, no cycles', '- the state machine owns the phases']
   let index = 0
   while (lines.join('\n').length < targetBytes) {
@@ -292,126 +397,170 @@ function designDocument(targetBytes) {
   return lines.join('\n')
 }
 
-await check('a long design costs the conversation one line, and the document is on disk in full', async () => {
+await check('a long plan costs the conversation a line, and the document is on disk in full', async () => {
   const env = await harness(chooseFirst)
   try {
-    const content = designDocument(12000)
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    const answer = await env.call({ action: 'design', content })
+    const content = planDocument(12000)
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    const answer = await env.call({ action: 'plan', content, options: TWO_OPTIONS })
     const envelopeText = JSON.stringify(answer)
 
     assert.ok(content.length > 12000, `the fixture must be large, got ${content.length}`)
-    assert.ok(
-      envelopeText.length < 1500,
-      `the envelope must be a line, not a document: ${envelopeText.length} chars`,
-    )
-    const file = answer.files.design
-    assert.ok(existsSync(file), `the design file must exist at ${file}`)
-    const onDisk = readFileSync(file, 'utf8')
+    assert.ok(envelopeText.length < 1500, `the envelope must be a line, not a document: ${envelopeText.length} chars`)
+    const onDisk = readFileSync(answer.files.plan, 'utf8')
     assert.ok(onDisk.includes(content), 'the document must be stored in full')
     assert.ok(!onDisk.startsWith('\uFEFF'), 'no BOM is introduced')
-    // The state document carries the plan, not the prose: it is re-read on every model step.
+    // The state document is re-read on every model step, so it must not carry the prose.
     const stateText = readFileSync(env.statePath, 'utf8')
     assert.ok(stateText.length < 3000, `state.json must stay small, got ${stateText.length} chars`)
-    assert.ok(!stateText.includes('step 200:'), 'the design body must not be copied into the state')
+    assert.ok(!stateText.includes('step 200:'), 'the plan body must not be copied into the state')
   } finally { env.dispose() }
 })
 
-await check('every phase result is small, and the largest is still a small object', async () => {
+await check('no phase envelope exceeds a line, even with the options echoed back', async () => {
   const env = await harness(chooseFirst)
   try {
     const sizes = []
     const record = (value) => sizes.push(JSON.stringify(value).length)
-    record(await env.call({ action: 'start', intent: 'make the build faster' }))
-    record(await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] }))
-    record(await env.call({ action: 'design', content: designDocument(6000) }))
-    record(await env.call({
-      action: 'options',
-      options: [
-        { title: 'a', pros: ['p'], cons: ['c'] },
-        { title: 'b', pros: ['p'], cons: ['c'] },
-      ],
-    }))
+    record(await env.call({ action: 'start', intent: 'make the build faster', assumptions: ['a'] }))
+    record(await env.call({ action: 'plan', content: planDocument(6000), options: TWO_OPTIONS, criteria: 'risk vs speed' }))
     record(await env.call({ action: 'choose' }))
-    record(await env.call({ action: 'execute', goal: 'g', steps: ['one', 'two'] }))
-    record(await env.call({ action: 'progress', step: 'one' }))
+    record(await env.call({ action: 'run', goal: 'g', steps: ['one', 'two'], outcome: 'done' }))
     record(await env.call({ action: 'status' }))
     const largest = Math.max(...sizes)
     assert.ok(largest < 2000, `no phase envelope may exceed 2000 chars, got ${largest}: ${sizes.join(', ')}`)
   } finally { env.dispose() }
 })
 
-await check('checkpoint writes the record to a file and reports a summary, not the record', async () => {
+await check('checkpoint folds the journal into the record and reports a summary', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: designDocument(4000) })
-    await env.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] })
-    await env.call({ action: 'choose' })
+    await walkToRun(env, { to: 'run' })
+    await env.call({ action: 'run', goal: 'g', steps: ['one', 'two'] })
+    await env.call({ action: 'note', text: 'found a second call site' })
     const checkpoint = await env.call({ action: 'checkpoint', reason: 'phase boundary' })
-    assert.ok(String(checkpoint.summary).includes('checkpoint at execute'), `got: ${checkpoint.summary}`)
-    const file = checkpoint.files.checkpoint
-    const body = readFileSync(file, 'utf8')
-    assert.ok(body.includes('## Decisions'), 'the checkpoint must carry the decisions')
-    assert.ok(body.includes('chosen option: a'), `the chosen option belongs in the checkpoint: ${body.slice(0, 300)}`)
+    assert.ok(String(checkpoint.summary).includes('checkpoint at run'), `got: ${checkpoint.summary}`)
+    const body = readFileSync(checkpoint.files.checkpoint, 'utf8')
+    assert.ok(body.includes('## Decisions'), 'the checkpoint carries the decisions')
+    assert.ok(body.includes('chosen option: rewrite the parser'), `the chosen option belongs in it: ${body.slice(0, 300)}`)
+    assert.ok(body.includes('found a second call site'), 'and the journal activity')
     assert.ok(String(checkpoint.note).includes('checkpoint(s) recorded'), `got note: ${checkpoint.note}`)
     assert.equal(env.state().checkpoints.length, 1)
   } finally { env.dispose() }
 })
 
 // ---------------------------------------------------------------------------
-// execution, finish, prompt section, files
+// execution, the prompt section, files
 // ---------------------------------------------------------------------------
 
-await check('progress tracks steps and names finish when none are open', async () => {
+await check('multi-step execution tracks steps and closes on the outcome', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan' })
-    await env.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] })
-    await env.call({ action: 'choose' })
-    await env.call({ action: 'execute', goal: 'g', steps: ['one', 'two'], files: ['src/a.js'] })
-    const first = await env.call({ action: 'progress', step: 'one', evidence: 'suite passes' })
-    assert.ok(first.note.includes('1 step(s) still open'), `got: ${first.note}`)
-    assert.ok(String(first.next).includes('progress'), `next must stay on progress, got: ${first.next}`)
-    const second = await env.call({ action: 'progress', step: 'two' })
-    assert.ok(String(second.next).includes('finish'), `next must name finish, got: ${second.next}`)
-    const state = env.state()
-    assert.deepEqual(state.steps.map((s) => s.status), ['done', 'done'])
-    assert.ok(state.evidence.includes('suite passes'), 'evidence must be recorded')
+    await walkToRun(env, { to: 'run' })
+    const opened = await env.call({ action: 'run', goal: 'g', steps: ['one', 'two'], files: ['src/a.js'] })
+    assert.equal(opened.phase, 'run')
+    assert.deepEqual(opened.steps, ['[ ] one', '[ ] two'])
+    const first = await env.call({ action: 'run', status: 'done', note: 'one' })
+    assert.deepEqual(first.steps, ['[x] one', '[ ] two'])
+    const closed = await env.call({ action: 'run', outcome: 'the build is faster' })
+    assert.equal(closed.phase, 'done')
+    assert.equal(closed.next, null, '"there is no next phase" must be stated, not omitted')
+    assert.ok(String(closed.note).includes('still open'), `an open step is reported rather than hidden: ${closed.note}`)
+    const execution = readFileSync(join(env.dir, '03-execution.md'), 'utf8')
+    assert.ok(execution.includes('src/a.js'), 'the files in scope are in the execution record')
   } finally { env.dispose() }
 })
 
-await check('finish closes the workflow, and the prompt section goes empty', async () => {
+await check('run with a status but no note is refused, and status never opens a workflow', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    assert.ok(env.sectionText().includes('clarify'), 'the section must point at the current phase')
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan' })
-    await env.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] })
-    await env.call({ action: 'choose' })
-    await env.call({ action: 'execute', goal: 'g', steps: ['one'] })
-    const finished = await env.call({ action: 'finish', outcome: 'the build is faster now' })
-    assert.equal(finished.phase, 'done')
-    assert.equal(finished.next, null, '"there is no next phase" must be stated, not omitted')
-    assert.equal(env.sectionText(), '', 'a finished workflow must stop costing prompt tokens')
+    await walkToRun(env, { to: 'run' })
+    await env.call({ action: 'run', goal: 'g', steps: ['one'] })
+    await assert.rejects(() => env.callRaw({ action: 'run', status: 'done' }), /needs "note"/)
   } finally { env.dispose() }
 })
 
-await check('the prompt section is useful before start and empty while no workflow exists', async () => {
+await check('the first run needs steps or a goal, so an execution record says something', async () => {
   const env = await harness(chooseFirst)
   try {
-    const idle = env.sectionText()
-    assert.ok(idle.includes('workflow'), `an idle session is told the tool exists: ${idle}`)
-    assert.ok(idle.length < 700, `the idle section must stay short, got ${idle.length}`)
-    await env.call({ action: 'start', intent: 'a'.repeat(2000) })
-    const active = env.sectionText()
-    assert.ok(active.length < 900, `the active section must stay short, got ${active.length}`)
-    assert.ok(active.includes('a'.repeat(100)), 'the intent is carried, shortened if needed')
+    await walkToRun(env, { to: 'run' })
+    await assert.rejects(() => env.callRaw({ action: 'run' }), /needs "steps"/)
+    // A one-step job closes in the same call, which is the fast path.
+    const closed = await env.call({ action: 'run', goal: 'faster build', outcome: 'it is faster' })
+    assert.equal(closed.phase, 'done')
+  } finally { env.dispose() }
+})
+
+await check('a finished workflow takes a late step but refuses new work', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    await walkToRun(env, { to: 'run' })
+    await env.call({ action: 'run', goal: 'g', steps: ['one'], outcome: 'done' })
+    assert.equal(env.state().phase, 'done')
+    // Recording what happened after the summary is legitimate and must be cheap; starting more work is not.
+    const late = await env.call({ action: 'run', status: 'done', note: 'a late step from a resumed session' })
+    assert.equal(late.phase, 'done', 'a late step must not reopen the workflow')
+    assert.equal(env.state().phase, 'done', 'and must not change the phase on disk')
+    assert.ok(readFileSync(env.journalPath, 'utf8').includes('a late step'), 'the late step reached the journal')
+    await assert.rejects(() => env.callRaw({ action: 'run', steps: ['more work'] }), /already done/)
+    await assert.rejects(() => env.callRaw({ action: 'run', outcome: 'another outcome' }), /already done/)
+  } finally { env.dispose() }
+})
+
+await check('the prompt section is one constant: the plugin induces ZERO prompt changes per workflow', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    const section = env.sections.find((item) => item.name === 'dsh-os:workflow')
+    assert.ok(section, 'the prompt section was not registered')
+    assert.equal(typeof section.text, 'string', 'the text must be a constant, never a function of the state')
+
+    // Why this is the most important assertion in this file: the system prompt sits before the tool
+    // catalog and the whole history, so a change to it invalidates every token after it. Measured on the
+    // DeepSeek endpoint, appending a message keeps a 98.7% cache hit while changing the system prompt
+    // anywhere — one line at the end included — drops to 0.0%. An earlier version rendered the phase into
+    // this text, so a four-call workflow re-wrote the prompt three times and paid a full-prefix miss each
+    // time. The phase is delivered in the tool's own result instead, which is appended history.
+    const first = env.sectionText()
+    await env.call({ action: 'start', intent: 'make the build faster', questions: [{ id: 'i', question: 'what for?' }] })
+    assert.equal(env.sectionText(), first, 'a start must not change the prompt')
+    await env.call({ action: 'plan', content: '# Plan', options: TWO_OPTIONS })
+    assert.equal(env.sectionText(), first, 'a plan must not change the prompt')
+    await env.call({ action: 'choose' })
+    assert.equal(env.sectionText(), first, 'a choice must not change the prompt')
+    await env.call({ action: 'run', goal: 'g', steps: ['one', 'two'] })
+    assert.equal(env.sectionText(), first, 'opening execution must not change the prompt')
+    await env.call({ action: 'run', status: 'done', note: 'one' })
+    assert.equal(env.sectionText(), first, 'a completed step must not change the prompt')
+    await env.call({ action: 'run', outcome: 'done' })
+    assert.equal(env.sectionText(), first, 'finishing must not change the prompt')
+
+    assert.equal(env.sections.length, 1, 'the section is registered once, not re-registered per phase')
+    assert.ok(first.length < 700, `the section must earn its tokens: ${first.length} chars`)
+
+    // The section text must not be a function of the state at all: the strongest form of the invariant is
+    // that destroying the state cannot change it. Anything the prompt reads is something that can move it.
+    rmSync(env.statePath, { force: true })
+    assert.equal(env.sectionText(), first, 'the prompt must not read workflow state')
+  } finally { env.dispose() }
+})
+
+await check('the phase and the next call travel in the tool result, not in the prompt', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    // The model must be able to learn what to do next without the prompt telling it, because the prompt
+    // is frozen. Every phase's result therefore names the phase and the single next call.
+    const started = await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    assert.equal(started.phase, 'plan')
+    assert.ok(String(started.next).includes('"plan"'), `next must name the plan call: ${started.next}`)
+    const planned = await env.call({ action: 'plan', content: '# Plan', options: TWO_OPTIONS })
+    assert.equal(planned.phase, 'choose')
+    assert.ok(String(planned.next).includes('"choose"'), `next must name choose: ${planned.next}`)
+    const chosen = await env.call({ action: 'choose' })
+    assert.equal(chosen.phase, 'run')
+    assert.ok(String(chosen.next).includes('"run"'), `next must name run: ${chosen.next}`)
+    const status = await env.call({ action: 'status' })
+    assert.equal(status.phase, 'run')
+    assert.ok(status.next, 'status must report the next call too')
   } finally { env.dispose() }
 })
 
@@ -420,15 +569,11 @@ await check('status reports the phase and the open steps', async () => {
   try {
     const idle = await env.call({ action: 'status' })
     assert.equal(idle.phase, 'none')
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan' })
-    await env.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] })
-    await env.call({ action: 'choose' })
-    await env.call({ action: 'execute', goal: 'g', steps: ['one', 'two'] })
-    await env.call({ action: 'progress', step: 'one' })
+    await walkToRun(env, { to: 'run' })
+    await env.call({ action: 'run', goal: 'g', steps: ['one', 'two'] })
+    await env.call({ action: 'run', status: 'done', note: 'one' })
     const status = await env.call({ action: 'status' })
-    assert.equal(status.phase, 'execute')
+    assert.equal(status.phase, 'run')
     assert.deepEqual(status.steps, ['[x] one', '[ ] two'])
   } finally { env.dispose() }
 })
@@ -436,7 +581,7 @@ await check('status reports the phase and the open steps', async () => {
 await check('reset discards the session, and the deleted path stays inside the root', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
     assert.ok(existsSync(env.dir), 'the session directory must exist while a workflow is active')
     const reset = await env.call({ action: 'reset' })
     assert.equal(reset.phase, 'none')
@@ -451,60 +596,78 @@ await check('reset discards the session, and the deleted path stays inside the r
 
 await check('a finished workflow is archived, and the next one starts with clean documents', async () => {
   const env = await harness(chooseFirst)
-  const play = async () => {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: '# Plan' })
-    await env.call({ action: 'options', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] })
-    await env.call({ action: 'choose' })
-    await env.call({ action: 'execute', goal: 'g', steps: ['one'] })
-    return env.call({ action: 'finish', outcome: 'done' })
-  }
   try {
-    await play()
-    await env.call({ action: 'start', intent: 'the next request' })
+    await walkToRun(env, { to: 'run', questions: [{ id: 'i', question: 'what for?' }] })
+    await env.call({ action: 'run', goal: 'g', outcome: 'the first outcome' })
+    await env.call({ action: 'start', intent: 'the next request', assumptions: ['b'] })
     const state = env.state()
     assert.equal(state.intent, 'the next request')
-    assert.deepEqual(state.decisions, [], 'the previous decisions must not leak into the new workflow')
-    const archived = readdirSync(join(env.home, 'dsh-os', 'workflows')).filter((name) => name.includes('.done-'))
-    assert.equal(archived.length, 1, `the finished workflow must be archived, got ${JSON.stringify(archived)}`)
-    const intentFile = readFileSync(join(env.dir, '02-intent.md'), 'utf8')
-    assert.ok(intentFile.includes('the next request'), 'the new intent file carries the new prompt')
-    assert.ok(!intentFile.includes('what for?'), 'the previous questions must not leak into the new workflow')
-  } finally { env.dispose() }
-})
+    assert.deepEqual(state.decisions, ['assumed: b'], 'the previous decisions must not leak into the new workflow')
 
-await check('the original prompt is written verbatim the moment the workflow starts', async () => {
-  const env = await harness(chooseFirst)
-  try {
-    const prompt = 'the parser is slow when the config has many entries\n\nfix it, do not rewrite it'
-    const started = await env.call({ action: 'start', intent: prompt })
-    const file = started.files.intent
-    assert.ok(existsSync(file), `the intent file must exist straight after start: ${file}`)
-    assert.ok(readFileSync(file, 'utf8').includes(prompt), 'the prompt is stored verbatim, line breaks included')
+    const root = join(env.home, 'dsh-os', 'workflows')
+    const archived = readdirSync(root).filter((name) => name.includes('.done-'))
+    assert.equal(archived.length, 1, `the finished workflow must be archived, got ${JSON.stringify(readdirSync(root))}`)
+    // The archive must actually contain the previous workflow's documents. Asserting only that a
+    // `.done-` directory exists is what let a rename that failed on Windows (colons in the stamp) pass:
+    // the directory appeared, but as a leftover, and the next workflow inherited the old files.
+    const archivedFiles = readdirSync(join(root, archived[0])).sort()
+    for (const expected of ['01-intent.md', '02-plan.md', '03-execution.md', '04-outcome.md']) {
+      assert.ok(archivedFiles.includes(expected), `${expected} must be in the archive, got ${JSON.stringify(archivedFiles)}`)
+    }
+    assert.ok(
+      readFileSync(join(root, archived[0], '04-outcome.md'), 'utf8').includes('the first outcome'),
+      'the archived outcome is the previous workflow\'s, not this one\'s',
+    )
+
+    const intentFile = readFileSync(join(env.dir, '01-intent.md'), 'utf8')
+    assert.ok(intentFile.includes('the next request'))
+    assert.ok(!intentFile.includes('what for?'), 'the previous questions must not leak into the new workflow')
+    assert.ok(!existsSync(env.journalPath), 'the previous journal must not be inherited')
   } finally { env.dispose() }
 })
 
 await check('nothing is written outside the session directory', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
-    await env.call({ action: 'clarify', questions: [{ id: 'i', question: 'what for?' }] })
-    await env.call({ action: 'design', content: designDocument(3000) })
-    const session = readdirSync(env.dir).sort()
-    assert.deepEqual(session, ['02-intent.md', '03-design.md', 'state.json'])
+    await walkToRun(env)
+    assert.deepEqual(env.files(), ['01-intent.md', '02-plan.md', 'state.json'])
+    assert.deepEqual(readdirSync(join(env.home, 'dsh-os', 'workflows')), [SESSION_KEY])
   } finally { env.dispose() }
 })
 
 await check('a corrupted state file reads as absent rather than throwing', async () => {
   const env = await harness(chooseFirst)
   try {
-    await env.call({ action: 'start', intent: 'x' })
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
     writeFileSync(env.statePath, '{ not json')
     const status = await env.call({ action: 'status' })
     assert.equal(status.phase, 'none', 'a corrupt state must be reported as no workflow, not a crash')
-    const restarted = await env.call({ action: 'start', intent: 'again' })
-    assert.equal(restarted.phase, 'clarify')
+    const restarted = await env.call({ action: 'start', intent: 'again', assumptions: ['a'] })
+    assert.equal(restarted.phase, 'plan')
+  } finally { env.dispose() }
+})
+
+await check('the state cache is keyed on the file, so a state changed underneath it is re-read', async () => {
+  const env = await harness(chooseFirst)
+  try {
+    await env.call({ action: 'start', intent: 'x', assumptions: ['a'] })
+    assert.equal((await env.call({ action: 'status' })).phase, 'plan')
+    // Rewrite the state behind the plugin's back, as another process or an editor would. The cache must not
+    // serve the previous parse: the stamp moved, so the next read parses again.
+    const state = JSON.parse(readFileSync(env.statePath, 'utf8'))
+    state.phase = 'run'
+    state.choice = { id: 'o9', title: 'chosen elsewhere', verbatim: 'chosen elsewhere', options: [] }
+    writeFileSync(env.statePath, `${JSON.stringify(state, null, 2)}\n`)
+    const seen = await env.call({ action: 'status' })
+    assert.equal(seen.phase, 'run', 'an edited state must be observed, not cached away')
+    assert.ok(
+      String(seen.summary).includes('chosen elsewhere') || String(seen.next).includes('"run"'),
+      `the edited content is read back: ${seen.summary}`,
+    )
+    // And a note still appends without rewriting the state document.
+    const before = readFileSync(env.statePath, 'utf8')
+    await env.call({ action: 'note', text: 'a remark after the external edit' })
+    assert.equal(readFileSync(env.statePath, 'utf8'), before, 'a plain note does not rewrite the state')
   } finally { env.dispose() }
 })
 

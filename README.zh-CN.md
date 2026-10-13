@@ -67,7 +67,7 @@ deepseek-coordination/
 ├─ tools/parse-check.ps1           在**将要执行代码的那个运行时**下解析检查模块，并报告非 ASCII 与 BOM
 ├─ tools/json-field.mjs            按点分路径读取信封里的一个字段（shell 测试用，`sed` 看不进嵌套对象）
 ├─ tools/verify-bundle.mjs         校验 loader 的解析契约（14 项）
-├─ tools/verify-plugin-load.mjs    走真实 `apply()` 路径（13 项）
+├─ tools/verify-plugin-load.mjs    走真实 `apply()` 路径（30 项）
 ├─ tools/verify-editions.mjs       证明两个 PowerShell 生成物都可达（14 项）
 ├─ tools/probe-pipeline.mjs        在打桩的动词层上端到端驱动拦截链路（23 项）
 ├─ tests/                          黄金（Windows/POSIX/桌面注入）、两表一致性、编码、插件、授权、接管各套测试
@@ -140,7 +140,7 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 
 ### 从 harness 使用
 
-`package.json` 声明了 `dsh.bundle.patch`，因此本包可以作为一个 bundle 安装进 DSH profile，并插入四行：
+`package.json` 声明了 `dsh.bundle.patch`，因此本包可以作为一个 bundle 安装进 DSH profile，并插入五行：
 
 | 行 | 入口 | 作用 |
 |---|---|---|
@@ -148,6 +148,7 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 | `dsh-os-settings` | `./settings` | 面板编辑的设置，以及它的两条 HTTP 路由 |
 | `dsh-os-takeover` | `./takeover` | 在开启时把内置 `read`/`write`/`edit`/`pwsh` 交给 dsh-os 答复 |
 | `dsh-os-permission` | `./permission` | 同意写入委托，`permission.json` 的唯一写入方 |
+| `dsh-os-workflow` | `./workflow` | 意图优先的工作流工具及其系统提示词小节 |
 
 各行必须使用**不同的模块说明符**：`name` 按包说明符解析，若两行都用裸包名就会把同一个模块加载两次，从而抛出 `tool "dsh_os" is already registered` 并中止整个 entry。子路径导出正是为此存在。
 
@@ -155,6 +156,7 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 |---|---|
 | `dsh_os` | 执行动词面上的一个动词，并原样返回其 JSON 信封 |
 | `os_permission_*` | 读取、授予、撤销与审计持久授权决定 |
+| `workflow` | 执行意图优先工作流的一个阶段（见[工作流](#工作流)） |
 
 只注册一个工具而非每个动词一个，理由有三：动词表就是契约且存放在 `src/host/spec/verbs.tsv`，新增动词时无需重新生成 schema；agent 用一次 `verb: "selfcheck"` 调用就能发现整个动词面；信封本身已是稳定的结果形状，不会出现第二份会与脚本漂移的契约。
 
@@ -197,6 +199,93 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 
 > [!IMPORTANT]
 > **仍未证明：harness 自身的 loader 会在活动 profile 里组合这个 bundle。** 插件的解析、装载与执行路径现由 `tools/verify-bundle.mjs`、`tools/verify-plugin-load.mjs` 与 `tools/verify-editions.mjs` 覆盖（详见[安装现状](#安装现状与已知缺陷)），但"装进用户的桌面活动 profile 并重启 harness"这一步**没有被跑过**。
+
+### 工作流
+
+本包其余各行让一次**操作系统调用**变正确；这一行让一个**需求**在被执行之前就被决定。它消除的失效模式是：一个从未成为规格的需求——模型直接开始改文件，等到评审时才发现方向偏了，而 token 已经花掉。
+
+`dsh-os-workflow` 注册一个工具 `workflow`，以及一个系统提示词小节。
+
+```
+intake -> plan -> choose -> run -> done
+```
+
+| 阶段 | 动作 | 它确立了什么 |
+|---|---|---|
+| intake | `start` | **逐字**记录的提示词，外加 1–3 个关于真实意图的问题，**或**你所做的假设 |
+| plan | `plan` | 方案与流程、**至少两个**各带利弊的备选、评判标准，以及你的推荐 |
+| choose | `choose` | **用户的选择**，在同一次调用内经 `ctx.userQuestions` 取得 |
+| run | `run` | 执行、步骤，以及在同一次调用内关闭工作流的结论 |
+| — | `note` | 执行期间记下的一条备注或一个决定 |
+| — | `checkpoint` | 把记录折叠进一个文件，并回传摘要 |
+| — | `status`、`reset` | 读取状态；丢弃并重新开始 |
+
+**门是硬的。** 入口尚未记录的阶段会被拒绝，且拒绝信息会点明必须先跑哪个阶段。`choose` 无法由模型自己回答：问题经与 `ask_user_question` 相同的缝交给用户，除此之外没有任何路径能进入 `run`。
+
+**四次调用、一次提问。** 不可避免的路径是 `start` → `plan` → `choose` → `run`。它原本是八次调用、两次提问，差别来自三处刻意的合并——每一处都去掉一个来回，而没有去掉任何一个决定：
+
+* **设计与备选是同一次调用**，因为它们本就是同一个决定。这就是 QOC（Questions、Options、Criteria）与 ADR（Context、Decision、Consequences）的形状：一条决策记录同时持有它被选出的那些备选、以及评判它们所用的标准。拆成两步会让第二步重新推导第一步，并让用户把同一份架构读两遍。
+* **意图清晰的请求零提问。** `start` 接受 `assumptions` 而非 `questions`，因此不含歧义的提示词不会被打断——而假设被记录在案，用户可以纠正，这比它所替代的那个问题更便宜。"最小且相关"的提问优于盘问，其证据是 Ask-to-Act 这一线工作（[arXiv:2504.00907](https://arxiv.org/abs/2504.00907)）。
+* **单步执行在开启的同一次调用内关闭。** 给 `run` 传 `outcome` 即结束工作流；只有多步工作才需要第二次调用。
+
+**压缩是另一半。** 被叙述进对话的计划会随着之后每一步被重新发送，这正是短任务变贵的原因。所以它从不进入对话：每个阶段写下一份真正的文档，只回传一行——阶段、摘要、文件路径、下一个调用。`tests/workflow.test.mjs` 会度量这个比例，并断言任何阶段的信封都不超过 2000 字符。这个形状有实测依据而非风格偏好：剪枝加摘要能在降低 token 与运行时的同时提升完成率（[Less Context, Better Agents](https://export.arxiv.org/pdf/2608.16370)），而规划/执行分离能以 token 成本的一小部分达到与交错推理相当的准确率（[Plan Once, Ground Locally](https://zenodo.org/records/22904595)）。
+
+**开销落在哪里**，以复杂度表述，因为它本来就是复杂度：
+
+| 路径 | 开销 |
+|---|---|
+| 读取状态 | 每次工作流调用一次，按文件 mtime 缓存——而**绝不在模型步上**发生，因为提示词小节根本不读状态 |
+| 一次阶段跃迁 | 一次原子状态写入；第一版每个动作写三次 |
+| 执行期间的一条 note | 一次 `appendFileSync` 追加，O(1)，由压实维持有界——而不是"读-推-重写"那种在整个工作流上 O(n²) 的做法 |
+| 提示词小节 | 一个**常量**：不读、不查、不格式化，在每个工作流的每个阶段都完全一致 |
+
+### KV 缓存效应——提示词小节为何必须是常量
+
+这一行注册进系统提示词的小节是一个**常量字符串**。这不是为了整洁，这就是设计本身。证据是实测的，而且很残酷：
+
+| 对一个 7,384 token 的请求做改动 | 命中 | 命中率 |
+|---|---:|---:|
+| 什么都不改 | 7,296 | **98.8%** |
+| 在末尾追加一条消息 | 7,296 | **98.7%** |
+| 在**系统提示词末尾**加一行 | 0 | **0.0%** |
+| 在**系统提示词开头**插一行 | 0 | **0.0%** |
+| 在工具列表末尾追加一个 schema | 1,408 | 18.3% |
+| 改最后一个工具描述的一个字符 | 1,280 | 17.3% |
+| 对调两个工具的顺序 | 0 | **0.0%** |
+
+十个变量，在 DeepSeek 官方端点上实测（[前缀稳定性一章](https://github.com/diguike/book-deepseek-harness/blob/main/book/11-prefix-stability.md)）。其背后的规则来自 provider 自己：一次缓存命中要求请求**完整匹配一个已持久化的 cache prefix unit**，而系统提示词排在工具目录与全部历史之前（[上下文硬盘缓存](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)）。
+
+harness 自己已经为这一课付过一次账：沙箱策略原本写在系统提示词里，用户切一次权限，缓存命中就从 **约 14,700 token 掉到 256**；修法是把会变的事实挪出提示词、放进消息序列（[DSH Agent Note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-09-02-in-history-system-prompt-replacement.md)）。
+
+**这一行的第一版犯的正是这个错误。** 它把当前阶段渲染进小节，于是四次调用的工作流会三次重写系统提示词，每次都付一次整段前缀的 miss。修法是结构性的，不是文案性的：
+
+* 小节是常量，因此本行的**缓存效应是 `prefix-stable`**：每个工作流零次提示词变更，且由 `tests/workflow.test.mjs` 在每个阶段对注册文本逐字节断言；
+* 当前阶段与**下一个该发的调用**改由 `workflow` 工具自身的结果携带——那是追加的历史，上表为它标价 98.7%；
+* 顺序错误的调用会被拒绝，且拒绝信息点明必须先记录哪个阶段，因此模型无需提示词告知任何东西也能自我纠正；
+* 发现入口放在工具**描述**里。它位于工具目录中：在前缀之内、只发送一次、整个会话不变。
+
+> [!IMPORTANT]
+> **读者应当为自己插件得出的结论。** 任何逐步变化的东西——时间、当前目录、分支、权限、阶段——都不能写进提示词小节。本 harness 为这类内容准备了专门的通道：用 `ctx.systemPrompt.context()` 注册，它会作为一条追加的 user 消息送达，并且只在内容变化时重新投影。小节只用于在整个会话内稳定的文本。
+
+**状态存放在哪。** `$DSH_HOME/dsh-os/workflows/<session>/`，与设置文档同级，理由相同：包目录会在升级时被整体替换，而工作区属于用户。`state.json` 是紧凑记录，其余文件都是细节。已结束的工作流会被归档而不是覆盖，因此下一个从干净状态开始，而上一个仍然可读。
+
+```
+state.json          紧凑记录：阶段、意图、决定、步骤、产物路径
+journal.jsonl       仅追加：备注与步骤，有界，由 checkpoint 折入
+01-intent.md        逐字提示词，随后是问答（或假设）
+02-plan.md          方案与流程、备选及其利弊、标准、决定
+03-execution.md     选中的选项、目标、步骤、涉及文件、约束
+04-outcome.md       交付了什么，以及任何仍未关闭的步骤
+05-checkpoint.md    折叠：至今为止的全部决定，在需要压缩时写出
+```
+
+**可配置项。** `workflowRoot` 改变目录位置；`autoCompact`（默认 `true`）控制 checkpoint 是否报告引擎可能执行的压缩，`maxCheckpoints` 限制其数量。结构性的一半——细节落盘、只回传一行——**不可配置**，因为它正是这个功能能省下东西的原因。
+
+> [!WARNING]
+> **这一行会向用户提问，因此部署必须能回答。** 它注入 `userQuestions`；缺少该服务的宿主什么都不注册，而不是注册一个第二次调用就会失败的工具。有两次调用会阻塞等人：给了问题的 `start`，以及永远如此的 `choose`。
+
+> [!NOTE]
+> **这一行不会调用引擎的压缩服务。** `ctx.compaction` 确实存在，但从这里调用它意味着构造一个会话形状的上下文，而那个契约并未公开——那是把猜测包装成功能。本插件的做法是确定且可检查的：细节离开对话、进入文件，而 `checkpoint` 记录下压缩安全的边界。正因如此，这里的压缩是被 `tests/workflow.test.mjs` **度量**的，而不是仅仅被声称。
 
 ---
 
@@ -440,7 +529,7 @@ dsh-os permission audit --limit 50     # 追加式尾部；委托裁剪到 200 �
 | 校验器 | 证明什么 | 用例 |
 |---|---|---|
 | `tools/verify-bundle.mjs` | loader 的**解析**契约：manifest 头、patch 文件、每一行都能从一个 profile 形态的 `node_modules` 解析、每个被解析模块都导出 loader 会调用的 Cordis 形状（`apply`/`inject`/`name`）、两行解析到**不同**模块（共享说明符会导致同一个工具注册两次并让整个入口中止）、以及版本闸门 | 10 |
-| `tools/verify-plugin-load.mjs` | 真实的 `apply()` 路径：宿主插件以**根类型为 `object`** 的参数 schema 注册 `dsh_os`，授权插件注册其五个工具，并且**注册后的 handler 真的 spawn 了脚本**并返回真实信封（`selfcheck` → ok，`verbCount` 86）；不带 `allow` 的变更类动词以带类型的 `E_PERMISSION` 被拒，而不是抛异常 | 13 |
+| `tools/verify-plugin-load.mjs` | 真实的 `apply()` 路径：宿主插件以**根类型为 `object`** 的参数 schema 注册 `dsh_os`，授权插件注册其五个工具，并且**注册后的 handler 真的 spawn 了脚本**并返回真实信封（`selfcheck` → ok，`verbCount` 86）；不带 `allow` 的变更类动词以带类型的 `E_PERMISSION` 被拒，而不是抛异常。另含工作流一节：工具与提示词小节确实注册，且 `start → plan → choose → run` 经真实 handler 跑通、阶段门依然成立 | 30 |
 | `tools/verify-editions.mjs` | 版本选择：默认仍是 PowerShell 5.1；`powershellEdition: '7.6'` 与 `DSH_OS_POWERSHELL_EDITION` 选中 7.6 产物；`'auto'` 仅在产物与可用的 `pwsh` **同时**存在时才用 7.6；配置优先于环境变量；显式 `scriptPath` 完全禁用该选择。`-ExecutionPolicy` 只传给 5.1 可执行文件 | 14 |
 
 bundle 解析校验把包以 junction 链接进一个一次性的 profile 沙箱，因此解析行为与真实 profile 一致，而**活动 profile 从不被写入**。
@@ -494,7 +583,7 @@ bundle 解析校验把包以 junction 链接进一个一次性的 profile 沙箱
 npm run test:all        # 按顺序跑下面全部
 ```
 
-`test:all` 依次串联 `test:conformance`、`test:encoding`、`test`（Windows 黄金）、`test:plugin`、`test:permission`、`test:bundle`（`tools/verify-bundle.mjs`）、`test:load`（先 `tools/verify-plugin-load.mjs`，再 `tools/verify-editions.mjs`）与 `test:desktop`（`bash tests/smoke-desktop-sh.sh`）。
+`test:all` 依次串联 `test:conformance`、`test:encoding`、`test`（Windows 黄金）、`test:plugin`、`test:takeover`、`test:permission`、`test:workflow`、`test:bundle`（`tools/verify-bundle.mjs`）、`test:package`（`tools/verify-package.mjs`）、`test:load`（先 `tools/verify-plugin-load.mjs`，再 `tools/verify-editions.mjs`）与 `test:desktop`（`bash tests/smoke-desktop-sh.sh`）。
 
 | 套件 | 命令 | 用例数 | 实测结果 |
 |---|---|---|---|
@@ -504,11 +593,17 @@ npm run test:all        # 按顺序跑下面全部
 | POSIX 黄金 | `bash tests/golden-sh.sh` | 116 | **116 通过，0 失败** |
 | POSIX 桌面注入 | `bash tests/smoke-desktop-sh.sh` | 52 | **52 通过，0 失败** |
 | 插件 | `node tests/plugin.test.mjs` | 13 | **13 通过，0 失败** |
+| 接管拦截 | `node tests/takeover.test.mjs` | 41 | **41 通过，0 失败** |
 | 授权委托 | `node tests/permission.test.mjs` | 18 | **18 通过，0 失败** |
-| bundle 解析 | `node tools/verify-bundle.mjs` | 10 | **10 通过，0 失败** |
-| 插件装载 | `node tools/verify-plugin-load.mjs` | 13 | **13 通过，0 失败** |
+| 工作流 | `node tests/workflow.test.mjs` | 30 | **30 通过，0 失败** |
+| bundle 解析 | `node tools/verify-bundle.mjs` | 16 | **16 通过，0 失败** |
+| 打包完整性 | `node tools/verify-package.mjs` | 20 | **20 通过，0 失败** |
+| 插件装载 | `node tools/verify-plugin-load.mjs` | 30 | **30 通过，0 失败** |
 | 版本选择 | `node tools/verify-editions.mjs` | 14 | **14 通过，0 失败** |
 | 构建漂移 | `powershell -File tools/build.ps1 -Check` | 3 个生成物 | **无漂移** |
+
+> [!NOTE]
+> **`test:desktop` 需要 `bash`，而本机没有。** 因此在没有 Git Bash 或 WSL 的 Windows 主机上，`npm run test:all` 会以 `'bash' is not recognized` 结束。这是运行环境缺口而非断言失败：同一次调用中位于它之前的所有套件都跑过并通过。POSIX 套件在这里依旧未被验证，原因与过去相同——它们需要一台 POSIX 主机。
 
 ### 两张表的一致性
 

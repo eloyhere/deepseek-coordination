@@ -8,6 +8,7 @@
 //
 // Neither had ever been exercised outside a live profile. The plugins import only Node builtins, so a
 // mock context is enough to run them for real; nothing here touches the live profile.
+import { existsSync, rmSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,6 +135,134 @@ if (hostTool?.execute) {
     bad(`handler threw instead of returning an envelope: ${e.message}`)
   }
 }
+
+// ---- 5. the workflow plugin: its tool, its prompt section, and one real phase -------------------
+//
+// This row is the one whose failure is silent: a workflow row that registers nothing looks exactly
+// like a workflow row that was never installed. So the three things that only exist at runtime are
+// exercised here — the registration, the prompt section, and a phase call that writes state — against a
+// throwaway DSH_HOME, never the live one.
+console.log('\n== 5. workflow plugin: apply() registers the tool and the prompt section ==')
+const wfMod = await import(pathToFileURL(join(root, 'src/plugin/workflow.js')).href)
+const wf = wfMod.default ?? wfMod
+const dshHome = join(root, '.temporary', 'workflow-verify-home')
+rmSync(dshHome, { recursive: true, force: true })
+const previousHome = process.env.DSH_HOME
+process.env.DSH_HOME = dshHome
+
+const wfTools = []
+const wfSections = []
+const wfAsked = []
+const wfCtx = {
+  tools: {
+    register(tool) {
+      if (wfTools.some((t) => t.name === tool.name)) throw new Error(`tool "${tool.name}" is already registered`)
+      wfTools.push(tool)
+      return tool
+    },
+  },
+  userQuestions: {
+    ask: async (request) => {
+      wfAsked.push(request)
+      return {
+        answers: request.questions.map((question) => ({
+          id: question.id,
+          selected: question.options?.[0] ? [question.options[0].label] : [],
+          ...question.options?.[0] ? {} : { custom: 'the first one' },
+        })),
+      }
+    },
+  },
+  systemPrompt: {
+    section(section) { wfSections.push(section); return () => {} },
+    getSectionOrder: () => 100,
+  },
+}
+
+try {
+  wf.apply(wfCtx, {})
+  ok(`apply() completed; registered: ${wfTools.map((t) => t.name).join(', ') || '(nothing)'}`)
+} catch (e) {
+  bad(`apply() threw: ${e.message}`)
+}
+
+const wfTool = wfTools.find((t) => t.name === 'workflow')
+if (!wfTool) {
+  bad('the workflow tool was not registered')
+} else {
+  ok('tool name is workflow')
+  if (wfTool.parameters?.type === 'object') ok('parameters is a JSON Schema with type "object"')
+  else bad(`parameters.type is ${JSON.stringify(wfTool.parameters?.type)}, expected "object"`)
+  const actions = wfTool.parameters?.properties?.action?.enum ?? []
+  // The four-call path is the contract this feature's cost claim rests on, so it is asserted, not read.
+  for (const action of ['start', 'plan', 'choose', 'run']) {
+    if (actions.includes(action)) ok(`action "${action}" is declared`)
+    else bad(`action "${action}" is missing from the enum: ${actions.join(', ')}`)
+  }
+  const required = wfTool.parameters?.required ?? []
+  if (required.includes('action')) ok('parameters requires "action"')
+  else bad(`parameters.required is ${JSON.stringify(required)}`)
+  if (typeof wfTool.output?.render === 'function') ok('output.render is a function')
+  else bad('output.render is missing, so the registry would reject the definition')
+  if (typeof wfTool.execute === 'function') ok('execute() is a function')
+  else bad('execute() is missing')
+}
+
+if (wfSections.length === 1 && wfSections[0].name === 'dsh-os:workflow') {
+  ok(`prompt section registered: ${wfSections[0].name}, order=${wfSections[0].order}`)
+} else {
+  bad(`expected exactly one prompt section named dsh-os:workflow, got ${JSON.stringify(wfSections.map((s) => s.name))}`)
+}
+
+// ---- 6. the workflow handler really runs the state machine --------------------------------------
+console.log('\n== 6. the workflow handler runs start -> plan -> choose -> run ==')
+if (wfTool?.execute) {
+  const exec = { agent: { id: "SessionId('verify-workflow')" }, callId: 'call-1' }
+  const call = async (args) => JSON.parse(await wfTool.execute(args, exec))
+  try {
+    const started = await call({ action: 'start', intent: 'make the build faster', assumptions: ['the build script is the repo one'] })
+    if (started.phase === 'plan') ok(`start -> ${started.phase}`)
+    else bad(`start returned phase ${started.phase}, expected plan`)
+
+    const planned = await call({
+      action: 'plan',
+      content: '# Approach\n\n- one module per concern',
+      options: [
+        { id: 'o1', title: 'rewrite', pros: ['fast'], cons: ['risky'], recommended: true },
+        { id: 'o2', title: 'cache', pros: ['small'], cons: ['memory'] },
+      ],
+    })
+    if (planned.phase === 'choose') ok(`plan -> ${planned.phase} (${planned.options?.length ?? 0} options echoed back)`)
+    else bad(`plan returned phase ${planned.phase}, expected choose`)
+
+    const chosen = await call({ action: 'choose' })
+    if (chosen.phase === 'run') ok(`choose -> ${chosen.phase}; the user was asked ${wfAsked.length} time(s)`)
+    else bad(`choose returned phase ${chosen.phase}, expected run`)
+
+    const ran = await call({ action: 'run', goal: 'faster build', outcome: 'the build is faster' })
+    if (ran.phase === 'done' && ran.next === null) ok('run with an outcome closes the workflow')
+    else bad(`run returned phase ${ran.phase}, next=${JSON.stringify(ran.next)}`)
+
+    // The gates must hold through the real registration too, not only in the unit suite.
+    try {
+      await wfTool.execute({ action: 'plan', content: '# x', options: [{ title: 'a', pros: ['p'] }, { title: 'b', pros: ['p'] }] }, exec)
+      bad('a plan after the workflow finished was accepted; the phase gate is not holding')
+    } catch (e) {
+      if (/already behind|no workflow/.test(e.message)) ok(`the phase gate holds: ${e.message.slice(0, 60)}…`)
+      else bad(`unexpected refusal: ${e.message}`)
+    }
+
+    const stateFile = join(dshHome, 'dsh-os', 'workflows', 'verify-workflow', 'state.json')
+    if (existsSync(stateFile)) ok(`state document written: ${stateFile.slice(root.length + 1)}`)
+    else bad(`no state document at ${stateFile}`)
+  } catch (e) {
+    bad(`the state machine threw through the real handler: ${e.message}`)
+  }
+}
+
+if (previousHome === undefined) delete process.env.DSH_HOME
+else process.env.DSH_HOME = previousHome
+rmSync(dshHome, { recursive: true, force: true })
 
 console.log('')
 console.log(`passed=${passes} failed=${failures}`)

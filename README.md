@@ -71,18 +71,21 @@ deepseek-coordination/
 ├─ src/plugin/invoke.js            shared invocation layer: artefact/edition resolution, spawn, envelope parsing
 ├─ src/plugin/settings.js          settings service + the panel's two HTTP routes (`/api/dsh-os/*`)
 ├─ src/plugin/takeover.js          `tools/execute` interception: answers the built-in read/write/edit/pwsh through dsh-os
+├─ src/plugin/workflow.js          intent-first workflow: the `workflow` tool, its phase gates and its prompt section
 ├─ client.js                       browser half: the `dsh.client` artifact that renders the settings panel
 ├─ src/permission/index.js         consent delegate: the only writer of permission.json, registers five `os_permission_*` tools
 ├─ tools/build.ps1                 assembles the three generated scripts; `-Check` fails on drift
 ├─ tools/parse-check.ps1           parse-checks each module under the runtime that will execute it, and reports non-ASCII bytes and a BOM
 ├─ tools/json-field.mjs            reads one field of an envelope by dotted path (used by the shell suites; `sed` cannot see into a nested object)
-├─ tools/verify-bundle.mjs         verifies the loader's resolution contract (14 cases)
-├─ tools/verify-plugin-load.mjs    runs the real `apply()` path (13 cases)
+├─ tools/verify-bundle.mjs         verifies the loader's resolution contract (16 cases)
+├─ tools/verify-plugin-load.mjs    runs the real `apply()` path, including the workflow state machine (30 cases)
+├─ tools/verify-package.mjs        packs the package and asserts every runtime-resolved file ships (20 cases)
 ├─ tools/verify-editions.mjs       proves both PowerShell artefacts are reachable (14 cases)
 ├─ tools/probe-pipeline.mjs        drives the interception end to end against a stubbed verb layer (23 cases)
-├─ tests/                          golden (Windows/POSIX/desktop injection), table conformance, encoding, plugin, permission, takeover suites
+├─ tests/                          golden (Windows/POSIX/desktop injection), table conformance, encoding, plugin, permission, takeover, workflow suites
 │  ├─ conformance.ps1              command.txt and spec/verbs.tsv must describe the same surface (5 cases)
 │  ├─ takeover.test.mjs            byte-level format preservation, read windowing, eligibility (41 cases)
+│  ├─ workflow.test.mjs            phase gates, the user's choice, and the KV-cache invariant (30 cases)
 │  ├─ smoke-desktop-sh.sh          what the POSIX desktop verbs actually inject (52 cases)
 │  └─ fake-xdotool, fake-wmctrl    recording stand-ins, so the desktop verbs can be verified with no X server
 └─ permission.json                 authorization data (an empty file in the repository; that is the initial state)
@@ -156,7 +159,7 @@ because batch-file argument handling is itself a source of quoting bugs.
 ### Using it from the harness
 
 `package.json` declares `dsh.bundle.patch`, so the package installs into a DSH profile as a bundle and
-inserts four rows:
+inserts five rows:
 
 | Row | Entry | What it does |
 |---|---|---|
@@ -164,6 +167,7 @@ inserts four rows:
 | `dsh-os-settings` | `./settings` | the settings the panel edits, plus its two HTTP routes |
 | `dsh-os-takeover` | `./takeover` | answers the built-in `read`/`write`/`edit`/`pwsh` through dsh-os while enabled |
 | `dsh-os-permission` | `./permission` | the consent delegate, the only writer of `permission.json` |
+| `dsh-os-workflow` | `./workflow` | the intent-first workflow tool and its system-prompt section |
 
 The rows must name **different module specifiers**: `name` is resolved as a package specifier, and giving
 two rows the bare package name loads the same module twice, which throws `tool "dsh_os" is already
@@ -173,6 +177,7 @@ registered` and aborts the whole entry. That is why the subpath exports exist.
 |---|---|
 | `dsh_os` | Run one verb of the surface and return its JSON envelope verbatim |
 | `os_permission_*` | Read, grant, revoke and audit durable authorization decisions |
+| `workflow` | Run one phase of the intent-first workflow (see [The workflow](#the-workflow)) |
 
 One tool rather than one per verb, for three reasons: the verb table is the contract and lives in
 `src/host/spec/verbs.tsv`, so no schema needs regenerating when a verb is added; an agent discovers the
@@ -250,6 +255,145 @@ environment, while 7.6.6 is plainly installed in the standard location.
 > `tools/verify-bundle.mjs` cannot cover: that the *harness's own loader* composes the bundle by the
 > same contract the verifier checks, rather than by a shortcut that happens to work here. The
 > verifier remains the evidence; the live session is corroboration.
+
+### The workflow
+
+Every other row in this package makes an OS call **correct**. This one makes a *request* decided before it
+is executed. The failure mode it removes is a request that was never a specification: the model starts
+editing files, and the divergence is discovered at review — after the tokens have been spent.
+
+`dsh-os-workflow` registers one tool, `workflow`, and one system-prompt section.
+
+```
+intake -> plan -> choose -> run -> done
+```
+
+| Phase | Action | What it establishes |
+|---|---|---|
+| intake | `start` | the prompt **verbatim**, plus 1–3 questions about intent *or* the assumptions being made |
+| plan | `plan` | the approach and process, **at least two** alternatives with pros and cons, the criteria, and a recommendation |
+| choose | `choose` | **the user's decision**, taken through `ctx.userQuestions` inside the call |
+| run | `run` | execution, its steps, and — in the same call — the outcome that closes the workflow |
+| — | `note` | a remark or a decision made during execution |
+| — | `checkpoint` | folds the record into one file and reports a summary |
+| — | `status`, `reset` | read the state; discard it and start again |
+
+**The gates are real.** A phase whose entry has not been recorded is refused, and the refusal names the
+phase that must run first. `choose` cannot be answered by the model: the question goes to the user through
+the same seam `ask_user_question` uses, and nothing else can move the workflow into `run`.
+
+**Four calls, one question.** The unavoidable path is `start` → `plan` → `choose` → `run`. It was
+originally eight calls and two questions, and the difference is three deliberate fusions — each of which
+removes a round-trip without removing a decision:
+
+* **design and options are one call**, because they are one decision. This is the QOC shape (Questions,
+  Options, Criteria) and the ADR shape (Context, Decision, Consequences): a decision record holds the
+  alternatives it was chosen between and the criteria it was judged against. Splitting them made the
+  second call re-derive the first and made the user read the same architecture twice.
+* **a clear request costs zero questions.** `start` accepts `assumptions` instead of `questions`, so an
+  unambiguous prompt is not interrupted — and the assumption is on record where the user can correct it,
+  which is cheaper than the question it replaced. The evidence for *minimal, relevant* questions over
+  interrogation is the Ask-to-Act line of work ([arXiv:2504.00907](https://arxiv.org/abs/2504.00907)).
+* **a single-step execution closes in the same call it opens.** Passing `outcome` to `run` finishes the
+  workflow; only multi-step work needs a second call.
+
+**The compression is the other half.** A plan narrated into the conversation is re-sent with every later
+step, which is what makes a short task expensive. So it never enters the conversation: each phase writes a
+real document and returns a line — phase, summary, file path, one next call. `tests/workflow.test.mjs`
+measures it and holds every phase envelope under 2000 characters; in the current build the four calls of a
+full workflow total about 1.8 kB, roughly 500 tokens, for a plan document measured in kilobytes. This shape
+is measured, not stylistic: pruning plus summarisation improves completion while cutting tokens and runtime
+([Less Context, Better Agents](https://export.arxiv.org/pdf/2608.16370)), and a planner/executor split
+matches interleaved reasoning at a fraction of the token cost
+([Plan Once, Ground Locally](https://zenodo.org/records/22904595)).
+
+**Where the cost goes**, stated as complexity because that is what it is:
+
+| Path | Cost |
+|---|---|
+| reading state | once per workflow call, cached on the file's mtime — and **never** on a model step, because the prompt section reads no state at all |
+| a phase transition | one atomic state write; the first version wrote it three times per action |
+| a note during execution | one `appendFileSync` append, O(1), bounded by compaction — not the read-push-rewrite that is O(n²) over a workflow |
+| the prompt section | a **constant**: no read, no lookup, no formatting, identical at every phase of every workflow |
+
+### The KV cache effect, which is why the prompt section is a constant
+
+The section this row registers into the system prompt is a **constant string**. That is not tidiness; it is
+the design. The evidence is measured, and it is brutal:
+
+| Change to a 7,384-token request | Cache hit | Hit rate |
+|---|---:|---:|
+| nothing | 7,296 | **98.8%** |
+| append a message at the end | 7,296 | **98.7%** |
+| add one line at the **end of the system prompt** | 0 | **0.0%** |
+| insert one line at the **start of the system prompt** | 0 | **0.0%** |
+| append a tool schema | 1,408 | 18.3% |
+| change one character of the last tool description | 1,280 | 17.3% |
+| swap the order of two tools | 0 | **0.0%** |
+
+Ten variants, measured on the live DeepSeek endpoint
+([prefix-stability chapter](https://github.com/diguike/book-deepseek-harness/blob/main/book/11-prefix-stability.md)).
+The rule behind them is the provider's own: a cache hit requires a request to **fully match a persisted
+cache prefix unit**, and the system prompt sits before the tool catalog and the entire history
+([Context Caching](https://api-docs.deepseek.com/guides/kv_cache/)).
+
+The harness has already paid for this lesson once. The sandbox policy used to live in the system prompt,
+and a single permission switch dropped cache reads from **~14,700 tokens to 256**; the fix was to move the
+changing fact out of the prompt into the message sequence
+([DSH agent note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-09-02-in-history-system-prompt-replacement.md)).
+
+**The first version of this row made exactly that mistake.** It rendered the current phase into the section,
+so a four-call workflow re-wrote the system prompt three times and paid a full-prefix miss each time. The
+fix is structural, not cosmetic:
+
+* the section is a constant, so this row's **cache effect is `prefix-stable`**: zero prompt changes per
+  workflow, asserted by `tests/workflow.test.mjs` against the registered text at every phase;
+* the phase and the **one next call** travel in the `workflow` tool's own result instead — appended history,
+  which the measurement above prices at 98.7%;
+* a step taken out of order is refused, and the refusal names the phase to record first, so the model can
+  recover from a stale plan without the prompt having told it anything;
+* the tool **description** carries the discovery text. It lives in the tool catalog: inside the cached
+  prefix, sent once, and unchanged for the life of the session.
+
+> [!IMPORTANT]
+> **The consequence a reader should draw for their own plugins.** Anything that changes per step — the
+> time, the current directory, a branch, a permission, a phase — must not be written into a prompt section.
+> This harness gives that content its own path: register it with `ctx.systemPrompt.context()` and it is
+> delivered as an appended user message, re-projected only when it changes. A section is for text that is
+> stable for the session.
+
+**Where the state lives.** `$DSH_HOME/dsh-os/workflows/<session>/`, beside the settings document and for
+the same reason: the package directory is replaced on upgrade, and the workspace belongs to the user.
+`state.json` is the compact record; every other file is the detail. A finished workflow is archived rather
+than overwritten, so the next one starts clean and the last one stays readable.
+
+```
+state.json          the compact record: phase, intent, decisions, steps, artifact paths
+journal.jsonl       append-only: notes and steps, bounded, folded in by a checkpoint
+01-intent.md        the prompt verbatim, then the questions and answers (or the assumptions)
+02-plan.md          approach and process, alternatives with pros and cons, criteria, the decision
+03-execution.md     chosen option, goal, steps, files in scope, constraints
+04-outcome.md       what was delivered, and any step left open
+05-checkpoint.md    the fold: everything decided so far, written when a compaction is wanted
+```
+
+**What is configured.** `workflowRoot` moves the directory; `autoCompact` (default `true`) controls
+whether a checkpoint reports the compaction the engine may perform, and `maxCheckpoints` bounds it. The
+structural half — detail to disk, one line back — is **not** configurable, because it is the reason the
+feature saves anything.
+
+> [!WARNING]
+> **This row asks the user questions, so the deployment must be able to answer them.** It injects
+> `userQuestions`; a host without it registers nothing rather than registering a tool that would fail on
+> its second call. Two calls block on a human: `start` when questions are given, and `choose` always.
+
+> [!NOTE]
+> **What this row does not do: it does not invoke the engine's compaction service.** `ctx.compaction`
+> exists, and calling it from here would mean constructing a session-shaped context whose contract is not
+> published — a guess dressed up as a feature. What the plugin does instead is deterministic and
+> inspectable: the detail leaves the conversation for a file, and `checkpoint` records the boundary where a
+> compaction is safe. That is why the compression is measurable by `tests/workflow.test.mjs` rather than
+> merely asserted.
 
 ---
 
@@ -611,7 +755,7 @@ been closed by three verifiers, and they found one real defect:
 | Verifier | What it proves | Cases |
 |---|---|---|
 | `tools/verify-bundle.mjs` | the loader's **resolution** contract: the manifest header, the patch file, every row resolving from a profile-style `node_modules`, every resolved module exporting the Cordis shape the loader calls (`apply`/`inject`/`name`), the two rows resolving to **different** modules (a shared specifier registers the same tool twice and aborts the whole entry), and the version gate | 10 |
-| `tools/verify-plugin-load.mjs` | the real `apply()` path: the host plugin registers `dsh_os` with a parameters schema whose **root type is `object`**, the permission plugin registers its five tools, and **the registered handler really does spawn the script** and return a real envelope (`selfcheck` → ok, `verbCount` 86); a mutating verb without `allow` is refused with a typed `E_PERMISSION` rather than throwing | 13 |
+| `tools/verify-plugin-load.mjs` | the real `apply()` path: the host plugin registers `dsh_os` with a parameters schema whose **root type is `object`**, the permission plugin registers its five tools, and **the registered handler really does spawn the script** and return a real envelope (`selfcheck` → ok, `verbCount` 86); a mutating verb without `allow` is refused with a typed `E_PERMISSION` rather than throwing. It also covers the workflow row, whose failure would otherwise be silent: the tool and its prompt section **are** registered, and `start → plan → choose → run` runs through the real handler with its gates intact | 30 |
 | `tools/verify-editions.mjs` | edition selection: the default is still PowerShell 5.1; `powershellEdition: '7.6'` and `DSH_OS_POWERSHELL_EDITION` select the 7.6 artefact; `'auto'` uses 7.6 only when the artefact and a working `pwsh` are present **together**; configuration beats the environment; an explicit `scriptPath` disables the choice. `-ExecutionPolicy` is passed only to the 5.1 executable | 14 |
 
 The bundle verifier links the package into a throwaway profile sandbox by junction, so resolution
@@ -743,11 +887,20 @@ npm run test:all        # runs everything below, in order
 | POSIX golden | `bash tests/golden-sh.sh` | 116 | **116 passed, 0 failed** |
 | POSIX desktop injection | `bash tests/smoke-desktop-sh.sh` | 52 | **52 passed, 0 failed** |
 | Plugin | `node tests/plugin.test.mjs` | 13 | **13 passed, 0 failed** |
+| Takeover interceptions | `node tests/takeover.test.mjs` | 41 | **41 passed, 0 failed** |
 | Permission delegate | `node tests/permission.test.mjs` | 18 | **18 passed, 0 failed** |
-| Bundle resolution | `node tools/verify-bundle.mjs` | 10 | **10 passed, 0 failed** |
-| Plugin load | `node tools/verify-plugin-load.mjs` | 13 | **13 passed, 0 failed** |
+| Workflow | `node tests/workflow.test.mjs` | 30 | **30 passed, 0 failed** |
+| Bundle resolution | `node tools/verify-bundle.mjs` | 16 | **16 passed, 0 failed** |
+| Package completeness | `node tools/verify-package.mjs` | 20 | **20 passed, 0 failed** |
+| Plugin load | `node tools/verify-plugin-load.mjs` | 30 | **30 passed, 0 failed** |
 | Edition selection | `node tools/verify-editions.mjs` | 14 | **14 passed, 0 failed** |
 | Build drift | `powershell -File tools/build.ps1 -Check` | 3 artefacts | **no drift** |
+
+> [!NOTE]
+> **`test:desktop` needs `bash`, and this machine has none.** `npm run test:all` therefore ends with
+> `'bash' is not recognized` on a Windows host without Git Bash or WSL on `PATH`. That is an environment
+> gap in the runner, not a failing assertion: every suite above it ran and passed in the same invocation.
+> The POSIX suites remain unverified here for the same reason they always were — they need a POSIX host.
 
 ### Conformance of the two tables
 
