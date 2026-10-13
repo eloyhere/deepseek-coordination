@@ -17,7 +17,7 @@ encoding, byte order marks and line endings explicit and byte-exact.
 | `src/host/lib/*.sh` | **The source of truth** for POSIX: the 16 shell modules, plus the standalone `git.sh` |
 | `src/host/bin/dsh-os.ps1` | **Generated** Windows PowerShell 5.1 implementation (218,514 bytes) |
 | `src/host/bin/dsh-os7.ps1` | **Generated** PowerShell 7.6 implementation (255,565 bytes) |
-| `src/host/bin/dsh-os.sh` | **Generated** POSIX implementation (130,240 bytes) |
+| `src/host/bin/dsh-os.sh` | **Generated** POSIX implementation (142,744 bytes) |
 | `src/host/bin/dsh-os.bat` | ASCII-only `cmd.exe` shim: sets code page 65001 and forwards arguments to the `.ps1`. Hand-written, not generated |
 | `src/host/command.txt` | The authoritative verb contract, one line per verb |
 | `src/host/spec/verbs.tsv` | Machine-readable verb table: positionals, flags, permission class, error codes. **86 verbs** |
@@ -26,9 +26,17 @@ encoding, byte order marks and line endings explicit and byte-exact.
 | `src/host/docs/permission-model.md` | Authorization model: the four decisions, the file schema, the two enforcement layers |
 | `src/host/lib/powershell.md` | PowerShell 5.1 to 7.6 API-change reference. Not referenced by code, tests or `package.json`; not published |
 | `tools/build.ps1` | Assembles the generated scripts from the modules; `-Check` fails if they drift |
+| `tools/parse-check.ps1` | Parse-checks the PowerShell modules under the runtime that will execute them; also reports non-ASCII bytes and a BOM. Skips files that are not build inputs |
+| `tools/json-field.mjs` | Reads one field of an envelope by dotted path. Used by the shell harnesses, because `sed` cannot see into a nested object |
+| `tools/verify-bundle.mjs` | Verifies the loader's resolution contract without touching a live profile. **10 cases** |
+| `tools/verify-plugin-load.mjs` | Runs the real `apply()` path against a stub registry. **13 cases** |
+| `tools/verify-editions.mjs` | Proves both PowerShell artefacts are reachable and that the default is unchanged. **14 cases** |
 | `tests/golden.ps1` | Windows golden cases driving the real script through argv. **49 cases** |
-| `tests/golden-sh.sh` | POSIX golden cases, including that a failing call still emits an envelope. **75 registered cases** |
-| `tests/encoding.ps1` | Encoding-contract guard (BOM, ASCII-only, line endings, BOM-free stdout). **10 contract sites** |
+| `tests/golden-sh.sh` | POSIX golden cases, including that a failing call still emits an envelope. **116 cases** |
+| `tests/smoke-desktop-sh.sh` | Asserts what the POSIX desktop verbs actually *inject*, using the fakes below. **52 cases** |
+| `tests/fake-xdotool`, `tests/fake-wmctrl` | Recording stand-ins for the X tools, so the desktop verbs can be verified on a machine with no X server |
+| `tests/encoding.ps1` | Encoding-contract guard (BOM, ASCII-only, line endings, BOM-free stdout). **32 build modules + the generated artefacts** |
+| `tests/conformance.ps1` | Asserts `command.txt` and `spec/verbs.tsv` describe the same surface: same verbs both ways, same count, same R/W class, same positional names. **5 checks** |
 | `tests/plugin.test.mjs` | Plugin execute path, argv handling, and bundle manifest shape. **13 cases** |
 | `tests/permission.test.mjs` | Consent delegate: rule matching, deny-first, trust, audit bounds, atomic write. **18 cases** |
 | `src/plugin/index.js` | Host plugin: registers the `dsh_os` tool |
@@ -102,20 +110,25 @@ Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
 ## Tests
 
 ```powershell
-npm run test:all     # encoding guard, Windows golden, plugin, permission, then the three verifiers
+npm run test:all     # encoding guard, Windows golden, plugin, permission, the three verifiers, desktop smoke
 ```
 
-`test:all` chains `test:encoding`, `test` (the Windows golden suite), `test:plugin`, `test:permission`,
-`test:bundle` (`tools/verify-bundle.mjs`) and `test:load` (`tools/verify-plugin-load.mjs` then
-`tools/verify-editions.mjs`), in that order.
+`test:all` chains `test:conformance`, `test:encoding`, `test` (the Windows golden suite), `test:plugin`,
+`test:permission`, `test:bundle` (`tools/verify-bundle.mjs`), `test:load`
+(`tools/verify-plugin-load.mjs` then `tools/verify-editions.mjs`) and `test:desktop`
+(`bash tests/smoke-desktop-sh.sh`), in that order. The POSIX golden suite is run directly with
+`bash tests/golden-sh.sh`, because it is a POSIX acceptance suite and not part of the Windows-side `npm`
+chain.
 
 Current state, measured on this checkout:
 
 | Suite | Command | Cases | Result |
 |---|---|---|---|
-| Encoding contracts | `powershell -File tests/encoding.ps1` | 10 contract sites | **4 violations** — see below |
+| Table conformance | `powershell -File tests/conformance.ps1` | 5 | **5 passed, 0 failed** |
+| Encoding contracts | `powershell -File tests/encoding.ps1` | 32 build modules | **all contracts hold** |
 | Windows golden | `powershell -File tests/golden.ps1` | 49 | **49 passed, 0 failed** |
-| POSIX golden | `bash tests/golden-sh.sh` | 115 | **115 passed, 0 failed** |
+| POSIX golden | `bash tests/golden-sh.sh` | 116 | **116 passed, 0 failed** |
+| POSIX desktop smoke | `bash tests/smoke-desktop-sh.sh` | 52 | **52 passed, 0 failed** |
 | Plugin | `node tests/plugin.test.mjs` | 13 | **13 passed, 0 failed** |
 | Permission delegate | `node tests/permission.test.mjs` | 18 | **18 passed, 0 failed** |
 | Bundle resolution | `node tools/verify-bundle.mjs` | 10 | **10 passed, 0 failed** |
@@ -126,17 +139,45 @@ Current state, measured on this checkout:
 86 verbs are declared in the table; **82 are implemented on Windows PowerShell 5.1 and on PowerShell
 7.6 (identical sets), and 61 on POSIX**.
 
-The POSIX desktop verbs need an X display. The suite supplies one through the `tests/fake-xdotool` and
-`tests/fake-wmctrl` fixtures rather than a real X server, so "115 passed" is evidence that the verbs
-build the right commands and fail in the right typed way; it is **not** evidence that they drive a real
-window manager.
+The POSIX desktop verbs need an X display, which this machine does not have. `tests/golden-sh.sh`
+therefore asserts the **absence** path — with no `DISPLAY`, every one of them must return a typed
+`E_NO_DISPLAY` rather than an empty success. `tests/smoke-desktop-sh.sh` covers the other half without a
+display server: it puts the recording `tests/fake-xdotool` on `PATH` and sets `DISPLAY`, so the verbs run
+their real code and the assertions are about the **exact argument vector** handed to the tool — that
+`--button right` became button `3`, that `Enter` became the keysym `Return`, that a name outside the
+table (`XF86AudioMute`) is not mangled, that `--clearmodifiers` and `--repeat` land in the right place,
+and that an `xdotool` failure is reported as `E_IO` rather than a false success. That harness is what
+found two real defects in the POSIX implementation (see below). Neither suite is evidence that the verbs
+drive a real window manager.
 
-The four encoding violations are all in the two standalone `git.ps1` scripts, and they are a contract
-conflict rather than a defect in either file. `tests/encoding.ps1` requires every `*.ps1` under
-`src/host/lib/` to be BOM-free and ASCII-only, because the modules it walks are concatenated into a
-generated script. The `git.ps1` scripts are not build inputs, they are UTF-8 **with** a BOM (mandatory
-for the Chinese prompt literals under Windows PowerShell 5.1) and therefore contain non-ASCII bytes.
-The two rules and those two files cannot both hold; the guard has not been relaxed.
+`tests/encoding.ps1` requires ASCII-only, BOM-free files **of the 32 modules `tools/build.ps1`
+concatenates**, because a non-ASCII byte there would be decoded in the ANSI code page and corrupt the
+generated artefact. It deliberately does not require it of the two standalone `git.ps1` scripts, which
+are never concatenated into anything and are UTF-8 **with** a BOM so their Chinese prose parses under
+Windows PowerShell 5.1. An earlier version of the guard applied the rule to every `*.ps1` under `lib/`
+and reported four violations that were a contract conflict rather than a defect; the guard now scopes
+the rule to build inputs and prints which files it skipped, so the narrowing is visible rather than
+silent.
+
+`tests/conformance.ps1` exists because `spec/verbs.tsv` had claimed since it was written that
+"tests/conformance.ps1 asserts the two agree" while no such file existed — a comment naming a guard that
+is not there is worse than no comment, because it is read as a guarantee. It resolves each `command.txt`
+line to a verb by the longest word-prefix that names a known verb (so `file verify charset path charset`
+resolves to `file.verify.charset` rather than to a nonexistent `file.verify`), then checks that the two
+tables list the same verbs, the same count, the same R/W class and the same positional names in order.
+Writing it found **five real inconsistencies**, all of them in `command.txt` except one:
+
+| Verb | Was declared | Actual, per the implementation |
+|---|---|---|
+| `file.append` | `path content charset` | charset is an **optional** third positional, so the declaration implied it was required |
+| `file.insert` | `path content charset offset` | charset is `--charset`, deliberately **not** a positional — an omitted positional there would silently shift `offset` |
+| `wait.ms` | no positionals | takes `ms` |
+| `keyboard.combination` | two lines, `... down a b c d` / `... up a b c d` | one verb with a **`phase`** positional; the two-line form read as two verbs |
+| `execute.command` | tsv `command\|arguments` | the entire positional list is argv, so there is no separate `command` |
+
+`command.txt` is the authoritative contract, so four were corrected there; `verbs.tsv`'s
+`execute.command` row was corrected to `arguments...`. Nothing about the running surface changed — only
+what the two documents say — which is exactly the class of drift a conformance guard is for.
 
 ## Using it from the harness
 
@@ -198,13 +239,28 @@ with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not
   — four verbs. Everything else in the table is dispatched on both PowerShell runtimes, with identical
   verb sets. Every listed verb is declared in the table and returns a typed `E_NOT_SUPPORTED` rather
   than a silent success.
-- Missing on POSIX: 25 verbs — `file.encode`; all of `window.*`; `screenshot`, `text`, `structure`;
-  `clipboard.read`, `clipboard.write`, `clipboard.paste`; `wait.window`; `task.launch`; and all of
-  `service.*`. `mouse.*`, `keyboard.*`, `wait.ms` and the five `environment attribute` verbs **are**
-  implemented, but every one of them requires an X display: with no `DISPLAY` they return a typed
-  `E_NO_DISPLAY` rather than an empty success.
+- Missing on POSIX: 25 verbs — `file.encode`; all eleven `window.*`; `screenshot`, `text`, `structure`;
+  `clipboard.read`, `clipboard.write`, `clipboard.paste`; `wait.window`; `task.launch`; and all five
+  `service.*`. These fall through the dispatch table to a typed `E_NOT_SUPPORTED`; they are not silently
+  absent.
+- Implemented on POSIX and needing **no display server**: the five `environment attribute` verbs
+  (`add`, `set`, `delete`, `list`, `get`) and `wait.ms`. The attribute mutations are `--scope process`
+  only, and refuse a persistent scope with `E_NOT_SUPPORTED` rather than half-applying it, because POSIX
+  has no kernel API for a list variable and rewriting `PATH` in a startup file can make a machine's
+  shells unusable.
+- Implemented on POSIX and needing **an X display**: all seven `mouse.*` and all six `keyboard.*`, which
+  drive X11 through `xdotool`. With no `DISPLAY` each returns a typed `E_NO_DISPLAY`; with no `xdotool`
+  installed each returns `E_NOT_SUPPORTED` naming the missing tool. Key names are translated from the
+  Windows spelling to the X keysym spelling (`Enter`→`Return`, `PgUp`→`Prior`, `win`→`super`) and
+  anything outside the table is passed through unchanged, so any X keysym name works. A Windows virtual
+  key *number* is refused, because `13` means Return to a Windows caller and nothing to X.
+- Both goldens include the failure path, which is the point: a failing call must still deliver exactly
+  one parseable envelope on stdout, because a bare exit code tells an agent nothing.
 - Windows and PowerShell 7.6 are at exact parity: both dispatch the same 82 verbs, checked by
   comparing the two dispatch tables rather than by eye.
+- Every Windows verb that a caller can reach is also reachable on POSIX or reports a typed refusal. The
+  POSIX-only weak spot is that the desktop verbs are verified against recording fakes rather than a real
+  X server; see *Tests*.
 - The four `execute` verbs that the README previously listed as unwritten are in fact implemented on
   Windows — `execute.command`, `execute.query`, `execute.kill` and `task.launch` are dispatched to real
   bodies. So are `permission.grant`, `permission.revoke` and `permission.acl.init` on **both**
@@ -248,21 +304,37 @@ Measured on this checkout, stated exactly as observed:
 
 | Suite | Cases | Result |
 |---|---|---|
+| Table conformance | 5 | **5 passed, 0 failed** |
 | Windows golden | 49 | **49 passed, 0 failed** |
-| POSIX golden | 115 | **115 passed, 0 failed** |
+| POSIX golden | 116 | **116 passed, 0 failed** |
+| POSIX desktop smoke | 52 | **52 passed, 0 failed** |
 | Plugin | 13 | **13 passed, 0 failed** |
 | Permission delegate | 18 | **18 passed, 0 failed** |
 | Bundle resolution | 10 | **10 passed, 0 failed** |
 | Plugin load | 13 | **13 passed, 0 failed** |
 | Edition selection | 14 | **14 passed, 0 failed** |
-| Encoding contracts | 10 sites | **4 violations** — see below |
+| Encoding contracts | 32 modules | **all contracts hold** |
 
-- The 4 encoding violations are all in the two standalone `git.ps1` scripts, for the contract conflict
-  described under Tests. Every other contract holds, including that stdout never carries a BOM.
-- The PowerShell 7.6 artefact builds and is now reachable, but the version of PowerShell 7 on the
-  machine that ran the edition verifier is **7.6.6**, and the argument-stability and encoding
-  behaviour of `bin/dsh-os7.ps1` is otherwise established by comparing the two dispatch tables and by a
-  comment-aware scan for cross-version constructs, not by a per-verb run on 7.6.
+- Every suite above passes. The four encoding violations this section used to report are gone, because
+  the guard now scopes the ASCII-only rule to the files the assembler actually reads; the rule was never
+  relaxed, its scope was corrected, and the guard prints which files it skipped.
+- The PowerShell 7.6 artefact builds, is reachable, and the version of PowerShell 7 on this machine is
+  **7.6.6**, which is what the edition verifier drove. Beyond that, the 7.6 modules are established as a
+  faithful port by comparing the two dispatch tables (identical 82-verb sets), by a per-module
+  function-name comparison, and by running the window group's golden cases against `dsh-os7.ps1` — rather
+  than by a per-verb run of the whole surface on 7.6. That is a real gap in the evidence, not a claim of
+  full parity.
+- Two defects found by `tests/smoke-desktop-sh.sh` after the POSIX mouse and keyboard verbs were written,
+  both recorded here because they are the kind review does not catch:
+  1. **Validation ran after injection.** `mouse click 10 20 --count abc` returned an error *and had
+     already moved the pointer*. The Windows side validates every argument before injecting; the POSIX
+     side now does too.
+  2. **A rejection inside `$(...)` did not stop the verb.** The coordinate validator called `fail`, but
+     the caller invoked it as `x="$(window_int_arg ...)"`, so the `exit` ended only the subshell: the verb
+     carried on with an empty value and injected anyway — `mouse over abc 20` moved the pointer and
+     returned `ok`. The validators now assign a variable (`WINDOW_INT`, `WINDOW_BUTTON`, `WINDOW_KEY`)
+     and are called in the caller's own shell. This trap was already documented in the environment
+     module, and it was still repeated here.
 
 Not proven, and not claimed: that the **harness's own loader** composes these bundles in a live
 profile. That would mean installing this package into the user's active desktop profile and restarting
@@ -283,14 +355,17 @@ the script itself cannot create a persistent authorization: with no delegate pre
 Two enforcement layers protect "the files that decide what this layer may do":
 
 - **Layer B, structural** — a hard protected-path boundary rejects any modification of
-  `permission.json` (and `.bak`), `src/host/command.txt`, the four `src/host/bin/dsh-os.*` entry
+  `permission.json` (and `.bak`), `src/host/command.txt`, the three `src/host/bin/dsh-os.*` entry
   points, `src/host/spec/verbs.tsv` and `src/host/spec/charsets.tsv`, plus any same-named temporary
   staged beside one of them. Violations report `E_PERMISSION_PROTECTED_PATH` with no side effect;
   reads are still allowed so you can review the rules. The check runs on the **resolved, normalised**
   path, compared segment by segment rather than by regex, because `..`, 8.3 short names or a trailing
   dot all walk around a regex. `file.move` and `file.copy` check **both ends**, since moving a
   protected file is a way of destroying it. The POSIX list has eight entries: the same list without
-  `dsh-os7.ps1`.
+  `dsh-os7.ps1`. `dsh-os7.ps1` was added to the Windows list only after the gap was found destructively —
+  the golden suite's protected-path case moved the artefact into a sandbox it then deleted, because the
+  list named the 5.1 and shell entry points but not the 7.6 one. Every entry point belongs to the same
+  boundary, and the two lists now protect both PowerShell scripts.
 - **Layer A, kernel ACL** — Windows only, opt-in and requiring elevation. `permission acl init`
   appends an explicit `DENY` for `Everyone` (`S-1-1-0`) to the DACL of `permission.json`, covering
   `FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER`. It is idempotent and reports

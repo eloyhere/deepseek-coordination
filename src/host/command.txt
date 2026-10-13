@@ -34,12 +34,12 @@ file delete path                            // W  recycle by default; --permanen
 file move source destination                // W
 file copy source destination                // W
 file mkdir path                             // W
-file append path content charset            // W  append at end of file, preserving original BOM and EOL.
-file insert path content charset offset     // W  insert at a byte offset; must be a character boundary.
+file append path content                    // W  append at end of file, preserving original BOM and EOL. Optional third positional <charset> asserts the existing charset.
+file insert path content offset             // W  insert at a byte offset; must be a character boundary. Charset is --charset, not a positional, so an omitted one cannot shift offset.
 file view path charset start end            // R  charset is an optional assertion; start/end an optional byte range.
 file search directory name                  // R  returns a JSON array of matching paths. Literal substring by default, --regex to switch.
 
-execute command arguments                   // W  arguments is an array passed straight to argv; no shell.
+execute command arguments...                // W  arguments is an array passed straight to argv; no shell. The whole positional list is argv, so there is no separate <command> parameter.
 execute synchronous commands                // W  walk the command array one after another; stop at the first failure.
 execute asynchronous commands               // W  walk the command array concurrently; wait for all of them.
 execute query pid                           // R  query a running process
@@ -57,8 +57,7 @@ screenshot x y width height                 // R  catch a screenshot for a recta
 keyboard down code                          // W  trigger a key down.
 keyboard up code                             // W  trigger a key up.
 keyboard press code                         // W  one atomic down+up; use this instead of down followed by up.
-keyboard combination down a b c d           // W  such as alt+tab: press the whole chord together.
-keyboard combination up a b c d             // W  such as alt+tab: release the whole chord together.
+keyboard combination phase keys             // W  phase is down, up or press; keys are the chord, e.g. ctrl c. `keyboard combination down a b c d` releases nothing; the same verb with phase up does.
 keyboard type text                          // W  type arbitrary text; non-ASCII goes through the clipboard.
 keyboard codes                              // R  list accepted key names for this platform.
 
@@ -76,7 +75,7 @@ window move name x y                        // W
 window resize name width height             // W
 
 wait window name                            // R  block until a window appears; --absent waits for it to go.
-wait ms                                     // R  explicit wait
+wait ms ms                                  // R  explicit wait, in milliseconds. Bounded to one hour.
 
 text x y                                    // R  find the complete text around the point.
 structure x y                               // R  find view structure around the point.

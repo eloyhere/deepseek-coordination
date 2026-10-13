@@ -53,14 +53,22 @@ deepseek-coordination/
 ├─ src/host/lib/powershell.md      5.1 → 7.6 的 API 变更参考（无任何代码/测试/package.json 引用，不随包发布）
 ├─ src/host/bin/dsh-os.ps1         【生成物】Windows PowerShell 5.1 实现（218,514 字节）
 ├─ src/host/bin/dsh-os7.ps1        【生成物】PowerShell 7.6 实现（255,565 字节）
-├─ src/host/bin/dsh-os.sh          【生成物】POSIX 实现（130,240 字节）
+├─ src/host/bin/dsh-os.sh          【生成物】POSIX 实现（142,744 字节）
 ├─ src/host/bin/dsh-os.bat         仅 ASCII 的 cmd.exe 外壳（手写，非生成物）
 ├─ src/host/docs/os-spec.md        完整规范：契约、错误码、黄金用例矩阵
 ├─ src/host/docs/permission-model.md  授权模型及其残余风险
 ├─ src/plugin/index.js             宿主插件：注册 `dsh_os` 工具
 ├─ src/permission/index.js         同意写入委托：`permission.json` 的唯一写入方，注册 5 个 `os_permission_*` 工具
 ├─ tools/build.ps1                 拼装三个生成脚本；`-Check` 在漂移时失败
-├─ tests/                          黄金（Windows/POSIX）、编码、插件、授权五套测试文件
+├─ tools/parse-check.ps1           在**将要执行代码的那个运行时**下解析检查模块，并报告非 ASCII 与 BOM
+├─ tools/json-field.mjs            按点分路径读取信封里的一个字段（shell 测试用，`sed` 看不进嵌套对象）
+├─ tools/verify-bundle.mjs         校验 loader 的解析契约（10 项）
+├─ tools/verify-plugin-load.mjs    走真实 `apply()` 路径（13 项）
+├─ tools/verify-editions.mjs       证明两个 PowerShell 生成物都可达（14 项）
+├─ tests/                          黄金（Windows/POSIX/桌面注入）、两表一致性、编码、插件、授权各套测试
+│  ├─ conformance.ps1              `command.txt` 与 `spec/verbs.tsv` 必须描述同一个面（5 项）
+│  ├─ smoke-desktop-sh.sh          POSIX 桌面动词**实际注入了什么**（52 项）
+│  └─ fake-xdotool, fake-wmctrl    会记录调用的替身，使无 X server 的机器也能校验桌面动词
 └─ permission.json                 授权数据（随仓库为空文件，这就是初始状态）
 ```
 
@@ -329,9 +337,11 @@ dsh-os permission audit --limit 50     # 追加式尾部；委托裁剪到 200 �
 
 ### POSIX
 
-**已实现（61）：** 除 `file.encode` 外的整个 `file` 面；`file verify.*`；`file.search`；五个 `execute` 动词（含 Windows 侧同样具备的 `execute.command`）；`system.*`；全部 `task.*`（`list`/`query`/`show`/`kill`，**不含 `task.launch`**）；整个 `environment` 面（变量层含持久写入，`attribute.*` 五个动词齐全）；整个 `permission` 面；`wait.ms`；整个 `mouse` 与 `keyboard` 面（各 7 与 6 个动词）；`selfcheck`。
+**已实现（61）：** 除 `file.encode` 外的整个 `file` 面；`file verify.*`；`file.search`；五个 `execute` 动词（含 Windows 侧同样具备的 `execute.command`）；`system.*`；`task.list`/`query`/`show`/`kill`（**不含 `task.launch`**）；整个 `environment` 变量层（含持久写入）与 `attribute.*` 五个动词；整个 `permission` 面；`wait.ms`；整个 `mouse` 面（7 个）与 `keyboard` 面（6 个）；`selfcheck`。
 
-**未实现（25）：** `file.encode`；全部 `window.*`（11 个）；`screenshot`、`text`、`structure`；`clipboard.read`、`clipboard.write`、`clipboard.paste`；`wait.window`；`task.launch`；全部 `service.*`（5 个）。
+这 61 个里，**13 个需要 X display**（`mouse.*` 7 个 + `keyboard.*` 6 个），其余 48 个不需要。
+
+**未实现（25）：** `file.encode`；全部 `window.*`（11 个）；`screenshot`、`text`、`structure`；`clipboard.read`、`clipboard.write`、`clipboard.paste`；`wait.window`；`task.launch`；全部 `service.*`（5 个：`list`、`query`、`start`、`stop`、`restart`）。这些会经分发表的默认分支返回**带类型的** `E_NOT_SUPPORTED`，而不是静默缺失。
 
 > [!NOTE]
 > POSIX 没有持久化变量的内核 API，因此 `environment add/set/delete --scope user` 是通过一个**托管块**去编辑 `${HOME}/.profile` 的，块由 `# >>> dsh-os managed environment >>>` 与 `# <<< dsh-os managed environment <<<` 标记界定。每次改动都会重新生成标记之间的全部内容，因此这些操作是幂等的，用户也可以直接删掉整个块来一次性撤销。若直接往文件里写裸赋值，第二次调用就会重复追加，而且无法撤销。`--scope machine` 不可用，会报 `E_NOT_SUPPORTED`。
@@ -339,10 +349,16 @@ dsh-os permission audit --limit 50     # 追加式尾部；委托裁剪到 200 �
 > `environment attribute add/set/delete` 则是**仅进程作用域**，持久作用域一律以 `E_NOT_SUPPORTED` 拒绝。这是刻意的：POSIX 没有列表型变量的内核 API，要持久化就得重写 shell 启动文件，而那里一旦重建错 `PATH`，整台机器的 shell 都可能不可用。
 
 > [!IMPORTANT]
-> **POSIX 的 `mouse.*`、`keyboard.*` 与 `wait.ms` 需要 X display。** 没有 `DISPLAY` 时它们返回**带类型的** `E_NO_DISPLAY`（而不是空结果）。这正是本机黄金测试出现 3 个失败的唯一原因，见[测试](#测试)。
+> **POSIX 只有 `mouse.*`（7 个）与 `keyboard.*`（6 个）需要 X display。** 没有 `DISPLAY` 时它们返回**带类型的** `E_NO_DISPLAY`；装了显示但没有 `xdotool` 时返回 `E_NOT_SUPPORTED` 并点名缺失的工具。
+>
+> **`wait.ms` 不需要**——它只是一次 sleep，因此本机可以完整验收。`environment attribute.*` 五个动词同样不需要（它们动的是环境变量，不是桌面）。
+>
+> 本机（无 `DISPLAY`、无 xdotool）的黄金测试因此把它们断言成 `E_NO_DISPLAY`：**这断言的是"缺失路径"，不是"它们能用"。** 注入路径由 `tests/smoke-desktop-sh.sh` 用替身工具覆盖，见[测试](#测试)。
 
 > [!NOTE]
-> 桌面相关各组在 POSIX 上是**结构性缺失**。`window.sh`、`service.sh` 与 `native.sh` 是刻意留空的桩，其文件头解释了原因：POSIX 上的对应物是外部程序（`xdotool`、`wmctrl`、`wl-copy`、`import`），而不是可链接的库。
+> POSIX 上仍**结构性缺失**的是 `window.*`（11 个）、`screenshot`、`text`、`structure`、`clipboard.*`、`wait.window` 与全部 `service.*`。`native.sh`（515 字节）与 `service.sh`（333 字节）是刻意留空的桩，其文件头解释了原因：POSIX 上的对应物是外部程序（`wmctrl`、`import`、`xclip`、`scrot`），而不是可链接的库。
+>
+> **`window.sh` 不再是桩**（26 KB）：它现在实现了 `wait.ms`、全部 `mouse.*` 与 `keyboard.*`，通过 `xdotool` 驱动 X11，并在动手之前先做显示与工具的能力检查。其余桌面动词仍从分发表的默认分支返回 `E_NOT_SUPPORTED`。
 
 ### 两套实现并不对等
 
@@ -396,14 +412,25 @@ bundle 解析校验把包以 junction 链接进一个一次性的 profile 沙箱
 
 该缺陷**已修复**：`tests/golden.ps1` 的解析器用例现在自己创建夹具（`$fixtureDir = Join-Path $sandbox 'parser\verify'`，随后 `New-Item` 与 `Set-Content`），再对其断言。当前实测为 **49 通过，0 失败**。
 
+### `tests/smoke-desktop-sh.sh` 查出的两个 POSIX 真实缺陷
+
+这两个都在**写完之后、review 看不出来**——因为本机没有 `DISPLAY`，它们平时只表现为"反正都是 `E_NO_DISPLAY`"。用替身工具把注入路径打开后才暴露：
+
+1. **校验发生在注入之后。** `mouse click 10 20 --count abc` **返回了错误，但指针已经被移走**——一次"失败"的调用已经改变了机器状态。Windows 侧是**先校验全部参数再注入**，POSIX 侧现已对齐。（`mouse over abc 20` 同理。）
+
+2. **`$(...)` 里的 `fail` 不会终止动词。** 坐标校验器调用 `fail`，但调用方写的是 `x="$(window_int_arg ...)"`，于是 `exit` **只结束了子 shell**：动词带着空值继续往下走并**照常注入**——`mouse over abc 20` **移动了指针并返回 `ok`**。现在三个会拒绝输入的校验器改为**赋值变量**（`WINDOW_INT`、`WINDOW_BUTTON`、`WINDOW_KEY`），并在**调用者自己的 shell** 中读取。
+
+   **这个陷阱本仓库的 `environment` 模块早已在注释里记录过**（`env_resolve_scope` 专门讲过为什么它赋值而不打印），而它仍然在这里被重复了一次。这两个缺陷现在由 3 个断言固化：非法入参必须**被拒绝且未注入任何东西**。
+
 ### 其他缺口
 
-* **`tests/conformance.ps1` 并不存在**，尽管 `spec/verbs.tsv` 的文件头声称它存在、并会校验与 `command.txt` 的一致性。两张表目前是一致的——但没有任何东西在强制这一点。
+* **`tests/conformance.ps1` 曾经并不存在**，尽管 `spec/verbs.tsv` 的文件头声称它存在、并会校验与 `command.txt` 的一致性。**该文件现已创建**（见下文「两张表的一致性」），文件头的声明因此成为事实。一个"指名了守卫、而守卫并不存在"的注释比没有注释更糟，因为它会被当作保证来读。
 * **同意写入委托从未注册审批 answerer**，如前所述。
 * **委托在其 `query` 结果里无条件报告 `aclEnforced: false`**，而不是像脚本那样去实测 ACL。因此在 A 层已开启时，它会**低报**防护强度。
 * **`--shell`、`--env`、`--stdin`、`--background` 被接受但从不被读取。** `execute.*` 在 Windows 上永远用 `cmd.exe`，在 POSIX 上永远用 `/bin/sh`。Windows 批量动词上的 `--encoding` 会构造一个从未被应用的值，因此对子进程输出的解码没有影响。
-* **`E_TIMEOUT` 从未被任何一侧实现抛出**，尽管它被声明用于 `wait` 与 `execute` 各组。
-* **若干已声明的错误码不可达**，例如 `file.encode` 的 `E_CHARSET_MISMATCH` 与 `E_ENCODING_INVALID`，以及 `file.delete` 的 `E_IS_A_DIR`。
+* **若干已声明的错误码确实不可达。** 在两侧实现中全文检索后确认，**零次出现**的有 `E_ENCODING_INVALID`（`file.encode`）、`E_IS_A_DIR`（`file.delete`）与 `E_ABORTED`。与此相对，`E_CHARSET_MISMATCH`（3 处）、`E_BINARY_CONTENT`、`E_TRUNCATED` 都有真实抛出点——因此这张表并非普遍不可信，但上述三个应视为尚未实现的意图，而不是可依赖的返回码。
+* **此处曾记载"`E_TIMEOUT` 从未被任何一侧抛出"——该记载已过时且错误。** 它在 `execute.ps1`（`execute command` 超时）与 `window.ps1`（`wait window` 超时）中都会被抛出。实测：
+  `execute command cmd.exe /c ping -n 10 127.0.0.1 --timeout 300 --allow` 返回 `{"ok":false,...,"code":"E_TIMEOUT",...,"hint":"captured so far: stdout=86 bytes, stderr=0 bytes"}`，退出码 **6**。POSIX 侧同样有 `E_TIMEOUT`（`json.sh` 映射到退出码 6）。
 * **`src/client/` 是未改动的 Vite 脚手架。** 它没有与宿主接线，`index.html` 引用 `./src/main.ts` 而实际文件在 `./src/client/main.ts`，且 `node_modules` 为空——因此 `npm run build` 与 `npm run dev` 目前没有意义。
 * **`git` 不是必需依赖，但也并非每个目标环境都有**，因此没有任何验收步骤依赖它。
 
@@ -422,13 +449,15 @@ bundle 解析校验把包以 junction 链接进一个一次性的 profile 沙箱
 npm run test:all        # 按顺序跑下面全部
 ```
 
-`test:all` 依次串联 `test:encoding`、`test`（Windows 黄金）、`test:plugin`、`test:permission`、`test:bundle`（`tools/verify-bundle.mjs`）与 `test:load`（先 `tools/verify-plugin-load.mjs`，再 `tools/verify-editions.mjs`）。
+`test:all` 依次串联 `test:conformance`、`test:encoding`、`test`（Windows 黄金）、`test:plugin`、`test:permission`、`test:bundle`（`tools/verify-bundle.mjs`）、`test:load`（先 `tools/verify-plugin-load.mjs`，再 `tools/verify-editions.mjs`）与 `test:desktop`（`bash tests/smoke-desktop-sh.sh`）。
 
 | 套件 | 命令 | 用例数 | 实测结果 |
 |---|---|---|---|
-| 编码契约 | `powershell -File tests/encoding.ps1` | 10 个契约点 | **4 项违规**（见下） |
+| 两表一致性 | `powershell -File tests/conformance.ps1` | 5 | **5 通过，0 失败** |
+| 编码契约 | `powershell -File tests/encoding.ps1` | 32 个构建模块 | **全部契约成立** |
 | Windows 黄金 | `powershell -File tests/golden.ps1` | 49 | **49 通过，0 失败** |
-| POSIX 黄金 | `bash tests/golden-sh.sh` | 115 | **115 通过，0 失败** |
+| POSIX 黄金 | `bash tests/golden-sh.sh` | 116 | **116 通过，0 失败** |
+| POSIX 桌面注入 | `bash tests/smoke-desktop-sh.sh` | 52 | **52 通过，0 失败** |
 | 插件 | `node tests/plugin.test.mjs` | 13 | **13 通过，0 失败** |
 | 授权委托 | `node tests/permission.test.mjs` | 18 | **18 通过，0 失败** |
 | bundle 解析 | `node tools/verify-bundle.mjs` | 10 | **10 通过，0 失败** |
@@ -436,12 +465,32 @@ npm run test:all        # 按顺序跑下面全部
 | 版本选择 | `node tools/verify-editions.mjs` | 14 | **14 通过，0 失败** |
 | 构建漂移 | `powershell -File tools/build.ps1 -Check` | 3 个生成物 | **无漂移** |
 
+### 两张表的一致性
+
+`spec/verbs.tsv` 的文件头一直声称「`tests/conformance.ps1` 会校验它与 `command.txt` 一致」，而那个文件**并不存在**——**现已补上**，声明因此成为事实。该守卫按「**最长的、能在词表中命中某个动词的词前缀**」把 `command.txt` 的每一行解析成动词（所以 `file verify charset path charset` 解析为 `file.verify.charset`，而不会误认成不存在的 `file.verify`），然后校验：两表动词集合互相包含、数量相等、R/W 类别一致、位置参数名按序一致。
+
+**写它的过程中查出 5 处真实不一致**，除一处外都在 `command.txt`（它是权威契约）：
+
+| 动词 | 原声明 | 按实现应有的样子 |
+|---|---|---|
+| `file.append` | `path content charset` | charset 是**可选**的第三个位置参数，原写法让人以为必需 |
+| `file.insert` | `path content charset offset` | charset 走 `--charset`，**刻意不是**位置参数——若它是位置参数，省略它会让 `offset` 静默移位 |
+| `wait.ms` | 无位置参数 | 接受 `ms` |
+| `keyboard.combination` | 两行 `... down a b c d` / `... up a b c d` | 是**一个**动词，含 `phase` 位置参数；两行写法读起来像两个动词 |
+| `execute.command` | tsv 写作 `command\|arguments` | 整个位置参数列表就是 argv，不存在单独的 `command` |
+
+其中四处改在 `command.txt`，`verbs.tsv` 的 `execute.command` 行改为 `arguments...`。**运行面没有任何改变**——变的只是两份文档的说法，而这正是这种一致性守卫存在的意义。
+
 `tests/encoding.ps1` 守卫的是让其余一切有意义的那些契约：`.ps1` 生成物带 BOM、`.sh` 生成物不带、行尾遵循 `.gitattributes`、`command.txt` 与 `.tsv` 表保持纯 ASCII + LF，以及 **stdout 永不携带 BOM**。
 
-**那 4 项编码违规全部来自两个独立脚本 `git.ps1`，而且这是契约冲突，不是文件本身的缺陷。** `tests/encoding.ps1` 要求 `src/host/lib/` 下每个 `*.ps1` 都不带 BOM 且纯 ASCII，因为它遍历的是会被拼进生成脚本的模块；而 `git.ps1` 不是构建输入，它是 **UTF-8 带 BOM**（Windows PowerShell 5.1 下中文提示字面量必须有 BOM）因此必然含非 ASCII 字节。这两条规则与这两个文件无法同时成立；该守卫尚未放宽。
+**此前记载的「4 项编码违规」现已消失，但这不是"放宽了守卫"。** 规则本身从未松动，改的是它的**适用范围**：原先它要求 `src/host/lib/` 下**每个** `*.ps1` 都不带 BOM 且纯 ASCII，而其中两个 `git.ps1` 是**独立工具**——不会被拼进任何生成物，且必须带 BOM 才能在 Windows PowerShell 5.1 下正确解析其中文提示字面量。对"构建从不读取的文件"套用该规则属于**误报**。现在守卫只校验 `tools/build.ps1` 实际拼接的 **32 个模块**，并**打印出它跳过了哪些文件**，使范围的收窄是可见的而不是静默的。
 
 > [!NOTE]
-> **POSIX 桌面动词的“115 通过”不是“驱动真实窗口管理器”的证据。** 该套件通过 `tests/fake-xdotool` 与 `tests/fake-wmctrl` 两个替身提供显示环境，而不是真的 X server；因此它证明的是这些动词**构造了正确的命令**、并以**正确的带类型错误**失败，而不是它们真的操作了桌面。
+> **POSIX 桌面动词的「116 通过」与「52 通过」都不是「驱动真实窗口管理器」的证据。** 两套测试从两个方向覆盖同一批动词，而本机没有 X server：
+> * `tests/golden-sh.sh` 断言**缺失路径**——没有 `DISPLAY` 时，每个桌面动词都必须返回带类型的 `E_NO_DISPLAY`，而不是空成功。
+> * `tests/smoke-desktop-sh.sh` 断言**注入路径**——它把会记录调用的 `tests/fake-xdotool` 放进 `PATH` 并设置 `DISPLAY`，于是动词走真实代码路径，断言落在**交给工具的确切参数向量**上：`--button right` 是否变成按键 `3`、`Enter` 是否变成 keysym `Return`、表外的 `XF86AudioMute` 是否被原样送达、`--clearmodifiers` 与 `--repeat` 是否在正确位置、以及 xdotool 失败是否报成 `E_IO` 而不是假成功。
+>
+> **正是这个测试台查出了 POSIX 实现里的两个真实缺陷**（见上文「实际可用范围」与「已知缺陷」）。没有任何一套证明它们真的操作了桌面。
 
 > [!WARNING]
 > **两套黄金测试必须串行运行。** 两套实现都会把失败信封暂存到一个**固定路径**的临时文件——`.temporary/dsh-os.err`，既无 PID 也无锁——因此并发调用会互相覆盖对方待取的结果。实测并行运行 `golden.ps1` 与 `golden-sh.sh` 时报出了 2 个**假**失败：退出码与信封自身的 `error.code` 相互矛盾；改为串行后二者全部消失。请把它当作缺陷而不是随机抖动：该暂存路径在构造上就是竞态的。

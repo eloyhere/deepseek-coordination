@@ -24,7 +24,7 @@ file.view	path|charset|start|end	max-bytes|no-numbers	R	E_NOT_FOUND E_NOT_A_FILE
 # file.search returns a JSON ARRAY of matches. It never walks outside the directory it is given, and
 # match is a literal substring by default (--regex switches to a regular expression).
 file.search	directory|name	regex|recursive|max-depth|limit|max-bytes|type	R	E_NOT_FOUND E_NOT_A_DIR E_RANGE E_TRUNCATED
-execute.command	command|arguments	workdir|env|stdin|timeout|encoding|shell|background|allow	W	E_NOT_FOUND E_TIMEOUT E_NOT_SUPPORTED
+execute.command	arguments...	workdir|env|stdin|timeout|encoding|shell|background|allow	W	E_NOT_FOUND E_TIMEOUT E_NOT_SUPPORTED
 # execute.synchronous runs the command array one after another and stops at the first failure.
 # execute.asynchronous runs them concurrently and waits for all of them.
 # Both return one aggregate envelope per command, in input order, so a caller can map results back
