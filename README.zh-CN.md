@@ -244,26 +244,31 @@ intake -> plan -> choose -> run -> done
 
 ### KV 缓存效应——提示词小节为何必须是常量
 
-这一行注册进系统提示词的小节是一个**常量字符串**。这不是为了整洁，这就是设计本身。证据是实测的，而且很残酷：
+这一行注册进系统提示词的小节是一个**常量字符串**。这不是为了整洁，这就是设计本身，理由是：提示词是任何会变动的内容最不该出现的地方。
 
-| 对一个 7,384 token 的请求做改动 | 命中 | 命中率 |
-|---|---:|---:|
-| 什么都不改 | 7,296 | **98.8%** |
-| 在末尾追加一条消息 | 7,296 | **98.7%** |
-| 在**系统提示词末尾**加一行 | 0 | **0.0%** |
-| 在**系统提示词开头**插一行 | 0 | **0.0%** |
-| 在工具列表末尾追加一个 schema | 1,408 | 18.3% |
-| 改最后一个工具描述的一个字符 | 1,280 | 17.3% |
-| 对调两个工具的顺序 | 0 | **0.0%** |
+**本包实际测到了什么。** `tools/measure-cache.mjs` 直连真实端点（`deepseek-flash`、`max_tokens: 1`、同一条谱系先热身一次、每个变量只发一次请求），读取 `cache_read_input_tokens`。测了两遍，结果一致：
 
-十个变量，在 DeepSeek 官方端点上实测（[前缀稳定性一章](https://github.com/diguike/book-deepseek-harness/blob/main/book/11-prefix-stability.md)）。其背后的规则来自 provider 自己：一次缓存命中要求请求**完整匹配一个已持久化的 cache prefix unit**，而系统提示词排在工具目录与全部历史之前（[上下文硬盘缓存](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)）。
+| 形状 | 缓存读 | 总输入 | 命中率 |
+|---|---:|---:|---:|
+| 不作改动（对照） | 5,632 | 5,780 | 97.4% |
+| 追加一条 user 消息 | 5,632 | 5,784 | 97.4% |
+| 追加一条 tool result | 5,632 | 5,853 | 96.2% |
+| **一次工作流：四次追加调用** | 5,632 → 5,888 | 每次约 5,900 | **均值 96.6%** |
 
-harness 自己已经为这一课付过一次账：沙箱策略原本写在系统提示词里，用户切一次权限，缓存命中就从 **约 14,700 token 掉到 256**；修法是把会变的事实挪出提示词、放进消息序列（[DSH Agent Note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-09-02-in-history-system-prompt-replacement.md)）。
+也就是说，本行自身的形状是被实测为「热」的：四次调用、23,040 个缓存命中 token、每一次都在 96% 以上。
 
-**这一行的第一版犯的正是这个错误。** 它把当前阶段渲染进小节，于是四次调用的工作流会三次重写系统提示词，每次都付一次整段前缀的 miss。修法是结构性的，不是文案性的：
+**本包没能测到、因此不会声称的部分。** 实验同样尝试了反事实——重写前导系统提示词、改一个工具描述、对调两个工具——但这些读数**不可复现**：第一遍全部读作 0.0%，第二遍全部读作 97%。provider 文档给出了原因，且这一点本身值得知道：它会持久化**跨请求检测到的公共前缀**，因此到第二遍时，反复发送的相同前缀已被学习，改动之后依然能匹配。共享账号上的「每变量 A/B 隔离」无法对改动一侧下定论，所以 `tools/measure-cache.mjs` 只对追加一侧下断言（那一侧稳定），其余只作为观察打印、不作为结论。
 
-* 小节是常量，因此本行的**缓存效应是 `prefix-stable`**：每个工作流零次提示词变更，且由 `tests/workflow.test.mjs` 在每个阶段对注册文本逐字节断言；
-* 当前阶段与**下一个该发的调用**改由 `workflow` 工具自身的结果携带——那是追加的历史，上表为它标价 98.7%；
+**反事实一侧改由独立证据支撑**，而这些证据很强：
+
+* provider 自己的规则是：一次缓存命中要求请求**完整匹配一个已持久化的 cache prefix unit**，而系统提示词排在工具目录与全部历史之前（[上下文硬盘缓存](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)）；
+* 在同一端点上的十变量实验发现：末尾追加消息保住 **98.7%** 命中，而在**系统提示词末尾**加一行得到 **0.0%**（[前缀稳定性一章](https://github.com/diguike/book-deepseek-harness/blob/main/book/11-prefix-stability.md)）；
+* harness 自己付过这笔账：沙箱策略原本写在系统提示词里，用户切一次权限，缓存命中从 **约 14,700 token 掉到 256**；修法是把会变的事实挪出提示词、放进消息序列（[DSH Agent Note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-09-02-in-history-system-prompt-replacement.md)）。
+
+**这一行的第一版把当前阶段渲染进了那个小节**，于是四次调用的工作流会三次重写系统提示词。无论 provider 某一天是否恰好宽容这件事，本行都不该依赖它——所以修法是结构性的：
+
+* 小节是常量，因此本行的**缓存效应是 `prefix-stable`**：每个工作流零次提示词变更，由 `tests/workflow.test.mjs` 在每个阶段对注册文本逐字节断言，并在删掉 `state.json` 之后再断言一次；
+* 当前阶段与**下一个该发的调用**改由 `workflow_plan` 工具自身的结果携带——追加的历史，上表实测 96–97%；
 * 顺序错误的调用会被拒绝，且拒绝信息点明必须先记录哪个阶段，因此模型无需提示词告知任何东西也能自我纠正；
 * 发现入口放在工具**描述**里。它位于工具目录中：在前缀之内、只发送一次、整个会话不变。
 
@@ -600,10 +605,13 @@ npm run test:all        # 按顺序跑下面全部
 | 授权委托 | `node tests/permission.test.mjs` | 18 | **18 通过，0 失败** |
 | 工作流 | `node tests/workflow.test.mjs` | 30 | **30 通过，0 失败** |
 | bundle 解析 | `node tools/verify-bundle.mjs` | 16 | **16 通过，0 失败** |
-| 打包完整性 | `node tools/verify-package.mjs` | 20 | **20 通过，0 失败** |
+| 打包完整性 | `node tools/verify-package.mjs` | 21 | **21 通过，0 失败** |
 | 插件装载 | `node tools/verify-plugin-load.mjs` | 30 | **30 通过，0 失败** |
 | 版本选择 | `node tools/verify-editions.mjs` | 14 | **14 通过，0 失败** |
 | 构建漂移 | `powershell -File tools/build.ps1 -Check` | 3 个生成物 | **无漂移** |
+| 前缀缓存（`npm run measure:cache`） | `node tools/measure-cache.mjs` | 2 项断言 | **PASS——四次工作流调用均值命中 96.6%** |
+
+`measure:cache` **不在** `test:all` 里：它直连真实 provider，因此需要 `DEEPSEEK_API_KEY`（从 `$DSH_HOME/.credentials.yaml` 读取）并会消耗 token。只有当某项被测量的断言不成立时它才以非零码退出。
 
 > [!NOTE]
 > **`test:desktop` 需要 `bash`，而本机没有。** 因此在没有 Git Bash 或 WSL 的 Windows 主机上，`npm run test:all` 会以 `'bash' is not recognized` 结束。这是运行环境缺口而非断言失败：同一次调用中位于它之前的所有套件都跑过并通过。POSIX 套件在这里依旧未被验证，原因与过去相同——它们需要一台 POSIX 主机。

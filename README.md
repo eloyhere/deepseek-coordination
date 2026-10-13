@@ -79,7 +79,7 @@ deepseek-coordination/
 ├─ tools/json-field.mjs            reads one field of an envelope by dotted path (used by the shell suites; `sed` cannot see into a nested object)
 ├─ tools/verify-bundle.mjs         verifies the loader's resolution contract (16 cases)
 ├─ tools/verify-plugin-load.mjs    runs the real `apply()` path, including the workflow state machine (30 cases)
-├─ tools/verify-package.mjs        packs the package and asserts every runtime-resolved file ships (20 cases)
+├─ tools/verify-package.mjs        packs the package and asserts every runtime-resolved file ships (21 cases)
 ├─ tools/verify-editions.mjs       proves both PowerShell artefacts are reachable (14 cases)
 ├─ tools/probe-pipeline.mjs        drives the interception end to end against a stubbed verb layer (23 cases)
 ├─ tests/                          golden (Windows/POSIX/desktop injection), table conformance, encoding, plugin, permission, takeover, workflow suites
@@ -328,37 +328,53 @@ matches interleaved reasoning at a fraction of the token cost
 ### The KV cache effect, which is why the prompt section is a constant
 
 The section this row registers into the system prompt is a **constant string**. That is not tidiness; it is
-the design. The evidence is measured, and it is brutal:
+the design, and the reason is that the prompt is the worst possible place for anything that moves.
 
-| Change to a 7,384-token request | Cache hit | Hit rate |
-|---|---:|---:|
-| nothing | 7,296 | **98.8%** |
-| append a message at the end | 7,296 | **98.7%** |
-| add one line at the **end of the system prompt** | 0 | **0.0%** |
-| insert one line at the **start of the system prompt** | 0 | **0.0%** |
-| append a tool schema | 1,408 | 18.3% |
-| change one character of the last tool description | 1,280 | 17.3% |
-| swap the order of two tools | 0 | **0.0%** |
+**What this package measured.** `tools/measure-cache.mjs` drives the real endpoint
+(`deepseek-flash`, `max_tokens: 1`, one request per variant after one warm request on the same lineage) and
+reports `cache_read_input_tokens` for the shapes this plugin actually produces. Measured twice, with
+identical results:
 
-Ten variants, measured on the live DeepSeek endpoint
-([prefix-stability chapter](https://github.com/diguike/book-deepseek-harness/blob/main/book/11-prefix-stability.md)).
-The rule behind them is the provider's own: a cache hit requires a request to **fully match a persisted
-cache prefix unit**, and the system prompt sits before the tool catalog and the entire history
-([Context Caching](https://api-docs.deepseek.com/guides/kv_cache/)).
+| Shape | Cache read | Total input | Hit |
+|---|---:|---:|---:|
+| an unchanged request (control) | 5,632 | 5,780 | 97.4% |
+| appending a user message | 5,632 | 5,784 | 97.4% |
+| appending a tool result | 5,632 | 5,853 | 96.2% |
+| **one workflow: four appended calls** | 5,632 → 5,888 | ~5,900 each | **96.6% mean** |
 
-The harness has already paid for this lesson once. The sandbox policy used to live in the system prompt,
-and a single permission switch dropped cache reads from **~14,700 tokens to 256**; the fix was to move the
-changing fact out of the prompt into the message sequence
-([DSH agent note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-09-02-in-history-system-prompt-replacement.md)).
+So the row's own shape is measured warm: four calls, 23,040 cached tokens, every call above 96%.
 
-**The first version of this row made exactly that mistake.** It rendered the current phase into the section,
-so a four-call workflow re-wrote the system prompt three times and paid a full-prefix miss each time. The
-fix is structural, not cosmetic:
+**What this package did NOT manage to measure, and will not claim.** The experiment also tries the
+counterfactual — rewrite the leading system prompt, edit a tool description, reorder two tools — and those
+readings are **not reproducible**: the first run reported 0.0% for all of them, the second reported 97%. The
+provider documents the reason and it is worth knowing: it persists a **common prefix detected across
+requests**, so by the second run the repeated identical prefixes had been learned and a mutation still
+matched. Per-variant A/B isolation on a shared account cannot settle the mutation side, so
+`tools/measure-cache.mjs` asserts only the append side, which is stable, and prints the rest as
+observations rather than claims.
+
+**The counterfactual rests on independent evidence instead**, and it is strong:
+
+* the provider's own rule is that a cache hit requires a request to **fully match a persisted cache prefix
+  unit**, and the system prompt sits before the tool catalog and the entire history
+  ([Context Caching](https://api-docs.deepseek.com/guides/kv_cache/));
+* a ten-variant experiment on the same endpoint found appending a message kept a **98.7%** hit while adding
+  one line at the **end** of the system prompt produced **0.0%**
+  ([prefix-stability chapter](https://github.com/diguike/book-deepseek-harness/blob/main/book/11-prefix-stability.md));
+* the harness itself paid for this lesson: the sandbox policy used to live in the system prompt, and one
+  permission switch dropped cache reads from **~14,700 tokens to 256**. The fix was to move the changing
+  fact out of the prompt into the message sequence
+  ([DSH agent note](https://github.com/deepseek-ai/deepseek-harness/blob/master/.agents/notes/implemented/feature/2026-09-02-in-history-system-prompt-replacement.md)).
+
+**The first version of this row rendered the current phase into that section**, so a four-call workflow
+re-wrote the system prompt three times. Whether or not the provider happens to forgive that on a given day,
+the row has no business depending on it — so the fix is structural, not cosmetic:
 
 * the section is a constant, so this row's **cache effect is `prefix-stable`**: zero prompt changes per
-  workflow, asserted by `tests/workflow.test.mjs` against the registered text at every phase;
-* the phase and the **one next call** travel in the `workflow_plan` tool's own result instead — appended history,
-  which the measurement above prices at 98.7%;
+  workflow, asserted by `tests/workflow.test.mjs` against the registered text at every phase, and again
+  after deleting `state.json` outright;
+* the phase and the **one next call** travel in the `workflow_plan` tool's own result instead — appended
+  history, measured above at 96–97%;
 * a step taken out of order is refused, and the refusal names the phase to record first, so the model can
   recover from a stale plan without the prompt having told it anything;
 * the tool **description** carries the discovery text. It lives in the tool catalog: inside the cached
@@ -900,10 +916,15 @@ npm run test:all        # runs everything below, in order
 | Permission delegate | `node tests/permission.test.mjs` | 18 | **18 passed, 0 failed** |
 | Workflow | `node tests/workflow.test.mjs` | 30 | **30 passed, 0 failed** |
 | Bundle resolution | `node tools/verify-bundle.mjs` | 16 | **16 passed, 0 failed** |
-| Package completeness | `node tools/verify-package.mjs` | 20 | **20 passed, 0 failed** |
+| Package completeness | `node tools/verify-package.mjs` | 21 | **21 passed, 0 failed** |
 | Plugin load | `node tools/verify-plugin-load.mjs` | 30 | **30 passed, 0 failed** |
 | Edition selection | `node tools/verify-editions.mjs` | 14 | **14 passed, 0 failed** |
 | Build drift | `powershell -File tools/build.ps1 -Check` | 3 artefacts | **no drift** |
+| Prefix cache (`npm run measure:cache`) | `node tools/measure-cache.mjs` | 2 claims | **PASS — 96.6% mean hit over four workflow calls** |
+
+`measure:cache` is **not** part of `test:all`: it calls the real provider, so it needs
+`DEEPSEEK_API_KEY` (read from `$DSH_HOME/.credentials.yaml`) and it costs tokens. It exits non-zero only
+when a measured claim does not hold.
 
 > [!NOTE]
 > **`test:desktop` needs `bash`, and this machine has none.** `npm run test:all` therefore ends with
@@ -1048,7 +1069,7 @@ Copyright (c) 2026 Eloy Kim
 
 The licence file is pure ASCII, LF-terminated and BOM-free, consistent with the rest of the
 repository's encoding contracts. One earlier description needs correcting: it is **not** listed in
-`package.json`'s `files` whitelist (which has 14 entries; it includes `src/host/bin/dsh-os7.ps1` but
+`package.json`'s `files` whitelist (which has 20 entries; it includes `src/host/bin/dsh-os7.ps1` but
 neither `LICENSE` nor `README.zh-CN.md`), so the file stays in a checkout but is not distributed with
 the published package.
 

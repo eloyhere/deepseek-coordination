@@ -81,6 +81,7 @@
     "src/plugin/takeover.js",
     "src/plugin/workflow.js",
     "src/permission/index.js",
+    "tools/measure-cache.mjs",
     "README.md"
   ],
   "scripts": {
@@ -100,6 +101,7 @@
     "test:desktop": "bash tests/smoke-desktop-sh.sh",
     "test:load": "node tools/verify-plugin-load.mjs && node tools/verify-editions.mjs",
     "test:pipeline": "node tools/probe-pipeline.mjs",
+    "measure:cache": "node tools/measure-cache.mjs",
     "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:plugin && npm run test:takeover && npm run test:permission && npm run test:workflow && npm run test:bundle && npm run test:package && npm run test:load && npm run test:desktop",
     "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
   },

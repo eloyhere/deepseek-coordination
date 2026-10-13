@@ -80,6 +80,7 @@ const required = [
   ['src/host/spec/verbs.tsv', 'the verb table; selfcheck and verb resolution read it from the package'],
   ['src/host/spec/charsets.tsv', 'the charset table for file charset/encode and file verify'],
   ['src/host/command.txt', 'the contract the scripts and selfcheck refer to'],
+  ['tools/measure-cache.mjs', 'the prefix-cache measurement the README quotes; a shipped claim needs its tool to ship with it'],
 ]
 
 for (const [path, why] of required) {
