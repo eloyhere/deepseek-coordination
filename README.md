@@ -2,59 +2,95 @@
 
 Cross-platform **atomic OS-interaction surface** for the DeepSeek Harness.
 
-The problem this project solves is narrow and concrete: an agent that talks to the operating
-system through *strings* gets the wrong answer whenever a path contains a space, a file carries a
-UTF-8 BOM, a line ending is CRLF, a document is not UTF-8, or a command is assembled by
-concatenation. This project replaces string assembly with an **argument-stable verb set** and makes
-encoding, byte order marks and line endings explicit and byte-exact.
+An agent that talks to the operating system through *strings* gets the wrong answer whenever a path
+contains a space, a file carries a UTF-8 BOM, a line ending is CRLF, a document is not UTF-8, or a
+command is assembled by concatenation. This project replaces string assembly with an **argument-stable
+verb set** and makes encoding, byte order marks and line endings explicit and byte-exact.
 
-## What is here
+The same verb surface is implemented natively on Windows and on POSIX, and can be driven either by an
+agent through a single harness tool or by a person directly in a terminal.
 
-| Path | What it is |
-|---|---|
-| `src/host/lib/powershell5.1/*.ps1` | **The source of truth** for Windows PowerShell 5.1: the 16 modules listed in `tools/build.ps1`, plus the standalone `git.ps1` |
-| `src/host/lib/powershell7.6/*.ps1` | **The source of truth** for PowerShell 7.6: the same 16 modules ported to .NET, plus the standalone `git.ps1` |
-| `src/host/lib/*.sh` | **The source of truth** for POSIX: the 16 shell modules, plus the standalone `git.sh` |
-| `src/host/bin/dsh-os.ps1` | **Generated** Windows PowerShell 5.1 implementation (218,514 bytes) |
-| `src/host/bin/dsh-os7.ps1` | **Generated** PowerShell 7.6 implementation (255,565 bytes) |
-| `src/host/bin/dsh-os.sh` | **Generated** POSIX implementation (142,744 bytes) |
-| `src/host/bin/dsh-os.bat` | ASCII-only `cmd.exe` shim: sets code page 65001 and forwards arguments to the `.ps1`. Hand-written, not generated |
-| `src/host/command.txt` | The authoritative verb contract, one line per verb |
-| `src/host/spec/verbs.tsv` | Machine-readable verb table: positionals, flags, permission class, error codes. **86 verbs** |
-| `src/host/spec/charsets.tsv` | Charset table: IANA name to .NET code page to `iconv` name, with BOM bytes. **15 charsets** |
-| `src/host/docs/os-spec.md` | Full specification: contracts, error codes, platform constraints, golden matrix |
-| `src/host/docs/permission-model.md` | Authorization model: the four decisions, the file schema, the two enforcement layers |
-| `src/host/lib/powershell.md` | PowerShell 5.1 to 7.6 API-change reference. Not referenced by code, tests or `package.json`; not published |
-| `tools/build.ps1` | Assembles the generated scripts from the modules; `-Check` fails if they drift |
-| `tools/parse-check.ps1` | Parse-checks the PowerShell modules under the runtime that will execute them; also reports non-ASCII bytes and a BOM. Skips files that are not build inputs |
-| `tools/json-field.mjs` | Reads one field of an envelope by dotted path. Used by the shell harnesses, because `sed` cannot see into a nested object |
-| `tools/verify-bundle.mjs` | Verifies the loader's resolution contract without touching a live profile. **10 cases** |
-| `tools/verify-plugin-load.mjs` | Runs the real `apply()` path against a stub registry. **13 cases** |
-| `tools/verify-editions.mjs` | Proves both PowerShell artefacts are reachable and that the default is unchanged. **14 cases** |
-| `tests/golden.ps1` | Windows golden cases driving the real script through argv. **49 cases** |
-| `tests/golden-sh.sh` | POSIX golden cases, including that a failing call still emits an envelope. **116 cases** |
-| `tests/smoke-desktop-sh.sh` | Asserts what the POSIX desktop verbs actually *inject*, using the fakes below. **52 cases** |
-| `tests/fake-xdotool`, `tests/fake-wmctrl` | Recording stand-ins for the X tools, so the desktop verbs can be verified on a machine with no X server |
-| `tests/encoding.ps1` | Encoding-contract guard (BOM, ASCII-only, line endings, BOM-free stdout). **32 build modules + the generated artefacts** |
-| `tests/conformance.ps1` | Asserts `command.txt` and `spec/verbs.tsv` describe the same surface: same verbs both ways, same count, same R/W class, same positional names. **5 checks** |
-| `tests/plugin.test.mjs` | Plugin execute path, argv handling, and bundle manifest shape. **13 cases** |
-| `tests/permission.test.mjs` | Consent delegate: rule matching, deny-first, trust, audit bounds, atomic write. **18 cases** |
-| `src/plugin/index.js` | Host plugin: registers the `dsh_os` tool |
-| `src/permission/index.js` | Consent delegate: the only writer of `permission.json` |
-| `src/client/` | Web client surface (Vite scaffold, not yet wired to the host) |
+```console
+$ dsh-os selfcheck
+{"ok":true,"verb":"selfcheck","result":{"script":"bin/dsh-os.ps1","capabilities":{...}},"meta":{...}}
 
-The two PowerShell runtimes are kept in separate directories because they differ in ways that are not
-cosmetic: .NET Framework 4.8 has no `ProcessStartInfo.ArgumentList` and needs an ANSI-aware encoding
-path, while .NET 10 has both. Neither file has to carry the other's workarounds.
+$ dsh-os file charset "C:\path with spaces\notes.txt"
+{"ok":true,"verb":"file.charset","result":{"charset":"utf-8-bom","bom":true,"eol":"crlf"},"meta":{...}}
+```
 
-## Modules
+* **Fully open source**, MIT licensed. No telemetry, no account, no network request.
+* **Zero runtime dependencies.** On Windows it is `Add-Type` P/Invoke; on POSIX it uses system tools
+  such as coreutils. Nothing is fetched at run time.
+* **One self-contained file per platform**, assembled from modules by a deterministic build.
 
-`src/host/lib/` holds one module pair per concern. `bin/dsh-os.ps1` and `bin/dsh-os.sh` are
-generated from them by `tools/build.ps1`, so never edit the generated files.
+> [!WARNING]
+> This layer can **read your screen, capture screenshots, read and write the clipboard, synthesise
+> mouse and keyboard input, start and kill processes, delete files and modify environment variables**.
+> Before granting it any permission, read [Dangerous permissions](#dangerous-permissions).
+
+---
+
+## Why it is needed
+
+The failure mode is always the same shape: a value becomes part of a string and is then reinterpreted
+downstream.
+
+| Fault | What goes wrong | What this project does |
+|---|---|---|
+| `C:\Program Files\a b.exe` | a space splits one path into two arguments | values are always **separate argv elements**, never spliced into a shell string |
+| a UTF-8 BOM in the middle of text | every consumer sees `\uFEFF` | the BOM is stripped on read and **never** leaks into a result; it is restored on write |
+| a CRLF file rewritten as LF | diff noise, broken scripts | reads report `eol`; writes restore the original convention |
+| a GBK document read as UTF-8 | silent mojibake (or a silent fall back to `latin1`) | the encoding is declared explicitly; strict UTF-8 is tried first, then a fall back |
+| a command built by concatenation | injection, quoting bugs | `execute.command` takes a real **argv array** and never goes through a shell |
+| a byte offset landing inside a character | text is cut to pieces | offsets are validated against the encoding's character boundaries |
+
+Every call returns **exactly one JSON envelope**, and a caller branches on `error.code` rather than
+parsing prose — and a **failing** call emits a parseable envelope too, because a bare exit code tells
+an agent nothing.
+
+---
+
+## Repository layout
+
+```
+deepseek-coordination/
+├─ src/host/command.txt            authoritative verb contract, one verb per line
+├─ src/host/spec/verbs.tsv         machine-readable verb table (single source of truth), 86 verbs
+├─ src/host/spec/charsets.tsv      IANA name -> .NET code page -> iconv name -> BOM bytes, 15 charsets
+├─ src/host/lib/powershell5.1/*.ps1  source: Windows PowerShell 5.1 side, the 16 modules build.ps1 lists plus the standalone git.ps1
+├─ src/host/lib/powershell7.6/*.ps1  source: PowerShell 7.6 side, the same 16 modules plus the standalone git.ps1
+├─ src/host/lib/*.sh               source: POSIX side, 16 shell modules plus the standalone git.sh
+├─ src/host/lib/powershell.md      the 5.1 -> 7.6 API-change reference (referenced by no code, test or package.json; not published)
+├─ src/host/bin/dsh-os.ps1         [generated] Windows PowerShell 5.1 implementation
+├─ src/host/bin/dsh-os7.ps1        [generated] PowerShell 7.6 implementation
+├─ src/host/bin/dsh-os.sh          [generated] POSIX implementation
+├─ src/host/bin/dsh-os.bat         ASCII-only cmd.exe shim (hand-written, not generated)
+├─ src/host/docs/os-spec.md        full specification: contracts, error codes, golden matrix
+├─ src/host/docs/permission-model.md  the authorization model and its residual risk
+├─ src/plugin/index.js             host plugin: registers the `dsh_os` tool
+├─ src/permission/index.js         consent delegate: the only writer of permission.json, registers five `os_permission_*` tools
+├─ tools/build.ps1                 assembles the three generated scripts; `-Check` fails on drift
+├─ tools/parse-check.ps1           parse-checks each module under the runtime that will execute it, and reports non-ASCII bytes and a BOM
+├─ tools/json-field.mjs            reads one field of an envelope by dotted path (used by the shell suites; `sed` cannot see into a nested object)
+├─ tools/verify-bundle.mjs         verifies the loader's resolution contract (10 cases)
+├─ tools/verify-plugin-load.mjs    runs the real `apply()` path (13 cases)
+├─ tools/verify-editions.mjs       proves both PowerShell artefacts are reachable (14 cases)
+├─ tests/                          golden (Windows/POSIX/desktop injection), table conformance, encoding, plugin, permission suites
+│  ├─ conformance.ps1              command.txt and spec/verbs.tsv must describe the same surface (5 cases)
+│  ├─ smoke-desktop-sh.sh          what the POSIX desktop verbs actually inject (52 cases)
+│  └─ fake-xdotool, fake-wmctrl    recording stand-ins, so the desktop verbs can be verified with no X server
+└─ permission.json                 authorization data (an empty file in the repository; that is the initial state)
+```
+
+The two PowerShell runtimes live in separate directories because the differences are not cosmetic:
+.NET Framework 4.8 has no `ProcessStartInfo.ArgumentList` and needs an ANSI-aware encoding path, while
+.NET 10 has both. Keeping them apart means neither side has to carry the other's workarounds.
+
+`src/host/lib/` holds one module per concern, mirrored across the three targets:
 
 | Module | Concern |
 |---|---|
-| `preamble` | strict mode, encoding pins, layout and repository-root discovery |
+| `preamble` | strict mode, encoding pins, repository-root discovery |
 | `json` | error model, JSON serialisation, the envelope writer |
 | `command` | argument parsing (positional and `name="value"`), assertions, coercion |
 | `charset` | charset table, BOM policy, byte-level text model |
@@ -66,120 +102,47 @@ generated from them by `tools/build.ps1`, so never edit the generated files.
 | `task` | `task.*` |
 | `environment` | `environment.*` and `environment attribute.*` |
 | `service` | `service.*` |
-| `permission` | `permission.*` (three read-only verbs, three delegate-only writes) and `selfcheck` |
-| `window` | `window.*` / `mouse.*` / `keyboard.*` / `clipboard.*` / `wait.*` / observe |
+| `permission` | `permission.*` (three read-only verbs and three delegate-only writes) and `selfcheck` |
+| `window` | `window.*`, `mouse.*`, `keyboard.*`, `clipboard.*`, `wait.*`, the observation verbs |
 | `dispatch` | verb resolution and the dispatch table |
 | `entry` | run, emit, exit |
 
-A build step rather than dot-sourcing the modules at runtime, deliberately: the shipped script must
-stay one self-contained file that the harness and a human can invoke directly, with no module
-resolution and no relative-path assumptions. On Windows PowerShell 5.1 a sourced file without a BOM
-is decoded in the ANSI code page, which is the exact encoding fault this project exists to remove.
+The shipped script is **one self-contained file** rather than dot-sourced modules at run time. On
+Windows PowerShell 5.1 a sourced file without a BOM is decoded in the ANSI code page — which is
+precisely the class of encoding fault this project exists to remove.
 
-## Design rules
+---
 
-1. **Values are separate argv elements.** Commands are never assembled into a shell string. This is
-   what removes the Windows space-in-path problem: `C:\Program Files\a b.exe` is one argument.
-2. **Byte-exact text handling.** Reads strip the BOM; every write restores the file's original BOM
-   presence and line-ending convention. A BOM is never allowed to leak into text a caller sees.
-3. **Assertions report, they do not throw.** `file verify charset` returns `match: false` alongside
-   the observed value, so a caller can tell "the file is wrong" from "I asked wrongly".
-4. **Read-only verbs never prompt; mutating verbs require explicit authorization** (`--allow`).
-5. **Unsupported is never silent.** An unimplemented verb or an unavailable platform capability
-   returns a typed error code, rather than succeeding with an empty result.
+## Getting started
 
-## Usage
+Not yet published to npm, so use it from source:
+
+```console
+git clone https://github.com/eloyhere/deepseek-coordination.git
+cd deepseek-coordination
+```
+
+The scripts need no build or installation; run them directly:
 
 ```powershell
 # Windows
 src\host\bin\dsh-os.ps1 selfcheck
 src\host\bin\dsh-os.ps1 file charset "C:\path with spaces\file.txt"
 src\host\bin\dsh-os.ps1 file verify charset .\file.txt utf-8
-src\host\bin\dsh-os.ps1 environment attr get PATH --scope process
+src\host\bin\dsh-os.ps1 environment attribute get PATH --scope process
 ```
 
-Every call writes exactly one JSON envelope to stdout, UTF-8 without a BOM:
-
-```json
-{"ok":true,"verb":"file.charset","result":{"charset":"utf-8","bom":false,"eol":"crlf"},"meta":{}}
+```sh
+# POSIX
+src/host/bin/dsh-os.sh selfcheck
+src/host/bin/dsh-os.sh file charset "./a file.txt"
 ```
 
-`error.code` is authoritative; exit codes are a coarse class (0 ok, 1 usage, 2 type, 3 authorization,
-4 unsupported, 5 target/encoding, 6 timeout, 7 internal).
+`dsh-os.bat` is for a person typing in `cmd.exe`. Callers that can pass an argv array — the harness,
+Node's `execFile`, CI — should call the `.ps1` or `.sh` **directly** and bypass `cmd.exe` entirely,
+because batch-file argument handling is itself a source of quoting bugs.
 
-## Tests
-
-```powershell
-npm run test:all     # encoding guard, Windows golden, plugin, permission, the three verifiers, desktop smoke
-```
-
-`test:all` chains `test:conformance`, `test:encoding`, `test` (the Windows golden suite), `test:plugin`,
-`test:permission`, `test:bundle` (`tools/verify-bundle.mjs`), `test:load`
-(`tools/verify-plugin-load.mjs` then `tools/verify-editions.mjs`) and `test:desktop`
-(`bash tests/smoke-desktop-sh.sh`), in that order. The POSIX golden suite is run directly with
-`bash tests/golden-sh.sh`, because it is a POSIX acceptance suite and not part of the Windows-side `npm`
-chain.
-
-Current state, measured on this checkout:
-
-| Suite | Command | Cases | Result |
-|---|---|---|---|
-| Table conformance | `powershell -File tests/conformance.ps1` | 5 | **5 passed, 0 failed** |
-| Encoding contracts | `powershell -File tests/encoding.ps1` | 32 build modules | **all contracts hold** |
-| Windows golden | `powershell -File tests/golden.ps1` | 49 | **49 passed, 0 failed** |
-| POSIX golden | `bash tests/golden-sh.sh` | 116 | **116 passed, 0 failed** |
-| POSIX desktop smoke | `bash tests/smoke-desktop-sh.sh` | 52 | **52 passed, 0 failed** |
-| Plugin | `node tests/plugin.test.mjs` | 13 | **13 passed, 0 failed** |
-| Permission delegate | `node tests/permission.test.mjs` | 18 | **18 passed, 0 failed** |
-| Bundle resolution | `node tools/verify-bundle.mjs` | 10 | **10 passed, 0 failed** |
-| Plugin load | `node tools/verify-plugin-load.mjs` | 13 | **13 passed, 0 failed** |
-| Edition selection | `node tools/verify-editions.mjs` | 14 | **14 passed, 0 failed** |
-| Build drift | `powershell -File tools/build.ps1 -Check` | 3 artefacts | **no drift** |
-
-86 verbs are declared in the table; **82 are implemented on Windows PowerShell 5.1 and on PowerShell
-7.6 (identical sets), and 61 on POSIX**.
-
-The POSIX desktop verbs need an X display, which this machine does not have. `tests/golden-sh.sh`
-therefore asserts the **absence** path — with no `DISPLAY`, every one of them must return a typed
-`E_NO_DISPLAY` rather than an empty success. `tests/smoke-desktop-sh.sh` covers the other half without a
-display server: it puts the recording `tests/fake-xdotool` on `PATH` and sets `DISPLAY`, so the verbs run
-their real code and the assertions are about the **exact argument vector** handed to the tool — that
-`--button right` became button `3`, that `Enter` became the keysym `Return`, that a name outside the
-table (`XF86AudioMute`) is not mangled, that `--clearmodifiers` and `--repeat` land in the right place,
-and that an `xdotool` failure is reported as `E_IO` rather than a false success. That harness is what
-found two real defects in the POSIX implementation (see below). Neither suite is evidence that the verbs
-drive a real window manager.
-
-`tests/encoding.ps1` requires ASCII-only, BOM-free files **of the 32 modules `tools/build.ps1`
-concatenates**, because a non-ASCII byte there would be decoded in the ANSI code page and corrupt the
-generated artefact. It deliberately does not require it of the two standalone `git.ps1` scripts, which
-are never concatenated into anything and are UTF-8 **with** a BOM so their Chinese prose parses under
-Windows PowerShell 5.1. An earlier version of the guard applied the rule to every `*.ps1` under `lib/`
-and reported four violations that were a contract conflict rather than a defect; the guard now scopes
-the rule to build inputs and prints which files it skipped, so the narrowing is visible rather than
-silent.
-
-`tests/conformance.ps1` exists because `spec/verbs.tsv` had claimed since it was written that
-"tests/conformance.ps1 asserts the two agree" while no such file existed — a comment naming a guard that
-is not there is worse than no comment, because it is read as a guarantee. It resolves each `command.txt`
-line to a verb by the longest word-prefix that names a known verb (so `file verify charset path charset`
-resolves to `file.verify.charset` rather than to a nonexistent `file.verify`), then checks that the two
-tables list the same verbs, the same count, the same R/W class and the same positional names in order.
-Writing it found **five real inconsistencies**, all of them in `command.txt` except one:
-
-| Verb | Was declared | Actual, per the implementation |
-|---|---|---|
-| `file.append` | `path content charset` | charset is an **optional** third positional, so the declaration implied it was required |
-| `file.insert` | `path content charset offset` | charset is `--charset`, deliberately **not** a positional — an omitted positional there would silently shift `offset` |
-| `wait.ms` | no positionals | takes `ms` |
-| `keyboard.combination` | two lines, `... down a b c d` / `... up a b c d` | one verb with a **`phase`** positional; the two-line form read as two verbs |
-| `execute.command` | tsv `command\|arguments` | the entire positional list is argv, so there is no separate `command` |
-
-`command.txt` is the authoritative contract, so four were corrected there; `verbs.tsv`'s
-`execute.command` row was corrected to `arguments...`. Nothing about the running surface changed — only
-what the two documents say — which is exactly the class of drift a conformance guard is for.
-
-## Using it from the harness
+### Using it from the harness
 
 `package.json` declares `dsh.bundle.patch`, so the package installs into a DSH profile as a bundle and
 registers one model-facing tool:
@@ -188,10 +151,10 @@ registers one model-facing tool:
 |---|---|
 | `dsh_os` | Run one verb of the surface and return its JSON envelope verbatim |
 
-One tool rather than one per verb: the verb table is the contract and lives in `spec/verbs.tsv`, so
-the schema does not need regenerating when a verb is added or renamed; an agent discovers the whole
-surface with a single `verb: "selfcheck"` call; and the envelope is already the stable result shape,
-so there is no second contract to drift from the script's.
+One tool rather than one per verb, for three reasons: the verb table is the contract and lives in
+`src/host/spec/verbs.tsv`, so no schema needs regenerating when a verb is added; an agent discovers the
+whole surface with a single `verb: "selfcheck"` call; and the envelope is already the stable result
+shape, so there is no second contract to drift from the script's.
 
 ```jsonc
 // call shape
@@ -200,226 +163,665 @@ so there is no second contract to drift from the script's.
 ```
 
 The implementation is spawned by absolute path with an argv array, never through a shell string, so a
-value containing spaces stays one value. On Windows the `.ps1` is launched through `powershell.exe -File`
-rather than the `.bat`: `cmd.exe` interprets a batch file, and spawning one with `shell: false` fails
-with `EINVAL`. On POSIX the `.sh` is launched through `/bin/bash` so it need not be marked executable.
+value containing spaces stays one value.
 
-## Status
+**Choosing the PowerShell edition.** The default remains the 5.1 artefact (`bin/dsh-os.ps1`),
+**deliberately unchanged**: a deployment that already works should not change behaviour underneath
+itself because a plugin was upgraded. To select the 7.6 artefact (`bin/dsh-os7.ps1`):
 
-- Implemented and tested on Windows: `file`, `file verify`, `file search`, `system`, `task`
-  (list/query), `service` (list/query), `environment` including `environment attribute`,
-  `permission` (read-only) and `selfcheck`.
-- Implemented and tested on POSIX: the same surface except `service`, `window`, `screenshot`,
-  `clipboard`, `wait`, `mouse` and `keyboard`, plus `file search`, `execute` (command / synchronous /
-  asynchronous), the process verbs `execute.query`, `execute.kill`, `task.query`, `task.show` and
-  `task.kill`, and the whole `permission.*` group including `permission acl init`.
-- POSIX layer A is a mode change rather than a Windows deny ACE, and the equivalence is weaker: the
-  same user can restore write access. `permission acl init` says so in its own result, and its
-  `restore` field names the command that undoes it.
-- `selfcheck` reports on the two platforms differently, and the difference is worth knowing before
-  reading its output as a parity check. On POSIX it derives the implemented list from its own dispatch
-  table and emits an `implementedCount`. On **Windows it does not**: `Invoke-Selfcheck` walks every row
-  of `spec/verbs.tsv` and emits only `verbCount`, with no implemented/unimplemented distinction at all.
-  So a Windows `selfcheck` naming a verb does not mean that verb is implemented — the dispatch tables
-  above are the authority.
-- Implemented and tested on Windows for `window`, `screenshot`, `clipboard` and `wait`: enumeration,
-  matching, move, resize, minimize, maximize, restore, z-order, close, screen capture to png/jpeg/bmp,
-  clipboard text round-trip including non-ASCII, an explicit sleep, and waiting for a window to appear
-  or to go away.
-- Both goldens include the failure path, which is the point: a failing call must still deliver exactly
-  one parseable envelope on stdout, because a bare exit code tells an agent nothing.
-- Implemented and tested on Windows for `mouse` and `keyboard`: cursor read-back, move, click,
-  right-click, wheel, button down/up, key down/up, a self-releasing press, chords in both phases, and
-  text entry by Unicode key events (so it is layout-independent and accepts non-ASCII).
-- Implemented and tested on Windows for `text` and `structure` through UI Automation: the element at a
-  point, its text via ValuePattern / TextPattern / LegacyIAccessiblePattern / Name in that order, and
-  the control tree around it. Both are honest about the environment - a missing UIA stack or a refusal
-  is a typed E_ACCESSIBILITY_UNAVAILABLE / E_ACCESSIBILITY_DENIED, never an empty result.
-- Missing on Windows: `clipboard.paste` and the `service` lifecycle verbs (`start`, `stop`, `restart`)
-  — four verbs. Everything else in the table is dispatched on both PowerShell runtimes, with identical
-  verb sets. Every listed verb is declared in the table and returns a typed `E_NOT_SUPPORTED` rather
-  than a silent success.
-- Missing on POSIX: 25 verbs — `file.encode`; all eleven `window.*`; `screenshot`, `text`, `structure`;
-  `clipboard.read`, `clipboard.write`, `clipboard.paste`; `wait.window`; `task.launch`; and all five
-  `service.*`. These fall through the dispatch table to a typed `E_NOT_SUPPORTED`; they are not silently
-  absent.
-- Implemented on POSIX and needing **no display server**: the five `environment attribute` verbs
-  (`add`, `set`, `delete`, `list`, `get`) and `wait.ms`. The attribute mutations are `--scope process`
-  only, and refuse a persistent scope with `E_NOT_SUPPORTED` rather than half-applying it, because POSIX
-  has no kernel API for a list variable and rewriting `PATH` in a startup file can make a machine's
-  shells unusable.
-- Implemented on POSIX and needing **an X display**: all seven `mouse.*` and all six `keyboard.*`, which
-  drive X11 through `xdotool`. With no `DISPLAY` each returns a typed `E_NO_DISPLAY`; with no `xdotool`
-  installed each returns `E_NOT_SUPPORTED` naming the missing tool. Key names are translated from the
-  Windows spelling to the X keysym spelling (`Enter`→`Return`, `PgUp`→`Prior`, `win`→`super`) and
-  anything outside the table is passed through unchanged, so any X keysym name works. A Windows virtual
-  key *number* is refused, because `13` means Return to a Windows caller and nothing to X.
-- Both goldens include the failure path, which is the point: a failing call must still deliver exactly
-  one parseable envelope on stdout, because a bare exit code tells an agent nothing.
-- Windows and PowerShell 7.6 are at exact parity: both dispatch the same 82 verbs, checked by
-  comparing the two dispatch tables rather than by eye.
-- Every Windows verb that a caller can reach is also reachable on POSIX or reports a typed refusal. The
-  POSIX-only weak spot is that the desktop verbs are verified against recording fakes rather than a real
-  X server; see *Tests*.
-- The four `execute` verbs that the README previously listed as unwritten are in fact implemented on
-  Windows — `execute.command`, `execute.query`, `execute.kill` and `task.launch` are dispatched to real
-  bodies. So are `permission.grant`, `permission.revoke` and `permission.acl.init` on **both**
-  platforms. `permission.json` therefore does have writing verbs; see the authorization section.
-- The consent delegate (`src/permission/index.js`, row id `dsh-os-permission`) is written and tested:
-  it is the only component that writes `permission.json`, matching is deny-first regardless of rule
-  order, a file whose `updatedBy` is not the delegate is untrusted and falls back to defaults, a
-  wildcard target needs explicit acknowledgement, and writes go through a temp file plus rename so a
-  crash cannot leave a half-written file.
-- The A layer (kernel ACL enforcement) is implemented on Windows: `permission acl init` appends an
-  explicit deny for Everyone to the authorization file DACL, is idempotent, requires elevation
-  (reporting `E_ELEVATION_REQUIRED` rather than failing silently), and `selfcheck` reports the strength
-  it MEASURED from the file security descriptor plus a reason, never a stored flag.
+* `powershellEdition: '7.6'` — plugin configuration;
+* `DSH_OS_POWERSHELL_EDITION=7.6` — for a deployment that cannot edit its profile;
+* `'auto'` — uses 7.6 only when both the artefact and a working `pwsh` are present.
 
-### Verified or not
+Configuration beats the environment variable, and an explicit `scriptPath` disables the choice
+entirely. `pwsh` is looked up as an explicit `DSH_OS_POWERSHELL`, then on `PATH`, then in the standard
+install locations, because `pwsh` is not always on `PATH` — it is not on this repository's own
+environment, while 7.6.6 is plainly installed in the standard location.
 
-Proven by tests and verifiers in this repository:
+> [!IMPORTANT]
+> **The bundle now loads in a live desktop session.** The plugin has since been installed into the
+> active profile, and the six tools it registers — `dsh_os` plus the five `os_permission_*` tools —
+> are present and callable in a running session. What is still **not** proven is the part that
+> `tools/verify-bundle.mjs` cannot cover: that the *harness's own loader* composes the bundle by the
+> same contract the verifier checks, rather than by a shortcut that happens to work here. The
+> verifier remains the evidence; the live session is corroboration.
 
-- the scripts on both platforms, including that a failing call still emits exactly one envelope;
-- the build's determinism: `tools/build.ps1 -Check` reports the three generated artefacts matching
-  their modules byte for byte (218,514 + 255,565 + 142,744 bytes);
-- the plugin's execute path: entry-point resolution, argv construction, a path containing spaces
-  reaching the script as one argument, flag forwarding, authorization, and error propagation;
-- the loader's **resolution** contract, by `tools/verify-bundle.mjs`: the manifest header, the patch
-  file, each row resolving from a profile-style `node_modules`, each resolved module exporting the
-  Cordis shape the loader calls, the two rows resolving to **distinct** modules, and the version gate.
-  The package is linked into a throwaway profile sandbox by junction, so resolution happens as it
-  would in a profile and the live profile is never written to;
-- the real `apply()` path, by `tools/verify-plugin-load.mjs`: the host plugin registers `dsh_os` with a
-  parameters schema whose root type is `object`, the permission plugin registers its five tools, the
-  **registered handler actually spawns the script** and returns a real envelope (`selfcheck` → ok,
-  `verbCount` 86), and a mutating verb without `allow` is refused with a typed `E_PERMISSION` rather
-  than throwing;
-- edition selection, by `tools/verify-editions.mjs`: the default stays on PowerShell 5.1,
-  `powershellEdition: '7.6'` and `DSH_OS_POWERSHELL_EDITION` select the 7.6 artefact, `'auto'` uses
-  7.6 only when both the artefact and a working `pwsh` are present, config beats environment, and an
-  explicit `scriptPath` disables the choice. `-ExecutionPolicy` is passed only to the 5.1 executable,
-  being a Windows PowerShell option.
+---
 
-Measured on this checkout, stated exactly as observed:
+## JSON contract
 
-| Suite | Cases | Result |
+Every call writes **exactly one** JSON envelope to stdout, UTF-8 **without** a BOM, terminated by a
+single LF.
+
+```jsonc
+// success
+{ "ok": true,  "verb": "file.charset", "result": { "charset": "utf-8", "bom": false, "eol": "crlf" },
+  "meta": { "durationMs": 3, "platform": "win32", "shell": "pwsh" } }
+
+// failure — still exactly one envelope, still on stdout
+{ "ok": false, "verb": "file.charset",
+  "error": { "code": "E_NOT_A_FILE", "message": "…", "hint": "…" },
+  "meta": { "durationMs": 2, "platform": "win32", "shell": "pwsh" } }
+```
+
+* `error.hint` appears only when there really is an actionable suggestion.
+* `--pretty` indents the output; `--quiet` emits only `result` (or only `error`).
+* **stderr carries human-readable diagnostics only and never takes part in parsing.** On Windows,
+  setting `DSH_OS_TRACE=1` puts a failure trace on stderr.
+
+### `error.code` is authoritative
+
+Exit codes are a coarse class, so that a shell can branch cheaply. **Never parse `error.message`.**
+
+| Exit code | Class | Representative codes |
 |---|---|---|
-| Table conformance | 5 | **5 passed, 0 failed** |
-| Windows golden | 49 | **49 passed, 0 failed** |
-| POSIX golden | 116 | **116 passed, 0 failed** |
-| POSIX desktop smoke | 52 | **52 passed, 0 failed** |
-| Plugin | 13 | **13 passed, 0 failed** |
-| Permission delegate | 18 | **18 passed, 0 failed** |
-| Bundle resolution | 10 | **10 passed, 0 failed** |
-| Plugin load | 13 | **13 passed, 0 failed** |
-| Edition selection | 14 | **14 passed, 0 failed** |
-| Encoding contracts | 32 modules | **all contracts hold** |
+| 0 | success | — |
+| 1 | usage | `E_USAGE` |
+| 2 | type / value | `E_TYPE`, `E_CHARSET_UNKNOWN`, `E_BOUNDARY`, `E_RANGE`, `E_WINDOW_AMBIGUOUS` |
+| 3 | authorization | `E_PERMISSION`, `E_ELEVATION_REQUIRED`, `E_PERMISSION_PROTECTED_PATH`, `E_PERMISSION_DELEGATE_ONLY`, `E_PERMISSION_FILE_UNTRUSTED`, `E_PERMISSION_DENIED_BY_RULE`, `E_PERMISSION_NO_ANSWERER` |
+| 4 | platform unsupported | `E_NOT_SUPPORTED`, `E_NO_DISPLAY`, `E_ACCESSIBILITY_DENIED`, `E_ACCESSIBILITY_UNAVAILABLE` |
+| 5 | target / encoding / IO | `E_NOT_FOUND`, `E_NOT_A_FILE`, `E_EXISTS`, `E_BINARY_CONTENT`, `E_CHARSET_MISMATCH`, `E_TRUNCATED`, `E_PARTIAL_WRITE`, `E_WINDOW_NOT_FOUND`, `E_IO` |
+| 6 | timeout | `E_TIMEOUT` |
+| 7 | internal / aborted | `E_INTERNAL`, `E_ABORTED` |
 
-- Every suite above passes. The four encoding violations this section used to report are gone, because
-  the guard now scopes the ASCII-only rule to the files the assembler actually reads; the rule was never
-  relaxed, its scope was corrected, and the guard prints which files it skipped.
-- The PowerShell 7.6 artefact builds, is reachable, and the version of PowerShell 7 on this machine is
-  **7.6.6**, which is what the edition verifier drove. Beyond that, the 7.6 modules are established as a
-  faithful port by comparing the two dispatch tables (identical 82-verb sets), by a per-module
-  function-name comparison, and by running the window group's golden cases against `dsh-os7.ps1` — rather
-  than by a per-verb run of the whole surface on 7.6. That is a real gap in the evidence, not a claim of
-  full parity.
-- Two defects found by `tests/smoke-desktop-sh.sh` after the POSIX mouse and keyboard verbs were written,
-  both recorded here because they are the kind review does not catch:
-  1. **Validation ran after injection.** `mouse click 10 20 --count abc` returned an error *and had
-     already moved the pointer*. The Windows side validates every argument before injecting; the POSIX
-     side now does too.
-  2. **A rejection inside `$(...)` did not stop the verb.** The coordinate validator called `fail`, but
-     the caller invoked it as `x="$(window_int_arg ...)"`, so the `exit` ended only the subshell: the verb
-     carried on with an empty value and injected anyway — `mouse over abc 20` moved the pointer and
-     returned `ok`. The validators now assign a variable (`WINDOW_INT`, `WINDOW_BUTTON`, `WINDOW_KEY`)
-     and are called in the caller's own shell. This trap was already documented in the environment
-     module, and it was still repeated here.
+The Windows implementation registers **36** error codes; the POSIX implementation groups them with
+`case`. The two agree on the class of every **named** code, but not on unnamed ones: Windows returns
+7, POSIX returns 5.
 
-Not proven, and not claimed: that the **harness's own loader** composes these bundles in a live
-profile. That would mean installing this package into the user's active desktop profile and restarting
-the harness, which has not been done.
+### Calling convention
 
-## Authorization
+Values are always separate argv elements and are **never** spliced into a shell string. The two
+spellings below are equivalent, but the same parameter must not be given twice in different forms:
 
-Read-only verbs never prompt. Every mutating verb requires an explicit `--allow`; without it the call
-returns `E_PERMISSION` and nothing happens.
+```sh
+# positional form
+dsh-os file create "./a.txt" "123" "utf-8-bom"
 
-`permission.json` is written by the consent delegate (`src/permission/index.js`, row id
-`dsh-os-permission`) and by nothing else. The table declares three write verbs —
-`permission.grant`, `permission.revoke` and `permission.acl.init`, all `W` — and three read-only ones
-(`query`, `list`, `audit`). `grant` and `revoke` accept only the `delegate` flag besides `allow`, so
-the script itself cannot create a persistent authorization: with no delegate present they return
-`E_PERMISSION_DELEGATE_ONLY`.
+# named form — order is free; the effective order comes from the verb table's parameter list
+dsh-os file create content="123" charset="utf-8-bom" path="./a.txt"
+```
 
-Two enforcement layers protect "the files that decide what this layer may do":
+`E_USAGE` rejects: an unknown flag, an empty `--`, a value-taking flag with no value, a repeated named
+argument, an unknown name, the same parameter given both positionally and by name, and surplus
+positional arguments. Read operations are never asked for `--allow`; write operations always are.
 
-- **Layer B, structural** — a hard protected-path boundary rejects any modification of
-  `permission.json` (and `.bak`), `src/host/command.txt`, the three `src/host/bin/dsh-os.*` entry
-  points, `src/host/spec/verbs.tsv` and `src/host/spec/charsets.tsv`, plus any same-named temporary
-  staged beside one of them. Violations report `E_PERMISSION_PROTECTED_PATH` with no side effect;
-  reads are still allowed so you can review the rules. The check runs on the **resolved, normalised**
-  path, compared segment by segment rather than by regex, because `..`, 8.3 short names or a trailing
-  dot all walk around a regex. `file.move` and `file.copy` check **both ends**, since moving a
-  protected file is a way of destroying it. The POSIX list has eight entries: the same list without
-  `dsh-os7.ps1`. `dsh-os7.ps1` was added to the Windows list only after the gap was found destructively —
-  the golden suite's protected-path case moved the artefact into a sandbox it then deleted, because the
-  list named the 5.1 and shell entry points but not the 7.6 one. Every entry point belongs to the same
-  boundary, and the two lists now protect both PowerShell scripts.
-- **Layer A, kernel ACL** — Windows only, opt-in and requiring elevation. `permission acl init`
-  appends an explicit `DENY` for `Everyone` (`S-1-1-0`) to the DACL of `permission.json`, covering
-  `FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER`. It is idempotent and reports
-  `E_ELEVATION_REQUIRED` rather than failing opaquely. `selfcheck` reports `aclEnforced` by reading
-  the file's real security descriptor and walking the DACL, never from a stored flag, and `aclReason`
-  explains a `false`. The POSIX equivalent is weaker by construction: it is a mode change, and the
-  same user can restore write access. `permission acl init` says so in its own result and its
-  `restore` field names the command that undoes it.
+A verb is one to three tokens deep — `selfcheck`, `file charset`, `file verify charset` — and the
+parser consumes the next token only when extending the verb is genuinely known to be possible, so a
+path argument that happens to begin with a word is not swallowed into the verb.
 
-Four limitations, stated because they change what the guarantees above mean:
+### Encoding, BOM and line endings
 
-1. **Persistent rules are recorded but not enforced at the verb layer.** The rules in
-   `permission.json` are matched by the consent delegate and its `os_permission_query` tool. The
-   script reads the file for **display only** (`permission list/query/audit`); no verb consults a rule
-   before acting. The real gates are `--allow`, the protected-path check and (if enabled) layer A. A
-   `deny-always` rule does **not** currently stop a verb that arrives with `--allow`.
-2. **`E_PERMISSION_DENIED_BY_RULE` is declared but never thrown.** It is in the error table and maps
-   to exit class 3, but no code path produces it — consistent with point 1.
-3. **The in-script rule reader is not deny-first.** `permission query` takes the **first** matching
-   rule without regard to whether it allows or denies. The delegate implements deny-first correctly
-   and has test coverage; the two readers can therefore disagree, and the script side is the weaker
+`src/host/spec/charsets.tsv` defines 15 canonical encoding names, each with aliases, a .NET code page,
+an `iconv` name and BOM bytes:
+
+`utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`, `utf-32le`, `utf-32be`, `gbk`, `gb18030`, `big5`,
+`shift_jis`, `euc-jp`, `euc-kr`, `latin1`, `windows-1252`, `ascii`.
+
+Detection sniffs the BOM first, then tries **strict** UTF-8, then GBK, then latin1. A read strips the
+BOM and normalises `\r\n` to `\n` for output; **every write restores the file's original BOM presence
+and line-ending convention.** Offsets are byte offsets in the half-open range `[start, end)` and must
+fall on a character boundary, otherwise the call fails with `E_BOUNDARY` rather than cutting a
+character in half.
+
+A file is judged binary when a NUL byte appears in the first 8 KiB of the payload, which reports
+`E_BINARY_CONTENT` instead of returning mojibake.
+
+---
+
+## The verb surface
+
+`src/host/spec/verbs.tsv` **declares 86 verbs** and is the single source of truth. Some are declared
+but not implemented; before relying on one, read
+[What is actually available](#what-is-actually-available).
+
+| Group | Verbs |
+|---|---|
+| `file` | `create` `charset` `encode` `length` `information` `list` `delete` `move` `copy` `mkdir` `append` `insert` `view` `search` |
+| `file verify` | `charset` `encoding` `completion` |
+| `execute` | `command` `synchronous` `asynchronous` `query` `kill` |
+| `system` | `brand` `cpu` `gpu` `version` `info` |
+| `task` | `list` `query` `show` `kill` `launch` |
+| `service` | `list` `query` `start` `stop` `restart` |
+| `environment` | `list` `get` `add` `set` `delete` |
+| `environment attribute` | `list` `get` `add` `set` `delete` |
+| `permission` | `query` `list` `audit` `grant` `revoke` `acl init` |
+| `window` | `find` `list` `active` `close` `top` `bottom` `move` `resize` `minimize` `maximize` `restore` |
+| `mouse` | `click` `context` `over` `wheel` `down` `up` `cursor` |
+| `keyboard` | `down` `up` `press` `combination` `type` `codes` |
+| `clipboard` | `read` `write` `paste` |
+| `wait` | `window` `ms` |
+| observation | `screenshot` `text` `structure` |
+| self-check | `selfcheck` |
+
+A few design points worth knowing before you start:
+
+* **`file verify.*` asserts; it does not throw.** `file verify charset` returns `match: false`
+  alongside the observed value, so a caller can tell "the file is wrong" from "I asked wrongly".
+  `file verify completion` returns `complete: null` when no expectation was given — deliberately not
+  `false`.
+* **`file insert`'s `--charset` is a flag, not a positional.** Inserted between `content` and `offset`
+  it would **silently displace `offset`**.
+* **`file.delete` goes to the recycle bin on Windows by default.** On POSIX it needs `trash-put`,
+  otherwise it reports `E_NOT_SUPPORTED` — it does **not** silently delete for real.
+* **`environment` has two levels.** A variable holds one string; an **attribute** (PATH, PATHEXT, LIB,
+  INCLUDE) holds an ordered list. A write returns `visibleToRunningProcesses`, because a `user` or
+  `machine` level write is invisible to processes that are already running.
+* **`keyboard type` is Unicode-first.** Non-ASCII text goes through a clipboard paste, because
+  `KEYEVENTF_UNICODE` is unreliable when an input method is active.
+
+---
+
+## Dangerous permissions
+
+This chapter is required reading before granting any permission. The layer is deliberately capable,
+and the guarantees it offers are narrower than the feature list suggests.
+
+### What a fully authorized agent can do
+
+| Capability | Verbs involved | Authorization |
+|---|---|---|
+| **Read the contents of your screen** | `screenshot`, `text`, `structure` | **read-only, never prompts** |
+| **Read and write your clipboard** | `clipboard.read`, `clipboard.write` | `read` never prompts; `write` needs `--allow` |
+| **Synthesise input** — clicks, drags, typing, chords | `mouse.*`, `keyboard.*` | `--allow` |
+| **Manipulate your windows** — move, resize, close, raise | `window.*` | `--allow` |
+| **Start and kill processes** | `task.kill`, `execute.*` | `--allow` |
+| **Run an arbitrary command line** | `execute.synchronous`, `execute.asynchronous` | `--allow` |
+| **Delete, move and overwrite files** | `file.delete`, `file.move`, `file.copy` | `--allow` |
+| **Persistently modify your environment variables** | `environment.set`, `.add`, `.delete`, `attribute.*` | `--allow` |
+| **Control system services** (declared, not implemented) | `service.start`, `.stop`, `.restart` | `--allow` + elevation |
+| **Read process and system inventories** | `task.*`, `system.*` | **read-only, never prompts** |
+
+Put plainly: `mouse.*` and `keyboard.*` mean an authorized agent can operate **any** program you can
+operate, with your rights. And because it can read the screen, it can also watch what it has just
+done. Inside the desktop there is no sandbox.
+
+### How authorization actually works
+
+**Layer B — structural enforcement (always on, cross-platform).**
+
+* Every mutating verb requires `--allow`. Without it the call returns `E_PERMISSION` and **nothing
+  happens**.
+* **`permission.json` has three write verbs, but they go through the delegate and not through the
+  script's own authorization.** The table declares `permission grant`, `permission revoke` and
+  `permission acl.init` (all class `W`), while `permission query`, `permission list` and
+  `permission audit` are read-only. The flags of `grant` and `revoke` accept only `delegate` (besides
+  `allow`), so they can be called **only by the consent delegate**; the script itself cannot create a
+  persistent authorization with `--allow`, and reports `E_PERMISSION_DELEGATE_ONLY` when no delegate
+  is present.
+* A hard **protected-path boundary** rejects any modification of the files that decide what this layer
+  may do: `permission.json` (and `.bak`), `src/host/command.txt`, the **four** `src/host/bin/dsh-os.*`
+  entry points (`.ps1`, `dsh-os7.ps1`, `.sh`, `.bat`), `src/host/spec/verbs.tsv` and
+  `src/host/spec/charsets.tsv`, plus any same-named temporary staged beside one of them. A violation
+  reports `E_PERMISSION_PROTECTED_PATH` with no side effect. Reads remain allowed so that you can
+  review the rules. The POSIX list has eight entries — the same list **without `dsh-os7.ps1`**.
+* The check runs on the **resolved and normalised** path, compared segment by segment rather than by
+  regular expression, because `..`, an 8.3 short name or a trailing dot all walk around a regex.
+  `file.move` and `file.copy` check **both ends**, since moving a protected file is also a way of
+  destroying it.
+
+**Layer A — kernel ACL (Windows, explicitly enabled, requires elevation).**
+
+`permission acl init` appends an explicit **DENY** for `Everyone` (`S-1-1-0`) to the DACL of
+`permission.json`, covering `FILE_GENERIC_WRITE | DELETE | WRITE_DAC | WRITE_OWNER`. It is idempotent,
+and reports `E_ELEVATION_REQUIRED` when it cannot act rather than failing vaguely.
+
+`selfcheck` reports `aclEnforced` by **reading the file's real security descriptor** and walking the
+DACL. An earlier version read a flag from a state file, which claimed an enforcement that was not in
+effect; that implementation has been deleted. `aclReason` explains a `false`, so the result can be
+acted on rather than merely wondered at.
+
+### Four limitations that must be stated honestly
+
+These are documented in `src/host/docs/permission-model.md` and repeated here because they change what
+the guarantees above mean.
+
+1. **Persistent rules are recorded but not enforced at the verb layer.** The rules in `permission.json`
+   are matched by the consent delegate and its `os_permission_query` tool; the script reads the file
+   for **display only** (`permission list/query/audit`). No verb consults a rule before acting: the
+   real gates are `--allow`, the protected-path check, and (if enabled) layer A. A `deny-always` rule
+   does **not** currently stop a verb that arrives with `--allow`.
+2. **`E_PERMISSION_DENIED_BY_RULE` is registered but never thrown.** It is in the error table and maps
+   to exit code 3, but no code path produces it — consistent with point 1.
+3. **The in-script rule reader is not deny-first.** The script's `permission query` takes the **first**
+   matching rule regardless of whether it allows or denies. The delegate implements deny-first
+   correctly and has test coverage, so the two readers can disagree, and the script side is the weaker
    one.
 4. **`execute` is a way around the protected-path boundary.** That boundary guards `file.*` and
    `environment.*`. It cannot constrain a child process: `execute.synchronous` hands the command line
    to `cmd.exe /d /s /c` on Windows and to `sh -c` on POSIX, so the program it starts can write
-   anything its own rights permit, `permission.json` included. Only layer A prevents that, and layer B
-   cannot when `aclEnforced` is false.
+   anything its own rights permit, `permission.json` included. Only layer A prevents that. When
+   `aclEnforced: false`, layer B cannot.
 
-The consent delegate has a **design gap** worth stating plainly: it registers five tools
+The consent delegate has one more **design gap** worth stating plainly: it registers five tools
 (`os_permission_query`, `os_permission_grant`, `os_permission_revoke`, `os_permission_list`,
-`os_permission_audit`) but does **not** register an `approval/request` answerer, although its own
-header explains that reaching the user is why it is a plugin rather than a script subcommand. As the
-code stands, the enforcement is a **tool description** telling the model to call `os_permission_grant`
-only after the user chooses; the code does not verify that a prompt ever happened. Treat the delegate
-as trusted infrastructure rather than as a check on the agent. It also reports
-`aclEnforced: false` unconditionally in its `query` result instead of measuring the ACL as the script
-does, so it **under-reports** protection when layer A is on.
+`os_permission_audit`), but it does **not** register an `approval/request` answerer. Its own design
+document says it should, and that `permission grant` **must** go through a user-confirmed prompt. As
+the code stands, the enforcement is a **tool description** telling the model to call
+`os_permission_grant` only after the user has chosen; the code does not verify that a prompt ever
+happened. Treat the delegate as trusted infrastructure, not as a check on the agent.
+
+Two further points about layer A: it requires the harness and the delegate to run as **different
+identities** (otherwise it degrades to layer B), and its POSIX equivalent is weaker — a mode change
+that the same user can undo. `permission acl init` says as much in its own result.
+
+### Reviewing what has been granted
+
+```sh
+dsh-os permission list                 # rules, defaults, and the MEASURED aclEnforced
+dsh-os permission query file.delete "R:\project\**"
+dsh-os permission audit --limit 50     # the append-only tail; the delegate trims to 200 entries
+```
+
+If `permission.json`'s `updatedBy` is not `consent-delegate`, the file is treated as **untrusted**: its
+rules are ignored, everything falls back to the defaults, and the reason is reported. A malicious rule
+hand-edited into that file therefore does **not** take effect — it is ignored, and you are told.
+
+To **create** a persistent decision you must use the delegate's tools. A wildcard target
+(`target.value === "*"`) is refused unless `acknowledgeBroad: true` is passed explicitly, because
+"agree to everything, permanently" has to be a separate decision and not the side effect of one click.
+
+---
+
+## What is actually available
+
+Method: the platform dispatch tables are extracted and compared against the declared verb table, entry
+by entry. An unimplemented verb **never fails silently**: it returns a named `E_NOT_SUPPORTED`
+envelope.
+
+| Platform | Declared | Implemented |
+|---|---|---|
+| Windows PowerShell 5.1 (`src/host/bin/dsh-os.ps1`) | 86 | **82** |
+| PowerShell 7.6 (`src/host/bin/dsh-os7.ps1`) | 86 | **82** |
+| POSIX (`src/host/bin/dsh-os.sh`) | 86 | **61** |
+
+The two PowerShell runtimes have **identical** implemented sets, established by comparing the two
+dispatch tables entry by entry rather than by eye.
+
+### Windows (5.1 and 7.6 alike)
+
+**Implemented (82):** every `file.*` (including `file.encode`); `file verify.*`; `file.search`; all
+five `execute` verbs (`command`, `synchronous`, `asynchronous`, `query`, `kill`); `system.*`; all of
+`task.*` (including `task.launch`); `service.list/query`; the whole `environment` surface (including
+`attribute.*`); the whole `permission` surface (including `grant`, `revoke`, `acl.init`); the whole
+`window` surface; `screenshot`; `clipboard.read/write`; `wait.window/ms`; the whole `mouse` and
+`keyboard` surfaces; `text`; `structure`; `selfcheck`.
+
+**Not implemented (4):** `clipboard.paste`, `service.start`, `service.stop`, `service.restart`.
+
+### POSIX
+
+**Implemented (61):** the whole `file` surface except `file.encode`; `file verify.*`; `file.search`;
+all five `execute` verbs (including `execute.command`, which the Windows side also has); `system.*`;
+`task.list`/`query`/`show`/`kill` (**not `task.launch`**); the whole `environment` variable level
+(including persistent writes) and all five `attribute.*` verbs; the whole `permission` surface;
+`wait.ms`; the whole `mouse` surface (7 verbs) and `keyboard` surface (6 verbs); `selfcheck`.
+
+Of those 61, **13 need an X display** (the 7 `mouse.*` and 6 `keyboard.*`); the other 48 do not.
+
+**Not implemented (25):** `file.encode`; all eleven `window.*`; `screenshot`, `text`, `structure`;
+`clipboard.read`, `clipboard.write`, `clipboard.paste`; `wait.window`; `task.launch`; and all five
+`service.*` (`list`, `query`, `start`, `stop`, `restart`). These fall through the dispatch table's
+default branch to a **typed** `E_NOT_SUPPORTED`; they are not silently absent.
+
+> [!NOTE]
+> POSIX has no kernel API for persisting a variable, so `environment add/set/delete --scope user`
+> edits `${HOME}/.profile` through a **managed block** delimited by
+> `# >>> dsh-os managed environment >>>` and `# <<< dsh-os managed environment <<<`. Every change
+> regenerates everything between the markers, so these operations are idempotent and a user can undo
+> the lot by deleting the block. Writing bare assignments into the file directly would append
+> duplicates on the second call and could not be undone. `--scope machine` is unavailable and reports
+> `E_NOT_SUPPORTED`.
+>
+> `environment attribute add/set/delete` are **process scope only**; a persistent scope is refused
+> with `E_NOT_SUPPORTED`. That is deliberate: POSIX has no kernel API for a list-valued variable, so
+> persisting one means rewriting a shell startup file, and a wrongly reconstructed `PATH` there can
+> make a machine's shells unusable.
+
+> [!IMPORTANT]
+> **On POSIX only `mouse.*` (7) and `keyboard.*` (6) need an X display.** With no `DISPLAY` they return
+> a **typed** `E_NO_DISPLAY`; with a display but no `xdotool` they return `E_NOT_SUPPORTED` naming the
+> missing tool.
+>
+> **`wait.ms` does not need one** — it is a sleep, so it can be accepted in full on this machine. The
+> five `environment attribute.*` verbs do not either (they act on environment variables, not on the
+> desktop).
+>
+> On this machine (no `DISPLAY`, no `xdotool`) the golden suite therefore asserts them as
+> `E_NO_DISPLAY`: **that asserts the absence path, not that they work.** The injection path is covered
+> by `tests/smoke-desktop-sh.sh` with stand-in tools; see [Tests](#tests).
+
+> [!NOTE]
+> What remains **structurally absent** on POSIX is `window.*` (11), `screenshot`, `text`, `structure`,
+> `clipboard.*`, `wait.window` and all of `service.*`. `native.sh` (515 bytes) and `service.sh`
+> (333 bytes) are deliberate empty stubs whose headers explain why: their POSIX counterparts are
+> external programs (`wmctrl`, `import`, `xclip`, `scrot`) rather than linkable libraries.
+>
+> **`window.sh` is no longer a stub** (26 KB): it now implements `wait.ms`, all of `mouse.*` and all of
+> `keyboard.*`, driving X11 through `xdotool` and checking for the display and the tools before
+> touching anything. The remaining desktop verbs still return `E_NOT_SUPPORTED` from the dispatch
+> table's default branch.
+
+### The two implementations are not equivalent
+
+Same verb names and the same calling convention, but behaviour differs in several places. The
+important ones:
+
+| Aspect | Windows | POSIX |
+|---|---|---|
+| `execute.command` | implemented | implemented (real argv, no shell) |
+| `file.encode` | implemented | not implemented |
+| `file.delete` default | recycle bin | fails without `trash-put` |
+| `file.search` literal match | case-insensitive | case-sensitive |
+| `file.view` character boundaries | enforced (`E_BOUNDARY`) | **not checked at all** |
+| `file.view --max-bytes` | honoured | ignored (`truncated` is always `false`) |
+| files over 32 MiB | `E_TRUNCATED` | no limit |
+| `--eol crlf` on create/append | exact bytes | adds one extra trailing CRLF |
+| appending to a mixed-EOL file | existing endings untouched | the whole file is renormalised |
+| a character that cannot be represented | silently written as `?` | `E_ENCODING_INVALID` |
+| `--pretty` / `--quiet` | honoured | accepted and ignored |
+| `--` | `E_USAGE` | end-of-options marker |
+| protected-path comparison | case-insensitive, normalised | case-sensitive, as given |
+| unregistered error code | exit code 7 | exit code 5 |
+| `meta.durationMs` on failure | the real duration | `0` |
+
+Measured here, because prose is not evidence: on POSIX,
+`file view <utf-8 file> utf-8 0 2` returns `ok` with `"text":"\ufffd"` — an offset of 2 lands inside
+the first three-byte character and the character is split, where Windows fails the same call with
+`E_BOUNDARY`.
+
+`file.search`'s `--type` is a latent defect on both implementations: the code reads it, but it is not
+registered as a known flag, so behaviour depends on the parser's fallback path.
+
+---
+
+## Installation status and known defects
+
+Stated plainly, so that nobody is caught out.
+
+### The bundle's load path is now covered by three verifiers
+
+This section previously recorded that the loader's end-to-end path was **unverified**. That gap has
+been closed by three verifiers, and they found one real defect:
+
+| Verifier | What it proves | Cases |
+|---|---|---|
+| `tools/verify-bundle.mjs` | the loader's **resolution** contract: the manifest header, the patch file, every row resolving from a profile-style `node_modules`, every resolved module exporting the Cordis shape the loader calls (`apply`/`inject`/`name`), the two rows resolving to **different** modules (a shared specifier registers the same tool twice and aborts the whole entry), and the version gate | 10 |
+| `tools/verify-plugin-load.mjs` | the real `apply()` path: the host plugin registers `dsh_os` with a parameters schema whose **root type is `object`**, the permission plugin registers its five tools, and **the registered handler really does spawn the script** and return a real envelope (`selfcheck` → ok, `verbCount` 86); a mutating verb without `allow` is refused with a typed `E_PERMISSION` rather than throwing | 13 |
+| `tools/verify-editions.mjs` | edition selection: the default is still PowerShell 5.1; `powershellEdition: '7.6'` and `DSH_OS_POWERSHELL_EDITION` select the 7.6 artefact; `'auto'` uses 7.6 only when the artefact and a working `pwsh` are present **together**; configuration beats the environment; an explicit `scriptPath` disables the choice. `-ExecutionPolicy` is passed only to the 5.1 executable | 14 |
+
+The bundle verifier links the package into a throwaway profile sandbox by junction, so resolution
+happens exactly as it would in a profile, and the **active profile is never written to**.
+
+The defect it found: `bin/dsh-os7.ps1` was previously **unreachable from the plugin** — it existed,
+built and tested, but `resolveInvocation` only ever looked for `dsh-os.ps1`, so all the 7.6 work was
+dead code from the plugin's point of view. It is now selectable, and **the default is unchanged**
+(still 5.1), because a deployment that already works should not change behaviour merely because a
+plugin was upgraded.
+
+**Now observed live, though not through this verifier:** the package has since been installed into an
+active desktop profile, and the six registered tools (`dsh_os` and the five `os_permission_*` tools)
+are present and callable in a running session. That corroborates the verifier; it does not replace it,
+because it does not establish that the loader composed the bundle by the same contract the verifier
+checks.
+
+### The Windows golden suite's order dependency is fixed
+
+This was recorded as `passed: 47 failed: 1` on a clean checkout, the failing case being
+`parser/one-two-three-token-verbs`, which asserted `file length` against a fixture directory created
+by a **later** case.
+
+That defect is **fixed**: the parser case in `tests/golden.ps1` now creates its own fixture
+(`$fixtureDir = Join-Path $sandbox 'parser\verify'`, then `New-Item` and `Set-Content`) and asserts
+against it. The current measurement is **49 passed, 0 failed**.
+
+### Two real POSIX defects found by `tests/smoke-desktop-sh.sh`
+
+Neither was visible after writing, and not by review either — because this machine has no `DISPLAY`,
+they normally showed up only as "an `E_NO_DISPLAY` either way". Opening the injection path with
+stand-in tools exposed both:
+
+1. **Validation ran after injection.** `mouse click 10 20 --count abc` **returned an error, but the
+   pointer had already been moved** — a call that reports failure had changed the state of the
+   machine. The Windows side validates every argument *before* injecting; the POSIX side now matches
+   it. (The same held for `mouse over abc 20`.)
+
+2. **A `fail` inside `$(...)` did not stop the verb.** The coordinate validator called `fail`, but the
+   caller wrote `x="$(window_int_arg ...)"`, so the `exit` ended only the subshell: the verb continued
+   with an empty value and **injected anyway** — `mouse over abc 20` **moved the pointer and returned
+   `ok`**. The three validators that reject input now **assign a variable** (`WINDOW_INT`,
+   `WINDOW_BUTTON`, `WINDOW_KEY`) which is read in the **caller's own shell**.
+
+   **This trap was already documented in this repository's `environment` module** (the comment on
+   `env_resolve_scope` explains precisely why it assigns rather than prints), and it was still
+   repeated here. Both defects are now pinned by three assertions each: invalid input must be
+   **rejected with nothing injected**.
+
+### Other gaps
+
+* **`tests/conformance.ps1` did not exist**, although the header of `spec/verbs.tsv` claimed it did and
+  that it checked consistency with `command.txt`. **The file now exists** (see
+  [Conformance of the two tables](#conformance-of-the-two-tables)), so the header's claim is now a
+  fact. A comment naming a guard that is not there is worse than no comment, because it is read as a
+  guarantee.
+* **The consent delegate never registers an approval answerer**, as described above.
+* **The delegate reports `aclEnforced: false` unconditionally** in its `query` result instead of
+  measuring the ACL as the script does, so it **under-reports** protection when layer A is on.
+* **This section previously recorded that `--shell`, `--env`, `--stdin` and `--background` were
+  accepted but never read, and that `--encoding` on Windows built a value that was never applied. Both
+  records were out of date, and both had been real defects; they are now fixed.**
+  * **Windows:** `--shell`, `--env`, `--stdin` and `--background` really are read (there are branches
+    for them in `execute.ps1`). `--encoding` genuinely **was inert** — it built `$enc` and never used
+    it, and `StandardOutputEncoding` appeared nowhere in the module set, so child output was always
+    decoded with the runtime default. It is now wired to the output and error streams. **Measured:**
+    with a child emitting the GBK bytes `D6 D0 CE C4`, the default decoding gives `����` (four
+    replacement characters) and `--encoding gbk` gives `中文` (two characters).
+  * **POSIX:** these flags genuinely were never read. They are now **explicitly refused** —
+    `--shell`, `--env`, `--stdin`, `--background` and `--encoding` all return `E_NOT_SUPPORTED` (exit
+    code 4) instead of being silently ignored. That is what this project's own contract requires: **an
+    unavailable capability must be an explicit error, never an empty success**, and a caller that
+    passed `--stdin`, had nothing fed in, and received a success envelope has been misled.
+* **Some declared error codes really are unreachable.** A full-text search of both implementations
+  confirms **zero occurrences** of `E_ENCODING_INVALID` (for `file.encode`), `E_IS_A_DIR` (for
+  `file.delete`) and `E_ABORTED`. By contrast `E_CHARSET_MISMATCH` (3 sites), `E_BINARY_CONTENT` and
+  `E_TRUNCATED` all have real throw sites — so the table is not uniformly unreliable, but those three
+  should be read as unimplemented intentions rather than dependable return codes.
+* **This section previously recorded that "`E_TIMEOUT` is never thrown by either side" — that record
+  was out of date and wrong.** It is thrown in `execute.ps1` (an `execute command` timeout) and in
+  `window.ps1` (a `wait window` timeout). Measured:
+  `execute command cmd.exe /c ping -n 10 127.0.0.1 --timeout 300 --allow` returns
+  `{"ok":false,...,"code":"E_TIMEOUT",...,"hint":"captured so far: stdout=86 bytes, stderr=0 bytes"}`
+  with exit code **6**. POSIX has `E_TIMEOUT` too (`json.sh` maps it to exit code 6).
+* **`src/client/` is an untouched Vite scaffold.** It is not wired to the host: `index.html` refers to
+  `./src/main.ts` while the real file is `./src/client/main.ts`, and there is no `node_modules`, so
+  `npm run build` and `npm run dev` are currently meaningless.
+* **`git` is not a required dependency, but it is not present in every target environment either**, so
+  no acceptance step depends on it. (The plugin's *installation* path does: the package manager
+  resolves the repository with `git ls-remote`, so a machine where the harness cannot find `git` on
+  `PATH` cannot install the bundle.)
+
+### What is not proven
+
+* That the loader composes the bundle **by the contract `tools/verify-bundle.mjs` checks**, rather than
+  by a path that happens to work on this machine. The weaker claim — that `dsh_os` and the five
+  `os_permission_*` tools appear and are callable in an active session — has since been observed.
+* Complete verb parity between the two platforms — in neither direction.
+* The enforcement effect of layer A on a machine where the harness and the delegate share one identity
+  — by construction that case degrades to layer B.
+* Anything about macOS or non-Linux POSIX beyond code review: the POSIX suites are written for a GNU
+  userland and were not run anywhere else.
+
+---
+
+## Tests
+
+```console
+npm run test:all        # runs everything below, in order
+```
+
+`test:all` chains `test:conformance`, `test:encoding`, `test` (the Windows golden suite),
+`test:plugin`, `test:permission`, `test:bundle` (`tools/verify-bundle.mjs`), `test:load`
+(`tools/verify-plugin-load.mjs` then `tools/verify-editions.mjs`) and `test:desktop`
+(`bash tests/smoke-desktop-sh.sh`).
+
+| Suite | Command | Cases | Measured result |
+|---|---|---|---|
+| Table conformance | `powershell -File tests/conformance.ps1` | 5 | **5 passed, 0 failed** |
+| Encoding contracts | `powershell -File tests/encoding.ps1` | 32 build modules | **all contracts hold** |
+| Windows golden | `powershell -File tests/golden.ps1` | 49 | **49 passed, 0 failed** |
+| POSIX golden | `bash tests/golden-sh.sh` | 116 | **116 passed, 0 failed** |
+| POSIX desktop injection | `bash tests/smoke-desktop-sh.sh` | 52 | **52 passed, 0 failed** |
+| Plugin | `node tests/plugin.test.mjs` | 13 | **13 passed, 0 failed** |
+| Permission delegate | `node tests/permission.test.mjs` | 18 | **18 passed, 0 failed** |
+| Bundle resolution | `node tools/verify-bundle.mjs` | 10 | **10 passed, 0 failed** |
+| Plugin load | `node tools/verify-plugin-load.mjs` | 13 | **13 passed, 0 failed** |
+| Edition selection | `node tools/verify-editions.mjs` | 14 | **14 passed, 0 failed** |
+| Build drift | `powershell -File tools/build.ps1 -Check` | 3 artefacts | **no drift** |
+
+### Conformance of the two tables
+
+The header of `spec/verbs.tsv` had always claimed that "`tests/conformance.ps1` asserts the two
+agree", while that file **did not exist** — it has now been **added**, so the claim is a fact. The
+guard resolves each line of `command.txt` to a verb by the **longest word-prefix that names a known
+verb** (so `file verify charset path charset` resolves to `file.verify.charset` and not to a
+nonexistent `file.verify`), then checks that the two tables hold each other's verbs, that the counts
+are equal, that the R/W class agrees, and that the positional names agree in order.
+
+**Writing it found five real inconsistencies**, and all but one of them were in `command.txt` (which is
+the authoritative contract):
+
+| Verb | Was declared | What the implementation actually does |
+|---|---|---|
+| `file.append` | `path content charset` | charset is an **optional** third positional; the old form implied it was required |
+| `file.insert` | `path content charset offset` | charset is `--charset` and **deliberately not** a positional — as a positional, omitting it would silently shift `offset` |
+| `wait.ms` | no positionals | takes `ms` |
+| `keyboard.combination` | two lines, `... down a b c d` / `... up a b c d` | it is **one** verb with a `phase` positional; the two-line form read as two verbs |
+| `execute.command` | tsv wrote `command\|arguments` | the entire positional list is argv; there is no separate `command` |
+
+Four were corrected in `command.txt`, and `verbs.tsv`'s `execute.command` row became `arguments...`.
+**Nothing about the running surface changed** — only what the two documents say — which is exactly
+what such a conformance guard is for.
+
+`tests/encoding.ps1` guards the contracts that make everything else meaningful: the `.ps1` artefacts
+carry a BOM, the `.sh` artefacts do not, line endings follow `.gitattributes`, `command.txt` and the
+`.tsv` tables stay pure ASCII + LF, and **stdout never carries a BOM**.
+
+**The "four encoding violations" recorded earlier are gone, and this is not a relaxation of the
+guard.** The rule itself never moved; its **scope** did. It used to require **every** `*.ps1` under
+`src/host/lib/` to be BOM-free and ASCII-only, and two of those files are the standalone `git.ps1`
+scripts — never concatenated into anything, and carrying a BOM because that is what makes their
+Chinese prompt literals parse under Windows PowerShell 5.1. Applying that rule to files the build
+never reads was a **false positive**. The guard now checks only the **32 modules `tools/build.ps1`
+actually concatenates**, and **prints which files it skipped**, so the narrowing is visible rather
+than silent.
+
+> [!NOTE]
+> **Neither the "116 passed" nor the "52 passed" for the POSIX desktop verbs is evidence that they
+> drive a real window manager.** The two suites cover the same verbs from two directions, and this
+> machine has no X server:
+> * `tests/golden-sh.sh` asserts the **absence** path — with no `DISPLAY`, every desktop verb must
+>   return a typed `E_NO_DISPLAY` rather than an empty success.
+> * `tests/smoke-desktop-sh.sh` asserts the **injection** path — it puts the recording
+>   `tests/fake-xdotool` on `PATH` and sets `DISPLAY`, so the verbs run their real code and the
+>   assertions are about the **exact argument vector** handed to the tool: whether `--button right`
+>   became button `3`, whether `Enter` became the keysym `Return`, whether a name outside the table
+>   (`XF86AudioMute`) is passed through unchanged, whether `--clearmodifiers` and `--repeat` land in
+>   the right place, and whether an `xdotool` failure is reported as `E_IO` rather than a false
+>   success.
+>
+> **That harness is what found the two real defects in the POSIX implementation** (see
+> [What is actually available](#what-is-actually-available) and
+> [Installation status](#installation-status-and-known-defects)). Neither suite proves that they
+> operate a real desktop.
+
+> [!WARNING]
+> **The two golden suites must be run serially.** Both implementations stage a failure envelope in a
+> **fixed-path** temporary file — `.temporary/dsh-os.err`, with no PID and no lock — so concurrent
+> calls overwrite each other's pending result. Running `golden.ps1` and `golden-sh.sh` in parallel was
+> measured to report 2 **false** failures, in which the exit code contradicted the envelope's own
+> `error.code`; run serially, both disappear. Treat this as a defect, not as flakiness: that staging
+> path is racy by construction.
+
+---
+
+## Contributing
+
+`src/host/lib/powershell5.1/*`, `src/host/lib/powershell7.6/*` and `src/host/lib/*.sh` are the source.
+**Never hand-edit `src/host/bin/dsh-os.ps1`, `dsh-os7.ps1` or `.sh`** — they are generated. Edit the
+modules, then:
+
+```console
+powershell -File tools/build.ps1          # regenerate all three scripts
+powershell -File tools/build.ps1 -Check   # fails as soon as a committed script drifts
+```
+
+There are three separate artefacts rather than "one script with a runtime branch" because the two
+runtimes differ in ways a branch cannot paper over cleanly: .NET Framework has no
+`ProcessStartInfo.ArgumentList`, and .NET 10 has no reason to keep carrying the hand-rolled Windows
+command-line escaping this project needed in order to work around its absence.
+
+`git.ps1` / `git.sh` are **not** in `tools/build.ps1`'s module lists, so they are never concatenated
+into any artefact; they are separate, self-contained interactive tools — see
+[Standalone tools](#standalone-tools).
+
+`.gitattributes` is part of the contract rather than a preference: `command.txt` and the `.tsv` tables
+must be LF so that both implementations parse byte-identical input; `dsh-os.bat` must be CRLF and
+ASCII-only, or `cmd.exe` mis-parses it; and `dsh-os.ps1` must be CRLF and UTF-8 **with** a BOM, or
+PowerShell 5.1 reads its non-ASCII literals in the ANSI code page.
+
+Two lessons learned the hard way in this repository, worth inheriting:
+
+* **A security boundary derived from a path must fail closed.** A refactor once made the repository
+  root one level too high, so no protected path matched. The failure mode was not an error but
+  **protection silently ceasing to apply** — the protected files really were deleted.
+* **Temporary files live under `.temporary/`**, golden-test fixtures included.
+
+Module headers still refer to a `tools/split-once.ps1` that no longer exists; the current assembler is
+`tools/build.ps1`.
+
+---
 
 ## Standalone tools
 
 `src/host/lib/git.sh`, `src/host/lib/powershell5.1/git.ps1` and `src/host/lib/powershell7.6/git.ps1`
 are interactive git runners. They are deliberately **not** part of the verb surface: they are absent
 from `$modulesPs1` and `$modulesSh` in `tools/build.ps1`, so they are never concatenated into
-`bin/dsh-os.ps1`, `bin/dsh-os7.ps1` or `bin/dsh-os.sh`, and they emit no JSON envelope. Each one is a
+`bin/dsh-os.ps1`, `bin/dsh-os7.ps1` or `bin/dsh-os.sh`, and they emit no JSON envelope. Each is a
 single self-contained file, byte-independent of the others, kept in step by review rather than by a
 generator.
 
-They locate git in three phases — `GIT_EXE`/`GIT_HOME`/`PATH`, then the known install locations
-(including the Git-for-Windows registry keys), then a depth- and time-bounded walk of every mounted
-file system — and exit 127 with the searched locations when nothing is found. Arguments reach git as
-separate argv elements; no shell string is ever assembled. `git add` with an empty answer becomes
-`git add .`. All three are ASCII-or-BOM per their own runtime's encoding contract, which is why the
-shell module is English-only and the PowerShell ones are not.
+They locate git in three phases: `GIT_EXE`/`GIT_HOME`/`PATH`, then the known install locations
+(including the Git-for-Windows registry keys), then a **depth- and time-bounded** walk of every
+mounted file system. When nothing is found they list what was searched and exit 127. Arguments reach
+git as separate argv elements; no shell string is ever assembled. `git add` with an empty answer
+(directly pressing Enter) is equivalent to `git add .`. Each of the three obeys its own runtime's
+encoding contract — which is precisely why `git.sh` is plain ASCII (English prompts) and the two
+`git.ps1` files are not.
 
-## License
+---
 
-MIT
+## Licence
+
+**MIT**, declared in `package.json` (`"license": "MIT"`, author Eloy Kim) and distributed with the
+repository as a separate [`LICENSE`](LICENSE) file. Fully open source: the whole verb surface, the
+specification documents and the test suites are all in the repository. No telemetry, no account, no
+network access at run time.
+
+```
+MIT License
+
+Copyright (c) 2026 Eloy Kim
+```
+
+The licence file is pure ASCII, LF-terminated and BOM-free, consistent with the rest of the
+repository's encoding contracts. One earlier description needs correcting: it is **not** listed in
+`package.json`'s `files` whitelist (which has 14 entries; it includes `src/host/bin/dsh-os7.ps1` but
+neither `LICENSE` nor `README.zh-CN.md`), so the file stays in a checkout but is not distributed with
+the published package.
+
+The verb contract and the specification documents are part of the source: a behaviour change should be
+reflected in `src/host/spec/verbs.tsv`, `src/host/command.txt` and `src/host/docs/os-spec.md`, not only
+in code.
+
+One further note: the specification documents (`src/host/docs/os-spec.md`,
+`src/host/docs/permission-model.md`, `src/host/command.txt`) are written in **Chinese**, while this
+README and the verb table are in English.
