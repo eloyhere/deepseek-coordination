@@ -427,7 +427,9 @@ bundle 解析校验把包以 junction 链接进一个一次性的 profile 沙箱
 * **`tests/conformance.ps1` 曾经并不存在**，尽管 `spec/verbs.tsv` 的文件头声称它存在、并会校验与 `command.txt` 的一致性。**该文件现已创建**（见下文「两张表的一致性」），文件头的声明因此成为事实。一个"指名了守卫、而守卫并不存在"的注释比没有注释更糟，因为它会被当作保证来读。
 * **同意写入委托从未注册审批 answerer**，如前所述。
 * **委托在其 `query` 结果里无条件报告 `aclEnforced: false`**，而不是像脚本那样去实测 ACL。因此在 A 层已开启时，它会**低报**防护强度。
-* **`--shell`、`--env`、`--stdin`、`--background` 被接受但从不被读取。** `execute.*` 在 Windows 上永远用 `cmd.exe`，在 POSIX 上永远用 `/bin/sh`。Windows 批量动词上的 `--encoding` 会构造一个从未被应用的值，因此对子进程输出的解码没有影响。
+* **此处曾记载「`--shell`、`--env`、`--stdin`、`--background` 被接受但从不被读取」，以及「Windows 上 `--encoding` 构造了从未被应用的值」——两处记载均已过时，且曾经是真实缺陷，现已修复：**
+  * **Windows 侧**：`--shell`、`--env`、`--stdin`、`--background` 都确实被读取（`execute.ps1` 中有对应分支）。`--encoding` 曾经**真的是惰性的**——它构造了 `$enc` 却从未使用，`StandardOutputEncoding` 在全套模块中一次都没出现，因此子进程输出始终按运行时默认解码。现已接上输出/错误流编码。**实测**：让子进程输出 GBK 字节 `D6 D0 CE C4`，默认解码得到 `����`（4 个替换字符），`--encoding gbk` 得到 `中文`（2 个字符）。
+  * **POSIX 侧**：这些标志**确实从未被读取**。现已改为**显式拒绝**——`--shell`、`--env`、`--stdin`、`--background`、`--encoding` 一律返回 `E_NOT_SUPPORTED`（退出码 4），而不是静默忽略。这正是本项目自己的契约所要求的：**不可用的能力必须是显式错误，绝不能是空成功**；一个传了 `--stdin` 却没被喂入任何输入、却收到成功信封的调用方，是被误导了。
 * **若干已声明的错误码确实不可达。** 在两侧实现中全文检索后确认，**零次出现**的有 `E_ENCODING_INVALID`（`file.encode`）、`E_IS_A_DIR`（`file.delete`）与 `E_ABORTED`。与此相对，`E_CHARSET_MISMATCH`（3 处）、`E_BINARY_CONTENT`、`E_TRUNCATED` 都有真实抛出点——因此这张表并非普遍不可信，但上述三个应视为尚未实现的意图，而不是可依赖的返回码。
 * **此处曾记载"`E_TIMEOUT` 从未被任何一侧抛出"——该记载已过时且错误。** 它在 `execute.ps1`（`execute command` 超时）与 `window.ps1`（`wait window` 超时）中都会被抛出。实测：
   `execute command cmd.exe /c ping -n 10 127.0.0.1 --timeout 300 --allow` 返回 `{"ok":false,...,"code":"E_TIMEOUT",...,"hint":"captured so far: stdout=86 bytes, stderr=0 bytes"}`，退出码 **6**。POSIX 侧同样有 `E_TIMEOUT`（`json.sh` 映射到退出码 6）。

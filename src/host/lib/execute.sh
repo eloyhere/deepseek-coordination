@@ -177,9 +177,30 @@ exec_validate_timeout() {
   esac
 }
 
+# Flags that are declared for a verb, are accepted by the argument parser, and CANNOT be honoured on this
+# platform. Accepting them silently is the one outcome the contract forbids: a caller that passes
+# --stdin and gets no input delivered, or --env and gets no variable set, has been misled by a success
+# envelope. They are refused with a typed error instead.
+#
+# The Windows side reads --shell, --env, --stdin and --background and acts on the first three; --encoding
+# selects the code page its output is decoded with. On POSIX the shell is always /bin/sh, so --shell has
+# no distinct meaning and is refused too rather than silently ignored.
+exec_reject_unhonoured_flags() {
+  local verb="$1"
+  local flag
+  for flag in shell env stdin background encoding; do
+    if have_flag "$flag"; then
+      fail E_NOT_SUPPORTED "--$flag is not honoured on this platform" \
+        "$verb runs the command through /bin/sh and passes no environment, stdin or code page"
+    fi
+  done
+  return 0
+}
+
 cmd_execute_synchronous() {
   require_min 1 'execute synchronous'
   require_allow 'execute synchronous' "${#POSITIONALS[@]}"
+  exec_reject_unhonoured_flags 'execute synchronous'
   local workdir timeout
   workdir="$(flag_value workdir)"
   timeout="$(flag_value timeout 120000)"
@@ -218,6 +239,7 @@ cmd_execute_synchronous() {
 cmd_execute_asynchronous() {
   require_min 1 'execute asynchronous'
   require_allow 'execute asynchronous' "${#POSITIONALS[@]}"
+  exec_reject_unhonoured_flags 'execute asynchronous'
   local workdir timeout
   workdir="$(flag_value workdir)"
   timeout="$(flag_value timeout 120000)"
@@ -271,6 +293,7 @@ cmd_execute_asynchronous() {
 cmd_execute_command() {
   require_min 1 'execute command'
   require_allow 'execute command' "${#POSITIONALS[@]}"
+  exec_reject_unhonoured_flags 'execute command'
   local workdir timeout
   workdir="$(flag_value workdir)"
   timeout="$(flag_value timeout 120000)"

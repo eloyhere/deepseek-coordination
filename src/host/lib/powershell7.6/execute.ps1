@@ -31,6 +31,12 @@ function Invoke-OneShellCommand {
   $psi.RedirectStandardError = $true
   $psi.UseShellExecute = $false
   $psi.CreateNoWindow = $true
+  # The encoding the child's output is DECODED with. Without these two lines $enc was computed and then
+  # never used, so --encoding was inert: output was decoded with the runtime default and a caller asking
+  # for gbk got mojibake with no indication why. Setting the stream encodings is what makes the flag
+  # mean something.
+  $psi.StandardOutputEncoding = $enc
+  $psi.StandardErrorEncoding = $enc
   if ($WorkDir) { $psi.WorkingDirectory = $WorkDir }
 
   $started = [DateTime]::UtcNow

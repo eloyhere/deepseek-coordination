@@ -54,6 +54,7 @@
   },
   "files": [
     "src/host/bin/dsh-os.ps1",
+    "src/host/bin/dsh-os7.ps1",
     "src/host/bin/dsh-os.bat",
     "src/host/bin/dsh-os.sh",
     "src/host/command.txt",
@@ -78,9 +79,10 @@
     "test:plugin": "node tests/plugin.test.mjs",
     "test:permission": "node tests/permission.test.mjs",
     "test:bundle": "node tools/verify-bundle.mjs",
+    "test:package": "node tools/verify-package.mjs",
     "test:desktop": "bash tests/smoke-desktop-sh.sh",
     "test:load": "node tools/verify-plugin-load.mjs && node tools/verify-editions.mjs",
-    "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:plugin && npm run test:permission && npm run test:bundle && npm run test:load && npm run test:desktop",
+    "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:plugin && npm run test:permission && npm run test:bundle && npm run test:package && npm run test:load && npm run test:desktop",
     "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
   },
   "devDependencies": {
