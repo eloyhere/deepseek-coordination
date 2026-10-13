@@ -22,6 +22,30 @@
         scriptDir: src/host/bin
         # Default timeout for a single verb invocation, in milliseconds.
         timeoutMs: 120000
+    # The settings service the panel edits and the takeover reads. It is its own row because BOTH of the
+    # other two need it without owning it: the takeover calls `enabled()` on every intercepted tool call,
+    # and the routes the browser panel talks to mutate the same object.
+    #
+    # It comes BEFORE the takeover row on purpose. The takeover declares `inject: ['dsh-os-settings']`,
+    # which is a hard dependency: a row that loads first would simply stay inactive until the service
+    # appears, and an inactive interception looks exactly like a broken one.
+    - id: dsh-os-settings
+      name: deepseek-coordination/settings
+      config:
+        # Defaults to $DSH_HOME/dsh-os/settings.json, or <package root>/.dsh-os-settings.json when
+        # DSH_HOME is unset. That order matters: the installed package directory is replaced on upgrade,
+        # so a setting stored there would not survive one.
+        # settingsPath: /absolute/path/to/settings.json
+    # The interception itself. It answers the built-in `read`/`write`/`edit`/`pwsh` calls through
+    # dsh-os while the user has the switch on, and calls through to the built-in implementation for
+    # everything else — including on any failure, so takeover can never make a call unanswerable.
+    - id: dsh-os-takeover
+      name: deepseek-coordination/takeover
+      config:
+        timeoutMs: 120000
+        # Must match the `tool-fs` row's `readLimit`: the interception must not apply a different read
+        # window than the built-in tool it replaces.
+        readLimit: 2000
     # The permission consent delegate: the ONLY writer of permission.json. It is a separate row because
     # the scripts must never write the file - there is no write verb in the verb table - so the row
     # that can write it is deliberately a distinct component with its own tools.
@@ -32,3 +56,19 @@
         # durable decisions outside the installed package.
         # permissionPath: /absolute/path/to/permission.json
         auditLimit: 200
+    # The intent-first workflow: start -> clarify -> design -> options -> choose -> execute -> finish.
+    # Its own row because it is its own concern: the rows above make an OS call correct, and this one
+    # makes a request decided before it is executed. It registers the `workflow` tool and a system-prompt
+    # section that is empty until a workflow is started, so a profile that never uses it pays nothing.
+    - id: dsh-os-workflow
+      name: deepseek-coordination/workflow
+      config:
+        # Defaults to $DSH_HOME/dsh-os/workflows, or <package root>/.dsh-os-workflows when DSH_HOME is
+        # unset. The state and every artifact are per session, under their own subdirectory.
+        # workflowRoot: /absolute/path/to/workflows
+        # Records each phase boundary in state.json, so a compaction that follows has a record of what it
+        # may drop. The structural half - detail to disk, one line back - is not optional and not
+        # configurable: it is the reason the feature saves anything.
+        autoCompact: true
+        # Checkpoint entries kept per session.
+        maxCheckpoints: 20

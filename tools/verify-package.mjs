@@ -65,7 +65,11 @@ console.log('')
 // argue with the reason rather than with a bare path.
 // ---------------------------------------------------------------------------
 const required = [
-  ['src/plugin/index.js', 'the package entry point; resolveInvocation and the dsh_os tool live here'],
+  ['src/plugin/index.js', 'the package entry point; the dsh_os tool lives here'],
+  ['client.js', 'the dsh.client artifact; without it the settings panel never loads even though dsh.client is declared'],
+  ['src/plugin/invoke.js', 'the shared invocation layer every plugin entry imports; the tool, the takeover and the settings service all spawn through it'],
+  ['src/plugin/settings.js', 'the ./settings subpath export, loaded by its own patch row'],
+  ['src/plugin/takeover.js', 'the ./takeover subpath export, loaded by its own patch row'],
   ['src/permission/index.js', 'the ./permission subpath export, loaded by the second patch row'],
   ['cordis.patch.yml', 'dsh.bundle.patch; without it the loader has no patch list'],
   ['src/host/bin/dsh-os.ps1', 'the PowerShell 5.1 entry point the plugin spawns on Windows'],

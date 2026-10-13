@@ -68,15 +68,21 @@ deepseek-coordination/
 ├─ src/host/docs/os-spec.md        full specification: contracts, error codes, golden matrix
 ├─ src/host/docs/permission-model.md  the authorization model and its residual risk
 ├─ src/plugin/index.js             host plugin: registers the `dsh_os` tool
+├─ src/plugin/invoke.js            shared invocation layer: artefact/edition resolution, spawn, envelope parsing
+├─ src/plugin/settings.js          settings service + the panel's two HTTP routes (`/api/dsh-os/*`)
+├─ src/plugin/takeover.js          `tools/execute` interception: answers the built-in read/write/edit/pwsh through dsh-os
+├─ client.js                       browser half: the `dsh.client` artifact that renders the settings panel
 ├─ src/permission/index.js         consent delegate: the only writer of permission.json, registers five `os_permission_*` tools
 ├─ tools/build.ps1                 assembles the three generated scripts; `-Check` fails on drift
 ├─ tools/parse-check.ps1           parse-checks each module under the runtime that will execute it, and reports non-ASCII bytes and a BOM
 ├─ tools/json-field.mjs            reads one field of an envelope by dotted path (used by the shell suites; `sed` cannot see into a nested object)
-├─ tools/verify-bundle.mjs         verifies the loader's resolution contract (10 cases)
+├─ tools/verify-bundle.mjs         verifies the loader's resolution contract (14 cases)
 ├─ tools/verify-plugin-load.mjs    runs the real `apply()` path (13 cases)
 ├─ tools/verify-editions.mjs       proves both PowerShell artefacts are reachable (14 cases)
-├─ tests/                          golden (Windows/POSIX/desktop injection), table conformance, encoding, plugin, permission suites
+├─ tools/probe-pipeline.mjs        drives the interception end to end against a stubbed verb layer (23 cases)
+├─ tests/                          golden (Windows/POSIX/desktop injection), table conformance, encoding, plugin, permission, takeover suites
 │  ├─ conformance.ps1              command.txt and spec/verbs.tsv must describe the same surface (5 cases)
+│  ├─ takeover.test.mjs            byte-level format preservation, read windowing, eligibility (41 cases)
 │  ├─ smoke-desktop-sh.sh          what the POSIX desktop verbs actually inject (52 cases)
 │  └─ fake-xdotool, fake-wmctrl    recording stand-ins, so the desktop verbs can be verified with no X server
 └─ permission.json                 authorization data (an empty file in the repository; that is the initial state)
@@ -115,8 +121,13 @@ precisely the class of encoding fault this project exists to remove.
 
 ## Getting started
 
-Not yet published to npm, so use it from source:
+Published on npm, so a DSH profile can install it as a bundle:
 
+```console
+dsh plugin install deepseek-coordination
+```
+
+Or work from source:
 ```console
 git clone https://github.com/eloyhere/deepseek-coordination.git
 cd deepseek-coordination
@@ -145,11 +156,23 @@ because batch-file argument handling is itself a source of quoting bugs.
 ### Using it from the harness
 
 `package.json` declares `dsh.bundle.patch`, so the package installs into a DSH profile as a bundle and
-registers one model-facing tool:
+inserts four rows:
+
+| Row | Entry | What it does |
+|---|---|---|
+| `dsh-os` | `.` | registers the `dsh_os` tool |
+| `dsh-os-settings` | `./settings` | the settings the panel edits, plus its two HTTP routes |
+| `dsh-os-takeover` | `./takeover` | answers the built-in `read`/`write`/`edit`/`pwsh` through dsh-os while enabled |
+| `dsh-os-permission` | `./permission` | the consent delegate, the only writer of `permission.json` |
+
+The rows must name **different module specifiers**: `name` is resolved as a package specifier, and giving
+two rows the bare package name loads the same module twice, which throws `tool "dsh_os" is already
+registered` and aborts the whole entry. That is why the subpath exports exist.
 
 | Tool | Purpose |
 |---|---|
 | `dsh_os` | Run one verb of the surface and return its JSON envelope verbatim |
+| `os_permission_*` | Read, grant, revoke and audit durable authorization decisions |
 
 One tool rather than one per verb, for three reasons: the verb table is the contract and lives in
 `src/host/spec/verbs.tsv`, so no schema needs regenerating when a verb is added; an agent discovers the
@@ -165,6 +188,48 @@ shape, so there is no second contract to drift from the script's.
 The implementation is spawned by absolute path with an argv array, never through a shell string, so a
 value containing spaces stays one value.
 
+### Taking over the built-in operations
+
+`dsh_os` is a tool an agent has to be *told* to use, and it never is: the built-in `read`/`write`/`edit`/
+`pwsh` tools are right there, they overlap almost completely, and nothing in the prompt prefers one over
+the other. The guarantees this project exists for therefore stay unexercised — the plugin is installed
+and imperceptible.
+
+**Takeover** removes the choice. Enable it in **Settings → DSH OS** and the built-in calls are answered
+by the same machinery, whether or not the agent cooperates. Per-tool switches let you redirect only
+`write`, or only `edit`, and leave the rest alone.
+
+It works through the `tools/execute` around-dispatch waterfall: a handler returns `{ value }` without
+calling `next()`, and that value is then validated against the **built-in** tool's own `output.schema`
+and rendered by the **built-in** `output.render`. The model-facing text, the diff cards and the
+presentation metadata are therefore unchanged; only the byte-level source of the value is.
+
+**What it does not take over, and why:**
+
+* `glob` and `grep`. This surface has no content-search verb at all — `file search` matches *names* — so
+  `grep`'s `lineNumber`/`line` cannot be produced, and glob's ignore rules and mtime ordering have no
+  equivalent. Redirecting them would silently return a different result set.
+* Background commands and sandbox escalations. A background call's result is a harness job id, which
+  this surface cannot mint, and `sandbox_permissions` is the harness's own approval seam.
+* Relative paths. The built-in tools resolve them against the session workspace through `ctx.fs`; this
+  plugin has no equivalent resolution, and guessing the process working directory would read a different
+  file than the one named.
+
+**Two properties are deliberately given up, and you should know them before enabling it:**
+
+1. **The filesystem sandbox does not bound a redirected call.** The built-in write path goes through
+   `ctx.fs`, which is where the sandbox policy and the read-before-write observation guard live. A
+   redirected write runs the verb directly, so dsh-os's own protected-path check is what remains. This
+   is a real reduction in defence, not a detail.
+2. **The reported text and the bytes on disk can differ.** With the default *follow the target* format, a
+   CRLF file stays CRLF and a BOM stays a BOM, while `value.after` is normalised LF text — which is what
+   the built-in `read` would show and what the diff card compares. Choose *same as built-in* if you would
+   rather the takeover change nothing about the bytes.
+
+Every redirected call falls back to the built-in implementation on any failure, so takeover can change
+how a result is produced but never whether the caller gets one. The panel's activity feed shows what was
+actually taken over and why anything fell back.
+
 **Choosing the PowerShell edition.** The default remains the 5.1 artefact (`bin/dsh-os.ps1`),
 **deliberately unchanged**: a deployment that already works should not change behaviour underneath
 itself because a plugin was upgraded. To select the 7.6 artefact (`bin/dsh-os7.ps1`):
@@ -179,8 +244,8 @@ install locations, because `pwsh` is not always on `PATH` — it is not on this 
 environment, while 7.6.6 is plainly installed in the standard location.
 
 > [!IMPORTANT]
-> **The bundle now loads in a live desktop session.** The plugin has since been installed into the
-> active profile, and the six tools it registers — `dsh_os` plus the five `os_permission_*` tools —
+> **The bundle now loads in a live desktop session.** The plugin is installed into the active profile as
+> a published npm package, and the tools it registers — `dsh_os` plus the five `os_permission_*` tools —
 > are present and callable in a running session. What is still **not** proven is the part that
 > `tools/verify-bundle.mjs` cannot cover: that the *harness's own loader* composes the bundle by the
 > same contract the verifier checks, rather than by a shortcut that happens to work here. The

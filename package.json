@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
   "type": "module",
   "description": "Cross-platform atomic OS-interaction surface for the DeepSeek Harness: one argument-stable verb set implemented natively on each OS, with byte-exact charset, BOM and line-ending handling.",
@@ -37,6 +37,10 @@
   "main": "src/plugin/index.js",
   "exports": {
     ".": "./src/plugin/index.js",
+    "./takeover": "./src/plugin/takeover.js",
+    "./settings": "./src/plugin/settings.js",
+    "./workflow": "./src/plugin/workflow.js",
+    "./client": "./client.js",
     "./permission": "./src/permission/index.js",
     "./package.json": "./package.json"
   },
@@ -50,6 +54,12 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
   "files": [
@@ -64,7 +74,12 @@
     "src/host/docs/permission-model.md",
     "src/host/docs/command-original.txt",
     "cordis.patch.yml",
+    "client.js",
     "src/plugin/index.js",
+    "src/plugin/invoke.js",
+    "src/plugin/settings.js",
+    "src/plugin/takeover.js",
+    "src/plugin/workflow.js",
     "src/permission/index.js",
     "README.md"
   ],
@@ -77,12 +92,15 @@
     "test:encoding": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/encoding.ps1",
     "test:conformance": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/conformance.ps1",
     "test:plugin": "node tests/plugin.test.mjs",
+    "test:takeover": "node tests/takeover.test.mjs",
     "test:permission": "node tests/permission.test.mjs",
+    "test:workflow": "node tests/workflow.test.mjs",
     "test:bundle": "node tools/verify-bundle.mjs",
     "test:package": "node tools/verify-package.mjs",
     "test:desktop": "bash tests/smoke-desktop-sh.sh",
     "test:load": "node tools/verify-plugin-load.mjs && node tools/verify-editions.mjs",
-    "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:plugin && npm run test:permission && npm run test:bundle && npm run test:package && npm run test:load && npm run test:desktop",
+    "test:pipeline": "node tools/probe-pipeline.mjs",
+    "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:plugin && npm run test:takeover && npm run test:permission && npm run test:workflow && npm run test:bundle && npm run test:package && npm run test:load && npm run test:desktop",
     "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
   },
   "devDependencies": {

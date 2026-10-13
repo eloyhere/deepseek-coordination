@@ -58,15 +58,21 @@ deepseek-coordination/
 ├─ src/host/docs/os-spec.md        完整规范：契约、错误码、黄金用例矩阵
 ├─ src/host/docs/permission-model.md  授权模型及其残余风险
 ├─ src/plugin/index.js             宿主插件：注册 `dsh_os` 工具
+├─ src/plugin/invoke.js            共享调用层：生成物/版本解析、spawn、信封解析
+├─ src/plugin/settings.js          设置服务 + 面板的两条 HTTP 路由（`/api/dsh-os/*`）
+├─ src/plugin/takeover.js          `tools/execute` 拦截：把内置 read/write/edit/pwsh 交给 dsh-os 答复
+├─ client.js                       浏览器半边：渲染设置面板的 `dsh.client` 生成物
 ├─ src/permission/index.js         同意写入委托：`permission.json` 的唯一写入方，注册 5 个 `os_permission_*` 工具
 ├─ tools/build.ps1                 拼装三个生成脚本；`-Check` 在漂移时失败
 ├─ tools/parse-check.ps1           在**将要执行代码的那个运行时**下解析检查模块，并报告非 ASCII 与 BOM
 ├─ tools/json-field.mjs            按点分路径读取信封里的一个字段（shell 测试用，`sed` 看不进嵌套对象）
-├─ tools/verify-bundle.mjs         校验 loader 的解析契约（10 项）
+├─ tools/verify-bundle.mjs         校验 loader 的解析契约（14 项）
 ├─ tools/verify-plugin-load.mjs    走真实 `apply()` 路径（13 项）
 ├─ tools/verify-editions.mjs       证明两个 PowerShell 生成物都可达（14 项）
-├─ tests/                          黄金（Windows/POSIX/桌面注入）、两表一致性、编码、插件、授权各套测试
+├─ tools/probe-pipeline.mjs        在打桩的动词层上端到端驱动拦截链路（23 项）
+├─ tests/                          黄金（Windows/POSIX/桌面注入）、两表一致性、编码、插件、授权、接管各套测试
 │  ├─ conformance.ps1              `command.txt` 与 `spec/verbs.tsv` 必须描述同一个面（5 项）
+│  ├─ takeover.test.mjs            字节级格式保留、读取窗口切片、可拦截资格（41 项）
 │  ├─ smoke-desktop-sh.sh          POSIX 桌面动词**实际注入了什么**（52 项）
 │  └─ fake-xdotool, fake-wmctrl    会记录调用的替身，使无 X server 的机器也能校验桌面动词
 └─ permission.json                 授权数据（随仓库为空文件，这就是初始状态）
@@ -101,7 +107,13 @@ deepseek-coordination/
 
 ## 开始使用
 
-尚未发布到 npm，因此从源码使用：
+已发布到 npm，因此 DSH profile 可以把它作为 bundle 安装：
+
+```console
+dsh plugin install deepseek-coordination
+```
+
+或从源码使用：
 
 ```console
 git clone https://github.com/eloyhere/deepseek-coordination.git
@@ -128,11 +140,21 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 
 ### 从 harness 使用
 
-`package.json` 声明了 `dsh.bundle.patch`，因此本包可以作为一个 bundle 安装进 DSH profile，并注册一个面向模型的工具。
+`package.json` 声明了 `dsh.bundle.patch`，因此本包可以作为一个 bundle 安装进 DSH profile，并插入四行：
+
+| 行 | 入口 | 作用 |
+|---|---|---|
+| `dsh-os` | `.` | 注册 `dsh_os` 工具 |
+| `dsh-os-settings` | `./settings` | 面板编辑的设置，以及它的两条 HTTP 路由 |
+| `dsh-os-takeover` | `./takeover` | 在开启时把内置 `read`/`write`/`edit`/`pwsh` 交给 dsh-os 答复 |
+| `dsh-os-permission` | `./permission` | 同意写入委托，`permission.json` 的唯一写入方 |
+
+各行必须使用**不同的模块说明符**：`name` 按包说明符解析，若两行都用裸包名就会把同一个模块加载两次，从而抛出 `tool "dsh_os" is already registered` 并中止整个 entry。子路径导出正是为此存在。
 
 | 工具 | 用途 |
 |---|---|
 | `dsh_os` | 执行动词面上的一个动词，并原样返回其 JSON 信封 |
+| `os_permission_*` | 读取、授予、撤销与审计持久授权决定 |
 
 只注册一个工具而非每个动词一个，理由有三：动词表就是契约且存放在 `src/host/spec/verbs.tsv`，新增动词时无需重新生成 schema；agent 用一次 `verb: "selfcheck"` 调用就能发现整个动词面；信封本身已是稳定的结果形状，不会出现第二份会与脚本漂移的契约。
 
@@ -143,6 +165,27 @@ src/host/bin/dsh-os.sh file charset "./a file.txt"
 ```
 
 实现以绝对路径加 argv 数组方式拉起，永不经 shell，因此含空格的值仍然是一个值。
+
+### 接管内置操作
+
+`dsh_os` 是一个**必须被告知才会用**的工具，而实际上永远不会被告知：内置的 `read`/`write`/`edit`/`pwsh` 就在手边，能力几乎完全重叠，提示词里也没有任何东西偏向其中一方。于是本项目存在的那些保证从未被真正走到——插件装上了，却感知不到。
+
+**接管**消除了这个选择。在 **设置 → DSH OS** 里打开后，内置调用会由同一套机制答复，无论 agent 是否配合。逐工具开关可以只接管 `write`、或只接管 `edit`，其余保持不变。
+
+它走的是 `tools/execute` 这条 around-dispatch waterfall：处理器返回 `{ value }` 并且不调用 `next()`，该值随后由**内置**工具自己的 `output.schema` 校验、由**内置**的 `output.render` 渲染。因此模型看到的文本、diff 卡片与展示元数据都没变，变的只是这个值的字节来源。
+
+**不接管的部分及原因：**
+
+* `glob` 与 `grep`。本动词面**完全没有按内容检索的动词**（`file search` 匹配的是**文件名**），所以 `grep` 的 `lineNumber`/`line` 物理上无法产出，glob 的忽略规则与 mtime 排序也没有对应物。接管它们会静默返回一个不同的结果集。
+* 后台命令与沙箱升级。后台调用的结果是一个 harness 作业 id，本动词面造不出来；`sandbox_permissions` 则是 harness 自己的审批缝。
+* 相对路径。内置工具经 `ctx.fs` 按会话工作区解析它们，本插件没有等价能力；去猜进程工作目录只会读到与调用方所指不同的文件。
+
+**有两项性质是被刻意放弃的，开启前应当知道：**
+
+1. **被接管的调用不再受文件系统沙箱约束。** 内置写路径经 `ctx.fs`，沙箱策略与"写前必读"的观察守卫都在那里；被接管的写直接执行动词，只剩 dsh-os 自己的受保护路径检查。这是真实的防御削弱，不是细节。
+2. **上报的文本与磁盘上的字节可以不同。** 默认的*沿用原文件*格式下，CRLF 文件保持 CRLF、BOM 保持 BOM，而 `value.after` 是归一化后的 LF 文本——也就是内置 `read` 会显示、diff 卡片会比较的那份文本。若希望接管在字节上什么都不改，请选择*同内置*。
+
+每一次被接管的调用在任何失败下都会回退到内置实现，因此接管只能改变结果**如何产生**，绝不会改变调用方**是否拿到结果**。面板的「最近活动」会显示实际接管了什么、以及任何回退的原因。
 
 **选择 PowerShell 版本。** 默认仍是 5.1 产物（`bin/dsh-os.ps1`），**刻意不变**：已经工作的部署不应因为插件升级而在脚下改变行为。要选 7.6 产物（`bin/dsh-os7.ps1`）：
 
