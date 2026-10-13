@@ -24,8 +24,61 @@ import { resolveInvocation, runScript, searchedDirectory } from './invoke.js'
 
 export const name = 'dsh-os'
 
-/** The plugin is inert without the tool registry. */
+/** The plugin is inert without the tool registry; the approval seam is optional and read at use time. */
 export const inject = ['tools']
+
+/**
+ * Parse an envelope, or undefined when the text is not one.
+ *
+ * Used only to READ the error code of a refusal. A caller that cannot parse it gets the text back
+ * unchanged, so a malformed envelope is never made worse by this.
+ */
+function parseEnvelope(text) {
+  try {
+    const parsed = JSON.parse(text)
+    return parsed !== null && typeof parsed === 'object' ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Ask the DSH approval seam for a one-shot decision on one call.
+ *
+ * A host plugin does NOT register an answerer to reach the user — the opposite is true. The Web
+ * composition already ships `dsh-client-ui-approval`, which answers `approval/request` and renders the
+ * banner ("tool X requests elevated execution" with Reject / Allow once). A plugin only has to ASK, and
+ * the client renders it. That is why this file carries no UI code for the decision.
+ *
+ * Three facts about the seam shape the code below, all read from `@deepseek-ai/dsh-user-approval`:
+ *
+ *   * `request()` reads `req.agent.session`, so a call with no agent THROWS rather than being refused
+ *     politely. The caller must not invoke it in that case, which is why `agent` is passed in and
+ *     checked here rather than being trusted.
+ *   * the only grant in the outcome vocabulary is `'allowed-once'`; `'rejected'`, `'cancelled'` and
+ *     `'unavailable'` all mean "no". They are reported distinctly so the caller can say which happened.
+ *   * a session whose policy is `never` resolves to `'rejected'` BEFORE the waterfall, so no prompt is
+ *     ever rendered. That is a deployment setting, not a fault in this code, and the message says so.
+ *
+ * The seam is consumed opportunistically with `ctx.get('approval')`, the same way `dsh-tools` does it: a
+ * deployment without the approval service keeps every verb that does not need a prompt.
+ */
+async function askApproval(ctx, { agent, callId, toolName, reason, displayReason, signal }) {
+  const approval = typeof ctx.get === 'function' ? ctx.get('approval') : undefined
+  if (approval === undefined) {
+    return { granted: false, outcome: 'unavailable', detail: 'no approval service is loaded in this deployment' }
+  }
+  if (agent === undefined || agent === null) {
+    return { granted: false, outcome: 'unavailable', detail: 'the call carries no agent, so there is no session to route an approval through' }
+  }
+  try {
+    const outcome = await approval.request({ agent, toolName, ...callId === undefined ? {} : { callId }, reason, displayReason, signal })
+    if (outcome === 'allowed-once') return { granted: true, outcome }
+    return { granted: false, outcome, detail: outcome === 'rejected' ? 'the request was refused (a session policy of "never" refuses before any prompt is shown)' : undefined }
+  } catch (error) {
+    return { granted: false, outcome: 'unavailable', detail: error instanceof Error ? error.message : String(error) }
+  }
+}
 
 export function apply(ctx, rawConfig) {
   // `?? {}` rather than a default parameter: Cordis passes a row's config as `null` when the row declares
@@ -93,18 +146,24 @@ export function apply(ctx, rawConfig) {
 
       // The verb may be given as several words; the script resolves multi-word verbs itself, so it is
       // split here rather than guessed at.
-      const verbArgs = [...String(args.verb).trim().split(/\s+/)]
-      for (const value of args.arguments ?? []) verbArgs.push(String(value))
-      for (const flag of args.flags ?? []) verbArgs.push(String(flag))
-      if (args.allow === true) verbArgs.push('--allow')
+      const baseArgs = [...String(args.verb).trim().split(/\s+/)]
+      for (const value of args.arguments ?? []) baseArgs.push(String(value))
+      for (const flag of args.flags ?? []) baseArgs.push(String(flag))
 
-      const result = await runScript(invocation, verbArgs, timeoutMs, exec?.signal)
+      const runOnce = (withAllow) => runScript(
+        invocation,
+        withAllow ? [...baseArgs, '--allow'] : baseArgs,
+        timeoutMs,
+        exec?.signal,
+      )
+
+      let result = await runOnce(args.allow === true)
 
       if (result.timedOut) {
         throw new Error(`dsh-os verb "${args.verb}" timed out after ${timeoutMs}ms`)
       }
 
-      const text = result.stdout.trim()
+      let text = result.stdout.trim()
       if (text === '') {
         // An empty stdout would leave the caller with nothing to parse, so the exit code and the
         // captured diagnostics are reported instead of an empty success.
@@ -112,6 +171,51 @@ export function apply(ctx, rawConfig) {
           `dsh-os verb "${args.verb}" produced no envelope (exit ${result.code})` +
           (result.stderr.trim() ? `: ${result.stderr.trim()}` : ''),
         )
+      }
+
+      // A refusal that a user decision could actually resolve is turned into one, ONCE, in this same
+      // call: mutating verbs answer `E_PERMISSION` when they arrive without `--allow`, so the user is
+      // asked and the verb is retried with it. Asking is skipped when the request already carried
+      // `--allow`, because then the refusal came from somewhere a prompt cannot change.
+      if (args.allow !== true) {
+        const refusal = parseEnvelope(text)
+        if (refusal?.error?.code === 'E_PERMISSION') {
+          const decision = await askApproval(ctx, {
+            agent: exec?.agent,
+            callId: exec?.callId,
+            toolName: 'dsh_os',
+            reason: `dsh-os verb "${args.verb}" needs authorization`,
+            displayReason: {
+              en: `dsh-os wants to run "${args.verb}", which changes something on this machine.`,
+            },
+            signal: exec?.signal,
+          })
+          if (decision.granted) {
+            result = await runOnce(true)
+            if (result.timedOut) {
+              throw new Error(`dsh-os verb "${args.verb}" timed out after ${timeoutMs}ms after approval`)
+            }
+            text = result.stdout.trim()
+          } else if (decision.outcome !== 'unavailable' || decision.detail !== undefined) {
+            // Report the refusal as the typed envelope the caller already branches on, with the reason
+            // attached — a bare "no" from a prompt that was never shown would be indistinguishable
+            // from a verb that failed on its own.
+            return JSON.stringify({
+              ok: false,
+              verb: refusal.verb ?? String(args.verb).trim().replace(/\s+/g, '.'),
+              error: {
+                code: 'E_PERMISSION',
+                message: `"${args.verb}" was not authorized (approval: ${decision.outcome})`,
+                ...decision.detail === undefined ? {} : { hint: decision.detail },
+              },
+              meta: { ...refusal.meta, approval: decision.outcome },
+            })
+          }
+        }
+      }
+
+      if (text === '') {
+        throw new Error(`dsh-os verb "${args.verb}" produced no envelope after approval (exit ${result.code})`)
       }
 
       // The envelope is returned verbatim, including when ok is false: a typed failure is a result the

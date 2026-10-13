@@ -344,6 +344,68 @@ export function apply(ctx, rawConfig) {
     ctx.tools.register(spec)
   }
 
+  /**
+   * Ask the user before a DURABLE decision is written.
+   *
+   * The delegate's whole reason for existing is that the scripts cannot reach the approval UI: there is
+   * no write verb in the verb table precisely so that `permission.json` has exactly one writer, and that
+   * writer is supposed to be gated by a human. Until now the gate was only a sentence in this tool's
+   * description asking the model to behave — the enforcement was a request, not a check. This makes it a
+   * check.
+   *
+   * The Web composition already ships the answerer (`dsh-client-ui-approval`), so nothing here renders a
+   * prompt; it asks, and the client shows the banner. `allowed-once` is the seam's only grant, and for
+   * this purpose it means "yes, record this rule" — the rule's own persistence is what makes it durable,
+   * which is why a durable decision uses this seam while a one-shot verb call does not.
+   *
+   * Absence of the seam is reported rather than ignored: a rule that nobody approved must not be written
+   * quietly. A deployment that wants unattended grants has to say so by configuring `requireApproval:
+   * false`, which is a decision on the record instead of a default nobody chose.
+   */
+  async function approvedForDurableWrite(exec, { verb, target, decision, revoke }) {
+    if (config.requireApproval === false) return { granted: true, outcome: 'not-required' }
+    const approval = typeof ctx.get === 'function' ? ctx.get('approval') : undefined
+    if (approval === undefined) {
+      return {
+        granted: false,
+        outcome: 'unavailable',
+        detail: 'no approval service is loaded, so a durable decision cannot be confirmed by the user; set requireApproval: false in this row\'s config to grant unattended',
+      }
+    }
+    if (exec?.agent === undefined || exec?.agent === null) {
+      return {
+        granted: false,
+        outcome: 'unavailable',
+        detail: 'this call carries no agent, so there is no session to show the request in; a durable decision needs an interactive turn',
+      }
+    }
+    const verbLabel = revoke === true ? `revoke ${verb}` : `${decision} for ${verb}`
+    try {
+      const outcome = await approval.request({
+        agent: exec.agent,
+        toolName: revoke === true ? 'os_permission_revoke' : 'os_permission_grant',
+        ...exec.callId === undefined ? {} : { callId: exec.callId },
+        reason: `dsh-os wants to ${verbLabel} on ${target}`,
+        displayReason: {
+          en: revoke === true
+            ? `dsh-os wants to remove the stored rule for "${verb}".`
+            : `dsh-os wants to remember "${decision === 'allow-always' ? 'always allow' : 'always deny'}" for "${verb}" on ${target}.`,
+        },
+        ...exec.signal === undefined ? {} : { signal: exec.signal },
+      })
+      if (outcome === 'allowed-once') return { granted: true, outcome }
+      return {
+        granted: false,
+        outcome,
+        detail: outcome === 'rejected'
+          ? 'refused — note that a session policy of "never" refuses before any prompt is shown, so nothing was displayed to the user'
+          : 'no answerer accepted the request',
+      }
+    } catch (error) {
+      return { granted: false, outcome: 'unavailable', detail: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   tool({
     name: 'os_permission_query',
     description:
@@ -389,8 +451,24 @@ export function apply(ctx, rawConfig) {
       required: ['verb', 'target', 'decision'],
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
-    async execute(args) {
-      return JSON.stringify(grant(args), null, 2)
+    async execute(args, exec) {
+      // The user decides before anything is written. A refusal is reported as a result rather than an
+      // exception, so the model can tell "the user said no" from "the tool broke".
+      const permission = await approvedForDurableWrite(exec, {
+        verb: args.verb,
+        target: args.target ?? '*',
+        decision: args.decision,
+      })
+      if (!permission.granted) {
+        return JSON.stringify({
+          ok: false,
+          written: false,
+          authorization: permission.outcome,
+          ...permission.detail === undefined ? {} : { reason: permission.detail },
+          note: 'permission.json was NOT modified.',
+        }, null, 2)
+      }
+      return JSON.stringify({ ...grant(args), authorizedBy: permission.outcome }, null, 2)
     },
   })
 
@@ -405,8 +483,25 @@ export function apply(ctx, rawConfig) {
       required: ['ruleId'],
     },
     output: { schema: { type: 'string' }, render: (_a, v) => [{ type: 'text', text: v }] },
-    async execute(args) {
-      return JSON.stringify(revoke({ ruleId: args.ruleId }), null, 2)
+    async execute(args, exec) {
+      // Revoking is a durable decision too — it removes a rule the user already agreed to, so it takes
+      // the same gate as writing one.
+      const permission = await approvedForDurableWrite(exec, {
+        verb: `rule ${args.ruleId}`,
+        target: args.ruleId,
+        decision: 'revoke',
+        revoke: true,
+      })
+      if (!permission.granted) {
+        return JSON.stringify({
+          ok: false,
+          written: false,
+          authorization: permission.outcome,
+          ...permission.detail === undefined ? {} : { reason: permission.detail },
+          note: 'permission.json was NOT modified.',
+        }, null, 2)
+      }
+      return JSON.stringify({ ...revoke({ ruleId: args.ruleId }), authorizedBy: permission.outcome }, null, 2)
     },
   })
 

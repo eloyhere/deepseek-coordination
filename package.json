@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": false,
   "type": "module",
   "description": "Cross-platform atomic OS-interaction surface for the DeepSeek Harness: one argument-stable verb set implemented natively on each OS, with byte-exact charset, BOM and line-ending handling.",
@@ -92,6 +92,7 @@
     "test": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/golden.ps1",
     "test:encoding": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/encoding.ps1",
     "test:conformance": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/conformance.ps1",
+    "test:rules": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/rules.ps1",
     "test:plugin": "node tests/plugin.test.mjs",
     "test:activation": "node tests/activation.test.mjs",
     "test:takeover": "node tests/takeover.test.mjs",
@@ -103,7 +104,7 @@
     "test:load": "node tools/verify-plugin-load.mjs && node tools/verify-editions.mjs",
     "test:pipeline": "node tools/probe-pipeline.mjs",
     "measure:cache": "node tools/measure-cache.mjs",
-    "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:plugin && npm run test:takeover && npm run test:permission && npm run test:workflow && npm run test:bundle && npm run test:package && npm run test:load && npm run test:desktop",
+    "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:rules && npm run test:plugin && npm run test:activation && npm run test:takeover && npm run test:permission && npm run test:workflow && npm run test:bundle && npm run test:package && npm run test:load && npm run test:desktop",
     "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
   },
   "devDependencies": {

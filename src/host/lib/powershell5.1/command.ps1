@@ -200,6 +200,50 @@ function Assert-Allowed {
   if ($Positionals -ge 0 -and $Parsed.positionals.Length -gt $Positionals) {
     throw (New-OsError -Code 'E_USAGE' -Message ("unexpected extra argument <{0}>" -f $Parsed.positionals[$Positionals]))
   }
+
+  # ---------------------------------------------------------------------------
+  # The durable rules are consulted HERE, at the one gate every mutating verb passes through.
+  #
+  # Before this existed, `permission.json` was written by the consent delegate and read by
+  # `permission.list` / `permission.query` for DISPLAY only: no verb ever looked at a rule, so a
+  # `deny-always` stopped nothing and an `allow-always` bought nothing. The file recorded decisions that
+  # had no effect, which is worse than having no file at all, because it reads as enforcement.
+  #
+  # A deny is checked FIRST and wins outright, so the answer never depends on the order rules were
+  # appended in. It is checked BEFORE the `--allow` flag, deliberately: `--allow` says a caller believes
+  # it is authorized, and a rule is the user having said otherwise. A deny that `--allow` could overrule
+  # would be a rule that does not deny.
+  #
+  # An allow rule still requires `--allow`, and that is not an oversight: the flag is the per-call
+  # statement that a caller has been authorized for THIS call, while the rule is the standing permission
+  # to be authorized at all. Requiring both keeps the flag meaningful for callers that never consult the
+  # rules, and stops a durable grant from silently authorizing every future call on its own.
+  # ---------------------------------------------------------------------------
+  $state = Read-PermissionFile
+  # An UNTRUSTED file is treated as having no rules at all, which is what the consent delegate does
+  # (`readDocument` returns an empty document when `updatedBy` is not its own). Only setting a `trusted`
+  # flag and then honouring the rules anyway would let anyone who can write the file both grant and deny
+  # by hand: the delegate is supposed to be its only writer, so a file it did not write is not evidence.
+  if ($null -ne $state.document -and $state.trusted) {
+    $target = Get-PermissionTarget -Parsed $Parsed -Verb $Verb
+    # THE TWO SPELLINGS ARE NOT THE SAME STRING, and that is the whole trap here.
+    #
+    # Every call site passes the verb in its HUMAN form, with spaces ("file delete"), because that is the
+    # text the error messages show. `permission.json` stores it in its TABLE form, with dots
+    # ("file.delete"), because that is what `selfcheck` and `permission.query` report and what a user
+    # writes into a rule. Comparing the two directly made every rule fail to match - silently, and only
+    # for the enforcement path, since the display path was always given the dotted form by its caller.
+    # A rule that never matches is indistinguishable from no rule at all, so this had to be normalized
+    # rather than documented.
+    $ruleVerb = $Verb -replace ' ', '.'
+    $rule = Get-PermissionDecision -Document $state.document -Verb $ruleVerb -Target $target
+    if ($null -ne $rule -and $rule.decision -eq 'deny-always') {
+      throw (New-OsError -Code 'E_PERMISSION_DENIED_BY_RULE' `
+          -Message ("{0} on '{1}' is denied by the stored rule {2}" -f $Verb, $target, $rule.id) `
+          -Hint 'the rule was written by the consent delegate; remove it with os_permission_revoke before retrying')
+    }
+  }
+
   if (-not (Test-HasFlag -Parsed $Parsed -Name 'allow')) {
     throw (New-OsError -Code 'E_PERMISSION' `
         -Message ("{0} is a mutating operation and requires user authorization" -f $Verb) `

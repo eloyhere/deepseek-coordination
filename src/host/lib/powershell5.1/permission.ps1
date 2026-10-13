@@ -87,16 +87,7 @@ function Invoke-PermissionQuery {
   $target = Get-Positional -Parsed $Parsed -Index 1 -Name 'target' -Optional -Default '*'
   Assert-NoExtra -Parsed $Parsed -Expected 2
   $state = Read-PermissionFile
-  $matched = $null
-  if ($null -ne $state.document -and $null -ne $state.document.PSObject.Properties['rules']) {
-    foreach ($r in @($state.document.rules)) {
-      $verbMatch = ($r.verb -eq $verb) -or ($r.verb.EndsWith('.*') -and $verb.StartsWith($r.verb.Substring(0, $r.verb.Length - 1)))
-      if (-not $verbMatch) { continue }
-      $value = '*'
-      if ($null -ne $r.target -and $null -ne $r.target.PSObject.Properties['value']) { $value = [string]$r.target.value }
-      if ($value -eq '*' -or $value -eq $target) { $matched = $r; break }
-    }
-  }
+  $matched = Get-PermissionDecision -Document $state.document -Verb $verb -Target $target
   $decision = 'ask'
   if ($null -ne $matched) { $decision = [string]$matched.decision }
   elseif (-not $state.trusted) { $decision = 'ask' }
@@ -109,6 +100,66 @@ function Invoke-PermissionQuery {
     trusted = $state.trusted
     aclEnforced = (Test-AclEnforced)
     fileExists = $state.exists
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Rule evaluation for the verb layer
+# ---------------------------------------------------------------------------
+
+# DENY FIRST, then allow. This is the deliberate departure from "first match wins" that the consent
+# delegate already implements, and it is what the two readers had disagreed about: the script used to
+# take the first matching rule in array order, so a deny and an allow that both matched resolved by
+# whichever happened to be appended first. The safe answer must not depend on append order.
+#
+# Returns the DECIDING rule, or $null when no rule matches (the caller then falls back to defaults).
+function Get-PermissionDecision {
+  param($Document, [string]$Verb, [string]$Target)
+  if ($null -eq $Document) { return $null }
+  if ($null -eq $Document.PSObject.Properties['rules']) { return $null }
+  $matching = @()
+  foreach ($r in @($Document.rules)) {
+    $pattern = [string]$r.verb
+    $verbMatch = ($pattern -eq $Verb) -or ($pattern -eq '*')
+    if (-not $verbMatch -and $pattern.EndsWith('.*')) {
+      # The namespace prefix stops at the LAST dot, not one character before the asterisk. Taking the
+      # string minus its final character turns "file.*" into "file." (correct) but also turns
+      # "file.delete" into "file.d", which then prefix-matches "file.delete" AND "file.destroy" and every
+      # other verb that happens to start with the same letters. A rule for one verb must not deny another.
+      $prefix = $pattern.Substring(0, $pattern.Length - 2) + '.'
+      $verbMatch = $Verb.StartsWith($prefix)
+    }
+    if (-not $verbMatch) { continue }
+    $value = '*'
+    if ($null -ne $r.target -and $null -ne $r.target.PSObject.Properties['value']) { $value = [string]$r.target.value }
+    # A target that is not the wildcard only matches when the caller's own string matches it exactly.
+    # The argument is used AS WRITTEN rather than resolved to an absolute path: a rule is granted on the
+    # thing the user was shown, and rewriting it here would make matching depend on the working directory.
+    if ($value -ne '*' -and $value -ne $Target) { continue }
+    $matching += $r
+  }
+  foreach ($r in $matching) { if ($r.decision -eq 'deny-always') { return $r } }
+  foreach ($r in $matching) { if ($r.decision -eq 'allow-always') { return $r } }
+  return $null
+}
+
+# The value a rule is written against, derived from the verb and the caller's own argument.
+#
+# The verb layer has one thing the tool layer does not: the exact argv. So the target here is the
+# argument AS TYPED - a path, a service name, a variable name, a pid - which is the string a human would
+# have written into a rule. An unresolvable verb shape yields '*' (verb-wide only), which is the
+# conservative direction: a rule scoped to one path can only fail to match, never match too much.
+function Get-PermissionTarget {
+  param($Parsed, [string]$Verb)
+  $first = $null
+  if ($Parsed.positionals.Length -ge 1) { $first = [string]$Parsed.positionals[0] }
+  if ([string]::IsNullOrEmpty($first)) { return '*' }
+  switch -Regex ($Verb) {
+    '^file\.' { return $first }
+    '^service\.' { return $first }
+    '^task\.(launch|kill)$' { return $first }
+    '^environment\.' { return $first }
+    default { return '*' }
   }
 }
 

@@ -119,26 +119,9 @@ function Invoke-PermissionQuery {
   $target = Get-Positional -Parsed $Parsed -Index 1 -Name 'target' -Optional -Default '*'
   Assert-NoExtra -Parsed $Parsed -Expected 2
   $state = Read-PermissionFile
-  $matched = $null
-  if ($null -ne $state.document -and $null -ne $state.document.PSObject.Properties['rules']) {
-    foreach ($r in @($state.document.rules)) {
-      # The rule text comes from permission.json and the verb comes from argv, so both comparisons are
-      # named rather than linguistic. A rule written "file.*" matches every verb under "file." because
-      # the trailing asterisk is dropped and what remains is used as a prefix.
-      $verbMatch = [string]::Equals([string]$r.verb, $verb, [System.StringComparison]::OrdinalIgnoreCase)
-      if (-not $verbMatch -and $r.verb.EndsWith('.*', [System.StringComparison]::Ordinal)) {
-        $prefix = $r.verb.Substring(0, $r.verb.Length - 1)
-        # The prefix test keeps the case-sensitivity the 5.1 code had; only its tolerance of control
-        # characters is dropped.
-        $verbMatch = $verb.StartsWith($prefix, [System.StringComparison]::Ordinal)
-      }
-      if (-not $verbMatch) { continue }
-      $value = '*'
-      if ($null -ne $r.target -and $null -ne $r.target.PSObject.Properties['value']) { $value = [string]$r.target.value }
-      if ([string]::Equals($value, '*', [System.StringComparison]::OrdinalIgnoreCase) -or
-          [string]::Equals($value, $target, [System.StringComparison]::OrdinalIgnoreCase)) { $matched = $r; break }
-    }
-  }
+  # One evaluator, shared with the verb layer's authorization gate, so the answer this verb REPORTS and
+  # the answer a mutating verb ACTS ON cannot drift apart.
+  $matched = Get-PermissionDecision -Document $state.document -Verb $verb -Target $target
   $decision = 'ask'
   if ($null -ne $matched) { $decision = [string]$matched.decision }
   elseif (-not $state.trusted) { $decision = 'ask' }
@@ -152,6 +135,79 @@ function Invoke-PermissionQuery {
     aclEnforced = (Test-AclEnforced)
     fileExists = $state.exists
   }
+}
+
+# ---------------------------------------------------------------------------
+# Rule evaluation for the verb layer
+# ---------------------------------------------------------------------------
+
+# DENY FIRST, then allow. This is the deliberate departure from "first match wins" that the consent
+# delegate already implements, and it is what the two readers had disagreed about: this function used to
+# take the first matching rule in array order, so a deny and an allow that both matched resolved by
+# whichever happened to be appended first. The safe answer must not depend on append order.
+#
+# Every comparison below is named ORDINAL, for the reason this whole module names its comparisons: from
+# .NET 5 an ignorable character compares equal to almost anything, so a linguistic `-eq` would let a rule
+# whose verb carries a stray control byte match a verb it is not. The delegate's JS reader compares by
+# exact string equality, so ordinal is also what keeps the two readers agreeing.
+#
+# Returns the DECIDING rule, or $null when no rule matches (the caller then falls back to defaults).
+function Get-PermissionDecision {
+  param($Document, [string]$Verb, [string]$Target)
+  if ($null -eq $Document) { return $null }
+  if ($null -eq $Document.PSObject.Properties['rules']) { return $null }
+  $matching = @()
+  foreach ($r in @($Document.rules)) {
+    $pattern = [string]$r.verb
+    $verbMatch = [string]::Equals($pattern, $Verb, [System.StringComparison]::OrdinalIgnoreCase)
+    if (-not $verbMatch) {
+      $verbMatch = [string]::Equals($pattern, '*', [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $verbMatch -and $pattern.EndsWith('.*', [System.StringComparison]::Ordinal)) {
+      # The namespace prefix stops at the LAST dot, not one character before the asterisk. Taking the
+      # string minus its final character turns "file.*" into "file." (correct) but also turns
+      # "file.delete" into "file.d", which then prefix-matches "file.delete" AND "file.destroy" and every
+      # other verb that happens to start with the same letters. A rule for one verb must not deny another.
+      $prefix = $pattern.Substring(0, $pattern.Length - 2) + '.'
+      $verbMatch = $Verb.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $verbMatch) { continue }
+    $value = '*'
+    if ($null -ne $r.target -and $null -ne $r.target.PSObject.Properties['value']) { $value = [string]$r.target.value }
+    # A target that is not the wildcard only matches when the caller's own string matches it exactly.
+    # The argument is used AS WRITTEN rather than resolved to an absolute path: a rule is granted on the
+    # thing the user was shown, and rewriting it here would make matching depend on the working directory.
+    if (-not [string]::Equals($value, '*', [System.StringComparison]::OrdinalIgnoreCase)) {
+      if (-not [string]::Equals($value, $Target, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+    }
+    $matching += $r
+  }
+  foreach ($r in $matching) {
+    if ([string]::Equals([string]$r.decision, 'deny-always', [System.StringComparison]::Ordinal)) { return $r }
+  }
+  foreach ($r in $matching) {
+    if ([string]::Equals([string]$r.decision, 'allow-always', [System.StringComparison]::Ordinal)) { return $r }
+  }
+  return $null
+}
+
+# The value a rule is written against, derived from the verb and the caller's own argument.
+#
+# The verb layer has one thing the tool layer does not: the exact argv. So the target here is the argument
+# AS TYPED - a path, a service name, a variable name, a pid - which is the string a human would have
+# written into a rule. An unrecognised verb shape yields '*' (verb-wide only), which is the conservative
+# direction: a path-scoped rule can then only fail to match, never match too much.
+function Get-PermissionTarget {
+  param($Parsed, [string]$Verb)
+  $first = $null
+  if ($Parsed.positionals.Length -ge 1) { $first = [string]$Parsed.positionals[0] }
+  if ([string]::IsNullOrEmpty($first)) { return '*' }
+  if ($Verb.StartsWith('file.', [System.StringComparison]::Ordinal)) { return $first }
+  if ($Verb.StartsWith('service.', [System.StringComparison]::Ordinal)) { return $first }
+  if ($Verb.StartsWith('environment.', [System.StringComparison]::Ordinal)) { return $first }
+  if ([string]::Equals($Verb, 'task.launch', [System.StringComparison]::Ordinal) -or
+      [string]::Equals($Verb, 'task.kill', [System.StringComparison]::Ordinal)) { return $first }
+  return '*'
 }
 
 # The well-known SID for "Everyone". Layer A denies write access to it, because denying Everyone
