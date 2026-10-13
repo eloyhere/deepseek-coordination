@@ -216,7 +216,18 @@ export function apply(ctx, rawConfig) {
     if (scope && !SCOPES.includes(scope)) {
       throw new Error(`scope must be one of ${SCOPES.join(', ')}, got '${scope}'`)
     }
-    const value = target?.value ?? '*'
+    // THE TARGET ARRIVES IN TWO SHAPES, and this function has to accept both.
+    //
+    // The model-facing tool declares `target` as a STRING ("Target value; * means every target") and hands
+    // it straight through, while this function reads `target.value` because the STORED rule is an object.
+    // Reading `.value` off a string yields `undefined`, so the value became '*' and `broad` became true,
+    // and the broad-target guard below then refused EVERY grant. The effect was that a rule scoped to one
+    // path could not be created at all: the documented "deny this one file" was unreachable through the
+    // only writer that exists, and the refusal blamed the caller for asking for too much.
+    //
+    // `query` already normalised both shapes (it reads `target?.value ?? target`); this is that treatment.
+    const shape = typeof target === 'string' ? { kind: 'path', value: target } : target
+    const value = shape?.value ?? '*'
     const broad = value === '*'
     if (broad && acknowledgeBroad !== true) {
       throw new Error(
@@ -229,7 +240,7 @@ export function apply(ctx, rawConfig) {
     const rule = {
       id: nextRuleId(document),
       verb,
-      target: { kind: target?.kind ?? 'any', value },
+      target: { kind: shape?.kind ?? 'any', value },
       scope: { kind: scope ?? 'user' },
       decision,
       grantedBy: WRITER,

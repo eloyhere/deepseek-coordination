@@ -227,6 +227,107 @@ await check('the write is atomic: no temporary file is left behind', () => {
   assert.deepEqual(leftovers, [], 'a crash-prone temp file must not survive a successful write')
 })
 
+await check('a STRING target persists as a scoped rule instead of being read as the wildcard', async () => {
+  // The model-facing tool declares `target` as a string and hands it straight through, while `grant` reads
+  // `target.value`. Reading `.value` off a string yields undefined, so the value became '*' and the
+  // broad-target guard refused EVERY grant: a rule for one path could not be created at all, through the
+  // only writer that exists. This case pins both halves of the fix.
+  reset()
+  const tools2 = new Map()
+  const ctx2 = {
+    tools: { register: (spec) => tools2.set(spec.name, spec) },
+    provide: () => () => {},
+    inject: () => {},
+    effect: (f) => { const d = f(); return () => { if (typeof d === 'function') d() } },
+    on: () => () => {},
+    get: () => undefined,
+  }
+  mod.apply(ctx2, { permissionPath: permPath, requireApproval: false, auditLimit: 5 })
+  const tool = tools2.get('os_permission_grant')
+  assert.ok(tool, 'os_permission_grant was not registered')
+  // The declared type is a string, which is exactly what makes the string shape the one that must work.
+  assert.equal(tool.parameters.properties.target.type, 'string')
+
+  const out = JSON.parse(await tool.execute(
+    { verb: 'file.delete', target: 'C:\\exactly\\one.txt', decision: 'deny-always' },
+    { agent: { id: 'A' }, callId: 'c1' },
+  ))
+  assert.ok(out.rule, `a string target was refused: ${JSON.stringify(out).slice(0, 160)}`)
+  assert.equal(out.rule.target.value, 'C:\\exactly\\one.txt', 'the target value was not preserved')
+  assert.equal(out.rule.target.kind, 'path', 'a string target must be stored as a path-scoped rule')
+  assert.equal(out.rule.broad, false, 'a concrete target must not be recorded as broad')
+
+  // The stored rule must be the one the evaluator then matches.
+  const verdict = internals.evaluate(internals.readDocument(permPath).document, 'file.delete', 'C:\\exactly\\one.txt')
+  assert.equal(verdict.decision, 'deny-always', 'the stored rule does not match its own target')
+})
+
+await check('the wildcard target still demands acknowledgeBroad', async () => {
+  reset()
+  const tools2 = new Map()
+  const ctx2 = {
+    tools: { register: (spec) => tools2.set(spec.name, spec) },
+    provide: () => () => {},
+    inject: () => {},
+    effect: (f) => { const d = f(); return () => { if (typeof d === 'function') d() } },
+    on: () => () => {},
+    get: () => undefined,
+  }
+  mod.apply(ctx2, { permissionPath: permPath, requireApproval: false, auditLimit: 5 })
+  const tool = tools2.get('os_permission_grant')
+  await assert.rejects(
+    () => tool.execute({ verb: 'file.delete', target: '*', decision: 'deny-always' }, { agent: { id: 'A' }, callId: 'c1' }),
+    /acknowledgeBroad/,
+    'permanent consent to everything must stay an explicit, separate decision',
+  )
+})
+
+await check('a durable write with no approval service reports it and writes nothing', async () => {
+  // The delegate's whole reason for existing is that the scripts cannot reach the approval UI, so the gate
+  // has to fail CLOSED. A silent write would be worse than a refusal, and an exception would lose the
+  // reason. `requireApproval` is left at its default (true) and no `approval` service is provided.
+  reset()
+  const tools2 = new Map()
+  const ctx2 = {
+    tools: { register: (spec) => tools2.set(spec.name, spec) },
+    provide: () => () => {},
+    inject: () => {},
+    effect: (f) => { const d = f(); return () => { if (typeof d === 'function') d() } },
+    on: () => () => {},
+    get: () => undefined,
+  }
+  mod.apply(ctx2, { permissionPath: permPath, auditLimit: 5 })
+  const out = JSON.parse(await tools2.get('os_permission_grant').execute(
+    { verb: 'file.delete', target: 'C:\\x.txt', decision: 'deny-always' },
+    { agent: { id: 'A' }, callId: 'c1' },
+  ))
+  assert.equal(out.ok, false, 'a durable write must not succeed without an approval')
+  assert.equal(out.written, false)
+  assert.equal(out.authorization, 'unavailable')
+  assert.match(String(out.reason), /approval service/, 'the reason must name what was missing')
+  assert.equal(existsSync(permPath), false, 'permission.json must not be created by a refused grant')
+})
+
+await check('requireApproval: false is the documented way to grant unattended', async () => {
+  reset()
+  const tools2 = new Map()
+  const ctx2 = {
+    tools: { register: (spec) => tools2.set(spec.name, spec) },
+    provide: () => () => {},
+    inject: () => {},
+    effect: (f) => { const d = f(); return () => { if (typeof d === 'function') d() } },
+    on: () => () => {},
+    get: () => undefined,
+  }
+  mod.apply(ctx2, { permissionPath: permPath, requireApproval: false, auditLimit: 5 })
+  const out = JSON.parse(await tools2.get('os_permission_grant').execute(
+    { verb: 'file.delete', target: 'C:\\y.txt', decision: 'deny-always' },
+    { agent: { id: 'A' }, callId: 'c1' },
+  ))
+  assert.ok(out.rule, `an explicit opt-out did not grant: ${JSON.stringify(out).slice(0, 160)}`)
+  assert.equal(out.authorizedBy, 'not-required', 'the audit must record why no approval was asked for')
+})
+
 await check('the package still declares one bundle patch', () => {
   const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'))
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
