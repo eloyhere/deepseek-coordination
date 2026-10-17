@@ -12,6 +12,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.6.5] — 2026-10-17
+
+### Added
+
+- A fourth selector after 情景: 强度, with the options low / medium / high (default medium). It
+  belongs to the 工作流 group, so the switch that hides the coordination selectors hides it too.
+
 ## [0.6.4] — 2026-10-17
 
 ### Added

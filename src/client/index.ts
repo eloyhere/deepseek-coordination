@@ -45,6 +45,9 @@ const INTERACTION_OPTIONS = ['感情', '思维', '启发', '收束', '统筹'] a
 /** 情景 — the working scenario. */
 const SCENARIO_OPTIONS = ['对话', '写作', '办公', '研究', '工程', '迭代'] as const
 
+/** 强度 — the effort level of the workflow. */
+const EFFORT_OPTIONS = ['low', 'medium', 'high'] as const
+
 /**
  * The host's three permission presets, labels taken from its own menu:
  * 仅可查看 / 工作区内修改 / 完全权限. The plugin mirrors the wording rather than
@@ -119,6 +122,7 @@ function CoordinationControls(): React.ReactElement {
   const [duty, setDuty] = React.useState<string>(DUTY_OPTIONS[0])
   const [interaction, setInteraction] = React.useState<string>(INTERACTION_OPTIONS[0])
   const [scenario, setScenario] = React.useState<string>(SCENARIO_OPTIONS[0])
+  const [effort, setEffort] = React.useState<string>('medium')
   const [permission, setPermission] = React.useState<string>(PERMISSION_FALLBACK[0])
 
   const children: React.ReactNode[] = []
@@ -147,6 +151,13 @@ function CoordinationControls(): React.ReactElement {
         options: SCENARIO_OPTIONS,
         value: scenario,
         onChange: setScenario,
+      }),
+      React.createElement(Dropdown, {
+        key: 'effort',
+        label: '强度',
+        options: EFFORT_OPTIONS,
+        value: effort,
+        onChange: setEffort,
       }),
     )
   }
