@@ -453,8 +453,6 @@ const CrisisActionOtherImminent = '立刻拨打当地紧急援助（110 / 120）
 
 /** The opening of a prompt carries the emotional register; bound the scan. */
 const MaxAnalysisLength = 4000
-/** A clause at most this long can be an explicit intent without a pronoun. */
-const ShortClauseLength = 12
 /** How far before a marker a negator may sit. */
 const NegationWindow = 8
 /** Sentence stops: discussion and imminence are judged per sentence. */
@@ -615,7 +613,7 @@ function crisisHits(content: string): CrisisHit[] {
         const clause = clauseAt(content, span.start)
         if (family === 'self') {
           if (hasMarker(clause, OtherPersonMarker)) continue
-          if (clause.trim().length > ShortClauseLength && !hasMarker(clause, FirstPersonMarker)) continue
+          if (!hasMarker(sentence, FirstPersonMarker)) continue
         } else if (!hasMarker(clause, HarmTargetMarker)) {
           continue
         }
