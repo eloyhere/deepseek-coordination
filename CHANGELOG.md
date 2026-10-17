@@ -12,6 +12,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.6.2] — 2026-10-17
+
+### Added
+
+- 交互 gains a fifth option, 统筹, after 收束.
+
+### Changed
+
+- The replacement permission dropdown offers 只读 / 工作区可写 / 完全权限 instead of the single
+  完全权限 fallback.
+
+### Fixed
+
+- The composer's "+" popover flashed and closed. The composer re-renders while that menu is open;
+  this plugin re-rendered with it, and each render made emotion touch `<head>`, which the host
+  treats as outside DOM mutation and closes the popover on. Both slot components are memoised and
+  the `sx` object is hoisted so an unrelated re-render no longer regenerates a style rule.
+
 ## [0.6.1] — 2026-10-17
 
 ### Fixed

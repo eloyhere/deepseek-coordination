@@ -39,13 +39,16 @@ const STORAGE_KEY = 'deepseek-coordination:takeover'
 const DUTY_OPTIONS = ['决策', '成果', '资源', '人员', '任职', '执行'] as const
 
 /** 交互 — the interaction mode. */
-const INTERACTION_OPTIONS = ['感情', '思维', '启发', '收束'] as const
+const INTERACTION_OPTIONS = ['感情', '思维', '启发', '收束', '统筹'] as const
 
 /** 情景 — the working scenario. */
 const SCENARIO_OPTIONS = ['对话', '写作', '办公', '研究', '工程', '迭代'] as const
 
-/** Fallback options for the replacement dropdown, which the host's presets override. */
-const PERMISSION_FALLBACK = ['完全权限'] as const
+/**
+ * Options of the replacement dropdown, matching the harness permission modes.
+ * Values are the mode names the host uses; the dropdown shows the labels.
+ */
+const PERMISSION_FALLBACK = ['只读', '工作区可写', '完全权限'] as const
 
 /**
  * The host's resident access-mode control, addressed by its accessible name so
@@ -73,6 +76,19 @@ const theme = createTheme({
 const MuiSelect: React.ComponentType<Record<string, unknown>> = Select as unknown as React.ComponentType<Record<string, unknown>>
 const MuiSwitch: React.ComponentType<Record<string, unknown>> = Switch as unknown as React.ComponentType<Record<string, unknown>>
 
+/** Hoisted so emotion does not regenerate the rule on every render. */
+const SELECT_SX = { width: 104, fontSize: 12, height: 28, backgroundColor: 'transparent' }
+
+/**
+ * Memoised on purpose: the composer re-renders while the user types or opens the
+ * "+" menu, and this plugin must not participate in that churn — a re-render here
+ * makes emotion touch <head>, and the host closes its popover on outside DOM
+ * mutation, which shows up as a popup that flashes and vanishes.
+ */
+const MemoControls = React.memo(function MemoControlsInner(): React.ReactElement {
+  return React.createElement(CoordinationControls, null)
+})
+
 /** One MUI select wired to a controlled value. */
 function Dropdown(props: {
   label: string
@@ -86,7 +102,7 @@ function Dropdown(props: {
       value: props.value,
       onChange: (event: SelectChangeEvent<unknown>) => { props.onChange(String(event.target.value)) },
       inputProps: { 'aria-label': props.label },
-      sx: { width: 104, fontSize: 12, height: 28, backgroundColor: 'transparent' },
+      sx: SELECT_SX,
     },
     props.options.map((option) => React.createElement(MenuItem, { key: option, value: option }, option)),
   )
@@ -223,16 +239,20 @@ export function apply(ctx: ClientContext): void {
   applyTakeoverStyle(takeover, takeoverStyle)
   ctx.effect(() => () => { takeoverStyle.remove() }, `${PLUGIN_ID}: takeover rule`)
 
+  const Settings = React.memo(function SettingsInner(): React.ReactElement {
+    return React.createElement(CoordinationSettings, { style: takeoverStyle })
+  })
+
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: PLUGIN_ID,
     order: 50,
     label: '协调',
-  }, () => React.createElement(CoordinationSettings, { style: takeoverStyle })))
+  }, Settings))
 
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left',
     id: PLUGIN_ID,
     order: 40,
-  }, () => React.createElement(CoordinationControls, null)))
+  }, MemoControls))
 }
