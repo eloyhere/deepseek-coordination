@@ -3,10 +3,12 @@
 > **状态：** 可实施（implementer-ready）。字符串逐字复制即可。
 > **范围：** 输入框五个下拉框的 tooltip、锁定/离线/错误提示、设置页的信息架构与全部文案。
 > **非范围：** 颜色、圆角、阴影等视觉样式；行为逻辑；模型可见的 `coordination_*` 工具描述。
-> **行为依据：** `docs/deepseek-coordination-v23.md` §3、§6.2、§6.3、§14、§15、§16、§19、§22；`src/shared/enum.ts` 的 `SceneProfiles`（v24 写作情景）。
+> **行为依据：** `docs/deepseek-coordination-v24.md` §3、§6.2、§6.3、§14、§15、§16、§19、§22（v24 新增写作情景）；`src/shared/enum.ts` 的 `SceneProfiles`。v23 仍适用于 v24 未改写的部分。
 > **文案落点：** `src/shared/i18n.ts`。本文所有字符串按 §5 逐字复制，不另写第二份。
 
 **替换关系。** 本文取代 v23 §15.1 / §15.2 里的中文 tooltip 与设置文案，不改变枚举值、默认值与执行逻辑。现有 `src/shared/i18n.ts` 已存在，本文的字符串是对它的**替换与扩充**，不是新建字典。
+
+**代码基线。** v0.7.0（`8c196ce`）已把 `i18n.ts` 接到输入框和设置页，但文案仍是旧值；本文的 202 条字符串是替换值。v0.7.0 已顺手修掉两处旧问题（验证的附加错误句、`SelectionState.tooltip` 未消费），本文把它们保留为回归约束，不再当作待办。
 
 **三个前提，先对齐：**
 
@@ -22,19 +24,19 @@
 |---|---|---|
 | 控件 tooltip | 5 条 | 每个下拉框一条，≤90 汉字 / ≤160 英文 |
 | 选项 tooltip | 23 条 | 职能 6 + 交互 5 + 情景 6 + 验证 3 + 权限 3，≤70 / ≤120 |
-| 权限目录与异常 tooltip | 8 条 | 目录项模板、空目录、自定义预设、审批后缀、写入提示、离线、拒绝 |
-| 锁定 / 离线 / 错误 tooltip | 9 条 | 含锁定、未锁定、离线、拒绝、无效、验证说明 |
-| tooltip 合计 | 45 条 | 含 5 个控件、全部选项与状态句 |
+| 权限目录、跟随与加载提示 | 11 条 | 目录为空、自定义预设、审批后缀、写入提示、离线、跟随 DSH、加载中 |
+| 锁定 / 离线 / 错误 / 无障碍模板 | 10 条 | 含锁定、未锁定、离线、拒绝、无效、验证说明、ARIA 模板 |
+| tooltip 与提示合计 | 49 条 | 含 5 个控件、全部选项、状态句与模板 |
 | 设置页设置 | 24 项 | 6 组；其中可编辑 5 项、强制 3 项、只读 16 项 |
 | 设置说明文案 | 24 条 | 每条 ≤70 汉字 / ≤120 英文 |
-| i18n 键（zh/en 成对） | 198 条 | 无孤儿键；模板键单独计数 |
+| i18n 键（zh/en 成对） | 202 条 | 无孤儿键；模板键单独计数 |
 
 **五条关键结论：**
 
-1. **五个下拉共 5 条控件 tooltip + 23 条选项 tooltip**，全部落在 90/160 与 70/120 的预算内；另有 8 条权限目录/异常文案和 9 条状态/拒绝文案。
-2. **验证文案统一为“三档都联网；差异只在 1×3 / 2×5 / 4×8 和证据范围”。** 当前 `controls.ts` 里那句「medium 与 high 允许联网搜索；low 不做贝叶斯推断」与 §6.3、§14 冲突，必须删除；这是本次唯一的**事实性**文案错误。
+1. **五个下拉共 5 条控件 tooltip + 23 条选项 tooltip**，全部落在 90/160 与 70/120 的预算内；另有 11 条权限/跟随/加载提示和 10 条状态/无障碍模板。
+2. **验证文案统一为“三档都联网；差异只在 1×3 / 2×5 / 4×8 和证据范围”。** v0.7.0 已把 `controls.ts` 的附加句换成 `composer.validationNote`；本文固定这句话，并用 lint 断言防止回归（旧版那句「low 不做贝叶斯推断」与 §6.3、§14 冲突）。
 3. **设置页从 2 个裸开关 + 1 个职能组扩到 6 组 24 项。** 其中 5 项本机可编辑、3 项强制（只读）、13 项主机配置只读、3 项运行时派生；强制项不提供关闭入口。
-4. **`config.ts` 不需要新增键，但有 4 组必须修或确认。** `profession.rebuildCanReselect` 与 `profession.abandonCanReselect` 当前无人读取、也没被强制；`ui.showTooltip` 已随 `SelectionState` 下发但客户端从未消费；`profession.default` 与 `defaults.profession` 重复，真正生效的是后者；`profession.audit` 有键但无人读取。
+4. **`config.ts` 不需要新增键，但有 3 组必须修、2 处要确认。** `profession.rebuildCanReselect` 与 `profession.abandonCanReselect` 当前无人读取、也没被强制；`profession.default` 与 `defaults.profession` 重复，真正生效的是后者；`profession.audit` 有键但无人读取。确认项：`ui.showTooltip` 已消费，客户端覆盖别另写默认；`ui.toolbar`、`profession.enabled` 是死键，不要做成设置。
 5. **每个字符串都有 zh/en 成对；没有孤儿键。** 长度、配对、禁用词、占位符一致性由 §4.6 的 lint 测试守住，不靠人工目测。
 
 **config key 映射总览：**
@@ -119,11 +121,11 @@
 
 > 定查多少资料、看多远的历史；三档都会联网，只差检索量和证据范围。
 
-**不合格例（当前）：**
+**不合格例（旧版主句，机制说明堆叠）：**
 
 > 决定检索预算与证据范围：low 当轮 / medium 当前会话 / high 本地全部内容。三档都联网并做贝叶斯更新。
 
-问题有三：①“检索预算 / 证据范围 / 贝叶斯”是内部词；②把菜单又列了一遍；③渲染后 102 字，超过 90 字上限。
+问题有三：①“检索预算 / 证据范围 / 贝叶斯”是内部词；②把菜单又列了一遍；③69 字虽未超 90 上限，但读起来仍是规格说明，操作者判断不出“选低档会怎样”。旧版还多一句与 §6.3 矛盾的附加句（v0.7.0 已删除），这里一并列为回归案例。
 
 **选项 tooltip 的公式：**
 
@@ -163,7 +165,7 @@
 
 | # | 位置 | 现在 | 字数 | 改成 | 字数 | 变化 | 问题 / 改法 |
 |---|---|---|---|---|---|---|---|
-| 1 | 验证 · 控件 tooltip（渲染后） | 验证 · 当前：中<br>决定检索预算与证据范围：low 当轮 / medium 当前会话 / high 本地全部内容。三档都联网并做贝叶斯更新。medium 与 high 允许联网搜索；low 不做贝叶斯推断。 | 102 | 定查多少资料、看多远的历史；三档都会联网，只差检索量和证据范围。 | 32 | −69% | 102 字，含“检索预算 / 证据范围 / 贝叶斯”三个内部概念；附加句还与 §6.3 矛盾（三档都联网、都做贝叶斯）。 |
+| 1 | 验证 · 控件 tooltip（渲染后） | 验证 · 当前：中<br>决定检索预算与证据范围：low 当轮 / medium 当前会话 / high 本地全部内容。三档都联网并做贝叶斯更新。 | 69 | 定查多少资料、看多远的历史；三档都会联网，只差检索量和证据范围。 | 32 | −54% | 69 字，含“检索预算 / 证据范围 / 贝叶斯”三个内部概念；v0.7.0 已删掉更糟的附加句（low 不做推断），但主句仍是机制说明，读者不知道“低档会怎样”。 |
 | 2 | 职能 · 控件 tooltip（渲染后） | 职能 · 当前：执行<br>任务内唯一且锁定的问责维度。选择后本 Turn 不可切换，只能重建或丢弃任务。本 Turn 的职能已锁定为「执行」。重建（rebuild）或丢弃（abandon）任务后才能重新选择。 | 101 | 定这个任务由谁负哪一份责；选定后任务内不能改，要换只能重建或丢弃任务。 | 35 | −65% | 101 字；“问责维度”“Turn”“rebuild / abandon”都要背景知识，锁定规则说了两遍。 |
 | 3 | 情景 · 写作选项 | 内容创作与文本打磨，适合文章、文案、报告、邮件、技术文档。优点：结构化产出、多轮打磨。缺点：需要多轮交互，不适合即时问答。 | 61 | 文章、文案、报告、邮件；先定受众、语气和字数，列提纲、再改稿，最多 3 轮；不跑命令。 | 43 | −30% | 61 字的规格书：优点 / 缺点两段式，读起来像需求文档，不像菜单提示。 |
 | 4 | 设置 · 权限接管 | 已接管时隐藏 DSH 输入框的访问模式控件，改用协调面板的权限下拉；未接管时保留 DSH 自带控件。 | 50 | 隐藏 DSH 的访问模式按钮，改用本插件的权限下拉。 | 26 | −48% | 50 字两段对照（已接管 / 未接管），把状态说明混进了开关本身。 |
@@ -171,7 +173,7 @@
 | 6 | 职能 · 决策选项 | 对是否执行、Plan 是否通过拥有最终批准权或否决权。任务内锁定，不可切换。 | 38 | 决定做不做、方案过不过；能叫停，也能放行。任务内锁定。 | 27 | −29% | 38 字，Plan / 最终批准权 / 否决权都是内部或法律化措辞。 |
 | 7 | 情景 · 迭代选项 | generate → critique → revise 闭环，适合打磨。优点：质量高。缺点：多轮调用。 | 52 | 先写、再批、再改，循环打磨；质量高，调用次数多。 | 24 | −54% | 52 字，把 generate → critique → revise 内部流程名直接摆进菜单。 |
 
-**读法说明：** “字数”是渲染后的中文字符数；百分比是相对现在的缩减。**缩减不是目的**——“验证”从 102 字降到 32 字，仍然保留了“三档都联网”和“只差检索量与证据范围”两个决策信息，删掉的只是机制名和重复的菜单列表。
+**读法说明：** “字数”是渲染后的中文字符数；百分比是相对现在的缩减。**缩减不是目的**——“验证”从 69 字降到 32 字，仍然保留了“三档都联网”和“只差检索量与证据范围”两个决策信息，删掉的只是机制名和重复的菜单列表。
 
 ### 2.5 五个下拉框的全量 tooltip
 
@@ -229,7 +231,7 @@
 
 #### 2.5.5 验证（3 条，≤70 / ≤120）
 
-> **事实约束（§6.3 / §14）：** 三档**都联网检索**、**都做贝叶斯更新**；差异只在检索预算（1×3 / 2×5 / 4×8）、证据范围（当轮 / 当前会话 / 本地全部内容）与融合范围。任何“low 不联网”“low 不做推断”的文案都是错的。当前 `controls.ts` 的附加句必须删除。
+> **事实约束（§6.3 / §14）：** 三档**都联网检索**、**都做贝叶斯更新**；差异只在检索预算（1×3 / 2×5 / 4×8）、证据范围（当轮 / 当前会话 / 本地全部内容）与融合范围。任何“low 不联网”“low 不做推断”的文案都是错的。v0.7.0 已删除旧附加句；保留这条断言防止回归。
 
 | 控件 | 值 | 中文标签 | English | 中文 tooltip（≤70） | English tooltip（≤120） | 长度检查 |
 |---|---|---|---|---|---|---|
@@ -241,7 +243,7 @@
 
 #### 2.5.6 权限（3 条兜底，≤70 / ≤120）
 
-> **来源约束：** 权限选项由 DSH 的 `ctx.permissionPresets` 目录动态提供；本插件不定义权限档位、不翻译 DSH 的预设名、不另存一份。下表是**目录为空时的兜底三条**，也是 DSH 目录项 tooltip 追加的“后果句”。
+> **来源约束：** 权限选项由 DSH 的 `ctx.permissionPresets` 目录动态提供；本插件不定义权限档位、不翻译 DSH 的预设名、不另存一份。下表是**目录为空时的兜底三条**，也是 DSH 目录项 tooltip 追加的“后果句”。没有已应用预设时，下拉框显示「跟随 DSH」而不是伪造一个档位（见 §2.5.7）。
 
 | 控件 | 值 | 中文标签 | English | 中文 tooltip（≤70） | English tooltip（≤120） | 长度检查 |
 |---|---|---|---|---|---|---|
@@ -249,26 +251,31 @@
 | 权限（兜底） | `workspace-write` | 工作区内修改 | Workspace write | 能改工作区里的文件；改工作区外会被拒绝。 | Can change files inside the workspace; writes outside it are refused. | zh 20/70 · en 69/120 ✅ |
 | 权限（兜底） | `danger-full-access` | 完全权限 | Full access | 能改任何路径，不受工作区限制；风险最高，慎用。 | Can change any path, outside the workspace too; highest risk, use with care. | zh 23/70 · en 76/120 ✅ |
 
-#### 2.5.7 DSH 目录项与异常（8 条，≤70 / ≤120）
+#### 2.5.7 DSH 目录项、跟随状态与异常（11 条，≤70 / ≤120）
 
-| 场景 | 值 | 中文 tooltip（≤70） | English tooltip（≤120） | 长度检查 / 规则 |
+| 场景 | 值 | 中文文案（≤70） | English（≤120） | 长度检查 / 规则 |
 |---|---|---|---|---|
-| DSH 目录项 | {name} | {name}：{consequence} | {name}: {consequence} | zh 20/70 · en 21/120 ✅ |
 | 目录为空 | — | DSH 没有提供权限预设，这里只显示说明，不能切换。 | DSH exposes no permission presets; this is informational and cannot be switched. | zh 26/70 · en 80/120 ✅ |
+| 目录为空时尝试切换 | — | DSH 没有提供权限预设，权限没有切换。 | DSH exposes no permission preset catalog, so the permission was not switched. | zh 20/70 · en 77/120 ✅ |
 | 自定义预设 | 当前值 | 自定义权限预设，DSH 目录里没有；切换前先确认影响。 | A custom permission preset not in DSH's catalog; check the impact before switching. | zh 27/70 · en 83/120 ✅ |
 | 审批后缀 | {approval} | 审批方式：{approval} | Approval: {approval} | zh 15/70 · en 20/120 ✅ |
 | 无法判断档位 | — | 权限档位由 DSH 的权限预设定义。 | The permission tier is defined by DSH permission presets. | zh 18/70 · en 57/120 ✅ |
 | 写入提示 | — | 切换会立刻写进本会话的 DSH 权限。 | Switching applies the DSH permission to this session immediately. | zh 19/70 · en 65/120 ✅ |
 | 主机离线 | — | 主机未连接，权限不能切换。 | Host unreachable; the permission cannot be switched. | zh 13/70 · en 52/120 ✅ |
-| DSH 拒绝 | — | DSH 没有接受这个权限预设，已保持原样。 | DSH did not accept that permission preset; the previous one stays in force. | zh 21/70 · en 75/120 ✅ |
+| 无已应用预设 | 跟随 DSH | 跟随 DSH | Follow DSH | zh 6/70 · en 10/120 ✅ |
+| 无预设且能读默认档位 | 跟随 DSH（默认：{mode}） | 跟随 DSH（默认：{mode}） | Follow DSH (default: {mode}) | zh 17/70 · en 28/120 ✅ |
+| 无已应用预设的 tooltip | — | 当前没有应用任何权限预设，跟随 DSH 的默认档位。 | No permission preset is applied; the DSH default tier is in force. | zh 26/70 · en 66/120 ✅ |
+| 主机选择加载中 | — | 正在加载主机选择… | Loading the host selection… | zh 9/70 · en 27/120 ✅ |
 
 **动态拼接规则：**
 
-1. 目录存在时，选项 label 用 DSH 的 `name` 原样显示；tooltip 用 `{name}：{consequence}`，`consequence` 取上表对应档位的后果句（20–23 字）。整块仍受 70/120 预算约束，超出时只显示后果句。
+1. 目录存在时，选项 label 用 DSH 的 `name` 原样显示；tooltip 由 DSH 的 `description` + 对应档位的 `permissions.<sandbox>.hint` 组成，**不另写目录项模板**。整块仍受 70/120 预算约束，超出时只保留后果句。
 2. **不把 DSH 的长 `description` 直接塞进 tooltip。** 如果 DSH 预设名超过 40 字符，菜单只显示名称（可换行），tooltip 只显示后果句；名称本身不截断。
 3. 找不到档位映射时，用 `composer.permissionPresetDefault`：「权限档位由 DSH 的权限预设定义。」这句话只在无法判断后果时出现，且必须与“切换会立即生效”一起出现。
 4. `approval` 后缀只在 DSH 提供审批策略时追加；追加后仍要保证整块 ≤ 2 行，超出就只保留后果句。
-5. 目录为空、主机离线、DSH 拒绝三种情况分别用 `permissionCatalogMissing`、`permissionOffline`、`permissionRejected`；**不要**用同一句“操作失败”糊过去。
+5. 目录为空、主机离线、空目录下尝试切换三种情况分别用 `permissionCatalogMissing`、`permissionOffline`、`permissionApplyFailed`；**不要**用同一句“操作失败”糊过去。
+6. **没有已应用预设时，不要伪造一个档位。** 显示 `followDsh`（能读到默认档位时用 `followDshMode`），tooltip 用 `permissionFollowHint`，并说明“跟随 DSH 的默认档位”；选中它不会写入任何权限。
+7. 主机选择还没加载完时，下拉框禁用并显示 `loadingSelection`（“正在加载主机选择…”）；不要显示空字符串或旧值。
 
 ### 2.6 锁定 / 离线 / 错误 tooltip
 
@@ -276,17 +283,19 @@
 |---|---|---|---|---|
 | `lockedLine` | 任务已开始（职能只读时） | 任务已开始，职能锁定；完成或新建任务后可改。 | Task started: profession locked. Finish it or start a new task to change it. | zh 22/70 · en 76/120 ✅ |
 | `unlockedLine` | 任务尚未开始 | 现在可以选；任务一开始就锁定。 | You can choose now; it locks when the task starts. | zh 15/70 · en 50/120 ✅ |
-| `lockedAria` | 只读控件的可访问名后缀 | 已锁定 | locked | zh 3/70 · en 6/120 ✅ |
+| `lockedAria` | 只读控件的可访问名模板（{explanation} = lockedLine） | {control} · {currentLabel}：{current}。{explanation} | {control} · {currentLabel}: {current}. {explanation} | zh 50/70 · en 52/120 ✅ |
 | `offlineLine` | 主机未连接 | 主机未连接；这里的选择只存本机，不影响任务。 | Host unreachable; choices here are saved on this device only and do not affect the task. | zh 22/70 · en 88/120 ✅ |
 | `localOnly` | 离线句的短片段 | 只存本机 | saved on this device only | zh 4/70 · en 25/120 ✅ |
-| `professionLocked` | 尝试修改已锁定职能 | 职能已锁定，改动没有生效；重建或丢弃任务后可改。 | Profession is locked, so the change was not applied. Rebuild or abandon the task to choose again. | zh 24/70 · en 97/120 ✅ |
+| `professionLocked` | 尝试修改已锁定职能（短句） | 职能已锁定，改动没有生效。 | Profession is locked, so the change was not applied. | zh 13/70 · en 52/120 ✅ |
+| `professionLockedRebuild` | 尝试修改已锁定职能（带出口） | 职能已锁定，改动没有生效；重建或丢弃任务后可改。 | Profession is locked, so the change was not applied. Rebuild or abandon the task to choose again. | zh 24/70 · en 97/120 ✅ |
 | `invalidSelection` | 主机返回 INVALID_ARGUMENT | 这个选项无效，已恢复原选择。 | That option is not valid; the previous choice was restored. | zh 14/70 · en 59/120 ✅ |
 | `requestFailed` | 主机拒绝或网络失败 | 主机拒绝了这次修改，已恢复原选择。 | The host rejected the change; the previous choice was restored. | zh 17/70 · en 63/120 ✅ |
 | `validationNote` | 验证控件的固定说明（aria-describedby） | 三档都联网：低 1×3 当轮 / 中 2×5 当前会话 / 高 4×8 本地全部。 | All three levels search: low 1×3 this turn / medium 2×5 this session / high 4×8 all local content. | zh 41/70 · en 98/120 ✅ |
 
 **使用规则：**
 
-- **锁定**（任务已开始）：「任务已开始，职能锁定；完成或新建任务后可改。」——这是用户指定的基准句。控件标题追加 `composer.lockedSuffix`「（已锁定）」，`aria-label` 追加 `composer.lockedAria`；只读控件仍可聚焦。
+- **锁定**（任务已开始）：「任务已开始，职能锁定；完成或新建任务后可改。」——这是用户指定的基准句。只读控件的 `aria-label` 用 `composer.lockedAria` 模板（`{explanation}` = `lockedLine`）；只读控件仍可聚焦。
+- **加载中**（主机选择未返回）：下拉框禁用并显示 `composer.loadingSelection`；不要用旧值或空值假装已就绪。
 - **离线**（主机 3 秒无响应）：「主机未连接；这里的选择只存本机，不影响任务。」——只作为**第二行**追加，不替换控件原有说明；离线时仍要让人知道这个控件是干什么的。
 - **拒绝**：先说“没生效”，再说“原值还在”，最后给出口。不出现错误码；错误码只进日志和 `errors.*` 的排查文档。
 - **无效选项**：「这个选项无效，已恢复原选择。」——不解释校验细节；细节留给日志。
@@ -309,7 +318,7 @@
 **实现要求：**
 
 1. **tooltip 必须由焦点触发，不只由 hover 触发。** MUI 的 `describeChild` 只解决语义关联，不解决聚焦；外层容器需要 `tabIndex=0`，并把 `aria-describedby` 指向 tooltip 内容。
-2. **锁定控件不要用原生 `disabled` 承担全部语义。** 原生 `disabled` 元素不可聚焦、不触发鼠标事件，键盘用户永远读不到锁定原因。用 `aria-disabled="true"` + 外层可聚焦容器；`select` 的 `aria-label` 用 `controlAria` 拼上 `lockedAria`。
+2. **锁定控件不要用原生 `disabled` 承担全部语义。** 原生 `disabled` 元素不可聚焦、不触发鼠标事件，键盘用户永远读不到锁定原因。用 `aria-disabled="true"` + 外层可聚焦容器；`select` 的 `aria-label` 用 `composer.lockedAria` 模板，`{explanation}` 填 `lockedLine`。
 3. **屏幕阅读器文本必须自足。** 读到“职能，当前：成果，已锁定”时，用户不需要看到 tooltip 也知道不能改；tooltip 只是补充后果。
 4. **对比度与缩放：** tooltip 正文对比度 ≥ 4.5:1；200% 缩放下不裁切、不出现横向滚动；不用颜色单独表达状态（状态 chip 必须带文字）。
 5. **触摸与无悬停设备：** 长按 500ms 打开；设置页的“?”按钮是常驻入口；不存在“只有 hover 才能知道”的规则。
@@ -322,7 +331,7 @@
 | 职能任务内锁定 | 职能控件 + 6 个选项 | “职能锁定”行 + `强制` chip + “为什么锁”段 | `PROFESSION_LOCKED` | v23 §3.3 |
 | 重建 / 丢弃后可重选 | 职能控件 + 设置行 | “重建后可重选”“丢弃后可重选”两行 | `professionLocked` | v23 §3.4 |
 | 三档验证都联网 | 验证控件 + 3 个选项 | “默认验证”说明 + 组助记 | — | §6.3 / §14 |
-| 权限切换立即生效 | 权限控件 + 目录项 | “权限预设来源”说明 + 组助记 | `permissionRejected` | §16 |
+| 权限切换立即生效 | 权限控件 + 目录项 | “权限预设来源”说明 + 组助记 | `permissionApplyFailed` | §16 |
 | 工作流关闭只是隐藏 | — | “工作流下拉框”说明 | — | §15.1 |
 | 只读项来自主机 | — | `只读（主机）` chip + 页脚 | — | §19 |
 | 写作最多 3 轮 | 写作选项 | “写作流程”行 | — | v24 SceneProfiles |
@@ -579,14 +588,15 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 
 | 占位符 | 含义 | 出现位置 |
 |---|---|---|
-| `{control}` | 控件标签（职能/交互/情景/验证/权限） | `composer.controlTitle`、`composer.controlAria` |
+| `{control}` | 控件标签（职能/交互/情景/验证/权限） | `composer.controlTitle`、`composer.controlAria`、`composer.lockedAria` |
 | `{current}` | 当前选项标签 | 同上 |
 | `{currentLabel}` | “当前 / Current” | 同上 |
 | `{profession}` | 锁定的职能标签 | `composer.lockedLine` |
-| `{name}` | DSH 权限预设名 | `composer.permissionCatalogEntry` |
-| `{consequence}` | 该预设对应的后果句 | 同上 |
 | `{approval}` | DSH 审批策略原文 | `composer.approvalPolicy` |
-| `{message}` | 校验失败详情（仅调试可见） | 不在操作者文案里直接展示 |
+| `{mode}` | DSH 默认权限档位标签 | `composer.followDshMode` |
+| `{label}` | 菜单项标签 | `composer.optionAria` |
+| `{hint}` | 菜单项说明 | `composer.optionAria` |
+| `{explanation}` | 锁定说明（填 `lockedLine`） | `composer.lockedAria` |
 
 **规则：** 模板只做一次替换；不嵌套模板；占位符缺失时保留原样（fail loud），不要静默变成空字符串。
 
@@ -628,7 +638,7 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 - 键名：`<area>.<entity>.<field>`，camelCase；选项键**必须用规范值**（`decision`、`writing`、`low`…），不用中文。
 - 中文是参考语言；英文逐键对应，不合并、不省略。
 - `settings.fields.<id>` 的 `<id>` 与 §3.2 的 id 一致；不要另起别名。
-- 删除 `settings.professionGroup` 整个子树（被 `settings.fields.*` 取代）；删除 `composer.professionLockedRebuild`（与 `professionLocked` 重复）。
+- 删除 `settings.professionGroup` 整个子树（被 `settings.fields.*` 取代）；`composer` 保留 v0.7.0 已接入的 `lockedAria`、`optionAria`、`customPreset`、`professionLockedRebuild`、`followDsh`、`followDshMode`、`permissionFollowHint`、`loadingSelection`、`permissionApplyFailed`，不要删。
 - 数据层仍存英文规范值；本文只改展示层。
 
 ### 5.2 controls（5 个控件 × label/hint）
@@ -729,25 +739,29 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 |---|---|---|---|
 | `composer.controlTitle` | {control} · {currentLabel}：{current} | {control} · {currentLabel}: {current} | zh 36/70 · en 37/120 ✅ |
 | `composer.controlAria` | {control}，{currentLabel}：{current} | {control}, {currentLabel}: {current} | zh 34/70 · en 36/120 ✅ |
-| `composer.lockedSuffix` | （已锁定） |  (locked) | zh 5/70 · en 9/120 ✅ |
+| `composer.optionAria` | {label}。{hint} | {label}. {hint} | zh 14/70 · en 15/120 ✅ |
 | `composer.currentLabel` | 当前 | Current | zh 2/10 · en 7/20 ✅ |
 | `composer.lockedLine` | 任务已开始，职能锁定；完成或新建任务后可改。 | Task started: profession locked. Finish it or start a new task to change it. | zh 22/70 · en 76/120 ✅ |
 | `composer.unlockedLine` | 现在可以选；任务一开始就锁定。 | You can choose now; it locks when the task starts. | zh 15/70 · en 50/120 ✅ |
-| `composer.lockedAria` | 已锁定 | locked | zh 3/70 · en 6/120 ✅ |
+| `composer.lockedAria` | {control} · {currentLabel}：{current}。{explanation} | {control} · {currentLabel}: {current}. {explanation} | zh 50/70 · en 52/120 ✅ |
 | `composer.offlineLine` | 主机未连接；这里的选择只存本机，不影响任务。 | Host unreachable; choices here are saved on this device only and do not affect the task. | zh 22/70 · en 88/120 ✅ |
 | `composer.localOnly` | 只存本机 | saved on this device only | zh 4/70 · en 25/120 ✅ |
-| `composer.professionLocked` | 职能已锁定，改动没有生效；重建或丢弃任务后可改。 | Profession is locked, so the change was not applied. Rebuild or abandon the task to choose again. | zh 24/70 · en 97/120 ✅ |
+| `composer.professionLocked` | 职能已锁定，改动没有生效。 | Profession is locked, so the change was not applied. | zh 13/70 · en 52/120 ✅ |
+| `composer.professionLockedRebuild` | 职能已锁定，改动没有生效；重建或丢弃任务后可改。 | Profession is locked, so the change was not applied. Rebuild or abandon the task to choose again. | zh 24/70 · en 97/120 ✅ |
 | `composer.invalidSelection` | 这个选项无效，已恢复原选择。 | That option is not valid; the previous choice was restored. | zh 14/70 · en 59/120 ✅ |
 | `composer.requestFailed` | 主机拒绝了这次修改，已恢复原选择。 | The host rejected the change; the previous choice was restored. | zh 17/70 · en 63/120 ✅ |
 | `composer.validationNote` | 三档都联网：低 1×3 当轮 / 中 2×5 当前会话 / 高 4×8 本地全部。 | All three levels search: low 1×3 this turn / medium 2×5 this session / high 4×8 all local content. | zh 41/70 · en 98/120 ✅ |
-| `composer.permissionCatalogEntry` | {name}：{consequence} | {name}: {consequence} | zh 20/70 · en 21/120 ✅ |
 | `composer.permissionCatalogMissing` | DSH 没有提供权限预设，这里只显示说明，不能切换。 | DSH exposes no permission presets; this is informational and cannot be switched. | zh 26/70 · en 80/120 ✅ |
-| `composer.permissionCustomPreset` | 自定义权限预设，DSH 目录里没有；切换前先确认影响。 | A custom permission preset not in DSH's catalog; check the impact before switching. | zh 27/70 · en 83/120 ✅ |
+| `composer.permissionApplyFailed` | DSH 没有提供权限预设，权限没有切换。 | DSH exposes no permission preset catalog, so the permission was not switched. | zh 20/70 · en 77/120 ✅ |
+| `composer.customPreset` | 自定义权限预设，DSH 目录里没有；切换前先确认影响。 | A custom permission preset not in DSH's catalog; check the impact before switching. | zh 27/70 · en 83/120 ✅ |
 | `composer.approvalPolicy` | 审批方式：{approval} | Approval: {approval} | zh 15/70 · en 20/120 ✅ |
 | `composer.permissionPresetDefault` | 权限档位由 DSH 的权限预设定义。 | The permission tier is defined by DSH permission presets. | zh 18/70 · en 57/120 ✅ |
 | `composer.permissionWriteNow` | 切换会立刻写进本会话的 DSH 权限。 | Switching applies the DSH permission to this session immediately. | zh 19/70 · en 65/120 ✅ |
 | `composer.permissionOffline` | 主机未连接，权限不能切换。 | Host unreachable; the permission cannot be switched. | zh 13/70 · en 52/120 ✅ |
-| `composer.permissionRejected` | DSH 没有接受这个权限预设，已保持原样。 | DSH did not accept that permission preset; the previous one stays in force. | zh 21/70 · en 75/120 ✅ |
+| `composer.followDsh` | 跟随 DSH | Follow DSH | zh 6/70 · en 10/120 ✅ |
+| `composer.followDshMode` | 跟随 DSH（默认：{mode}） | Follow DSH (default: {mode}) | zh 17/70 · en 28/120 ✅ |
+| `composer.permissionFollowHint` | 当前没有应用任何权限预设，跟随 DSH 的默认档位。 | No permission preset is applied; the DSH default tier is in force. | zh 26/70 · en 66/120 ✅ |
+| `composer.loadingSelection` | 正在加载主机选择… | Loading the host selection… | zh 9/70 · en 27/120 ✅ |
 
 ### 5.9 settings
 
@@ -908,14 +922,18 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 | `settings.professionGroup.abandonReselect` | `settings.fields.professionAbandon` | 改名 |
 | `settings.professionGroup.audit` | `settings.fields.professionAudit` | 改名；删除 `OrchestrationTrace` |
 | `settings.professionGroup.lockErrorHint` | `settings.fields.professionErrorHint` | 改名；删除 `rebuild/abandon` 内部词 |
+| `settings.professionGroup.defaultProfessionValue` | — | 删除；默认值直接显示在字段值里，不再拼「（配置默认）」 |
+| `settings.professionGroup.displayOnly` | — | 删除；改用 `只读（主机）` / `本机` chip 表达 |
 | `settings.title` | `settings.title` | 保留 |
 | `settings.footer` | `settings.footer` | 改写 |
 | `composer.validationNote` | `composer.validationNote` | 改写（必须含 1×3/2×5/4×8 与“都联网”） |
-| `composer.professionLockedRebuild` | — | 删除；合并进 `professionLocked` |
+| `composer.professionLockedRebuild` | `composer.professionLockedRebuild` | 保留 key；短句用 `professionLocked`，带出口用本条 |
 | `composer.permissionCatalogMissing` | `composer.permissionCatalogMissing` | 改写 |
 | `composer.permissionPresetDefault` | `composer.permissionPresetDefault` | 保留 key；仅在无法判断权限档位时使用 |
-| `composer.customPreset` | `composer.permissionCustomPreset` | 改名 |
+| `composer.customPreset` | `composer.customPreset` | 保留 key（不改名），改写 |
 | `composer.permissionWriteNow` | `composer.permissionWriteNow` | 保留 key，改写 |
+| `composer.lockedAria` / `optionAria` | 同名 | 保留模板键；`{explanation}` 填 `lockedLine` |
+| `composer.followDsh` / `followDshMode` / `permissionFollowHint` / `loadingSelection` / `permissionApplyFailed` | 同名 | 保留 key，按本文改写 |
 | `controls.*.hint` | 同名 | 全部替换 |
 | `professions.*.hint` / `interactions.*.hint` / `scenes.*.hint` | 同名 | 全部替换 |
 | `validations.*.hint` | 同名 | 全部替换（新增 `budget`/`scope`） |
@@ -939,7 +957,7 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 |---|---|
 | `src/shared/i18n.ts` | 按 §5 替换/新增所有字符串；补 `settings.fields`、`settings.groups`、`settings.values`、`settings.states` 类型；保留 zh/en 两套。 |
 | `src/shared/enum.ts` | 迁移后删除 `*Label` / `*Hint` 文案常量（§22 要求唯一文案源）；保留枚举值数组与 `toSandboxMode` 的**历史值反查表**（那是数据兼容，不是 UI 文案）。 |
-| `src/client/controls.ts` | 改为从 `copyFor(locale)` 取文案；删除「low 不做贝叶斯推断」；用 `lockedAria` 拼 `aria-label`；离线/拒绝用新句；把 `state.tooltip` 真正消费掉（或接客户端覆盖）；把硬编码的 5000ms 轮询改为读取 `refreshInterval`。 |
+| `src/client/controls.ts` | 已接入 `useCopy` 并消费 `state.tooltip`；用本文新字符串替换旧值；保留 `lockedAria`/`optionAria` 模板；把硬编码的 5000ms 轮询改为读取 `refreshInterval`。 |
 | `src/client/settings.ts` | 从 2 个开关 + 1 个组，改为 §3.1 的 6 组 24 行；每行常驻说明、状态 chip、`?` 按钮；离线/空/拒绝状态；页脚。 |
 | `src/client/store.ts` | 新增 3 个本机键：`deepseek-coordination:tooltips`、`:compact`、`:refresh`；默认值分别取 `ui.showTooltip`、`ui.compact`、`ui.refreshInterval`（需要从 `SelectionState` 或新投影读取）。 |
 | `src/client/bridge.ts` | 如果不在 `SelectionState` 里加 `ui` 投影，就不改；若要读 3 个主机默认值，在现有 selection 路由里附带 `ui` 字段，**不要**新增一套持久化。 |
@@ -955,10 +973,10 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 - **5 个本机键**：`deepseek-coordination:takeover`、`:workflow` 已存在；`:tooltips`、`:compact`、`:refresh` 为本文新增的 **localStorage** 键（不是 config.ts 键），默认值来自对应的 `ui.*`。
 - **3 个派生/运行时项**：接管控件状态、DSH 权限目录、当前语言；不持久化。
 
-**需要修（不是新增）：**
+**需要修或确认（不是新增）：**
 
 1. `profession.rebuildCanReselect` / `profession.abandonCanReselect`：现在无人读取、也未强制；要么在 `resolveConfig` 强制 `true` 并让重建/丢弃路径真正允许重选，要么不要把这两行写成“强制”。
-2. `ui.showTooltip`：已随 `SelectionState.tooltip` 下发，但 `controls.ts` 从未读取；新开关必须消费它，否则“显示提示”是假开关。
+2. `ui.showTooltip`：v0.7.0 已通过 `SelectionState.tooltip` 消费；客户端覆盖（`composerTooltips`）要把主机值作为默认，而不是另写一份默认。
 3. `profession.default`：与 `defaults.profession` 重复且不生效；删除或别名，设置页只认 `defaults.profession`。
 4. `profession.audit`：`config.ts` 有键但代码从未读取；如果短期不实现，设置页应把它标成“始终开启（设计约束）”，不要给一个看起来能关的开关。
 5. `ui.toolbar` 与 `profession.enabled`：存在但无人读取；`ui.toolbar` 与“工作流下拉框”语义重复。**不要**为它们新增开关，否则又是一个刷新即失效的假设置。
@@ -969,7 +987,7 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 
 1. 五个下拉的 5 条控件 tooltip 与 23 条选项 tooltip 全部来自 `i18n.ts`，页面里没有硬编码中文。
 2. 所有 tooltip 通过 §4.6 的长度检查；没有省略号截断。
-3. 验证三档都写“联网”，且 `composer.validationNote` 同时出现 `1×3`、`2×5`、`4×8`；旧的错误句已删除。
+3. 验证三档都写“联网”，且 `composer.validationNote` 同时出现 `1×3`、`2×5`、`4×8`；lint 断言防止回归（旧错误句已于 v0.7.0 删除）。
 4. 情景顺序是 对话 → 写作 → 办公 → 研究 → 工程 → 迭代；设置页“默认情景”包含写作。
 5. 职能锁定后可聚焦、可读出“已锁定 + 出口”，不依赖鼠标悬停。
 6. 设置页 6 组、24 项；可编辑 5、强制 3、主机只读 13、派生 3；没有第二个接取开关。
@@ -980,4 +998,4 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 
 ---
 
-*本文档只定义文案与信息架构，不修改任何代码。实现时如与 `docs/deepseek-coordination-v23.md` 的行为描述冲突，以 v23 行为为准、以本文文案为准。*
+*本文档只定义文案与信息架构，不修改任何代码。实现时如与 `docs/deepseek-coordination-v24.md` 的行为描述冲突，以 v24 行为为准、以本文文案为准；v24 未覆盖的部分回退到 v23。*
