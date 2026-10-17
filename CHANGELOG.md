@@ -12,6 +12,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.9.1] — 2026-10-18
+
+### Fixed
+
+- Composer tooltips disappeared and the dropdown row jittered after the global
+  tooltip-host refactor. Reverted to one controlled MUI Tooltip per dropdown:
+  the trigger keeps its own anchor, no fixed-position synthetic anchor is
+  measured, so there is no layout loop. The first click still opens the menu
+  (no state change on pointerdown/mousedown); click, selection, menu open,
+  mouseout and mouseleave close the tooltip; placement is left/right; the exit
+  is a 160 ms Fade and the popper is pointer-transparent.
+
 ## [0.9.0] — 2026-10-18
 
 The plugin gains a shared algorithm library, a blueprint-only document model, and a

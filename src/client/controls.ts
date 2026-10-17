@@ -46,7 +46,7 @@ import * as React from 'react'
 import Select, { type SelectChangeEvent } from '@mui/material/Select'
 import MenuItem from '@mui/material/MenuItem'
 import Tooltip from '@mui/material/Tooltip'
-import { TooltipHost, tooltipController } from './tooltip-controller.js'
+import Fade from '@mui/material/Fade'
 import Dialog from '@mui/material/Dialog'
 import DialogTitle from '@mui/material/DialogTitle'
 import DialogContent from '@mui/material/DialogContent'
@@ -110,6 +110,8 @@ const MuiSelect: React.ComponentType<Record<string, unknown>> =
   Select as unknown as React.ComponentType<Record<string, unknown>>
 const MuiTooltip: React.ComponentType<Record<string, unknown>> =
   Tooltip as unknown as React.ComponentType<Record<string, unknown>>
+const MuiFade: React.ComponentType<Record<string, unknown>> =
+  Fade as unknown as React.ComponentType<Record<string, unknown>>
 const MuiDialog: React.ComponentType<Record<string, unknown>> =
   Dialog as unknown as React.ComponentType<Record<string, unknown>>
 const MuiDialogTitle: React.ComponentType<Record<string, unknown>> =
@@ -1031,16 +1033,14 @@ function Dropdown(props: {
   const current = props.options.find((option) => option.value === props.value)
   const label = current?.label ?? props.value
   const ariaLabel = controlAria(props.copy, props.control, label)
-  // The trigger tooltip lives in one global host. The control only publishes an
-  // anchor/title request; click, selection, open, mouseout and mouseleave all
-  // collapse to one hide() call, so the tooltip can never sit over the menu.
-  const tooltipId = React.useId()
+  // One local tooltip per control, but every path that can leave it visible is
+  // explicit: click, selection, menu open, mouseout and mouseleave all close it.
+  // No state is changed on pointerdown/mousedown, so the first click still opens
+  // the menu (closing on mousedown would swallow the Select's click).
   const [menuOpen, setMenuOpen] = React.useState(false)
-  const showTooltip = (element: HTMLElement): void => {
-    if (!props.tooltips || menuOpen) return
-    tooltipController.show({ id: tooltipId, title: props.title, anchor: element })
-  }
-  const hideTooltip = (): void => { tooltipController.hide(tooltipId) }
+  const [hoverOpen, setHoverOpen] = React.useState(false)
+  const [focusOpen, setFocusOpen] = React.useState(false)
+  const triggerTooltipOpen = props.tooltips && !menuOpen && (hoverOpen || focusOpen)
   const optionAria = (option: OptionView): string => fillTemplate(props.copy.composer.optionAria, {
     label: option.label,
     hint: option.hint,
@@ -1050,9 +1050,9 @@ function Dropdown(props: {
     {
       value: props.value,
       onChange: (event: SelectChangeEvent<unknown>) => {
-        // A selection closes the menu; close the global tooltip too.
         setMenuOpen(false)
-        hideTooltip()
+        setHoverOpen(false)
+        setFocusOpen(false)
         props.onChange(String(event.target.value))
       },
       disabled: props.disabled === true,
@@ -1063,7 +1063,8 @@ function Dropdown(props: {
       inputProps: { 'aria-label': ariaLabel },
       onOpen: () => {
         setMenuOpen(true)
-        hideTooltip()
+        setHoverOpen(false)
+        setFocusOpen(false)
       },
       onClose: () => { setMenuOpen(false) },
       sx: selectStyle(props.width, props.compact),
@@ -1104,21 +1105,49 @@ function Dropdown(props: {
       style: WRAPPER_STYLE,
       tabIndex: props.disabled === true ? 0 : -1,
       ...(props.triggerLabel === undefined ? {} : { 'aria-label': props.triggerLabel }),
-      onMouseEnter: (event: React.MouseEvent<HTMLSpanElement>) => { showTooltip(event.currentTarget) },
-      onMouseLeave: () => { hideTooltip() },
+      onMouseEnter: () => { if (!menuOpen) setHoverOpen(true) },
+      onMouseLeave: () => { setHoverOpen(false); setFocusOpen(false) },
       onMouseOut: (event: React.MouseEvent<HTMLSpanElement>) => {
         const related = event.relatedTarget as Node | null
-        // Moving from the wrapper into the Select button is not a leave; only
-        // leaving the whole control closes the tooltip.
-        if (related === null || !event.currentTarget.contains(related)) hideTooltip()
+        if (related === null || !event.currentTarget.contains(related)) {
+          setHoverOpen(false)
+          setFocusOpen(false)
+        }
       },
-      onClick: () => { hideTooltip() },
-      onFocus: (event: React.FocusEvent<HTMLSpanElement>) => { showTooltip(event.currentTarget) },
-      onBlur: () => { hideTooltip() },
+      onClick: () => { setHoverOpen(false); setFocusOpen(false) },
+      onFocus: () => { if (!menuOpen) setFocusOpen(true) },
+      onBlur: () => { setFocusOpen(false) },
     },
     select,
   )
-  return trigger
+  if (!props.tooltips) return trigger
+  return React.createElement(
+    MuiTooltip,
+    {
+      title: props.title,
+      placement: 'right',
+      describeChild: true,
+      disableInteractive: true,
+      leaveDelay: 0,
+      open: triggerTooltipOpen,
+      // Fade-out only. The popper is pointer-transparent, so the 160 ms exit
+      // cannot block the Select menu underneath it.
+      TransitionComponent: MuiFade,
+      slotProps: {
+        transition: {
+          timeout: { enter: 90, exit: 160 },
+          easing: {
+            enter: 'cubic-bezier(0.2, 0, 0, 1)',
+            exit: 'cubic-bezier(0.4, 0, 1, 1)',
+          },
+        },
+        popper: { style: { pointerEvents: 'none' } },
+      },
+      onOpen: () => { if (!menuOpen) setHoverOpen(true) },
+      onClose: () => { setHoverOpen(false); setFocusOpen(false) },
+    },
+    trigger,
+  )
 }
 
 export interface ComposerControlsProps {
@@ -1371,7 +1400,6 @@ export const ComposerControls = React.memo(function ComposerControlsInner(
             rowStatus,
           ),
       ),
-      React.createElement(TooltipHost, { key: 'tooltip-host' }),
       escalationDialog,
     ),
   )
