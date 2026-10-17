@@ -109,7 +109,7 @@ export class CommandModule {
     const content = typeof parsed.content === 'string' ? parsed.content : ''
     const created = this.host.clock.now()
     const identity = this.host.db.transaction(() => {
-      const created_identity = this.host.db.insert('command', {
+      const row = this.host.db.insert('command', {
         handle: this.host.handles.next('command'),
         turn,
         type: commandType,
@@ -119,7 +119,7 @@ export class CommandModule {
       if (commandType !== 'none' && current.command !== commandType) {
         this.host.db.update('turn', { command: commandType }, 'identity = ?', turn)
       }
-      return created_identity
+      return row
     })
     return this.get(identity)
   }
