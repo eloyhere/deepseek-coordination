@@ -12,6 +12,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.6.3] — 2026-10-17
+
+### Fixed
+
+- The replacement permission dropdown offered guessed labels (只读 / 工作区可写 / 完全权限). The
+  host's own menu shows 仅可查看 / 工作区内修改 / 完全权限, and the plugin now uses exactly those
+  words. Only the labels are aligned: choosing an entry still dispatches nothing, because the
+  `/permission` write path is exposed on `conversation.composer.bar`, not on the slot this
+  plugin occupies.
+
 ## [0.6.2] — 2026-10-17
 
 ### Added

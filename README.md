@@ -132,8 +132,9 @@ These are the ones that fail silently rather than loudly:
 
 ## Known issues
 
-- The replacement dropdown's preset list is a fallback (`完全权限`) until the host's real preset
-  inventory is wired through.
+- The replacement dropdown mirrors the host's three presets (仅可查看 / 工作区内修改 / 完全权限)
+  but selecting one does **not** dispatch `/permission` yet: the command face lives on the composer
+  bar, which this slot cannot reach.
 - The takeover selector keys off the host control's accessible name; renaming it breaks the hide
   rule.
 - The selectors are presentation only: a chosen 职能 / 交互 / 情景 is **not** sent to the model or

@@ -45,10 +45,13 @@ const INTERACTION_OPTIONS = ['感情', '思维', '启发', '收束', '统筹'] a
 const SCENARIO_OPTIONS = ['对话', '写作', '办公', '研究', '工程', '迭代'] as const
 
 /**
- * Options of the replacement dropdown, matching the harness permission modes.
- * Values are the mode names the host uses; the dropdown shows the labels.
+ * The host's three permission presets, labels taken from its own menu:
+ * 仅可查看 / 工作区内修改 / 完全权限. The plugin mirrors the wording rather than
+ * inventing one, because the same words appear side by side in the composer.
+ * Note: only the labels are aligned today — choosing one does not yet dispatch
+ * a /permission command, since the command face is not on this slot.
  */
-const PERMISSION_FALLBACK = ['只读', '工作区可写', '完全权限'] as const
+const PERMISSION_FALLBACK = ['仅可查看', '工作区内修改', '完全权限'] as const
 
 /**
  * The host's resident access-mode control, addressed by its accessible name so
