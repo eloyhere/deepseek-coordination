@@ -8,17 +8,17 @@
  *
  * Likelihood model
  * ----------------
- * `computeLikelihood(evidence, hypothesis, weight)` turns an evidence weight
- * `w` in [0, 1] into a likelihood ratio:
+ * `computeLikelihood(evidence, hypothesis, weight)` turns a clamped evidence
+ * weight `w` in [0, 1] into a likelihood ratio:
  *
- *   p(e|h)  = 0.5 + 0.5 * w
- *   p(e|-h) = 0.5 - 0.5 * w
- *   LR      = p(e|h) / p(e|-h) = (1 + w) / (1 - w)
+ *   p(e|h)  = w
+ *   p(e|-h) = 1 - w
+ *   LR      = p(e|h) / p(e|-h) = w / (1 - w)
  *
- * `w = 0` is uninformative (`LR = 1`); `w = 1` is decisive support
- * (`LR -> infinity`, numerically guarded). The `likelihood` row stores
- * `p(e|h)` in `probability` and the weight in `weight`; the ratio itself is
- * derived from those two numbers, never invented as a column.
+ * `w = 0.5` is neutral (`LR = 1`); `w = 1` is decisive support and `w = 0` is
+ * decisive refutation, both numerically guarded. The `likelihood` row stores
+ * `p(e|h)` in `probability` and the clamped weight in `weight`; the ratio
+ * itself is derived from those two numbers, never invented as a column.
  *
  * Posterior update
  * ----------------
