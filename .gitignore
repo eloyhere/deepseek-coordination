@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 
 # Build output 鈥?produced by tsdown from src/, never edited or committed
@@ -31,3 +31,6 @@ pnpm-debug.log*
 
 # Angular build cache
 .angular/
+
+# Scratch probes left by other sessions (never committed)
+.asar-*
