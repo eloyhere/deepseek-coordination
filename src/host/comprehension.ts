@@ -1134,6 +1134,9 @@ export class ComprehensionModule {
     const output = await this.guardStage(comprehension, 'converge', prompt, undefined, () =>
       this.converge(prompt, heuristic),
     )
+    // Keep the heuristic evidence already stored and append the failure evidence.
+    const evidence = readStrings(parseJson<unknown>(this.get(comprehension).evidence, []))
+    for (const entry of output.evidence) if (!evidence.includes(entry)) evidence.push(entry)
     const record = this.writeStage({
       comprehension,
       stage: 'converge',
@@ -1144,7 +1147,7 @@ export class ComprehensionModule {
       entropyBefore: uniformEntropy(output.failures.length),
       entropyAfter: output.entropy,
       patch: {
-        evidence: jsonText(this.mergedEvidence(undefined, output)),
+        evidence: jsonText(evidence),
         failure: jsonText(output.failures),
         boundary: output.boundary,
         entropy: output.entropy,
@@ -1421,7 +1424,9 @@ export class ComprehensionModule {
 
   private successQuery(prompt: string, think: ThinkStageOutput): string {
     const subject = think.requirement.length > 0 && think.requirement !== think.intent ? think.requirement : think.intent
-    return collapse(`${subject} success cases best practice`, 240)
+    const fallback = trimPunctuation(collapse(sentencesOf(prompt)[0] ?? prompt, 160))
+    const target = subject.length > 0 ? subject : fallback
+    return collapse(`${target} success cases best practice`, 240)
   }
 
   private failureQuery(prompt: string, heuristic: HeuristicStageOutput): string {
