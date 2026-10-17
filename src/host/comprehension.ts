@@ -56,7 +56,7 @@ import type {
 } from '../shared/service.js'
 import { InvalidArgumentError, InvalidStateError } from '../shared/error.js'
 import { parseJson } from './database.js'
-import { mapComprehension, mapStage, text } from './row.js'
+import { mapComprehension, mapStage, mapTurn, text } from './row.js'
 import type { Row } from './row.js'
 
 /* ------------------------------------------------------------------------- *
@@ -650,7 +650,7 @@ export class ComprehensionModule {
    */
   async comprehend(input: ComprehendInput): Promise<Comprehension> {
     assertPrompt(input.prompt)
-    const turn = mapTurnRow(this.host.db.require<Row>('turn', input.turn, 'turn'))
+    const turn = mapTurn(this.host.db.require<Row>('turn', input.turn, 'turn'))
     const promptRow = this.host.db.require<Row>('prompt', input.promptIdentity, 'prompt')
     if (Number(promptRow.turn) !== turn.identity) {
       throw new InvalidArgumentError(`prompt ${input.promptIdentity} does not belong to turn ${input.turn}`, {
@@ -784,7 +784,7 @@ export class ComprehensionModule {
       })
     }
     const record = this.get(comprehension)
-    const turn = mapTurnRow(this.host.db.require<Row>('turn', record.turn, 'turn'))
+    const turn = mapTurn(this.host.db.require<Row>('turn', record.turn, 'turn'))
     const prompt = this.promptOf(record)
     const validation = toValidation(turn.validation)
     const scene = toScene(turn.scene)
@@ -1477,16 +1477,6 @@ export class ComprehensionModule {
 /* ------------------------------------------------------------------------- *
  * Pure helpers
  * ------------------------------------------------------------------------- */
-
-/** Wrap `mapTurn` in a narrow import so the module needs no Turn type surface. */
-function mapTurnRow(row: Row): { identity: number; validation: unknown; scene: unknown; interaction: unknown } {
-  return {
-    identity: Number(row.identity),
-    validation: row.validation,
-    scene: row.scene,
-    interaction: row.interaction,
-  }
-}
 
 function isStageName(value: unknown): value is StageName {
   return isOneOf(value, ComprehensionStageOrder)
