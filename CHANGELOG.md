@@ -12,6 +12,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.9.2] — 2026-10-18
+
+### Fixed
+
+- Two dropdown tooltips could remain on screen when an open dropdown was
+  dismissed by clicking another dropdown. Each control still owns its MUI
+  Tooltip and anchor (no synthetic anchor, no jitter), but a tiny
+  `tooltipVisibility` store grants ownership to exactly one id; requesting
+  another control closes the previous tooltip immediately. Click, selection,
+  menu open, mouseout and mouseleave all release ownership, and the fade-out
+  popper is pointer-transparent.
+
 ## [0.9.1] — 2026-10-18
 
 ### Fixed

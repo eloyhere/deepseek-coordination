@@ -47,6 +47,7 @@ import Select, { type SelectChangeEvent } from '@mui/material/Select'
 import MenuItem from '@mui/material/MenuItem'
 import Tooltip from '@mui/material/Tooltip'
 import Fade from '@mui/material/Fade'
+import { tooltipVisibility } from './tooltip-visibility.js'
 import Dialog from '@mui/material/Dialog'
 import DialogTitle from '@mui/material/DialogTitle'
 import DialogContent from '@mui/material/DialogContent'
@@ -1040,7 +1041,26 @@ function Dropdown(props: {
   const [menuOpen, setMenuOpen] = React.useState(false)
   const [hoverOpen, setHoverOpen] = React.useState(false)
   const [focusOpen, setFocusOpen] = React.useState(false)
-  const triggerTooltipOpen = props.tooltips && !menuOpen && (hoverOpen || focusOpen)
+  const tooltipId = React.useId()
+  const activeTooltip = React.useSyncExternalStore(
+    tooltipVisibility.subscribe,
+    tooltipVisibility.getSnapshot,
+    tooltipVisibility.getSnapshot,
+  )
+  // Only one composer tooltip may be visible. Each control keeps its own MUI
+  // Tooltip/anchor (stable layout), but `open` additionally requires ownership.
+  const triggerTooltipOpen =
+    props.tooltips && !menuOpen && activeTooltip === tooltipId && (hoverOpen || focusOpen)
+  const closeTooltip = (): void => {
+    setHoverOpen(false)
+    setFocusOpen(false)
+    tooltipVisibility.release(tooltipId)
+  }
+  const openTooltip = (): void => {
+    if (menuOpen) return
+    setHoverOpen(true)
+    tooltipVisibility.request(tooltipId)
+  }
   const optionAria = (option: OptionView): string => fillTemplate(props.copy.composer.optionAria, {
     label: option.label,
     hint: option.hint,
@@ -1051,8 +1071,7 @@ function Dropdown(props: {
       value: props.value,
       onChange: (event: SelectChangeEvent<unknown>) => {
         setMenuOpen(false)
-        setHoverOpen(false)
-        setFocusOpen(false)
+        closeTooltip()
         props.onChange(String(event.target.value))
       },
       disabled: props.disabled === true,
@@ -1063,8 +1082,7 @@ function Dropdown(props: {
       inputProps: { 'aria-label': ariaLabel },
       onOpen: () => {
         setMenuOpen(true)
-        setHoverOpen(false)
-        setFocusOpen(false)
+        closeTooltip()
       },
       onClose: () => { setMenuOpen(false) },
       sx: selectStyle(props.width, props.compact),
@@ -1105,18 +1123,15 @@ function Dropdown(props: {
       style: WRAPPER_STYLE,
       tabIndex: props.disabled === true ? 0 : -1,
       ...(props.triggerLabel === undefined ? {} : { 'aria-label': props.triggerLabel }),
-      onMouseEnter: () => { if (!menuOpen) setHoverOpen(true) },
-      onMouseLeave: () => { setHoverOpen(false); setFocusOpen(false) },
+      onMouseEnter: () => { openTooltip() },
+      onMouseLeave: () => { closeTooltip() },
       onMouseOut: (event: React.MouseEvent<HTMLSpanElement>) => {
         const related = event.relatedTarget as Node | null
-        if (related === null || !event.currentTarget.contains(related)) {
-          setHoverOpen(false)
-          setFocusOpen(false)
-        }
+        if (related === null || !event.currentTarget.contains(related)) closeTooltip()
       },
-      onClick: () => { setHoverOpen(false); setFocusOpen(false) },
-      onFocus: () => { if (!menuOpen) setFocusOpen(true) },
-      onBlur: () => { setFocusOpen(false) },
+      onClick: () => { closeTooltip() },
+      onFocus: () => { openTooltip() },
+      onBlur: () => { closeTooltip() },
     },
     select,
   )
@@ -1143,8 +1158,8 @@ function Dropdown(props: {
         },
         popper: { style: { pointerEvents: 'none' } },
       },
-      onOpen: () => { if (!menuOpen) setHoverOpen(true) },
-      onClose: () => { setHoverOpen(false); setFocusOpen(false) },
+      onOpen: () => { openTooltip() },
+      onClose: () => { closeTooltip() },
     },
     trigger,
   )
