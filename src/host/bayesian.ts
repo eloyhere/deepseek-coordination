@@ -183,7 +183,7 @@ function storedWeight(value: number): number {
 
 /** `p(e|h)` for one evidence weight; `LR = p / (1 - p)`. */
 function likelihoodProbability(weight: number): number {
-  return clamp(0.5 + 0.5 * weight, ProbabilityEpsilon, 1 - ProbabilityEpsilon)
+  return clampProbability(weight)
 }
 
 function mean(values: readonly number[]): number {

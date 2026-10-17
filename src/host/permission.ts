@@ -140,6 +140,7 @@ export class PermissionModule {
     const recorded = typeof reason === 'string' ? reason.trim() : ''
     const already = this.grantedSet(session, name, requested)
     const missing = requested.filter((value) => !already.has(value))
+    const parked = missing.length === 0 ? '' : '; recorded as pending'
 
     if (policy !== undefined) {
       // The one DSH-side effect a request may cause, and only when asked for.
@@ -148,14 +149,14 @@ export class PermissionModule {
         this.record(name, missing, session, Pending, recorded)
         return {
           allowed: false,
-          reason: `approval policy "${policy}" cannot be applied: DSH exposed no approval port; recorded as pending`,
+          reason: `approval policy "${policy}" cannot be applied: DSH exposed no approval port${parked}`,
         }
       }
       if (agent === undefined) {
         this.record(name, missing, session, Pending, recorded)
         return {
           allowed: false,
-          reason: `approval policy "${policy}" cannot be applied: no live agent for session ${session}; recorded as pending`,
+          reason: `approval policy "${policy}" cannot be applied: no live agent for session ${session}${parked}`,
         }
       }
       try {
@@ -164,7 +165,7 @@ export class PermissionModule {
         this.record(name, missing, session, Pending, recorded)
         return {
           allowed: false,
-          reason: `approval policy "${policy}" was refused: ${errorMessage(error)}; recorded as pending`,
+          reason: `approval policy "${policy}" was refused: ${errorMessage(error)}${parked}`,
         }
       }
     }

@@ -79,6 +79,8 @@ export interface UsageRecord {
  * provider-specific rules, but the fixed-prefix rule of v23 §5.3 applies to
  * every family this table describes. `decorate()` honours `config.cache.enabled`
  * and `config.cache.effortWarning`; the stateless helpers do not consult config.
+ * Effort tracking and usage accounting also ignore the optimizer switch: the
+ * switch disables request decoration, not measurement of what DSH reported.
  */
 export class CacheModule {
   private readonly host: ModuleHost
