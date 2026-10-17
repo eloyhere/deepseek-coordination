@@ -45,7 +45,10 @@ import type {
 } from './parser.js'
 import { formulaMetadata, scanTexFormulas, texCommentRanges } from './formula.js'
 import type { Formula } from './formula.js'
+import { MAX_CONCEPT_NAMES, structuralLocator } from './markup.js'
 import { splitTextLines, tokenize } from './tokenizer.js'
+import type { StructuralConcept } from '../../shared/entity.js'
+import type { StructuralKind } from '../../shared/enum.js'
 
 /** Statement kinds the P0 TeX parser recognises. */
 export type TexStatementKind =
@@ -60,6 +63,19 @@ export type TexStatementKind =
   | 'example'
   | 'remark'
 
+/** One explicit sectioning command (`\part`, `\chapter`, `\section`, ...). */
+export interface TexSection extends FlatFragment {
+  kind: 'part' | 'chapter' | 'section' | 'paragraph'
+  /** Sectioning depth: part 1, chapter 2, section 3, ... paragraph 6. */
+  level: number
+  /** Explicit braced title. */
+  title?: string
+  /** True for a starred (unnumbered) command. */
+  starred: boolean
+  span: SourceSpan
+  reference?: NodeReference
+}
+
 /** One theorem-like environment. Carries no body text. */
 export interface TexStatement extends FlatFragment {
   kind: TexStatementKind
@@ -73,6 +89,8 @@ export interface TexStatement extends FlatFragment {
   bodySpan: SourceSpan
   /** Target of a proof, from the first `\ref` inside it. */
   proofTarget?: string
+  /** True when the environment has no `\end{...}` (explicitly incomplete evidence). */
+  unterminated?: boolean
   reference?: NodeReference
 }
 
@@ -96,6 +114,22 @@ export interface TexParseResult extends ParseResult {
   crossReferences: TexReference[]
   formulas: Formula[]
   comments: CodeComment[]
+  /** Explicit sectioning commands, in source order. */
+  sections: TexSection[]
+}
+
+/**
+ * Sectioning command vocabulary. Only these commands are structural; an unknown
+ * command is never treated as a heading.
+ */
+const SECTION_COMMANDS: Readonly<Record<string, { kind: TexSection['kind']; level: number }>> = {
+  part: { kind: 'part', level: 1 },
+  chapter: { kind: 'chapter', level: 2 },
+  section: { kind: 'section', level: 3 },
+  subsection: { kind: 'section', level: 4 },
+  subsubsection: { kind: 'section', level: 5 },
+  paragraph: { kind: 'paragraph', level: 6 },
+  subparagraph: { kind: 'paragraph', level: 7 },
 }
 
 const STATEMENT_ENVIRONMENTS: Readonly<Record<string, TexStatementKind>> = {
@@ -196,6 +230,7 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
         ...(parsed.title === undefined ? {} : { title: sanitizeMetadataText(parsed.title, MAX_NAME_LENGTH) }),
         span,
         bodySpan: locate(parsed.nameEnd + 1, source.length),
+        ...(kind === 'proof' ? { unterminated: true } : {}),
         ...fragmentForSpan(ctx, span),
       })
       ctx.unverifiable(`unterminated ${parsed.environment} environment`, span)
@@ -272,6 +307,54 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
     index = command.end
   }
 
+  // Explicit sectioning commands (`\part`, `\chapter`, `\section`, ...).
+  const sections: TexSection[] = []
+  index = 0
+  while (index < source.length) {
+    if (index - lastCheck >= 2_048) {
+      lastCheck = index
+      if (!ctx.checkpoint()) break
+    }
+    const commentEnd = insideExcluded(excluded, index)
+    if (commentEnd !== undefined) {
+      index = commentEnd
+      continue
+    }
+    if (source.charCodeAt(index) !== 92) {
+      index += 1
+      continue
+    }
+    const command = readCommand(source, index)
+    if (command === undefined) {
+      index += 1
+      continue
+    }
+    const sectioning = SECTION_COMMANDS[command.name]
+    if (sectioning === undefined) {
+      index = command.end
+      continue
+    }
+    let argumentStart = command.end
+    const starred = source.charCodeAt(argumentStart) === 42
+    if (starred) argumentStart += 1
+    const argument = readBracedArgument(source, argumentStart)
+    if (argument === undefined) {
+      index = command.end
+      continue
+    }
+    const span = locate(index, argument.next)
+    const sectionTitle = sanitizeMetadataText(argument.value, MAX_NAME_LENGTH)
+    sections.push({
+      kind: sectioning.kind,
+      level: sectioning.level,
+      ...(sectionTitle.length === 0 ? {} : { title: sectionTitle }),
+      starred,
+      span,
+      ...fragmentForSpan(ctx, span),
+    })
+    index = argument.next
+  }
+
   for (const statement of statements) {
     const label = labels.find((candidate) =>
       candidate.span.start >= statement.bodySpan.start && candidate.span.end <= statement.span.end)
@@ -281,6 +364,59 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
         candidate.span.start >= statement.bodySpan.start && candidate.span.end <= statement.span.end)
       if (target !== undefined) statement.proofTarget = target.name
     }
+  }
+
+  /*
+   * Statement proof status, derived only from explicit proof/label links:
+   *
+   *  - a closed proof with a `\ref` to a statement label in this file proves it;
+   *  - a proof without a target (or with an unknown label) is `unverifiable`;
+   *  - an unterminated proof leaves its target `unproved`.
+   *
+   * No `Qed`/`by` heuristic is used: the environment boundary and the label link
+   * are the only evidence.
+   */
+  const statementByLabel = new Map<string, TexStatement>()
+  for (const statement of statements) {
+    if (statement.label === undefined) continue
+    if (!statementByLabel.has(statement.label)) statementByLabel.set(statement.label, statement)
+  }
+  const statementConcepts = new Map<TexStatement, StructuralConcept>()
+  for (const statement of statements) {
+    const concept: StructuralConcept = {
+      kind: statement.kind,
+      status: statement.kind === 'axiom'
+        ? 'axiomatic'
+        : statement.kind === 'proof'
+          ? 'unverifiable'
+          : 'stated',
+      ...(statement.kind === 'proof' ? { proofStatus: 'unverifiable' as const } : {}),
+    }
+    statementConcepts.set(statement, concept)
+  }
+  for (const statement of statements) {
+    if (statement.kind !== 'proof') continue
+    const concept = statementConcepts.get(statement)
+    if (concept === undefined) continue
+    const target = statement.proofTarget === undefined
+      ? undefined
+      : statementByLabel.get(statement.proofTarget)
+    if (target === undefined) {
+      concept.status = statement.unterminated === true ? 'unproved' : 'unverifiable'
+      concept.proofStatus = statement.unterminated === true ? 'incomplete' : 'unverifiable'
+      continue
+    }
+    const targetConcept = statementConcepts.get(target)
+    if (statement.unterminated === true) {
+      concept.status = 'unproved'
+      concept.proofStatus = 'incomplete'
+      if (targetConcept !== undefined) targetConcept.status = 'unproved'
+      continue
+    }
+    concept.status = 'proved'
+    concept.proofStatus = 'complete'
+    concept.target = statement.proofTarget
+    if (targetConcept !== undefined) targetConcept.status = 'proved'
   }
 
   // Formulas.
@@ -345,9 +481,19 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
     appendAstNode(ctx, root, 'document', span, cleanTitle)
   }
 
+  const statementOrdinals = new Map<string, number>()
+  const concepts: StructuralConcept[] = []
   for (const statement of statements) {
     const displayName = statement.title ?? statement.label
     const name = displayName === undefined ? undefined : sanitizeMetadataText(displayName, MAX_NAME_LENGTH)
+    const ordinal = (statementOrdinals.get(statement.kind) ?? 0) + 1
+    statementOrdinals.set(statement.kind, ordinal)
+    const locator = structuralLocator(ctx.path, statement.kind, ordinal)
+    const concept = statementConcepts.get(statement)
+    if (concept !== undefined) {
+      concept.locator = locator
+      concept.ordinal = ordinal
+    }
     let reference: NodeReference | undefined
     if (ctx.path !== undefined) {
       try {
@@ -362,8 +508,9 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
         reference = undefined
       }
     }
-    pushNodeMetadata(ctx, nodes, {
+    const node = pushNodeMetadata(ctx, nodes, {
       kind: statement.kind,
+      locator,
       ...(name === undefined || name.length === 0 ? {} : { name }),
       ...(statement.label === undefined ? {} : { label: statement.label }),
       ...(reference === undefined ? {} : { reference }),
@@ -371,6 +518,10 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
       source: 'environment',
       span: statement.span,
     })
+    if (node !== undefined && concept !== undefined) {
+      node.domain = concept
+      concepts.push(concept)
+    }
     missingBrief += 1
     firstMissing ??= statement.span
     appendAstNode(ctx, root, statement.kind, statement.span, statement.title ?? statement.label)
@@ -382,6 +533,149 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
     missingBrief += 1
     firstMissing ??= formula.span
     appendAstNode(ctx, root, 'formula', formula.span, formula.dialect)
+  }
+
+  /*
+   * Work node (explicit `\documentclass{book|article}`), sectioning hierarchy
+   * (`\part`/`\chapter`/`\section`/...), and Person authorities (`\author`).
+   * A command that is absent creates no node; nothing is inferred from prose.
+   */
+  const conceptChildren = new Map<string, string[]>()
+  const addConceptChild = (parent: string | undefined, child: string): void => {
+    if (parent === undefined) return
+    const list = conceptChildren.get(parent)
+    if (list === undefined) {
+      conceptChildren.set(parent, [child])
+      return
+    }
+    if (!list.includes(child) && list.length < 64) list.push(child)
+  }
+  const authorNames = author === undefined
+    ? []
+    : author
+        .split(/\\and\b/)
+        .map((value) => sanitizeMetadataText(value, MAX_NAME_LENGTH))
+        .filter((value) => value.length > 0)
+        .slice(0, MAX_CONCEPT_NAMES)
+  const workKind: 'book' | 'article' | undefined =
+    form === 'book' ? 'book' : form === 'article' ? 'article' : undefined
+  const workLocator = workKind === undefined ? undefined : structuralLocator(ctx.path, workKind, 1)
+  if (workKind !== undefined && workLocator !== undefined) {
+    const span = locate(0, source.length)
+    const concept: StructuralConcept = {
+      kind: workKind,
+      locator: workLocator,
+      explicit: true,
+      ...(authorNames.length === 0 ? {} : { authors: authorNames }),
+    }
+    const reference = ctx.path === undefined
+      ? undefined
+      : referenceForSpan(ctx, { scheme: 'file', target: ctx.path, span, parserId: 'latex' })
+    const node = pushNodeMetadata(ctx, nodes, {
+      kind: workKind,
+      locator: workLocator,
+      ...(cleanTitle === undefined ? {} : { name: cleanTitle }),
+      ...(reference === undefined ? {} : { reference }),
+      fragment: fragmentForSpan(ctx, span),
+      source: 'documentclass',
+      span,
+    })
+    if (node !== undefined) {
+      node.domain = concept
+      concepts.push(concept)
+      appendAstNode(ctx, root, workKind, span, cleanTitle)
+    }
+  }
+
+  const sectionStack: Array<{ level: number; locator: string }> = []
+  const sectionOrdinals = new Map<string, number>()
+  for (const section of sections) {
+    const ordinal = (sectionOrdinals.get(section.kind) ?? 0) + 1
+    sectionOrdinals.set(section.kind, ordinal)
+    const locator = structuralLocator(ctx.path, section.kind, ordinal)
+    while (sectionStack.length > 0 && sectionStack[sectionStack.length - 1].level >= section.level) {
+      sectionStack.pop()
+    }
+    const parent = sectionStack[sectionStack.length - 1]?.locator ?? workLocator
+    const concept: StructuralConcept = {
+      kind: section.kind,
+      locator,
+      ordinal,
+      level: section.level,
+      explicit: true,
+      ...(section.kind === 'chapter' ? { form: 'chapter' as const } : {}),
+      ...(section.kind === 'paragraph' ? { form: 'sectioning' as const } : {}),
+      ...(parent === undefined ? {} : { partOf: parent }),
+    }
+    let reference: NodeReference | undefined
+    if (ctx.path !== undefined) {
+      reference = referenceForSpan(ctx, {
+        scheme: 'symbol',
+        target: `${ctx.path}#${section.kind}:${ordinal}`,
+        span: section.span,
+        parserId: 'latex',
+      })
+      section.reference = reference
+    }
+    const node = pushNodeMetadata(ctx, nodes, {
+      kind: section.kind,
+      locator,
+      ...(section.title === undefined ? {} : { name: section.title }),
+      ...(reference === undefined ? {} : { reference }),
+      fragment: section,
+      source: 'command',
+      span: section.span,
+    })
+    if (node !== undefined) {
+      node.domain = concept
+      concepts.push(concept)
+      addConceptChild(parent, locator)
+      sectionStack.push({ level: section.level, locator })
+    }
+    appendAstNode(ctx, root, section.kind, section.span, section.title)
+  }
+
+  const authorArgument = readCommandArgument(source, 'author', excluded)
+  const authorSpan = authorArgument === undefined
+    ? locate(0, source.length)
+    : locate(authorArgument.start, authorArgument.end)
+  for (let personIndex = 0; personIndex < authorNames.length; personIndex += 1) {
+    const ordinal = personIndex + 1
+    const locator = structuralLocator(ctx.path, 'person', `author:${ordinal}`)
+    const concept: StructuralConcept = {
+      kind: 'person',
+      locator,
+      ordinal,
+      role: 'author',
+      explicit: true,
+    }
+    const reference = ctx.path === undefined
+      ? undefined
+      : referenceForSpan(ctx, {
+          scheme: 'symbol',
+          target: `${ctx.path}#person:author:${ordinal}`,
+          span: authorSpan,
+          parserId: 'latex',
+        })
+    const node = pushNodeMetadata(ctx, nodes, {
+      kind: 'person',
+      locator,
+      name: authorNames[personIndex],
+      ...(reference === undefined ? {} : { reference }),
+      fragment: fragmentForSpan(ctx, authorSpan),
+      source: 'documentclass',
+      span: authorSpan,
+    })
+    if (node !== undefined) {
+      node.domain = concept
+      concepts.push(concept)
+    }
+  }
+
+  for (const concept of concepts) {
+    if (concept.locator === undefined) continue
+    const list = conceptChildren.get(concept.locator)
+    if (list !== undefined && list.length > 0) concept.contains = [...list]
   }
 
   if (missingBrief > 0) {
@@ -404,6 +698,7 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
     crossReferences,
     formulas,
     comments,
+    sections,
   }
 }
 
@@ -568,6 +863,17 @@ function readSimpleCommand(source: string, name: string, excluded: readonly Sour
   const index = findCommand(source, name, excluded)
   if (index === undefined) return undefined
   return readBracedArgument(source, index)?.value
+}
+
+/** First braced argument of one command, with its offsets (no body returned). */
+function readCommandArgument(
+  source: string,
+  name: string,
+  excluded: readonly SourceSpan[],
+): BracedArgument | undefined {
+  const index = findCommand(source, name, excluded)
+  if (index === undefined) return undefined
+  return readBracedArgument(source, index)
 }
 
 function findCommand(source: string, name: string, excluded: readonly SourceSpan[]): number | undefined {

@@ -11,12 +11,13 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createTestHost, insertSession, insertTurn } from './helpers.js'
+import { createTestHost, insertGoal, insertPlan, insertSession, insertTurn } from './helpers.js'
 import { resolveConfig } from '../src/host/config.js'
 import { ProfessionModule } from '../src/host/profession.js'
 import {
   SelectionModule,
   abandonProfession,
+  applyConfigPatch,
   rebuildProfession,
 } from '../src/host/selection.js'
 import {
@@ -163,6 +164,185 @@ test('state() projects the resolved config and keeps the old wire fields', () =>
     const wire = JSON.stringify(state)
     assert.equal(wire.includes('coordination-secret.db'), false)
     assert.equal(wire.includes('databasePath'), false)
+  } finally {
+    fixture.close()
+  }
+})
+
+/* ------------------------------------------------------------------------- *
+ * Full config view and live patch (v24 §19)
+ * ------------------------------------------------------------------------- */
+
+test('configView() projects the full surface while the composer projection stays small', () => {
+  const fixture = buildModules()
+  try {
+    insertSession(fixture.db, 'config-full')
+    const state = fixture.selection.state('config-full')
+    const view = fixture.selection.configView()
+
+    // The full view carries every group the settings page renders.
+    assert.deepEqual(Object.keys(view.values).sort(), [
+      'bayesian',
+      'cache',
+      'chain',
+      'clarifyTimeout',
+      'compaction',
+      'comprehension',
+      'defaultLease',
+      'defaults',
+      'maxTurnPerSession',
+      'orchestration',
+      'parser',
+      'plan',
+      'profession',
+      'scenes',
+      'tools',
+      'ui',
+    ])
+    assert.equal(view.values.parser.maxFileBytes, 1_048_576)
+    assert.equal(view.values.chain.depth, 8)
+    assert.equal(view.values.tools.maxResultBytes, 0)
+    assert.deepEqual(view.values, view.defaults, 'a fresh config equals its schema defaults')
+
+    // The legacy composer projection is unchanged: no parser/chain/tools keys.
+    const legacy = state.config as unknown as Record<string, unknown>
+    assert.equal('parser' in legacy, false)
+    assert.equal('chain' in legacy, false)
+
+    // Neither projection may leak the deployment path.
+    for (const wire of [JSON.stringify(state), JSON.stringify(view)]) {
+      assert.equal(wire.includes('databasePath'), false)
+    }
+  } finally {
+    fixture.close()
+  }
+})
+
+test('a config patch reaches the live selection projection', () => {
+  const fixture = buildModules()
+  try {
+    insertSession(fixture.db, 'config-live')
+    const before = fixture.selection.state('config-live')
+    assert.equal(before.config?.showTooltip, true)
+    assert.equal(before.config?.defaultScene, 'dialogue')
+
+    applyConfigPatch(fixture.host.config, {
+      'ui.showTooltip': false,
+      'defaults.scene': 'research',
+    })
+
+    const after = fixture.selection.state('config-live')
+    assert.equal(after.config?.showTooltip, false)
+    assert.equal(after.config?.defaultScene, 'research')
+    // A session without a stored selection follows the new default.
+    assert.equal(fixture.selection.get('config-live').scene, 'research')
+  } finally {
+    fixture.close()
+  }
+})
+
+/* ------------------------------------------------------------------------- *
+ * Phase freezes (turn -> profession, plan -> validation, goal -> interaction)
+ * ------------------------------------------------------------------------- */
+
+test('state() freezes the matching dropdown per phase and lifts it automatically', () => {
+  const fixture = buildModules()
+  try {
+    const handle = 'session-freeze'
+    const session = insertSession(fixture.db, handle)
+    const turn = insertTurn(fixture.db, session, { profession: 'execution', status: 'planning' })
+    const plan = insertPlan(fixture.db, turn, { status: 'active' })
+    const goal = insertGoal(fixture.db, session, turn, { status: 'set' })
+    fixture.db.update('turn', { plan, goal }, 'identity = ?', turn)
+
+    const frozen = fixture.selection.state(handle).frozen
+    assert.equal(frozen?.profession?.phase, 'turn')
+    assert.equal(frozen?.validation?.phase, 'plan')
+    assert.equal(frozen?.validation?.status, 'active')
+    assert.equal(frozen?.interaction?.phase, 'goal')
+    assert.equal(frozen?.interaction?.status, 'set')
+    assert.equal(frozen?.validation?.turn, 1)
+
+    // A terminal plan lifts only the validation freeze.
+    fixture.db.update('plan', { status: 'done' }, 'identity = ?', plan)
+    const afterPlan = fixture.selection.state(handle).frozen
+    assert.equal(afterPlan?.validation, undefined)
+    assert.equal(afterPlan?.interaction?.phase, 'goal')
+    assert.equal(afterPlan?.profession?.phase, 'turn')
+
+    // Every newly created plan freezes again (the projection is re-derived).
+    const nextPlan = insertPlan(fixture.db, turn, { status: 'draft' })
+    fixture.db.update('turn', { plan: nextPlan }, 'identity = ?', turn)
+    assert.equal(fixture.selection.state(handle).frozen?.validation?.phase, 'plan')
+
+    // A `cleared` goal tombstone lifts the interaction freeze.
+    const cleared = insertGoal(fixture.db, session, turn, { status: 'cleared' })
+    fixture.db.update('turn', { goal: cleared }, 'identity = ?', turn)
+    const afterGoal = fixture.selection.state(handle).frozen
+    assert.equal(afterGoal?.interaction, undefined)
+    assert.equal(afterGoal?.validation?.phase, 'plan')
+
+    // Every newly set goal freezes interaction again.
+    const reopened = insertGoal(fixture.db, session, turn, { status: 'set' })
+    fixture.db.update('turn', { goal: reopened }, 'identity = ?', turn)
+    assert.equal(fixture.selection.state(handle).frozen?.interaction?.phase, 'goal')
+
+    // Closing the turn lifts everything and drops the lock.
+    fixture.db.update('turn', { status: 'done' }, 'identity = ?', turn)
+    const closed = fixture.selection.state(handle)
+    assert.equal(closed.frozen, undefined)
+    assert.equal(closed.locked, false)
+  } finally {
+    fixture.close()
+  }
+})
+
+test('set() refuses a frozen validation/interaction and names the phase', () => {
+  const fixture = buildModules()
+  try {
+    const handle = 'session-freeze-reject'
+    const session = insertSession(fixture.db, handle)
+    const turn = insertTurn(fixture.db, session, {
+      profession: 'execution',
+      status: 'planning',
+      validation: 'medium',
+      interaction: 'think',
+    })
+    const plan = insertPlan(fixture.db, turn, { status: 'scored' })
+    const goal = insertGoal(fixture.db, session, turn, { status: 'updated' })
+    fixture.db.update('turn', { plan, goal }, 'identity = ?', turn)
+
+    assert.throws(
+      () => fixture.selection.set(handle, { validation: 'high' }),
+      (error: unknown) =>
+        error instanceof InvalidStateError
+        && error.code === 'INVALID_STATE'
+        && error.details.phase === 'plan',
+      'a running plan must freeze validation on the server',
+    )
+    assert.throws(
+      () => fixture.selection.set(handle, { interaction: 'converge' }),
+      (error: unknown) =>
+        error instanceof InvalidStateError
+        && error.code === 'INVALID_STATE'
+        && error.details.phase === 'goal',
+      'a set goal must freeze interaction on the server',
+    )
+    // Replaying the stored value is not an edit: it must never get stuck.
+    assert.equal(fixture.selection.set(handle, { validation: 'medium' }).selection.validation, 'medium')
+
+    // Ending the plan releases validation while the goal keeps interaction frozen.
+    fixture.db.update('plan', { status: 'rebuilt' }, 'identity = ?', plan)
+    assert.equal(fixture.selection.set(handle, { validation: 'high' }).selection.validation, 'high')
+    assert.throws(() => fixture.selection.set(handle, { interaction: 'converge' }), InvalidStateError)
+
+    // Clearing the goal releases interaction.
+    const cleared = insertGoal(fixture.db, session, turn, { status: 'cleared' })
+    fixture.db.update('turn', { goal: cleared }, 'identity = ?', turn)
+    assert.equal(
+      fixture.selection.set(handle, { interaction: 'converge' }).selection.interaction,
+      'converge',
+    )
   } finally {
     fixture.close()
   }

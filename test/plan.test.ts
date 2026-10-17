@@ -27,7 +27,7 @@ import {
 } from '../src/host/plan.js'
 import type { PlanDimensions } from '../src/host/plan.js'
 import { InvalidArgumentError, InvalidStateError, NotFoundError } from '../src/shared/error.js'
-import type { Interaction } from '../src/shared/enum.js'
+import { SceneProfiles, type Interaction } from '../src/shared/enum.js'
 
 /* ------------------------------------------------------------------------- *
  * Configuration
@@ -92,7 +92,29 @@ const TestConfig: CoordinationConfig = {
   cache: { enabled: true, ttl: 60000, fingerprintWindow: 50, effortWarning: true },
   bayesian: { prior: 0.5, stopEntropy: 0.05, infoGain: 0.01, maxRoutes: 12, calibrationFloor: 0.1 },
   comprehension: { stageTimeout: 30000, searchEnabled: true, maxEvidence: 8, highHistoryWindow: 50 },
-  ui: { toolbar: true, showTooltip: true, takeover: false, refreshInterval: 5000, compact: true },
+  compaction: {
+    auto: true,
+    soft: 0.7,
+    hard: 0.88,
+    reserve: 2048,
+    recentTurns: 6,
+    cooldown: 30000,
+    maxPerSession: 20,
+  },
+  parser: {
+    enabled: true,
+    maxFileBytes: 1_048_576,
+    maxTokens: 200_000,
+    maxAstDepth: 256,
+    timeoutMs: 2000,
+    cacheCapacity: 256,
+    dependencyGraphMaxVertices: 20_000,
+    dependencyGraphMaxEdges: 100_000,
+  },
+  chain: { depth: 8, links: 50, tokenBudget: 1500 },
+  tools: { maxResultBytes: 0 },
+  scenes: SceneProfiles,
+  ui: { toolbar: true, showTooltip: true, takeover: false, refreshInterval: 5000, compact: true, locale: 'auto' },
   defaults: {
     profession: 'execution',
     interaction: 'think',

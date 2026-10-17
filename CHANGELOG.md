@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.10.0 | 2026-10-18 | pending | Settings catalog, file tools, data structures, installable package |
 | 0.9.2 | 2026-10-18 | `73a273d` | One dropdown tooltip at a time |
 | 0.9.1 | 2026-10-18 | `31f64da` | Restore working dropdown tooltips |
 | 0.9.0 | 2026-10-18 | `ad7d59f` | Shared algorithms, blueprint model, P0 parser, global tooltip host |
@@ -42,6 +43,70 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
+
+## [0.10.0] — 2026-10-18
+
+The settings surface, the file layer, the data-structure adoption pass and the
+release packaging land together. This is the first version whose built package
+is installable as a tarball; the raw `github:` source install remains
+unsupported because `lib/` is not committed.
+
+### Added
+
+- **Settings catalog** — 151 controls in 13 groups covering all 155 non-secret
+  config leaves exactly once (130 writable host rows). `GET /config` returns
+  `{ values, defaults }`; `POST /config` accepts a flat dotted patch, validates
+  type/range against the real Schemastery schema, applies live, re-resolves
+  invariants (weight normalisation, alias mirror, forced flags, compaction
+  clamps), rebuilds `TokenGovernor` when compaction changes, and best-effort
+  persists via `ctx.settings.update`. Unknown keys, `databasePath` and
+  `database` are rejected; forced/read-only/planned keys are reported as
+  `ignored`.
+- **Settings page** — MUI accordions (all default-expanded), List rows, six
+  scene tables, checkbox/radio/slider/number controls, chips and a retry path.
+  The profile nav row gets the Material `sync` glyph because the host shell only
+  accepts `{id, order, label}` for a settings section. No composer theme change.
+- **File layer** — `coordination_parse`, `coordination_describe`,
+  `coordination_chain` and `coordination_read`: bounded parse service, node
+  registry with deterministic handles, host-only chain projection and the only
+  content-returning tool. `parser.enabled` gates the tools at registration;
+  parser limits and `chain.depth / links / tokenBudget` are captured when the
+  lazy file-tool runtime is created.
+- **Data-structure adoption** — `LruList` memo, `BinaryHeap` selection with the
+  old total order, shared `hashString`, `RedBlackTree` numeric agreement,
+  `OrderedSet` first-seen dedupe and a `Queue` permission-command parser.
+  Randomized reference tests and measured caveats are in
+  `docs/data-structure-adoption-v24.md`.
+- **Packaging** — `prepack` builds before `npm pack`; `npm run pack:check`
+  verifies the four runtime files in the tarball and syntax-checks the host
+  entry; a tag-triggered GitHub Actions workflow attaches the packed tarball to
+  the release.
+
+### Changed
+
+- `parser.enabled`, the four parser limits and all three `chain.*` controls are
+  writable host rows now that the file-tool runtime consumes them. Their copy
+  states the restart/registration timing instead of claiming a live effect.
+- The six module-test config literals gained `ui.locale`, `compaction`, `parser`,
+  `chain`, `tools` and `scenes`, so `npm run test:tsc` is clean again.
+
+### Fixed
+
+- Installing `github:eloyhere/deepseek-coordination` produced a five-file
+  package with no `lib/index.mjs`, then failed at activation with
+  `ERR_MODULE_NOT_FOUND`. The repository now ships a verified release tarball;
+  raw git installs are documented as unsupported instead of failing silently.
+- The `selectContext` heap has an explicit zero-token path and a randomized
+  equivalence test, so it cannot strand acceptable candidates or reorder ties.
+- Numeric agreement uses the exact predecessor/successor argmax proof, not an
+  approximate sample; randomized brute-force comparison covers negatives and
+  duplicates.
+
+### Verification
+
+`npm run typecheck` and `npm run test:tsc` are clean; `npm test` is **433 tests,
+432 pass, 1 skipped (GC-only), 0 fail**; `npm run build` and
+`npm run pack:check` are green.
 
 ## [0.9.2] — 2026-10-18
 

@@ -477,6 +477,12 @@ export interface TurnObservation {
   /** DSH turn ordinal inside that session. */
   turn: number
   step?: number
+  /**
+   * The user prompt carried by the pre-step payload. Absent when DSH does not
+   * expose the messages; the pipeline then records an empty-prompt diagnostic
+   * instead of inventing one.
+   */
+  prompt?: string
 }
 
 export interface TurnLifecycle {
@@ -501,9 +507,49 @@ function warn(context: unknown, message: string, error: unknown): void {
   }
 }
 
+/** Join the text blocks of one message content value, ignoring non-text parts. */
+function contentText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return ''
+  const parts: string[] = []
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      parts.push(entry)
+      continue
+    }
+    const text = asString(asRecord(entry)?.text)
+    if (text.length > 0) parts.push(text)
+  }
+  return parts.join('\n')
+}
+
+/**
+ * The last user prompt carried by a pre-step payload, when DSH includes the
+ * conversation. This is the only host-side source of the turn text: the
+ * coordination database deliberately does not mirror the DSH conversation.
+ */
+export function promptTextOfMessages(messages: unknown): string | undefined {
+  if (!Array.isArray(messages)) return undefined
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = asRecord(messages[index])
+    if (message?.role !== 'user') continue
+    const text = contentText(message.content).trim()
+    if (text.length > 0) return text
+  }
+  return undefined
+}
+
+/** Upper bound for opening the coordination turn inside `agent/pre-step`. */
+const TurnHookBudgetMs = 5000
+
 /**
  * Register the turn lifecycle listeners. Returns a disposer; the plugin entry
  * usually yields this from `ctx.effect` so unload removes every listener.
+ *
+ * The pre-step listener is intentionally bounded: opening the coordination turn
+ * must never park the agent loop behind a slow database or command handler. The
+ * deterministic pipeline itself is scheduled by the service and is not awaited
+ * here at all.
  */
 export function installTurnLifecycle(context: unknown, lifecycle: TurnLifecycle): () => void {
   const holder = asRecord(context)
@@ -514,16 +560,32 @@ export function installTurnLifecycle(context: unknown, lifecycle: TurnLifecycle)
   const preStep = on.call(context, 'agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
     const record = asRecord(payload)
     const agentId = asString(asRecord(record?.agent)?.id)
-    try {
-      if (agentId.length > 0 && typeof record?.turn === 'number') {
-        await lifecycle.begin({
-          session: agentId,
-          turn: record.turn,
-          step: typeof record.step === 'number' ? record.step : 0,
-        })
+    if (agentId.length > 0 && typeof record?.turn === 'number') {
+      const prompt = promptTextOfMessages(record?.messages)
+      const observation: TurnObservation = {
+        session: agentId,
+        turn: record.turn,
+        step: typeof record.step === 'number' ? record.step : 0,
+        ...(prompt === undefined ? {} : { prompt }),
       }
-    } catch (error) {
-      warn(context, 'pre-step turn hook failed', error)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const begun = Promise.resolve()
+        .then(() => lifecycle.begin(observation))
+        .then(() => 'done' as const)
+        .catch((error: unknown) => {
+          warn(context, 'pre-step turn hook failed', error)
+          return 'failed' as const
+        })
+      const expiry = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), TurnHookBudgetMs)
+      })
+      try {
+        if ((await Promise.race([begun, expiry])) === 'timeout') {
+          warn(context, `pre-step turn hook exceeded ${TurnHookBudgetMs}ms; continuing`, new Error('timeout'))
+        }
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
     }
     return await next()
   })

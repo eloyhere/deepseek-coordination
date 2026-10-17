@@ -1,11 +1,13 @@
-﻿/**
+/**
  * The `coordination` SQLite database.
  *
  * The plugin owns this file; it never opens DSH's `harness` database. The
- * physical shape follows v23 搂17 for the tables the document spells out, and
- * extends the same conventions to the remaining v22 entities. SQLite triggers
- * are the second line of defence for the profession lock: even a caller that
- * bypasses the service cannot rewrite a locked profession.
+ * physical shape follows v23 §17 for the tables the document spells out, and
+ * extends the same conventions to the remaining v22 entities. Schema 24 adds the
+ * v24 `node`/`edge`/`snapshot` graph additively (see the block comment before
+ * `CREATE TABLE IF NOT EXISTS node` and `docs/persistence-v24.md`). SQLite
+ * triggers are the second line of defence for the profession lock: even a caller
+ * that bypasses the service cannot rewrite a locked profession.
  */
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -13,7 +15,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { DatabaseError, NotFoundError } from '../shared/error.js'
 
-export const SCHEMA_VERSION = 23
+export const SCHEMA_VERSION = 24
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -882,6 +884,178 @@ CREATE TABLE IF NOT EXISTS global_posterior (
   scope TEXT NOT NULL,
   created INTEGER NOT NULL
 );
+
+/*
+ * v24 node/edge/snapshot graph (domain model §2.8).
+ *
+ * Additive only: every statement is CREATE ... IF NOT EXISTS, so opening a
+ * schema-23 database creates the three tables and their indexes without
+ * touching an existing row, and PRAGMA user_version becomes 24. The node row
+ * stores metadata and locators only (no body, no AST, no attachment bytes);
+ * the node/edge handle columns are the deterministic public handles produced by
+ * node-registry.ts / chain.ts, so a rehydrated runtime answers the same
+ * handle after a restart.
+ *
+ * One deliberate extension to the documented edge shape: the domain model's
+ * edge table has no status column, but the projection depends on the
+ * per-edge status (satisfied/unmet/unknown/stale/unverifiable) and on
+ * the pinned target version. status, changed, evidenceHandle and
+ * targetVersion are therefore added to the table (all with defaults, so an
+ * older/foreign writer that omits them still works). Every other column and
+ * index follows §2.8 exactly.
+ */
+CREATE TABLE IF NOT EXISTS node (
+  identity INTEGER PRIMARY KEY AUTOINCREMENT,
+  handle TEXT UNIQUE NOT NULL,
+  kind TEXT NOT NULL,
+  locator TEXT NOT NULL,
+  project INTEGER,
+  owner INTEGER,
+  parent INTEGER,
+  path TEXT,
+  name TEXT,
+  title TEXT,
+  label TEXT,
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  level INTEGER,
+  byteStart INTEGER,
+  byteEnd INTEGER,
+  lineStart INTEGER,
+  lineEnd INTEGER,
+  fingerprint TEXT,
+  charset TEXT,
+  charsetConfidence REAL,
+  charsetSource TEXT,
+  bom INTEGER,
+  bomBytes INTEGER,
+  hash TEXT,
+  status TEXT NOT NULL DEFAULT 'parsed',
+  language TEXT,
+  form TEXT,
+  sourceForm TEXT,
+  signature TEXT,
+  specifier TEXT,
+  resolution TEXT,
+  external INTEGER,
+  typeOnly INTEGER,
+  target INTEGER,
+  sheet INTEGER,
+  anchor INTEGER,
+  formula INTEGER,
+  rowIndex INTEGER,
+  columnIndex INTEGER,
+  address TEXT,
+  valueType TEXT,
+  rangeForm TEXT,
+  rangeStart TEXT,
+  rangeEnd TEXT,
+  cellCount INTEGER,
+  rowCount INTEGER,
+  columnCount INTEGER,
+  dialect TEXT,
+  delimiter TEXT,
+  container TEXT,
+  semantics TEXT,
+  formal INTEGER,
+  formalSystem TEXT,
+  evidence INTEGER,
+  proofStatus TEXT,
+  role TEXT,
+  meaning TEXT,
+  summary TEXT,
+  brief TEXT,
+  description TEXT,
+  usage TEXT,
+  purpose TEXT,
+  reference TEXT,
+  tags TEXT,
+  version TEXT,
+  appliesTo TEXT,
+  author TEXT,
+  source TEXT,
+  negated INTEGER,
+  truncated INTEGER NOT NULL DEFAULT 0,
+  complete INTEGER NOT NULL DEFAULT 1,
+  created INTEGER NOT NULL,
+  changed INTEGER NOT NULL,
+  detail TEXT,
+  CHECK (byteStart IS NULL OR byteEnd IS NULL OR byteStart <= byteEnd),
+  CHECK (lineStart IS NULL OR lineEnd IS NULL OR lineStart <= lineEnd),
+  CHECK (kind = 'project' OR project IS NOT NULL),
+  FOREIGN KEY (project) REFERENCES node(identity),
+  FOREIGN KEY (owner) REFERENCES node(identity),
+  FOREIGN KEY (parent) REFERENCES node(identity),
+  FOREIGN KEY (target) REFERENCES node(identity),
+  FOREIGN KEY (sheet) REFERENCES node(identity),
+  FOREIGN KEY (anchor) REFERENCES node(identity),
+  FOREIGN KEY (formula) REFERENCES node(identity),
+  FOREIGN KEY (evidence) REFERENCES node(identity)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_locator ON node(kind, locator);
+CREATE INDEX IF NOT EXISTS idx_node_project ON node(project, kind);
+CREATE INDEX IF NOT EXISTS idx_node_owner ON node(owner, kind, ordinal);
+CREATE INDEX IF NOT EXISTS idx_node_parent ON node(parent, ordinal);
+CREATE INDEX IF NOT EXISTS idx_node_name ON node(kind, name);
+CREATE INDEX IF NOT EXISTS idx_node_meta ON node(kind, status, name);
+CREATE INDEX IF NOT EXISTS idx_node_summary ON node(kind, summary);
+CREATE INDEX IF NOT EXISTS idx_node_path ON node(kind, path);
+CREATE INDEX IF NOT EXISTS idx_node_position ON node(path, byteStart);
+CREATE INDEX IF NOT EXISTS idx_node_line ON node(path, lineStart);
+CREATE INDEX IF NOT EXISTS idx_node_fingerprint ON node(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_node_charset ON node(charset);
+CREATE INDEX IF NOT EXISTS idx_node_sheet ON node(sheet, rowIndex, columnIndex);
+CREATE INDEX IF NOT EXISTS idx_node_label ON node(owner, kind, role);
+CREATE INDEX IF NOT EXISTS idx_node_statement ON node(project, kind, status);
+CREATE INDEX IF NOT EXISTS idx_node_condition ON node(project, kind, status);
+CREATE INDEX IF NOT EXISTS idx_node_applies ON node(appliesTo);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_formula_anchor ON node(anchor) WHERE kind = 'formula' AND anchor IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS edge (
+  identity INTEGER PRIMARY KEY AUTOINCREMENT,
+  handle TEXT UNIQUE NOT NULL,
+  kind TEXT NOT NULL,
+  source INTEGER NOT NULL,
+  target INTEGER,
+  project INTEGER NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  baselineVersion TEXT,
+  ordinal INTEGER NOT NULL DEFAULT 0,
+  weight REAL NOT NULL DEFAULT 1,
+  spanStart INTEGER,
+  spanEnd INTEGER,
+  created INTEGER NOT NULL,
+  -- Extension over domain model §2.8 (see the block comment above).
+  status TEXT NOT NULL DEFAULT 'unknown',
+  changed INTEGER,
+  targetVersion TEXT,
+  evidenceHandle TEXT,
+  FOREIGN KEY (source) REFERENCES node(identity),
+  FOREIGN KEY (target) REFERENCES node(identity),
+  FOREIGN KEY (project) REFERENCES node(identity)
+);
+CREATE INDEX IF NOT EXISTS idx_edge_source ON edge(source, kind, ordinal);
+CREATE INDEX IF NOT EXISTS idx_edge_target ON edge(target, kind);
+CREATE INDEX IF NOT EXISTS idx_edge_project ON edge(project, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_key ON edge(source, kind, coalesce(target, 0), label);
+
+CREATE TABLE IF NOT EXISTS snapshot (
+  identity INTEGER PRIMARY KEY AUTOINCREMENT,
+  handle TEXT UNIQUE NOT NULL,
+  node INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  modified INTEGER NOT NULL,
+  parser TEXT NOT NULL,
+  hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  nodeCount INTEGER NOT NULL DEFAULT 0,
+  edgeCount INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL,
+  changed INTEGER NOT NULL,
+  UNIQUE(node),
+  FOREIGN KEY (node) REFERENCES node(identity)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshot_path ON snapshot(path, modified, size, parser);
 `
 
 export interface RunResult {
@@ -899,15 +1073,29 @@ export class CoordinationDatabase {
 
   constructor(path: string) {
     this.path = path
+    let raw: DatabaseSync
     try {
       if (path !== ':memory:' && !path.startsWith('file:')) mkdirSync(dirname(path), { recursive: true })
-      this.raw = new DatabaseSync(path)
+      raw = new DatabaseSync(path)
+    } catch (error) {
+      throw new DatabaseError(`failed to open coordination database at ${path}`, error)
+    }
+    this.raw = raw
+    try {
       this.raw.exec('PRAGMA foreign_keys = ON;')
       this.raw.exec('PRAGMA busy_timeout = 5000;')
       if (path !== ':memory:') this.raw.exec('PRAGMA journal_mode = WAL;')
       this.raw.exec(SCHEMA_SQL)
       this.raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
     } catch (error) {
+      // A failed schema setup must not leak the open handle: on Windows the
+      // database file then stays locked and even the temp directory cannot be
+      // removed. Closing here also makes a migration error retryable.
+      try {
+        this.raw.close()
+      } catch {
+        // Preserve the schema failure; a failing close would hide it.
+      }
       throw new DatabaseError(`failed to open coordination database at ${path}`, error)
     }
   }

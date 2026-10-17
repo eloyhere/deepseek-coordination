@@ -67,6 +67,9 @@ import type {
   Parser,
 } from './parser.js'
 import { tokenize } from './tokenizer.js'
+import { structuralLocator } from './markup.js'
+import type { StructuralConcept } from '../../shared/entity.js'
+import type { ConditionForm, StructuralRelation } from '../../shared/enum.js'
 
 /** One code symbol the lexical scan can prove. */
 export interface CodeSymbol extends FlatFragment {
@@ -121,6 +124,25 @@ export interface JavaScriptParseResult extends ParseResult {
   symbols: CodeSymbol[]
   comments: CodeComment[]
   exports: ExportBinding[]
+  /** Explicit contract-tag Condition nodes (`@requires`, `@ensures`, ...). */
+  conditions: NodeMetadata[]
+}
+
+/** Maximum contract-tag Condition nodes extracted from one file. */
+export const MAX_CONTRACT_CONDITIONS = 256
+
+/**
+ * Doc-comment contract tags mapped to a Condition form. Only these tags are
+ * conditions; `@param`/`@returns`/`@throws` are not (`docs/domain-model-v24.md`
+ * §2.3). `requires`/`pre` map to the necessary-condition relation, `ensures`/
+ * `post` to a postcondition, `invariant` to an invariant.
+ */
+const CONTRACT_TAGS: Readonly<Record<string, { form: ConditionForm; relation?: StructuralRelation }>> = {
+  requires: { form: 'precondition', relation: 'requires' },
+  pre: { form: 'precondition', relation: 'requires' },
+  ensures: { form: 'postcondition' },
+  post: { form: 'postcondition' },
+  invariant: { form: 'invariant' },
 }
 
 /** Significant token with its index in the raw token array. */
@@ -221,7 +243,8 @@ export function parseJavaScript(text: string, options: ParseOptions = {}): JavaS
   }
 
   attachComments(ctx, symbols, comments, commentBodies, tokens)
-  const metadata = buildMetadata(ctx, symbols)
+  const conditions = buildContractConditions(ctx, comments)
+  const metadata = [...buildMetadata(ctx, symbols), ...conditions]
 
   const root = createAstRoot('module', ctx.text.length)
   for (const reference of references) {
@@ -241,7 +264,7 @@ export function parseJavaScript(text: string, options: ParseOptions = {}): JavaS
     ast: new AstTree(root),
     nodes: metadata,
   })
-  return { ...base, symbols, comments, exports }
+  return { ...base, symbols, comments, exports, conditions }
 }
 
 /** `Parser` implementation for the registry. */
@@ -404,6 +427,64 @@ function findMatching(
       depth -= 1
       if (depth === 0) return position
     }
+  }
+  return -1
+}
+
+/**
+ * Index of the `{` that opens a function body, after `paramsClose`.
+ *
+ * Plain JS/TS without a return type has the brace immediately after `)`. A
+ * TypeScript return type (`): number {`, `): Promise<void> {`,
+ * `): { ok: boolean } {`) sits in between and previously made the declaration
+ * invisible to the symbol scan. The annotation is skipped lexically, with a
+ * bounded window; anything ambiguous (function types, declarations without a
+ * body) returns -1, so the caller keeps its fail-closed behaviour. No new
+ * syntax is accepted and no type is interpreted.
+ */
+function findFunctionBodyOpen(sig: readonly SigToken[], paramsClose: number): number {
+  if (sig[paramsClose + 1]?.token.text === '{') return paramsClose + 1
+  if (sig[paramsClose + 1]?.token.text !== ':') return -1
+  let depth = 0
+  const limit = Math.min(sig.length, paramsClose + 200)
+  for (let position = paramsClose + 1; position < limit; position += 1) {
+    const value = sig[position].token.text
+    if (value === '(' || value === '[' || value === '<') {
+      depth += 1
+      continue
+    }
+    if (value === ')' || value === ']' || value === '>') {
+      depth = Math.max(0, depth - 1)
+      continue
+    }
+    if (value === ';' || value === '=' || value === '=>' || value === '}') return -1
+    if (value !== '{') continue
+    if (depth > 0) {
+      // A brace inside `Array<{ a: 1 }>` is part of the annotation.
+      const nestedClose = findMatching(sig, position, '{', '}')
+      if (nestedClose < 0) return -1
+      position = nestedClose
+      continue
+    }
+    const previous = sig[position - 1]?.token.text
+    if (
+      previous !== ':' && previous !== '|' && previous !== '&' &&
+      previous !== ',' && previous !== '[' && previous !== '(' && previous !== '<'
+    ) {
+      // `: number {` / `: Result {`: the annotation ended, this brace is the body.
+      return position
+    }
+    const close = findMatching(sig, position, '{', '}')
+    if (close < 0) return -1
+    const next = sig[close + 1]?.token.text
+    // `{ ... } {` = an object return type followed by the body.
+    if (next === '{') return close + 1
+    // `{ ... } | ...` / `{ ... } & ...` = a union/intersection type literal.
+    if (next === '|' || next === '&') {
+      position = close
+      continue
+    }
+    return -1
   }
   return -1
 }
@@ -730,10 +811,15 @@ function handleFunction(
     ctx.unverifiable('function parameter list is unterminated', sig[cursor + 1].token.span)
     return position + 1
   }
-  if (sig[paramsClose + 1]?.token.text !== '{') return position + 1
-  const bodyClose = findMatching(sig, paramsClose + 1, '{', '}')
-  const endPosition = bodyClose < 0 ? paramsClose + 1 : bodyClose
-  if (bodyClose < 0) ctx.unverifiable('unterminated function body', sig[paramsClose + 1].token.span)
+  // A TypeScript return type (`): number {`, `): Promise<void> {`) must not
+  // hide the declaration: the body brace is found after the annotation.
+  const bodyOpen = sig[paramsClose + 1]?.token.text === '{'
+    ? paramsClose + 1
+    : findFunctionBodyOpen(sig, paramsClose)
+  if (bodyOpen < 0) return position + 1
+  const bodyClose = findMatching(sig, bodyOpen, '{', '}')
+  const endPosition = bodyClose < 0 ? bodyOpen : bodyClose
+  if (bodyClose < 0) ctx.unverifiable('unterminated function body', sig[bodyOpen].token.span)
   const span = spanBetween(sig[declarationStartPosition(sig, position)].token, sig[endPosition].token)
   const previous = sig[position - 1]?.token.text
   symbols.push(
@@ -776,9 +862,10 @@ function handleBinding(
     }
     if (sig[nameCursor]?.token.text !== '(') return cursor + 1
     const paramsClose = findMatching(sig, nameCursor, '(', ')')
-    if (paramsClose < 0 || sig[paramsClose + 1]?.token.text !== '{') return cursor + 1
-    const bodyClose = findMatching(sig, paramsClose + 1, '{', '}')
-    const endPosition = bodyClose < 0 ? paramsClose + 1 : bodyClose
+    const bodyOpen = paramsClose < 0 ? -1 : findFunctionBodyOpen(sig, paramsClose)
+    if (paramsClose < 0 || bodyOpen < 0) return cursor + 1
+    const bodyClose = findMatching(sig, bodyOpen, '{', '}')
+    const endPosition = bodyClose < 0 ? bodyOpen : bodyClose
     const span = spanBetween(sig[declarationStartPosition(sig, position)].token, sig[endPosition].token)
     symbols.push(
       newSymbol('function', nameToken.token.text, span, declarationStart(sig, position), sig[endPosition].index, exported.has(position), {
@@ -1181,6 +1268,96 @@ function parseDocFields(content: string | undefined): DocFields {
     hasUsage: usage !== undefined,
     hasPurpose: purpose !== undefined,
   }
+}
+
+/**
+ * Extract explicit contract-tag Condition nodes from doc/line comments.
+ *
+ * Each `@requires`/`@ensures`/`@pre`/`@post`/`@invariant` occurrence becomes one
+ * `condition` node with a form and `status='unknown'`; the tag text (if any)
+ * is only the capped `brief`, never the condition expression body. A comment
+ * attached to a symbol records that symbol name in `domain.appliesTo`.
+ */
+function buildContractConditions(ctx: ParseContext, comments: readonly CodeComment[]): NodeMetadata[] {
+  const nodes: NodeMetadata[] = []
+  let count = 0
+  for (const comment of comments) {
+    if (count >= MAX_CONTRACT_CONDITIONS) break
+    const raw = ctx.text.slice(comment.span.start, comment.span.end)
+    let cursor = 0
+    while (cursor <= raw.length) {
+      if (count >= MAX_CONTRACT_CONDITIONS) break
+      const newline = raw.indexOf('\n', cursor)
+      const lineEnd = newline < 0 ? raw.length : newline
+      const line = raw.slice(cursor, lineEnd).replace(/\r$/, '')
+      const lineStart = comment.span.start + cursor
+      const match = /@(requires|ensures|pre|post|invariant)\b[ \t]*(.*)$/i.exec(line)
+      if (match !== null) {
+        const tag = match[1].toLowerCase()
+        const mapping = CONTRACT_TAGS[tag]
+        if (mapping !== undefined) {
+          count += 1
+          const atIndex = line.indexOf(`@${match[1]}`)
+          const start = lineStart + (atIndex < 0 ? 0 : atIndex)
+          const span: SourceSpan = {
+            start,
+            end: lineStart + line.length,
+            line: 1,
+            column: 1,
+          }
+          const mappedLine = ctx.sourceMap.lineAt(start)
+          if (mappedLine !== undefined) {
+            span.line = mappedLine
+            const column = ctx.sourceMap.columnAt(start)
+            if (column !== undefined) span.column = column
+          }
+          const ordinal = count
+          const locator = structuralLocator(ctx.path, 'condition', ordinal, 'module')
+          const value = match[2].replace(/\*\/\s*$/, '').trim()
+          const concept: StructuralConcept = {
+            kind: 'condition',
+            locator,
+            ordinal,
+            form: mapping.form,
+            status: 'unknown',
+            explicit: true,
+            ...(mapping.relation === undefined ? {} : { relation: mapping.relation }),
+            ...(comment.target === undefined ? {} : { appliesTo: comment.target }),
+          }
+          let reference: NodeReference | undefined
+          try {
+            reference = referenceForSpan(ctx, {
+              scheme: 'symbol',
+              target: `${ctx.path ?? 'text'}#condition:${ordinal}`,
+              span,
+              parserId: 'javascript',
+            })
+          } catch {
+            reference = undefined
+          }
+          const node = pushNodeMetadata(ctx, nodes, {
+            kind: 'condition',
+            locator,
+            ...(value.length === 0 ? {} : { brief: value }),
+            ...(reference === undefined ? {} : { reference }),
+            fragment: fragmentForSpan(ctx, span),
+            source: 'comment',
+            span,
+          })
+          if (node !== undefined) node.domain = concept
+        }
+      }
+      if (newline < 0) break
+      cursor = lineEnd + 1
+    }
+  }
+  if (count >= MAX_CONTRACT_CONDITIONS) {
+    ctx.unverifiableOnce(
+      'contract-condition-cap',
+      `contract-tag condition limit ${MAX_CONTRACT_CONDITIONS} reached; later tags were dropped`,
+    )
+  }
+  return nodes
 }
 
 /** Build one metadata record per symbol, plus aggregate `unverifiable` notes. */

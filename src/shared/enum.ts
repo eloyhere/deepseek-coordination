@@ -109,6 +109,128 @@ export type TakeoverStatus = 'pending' | 'resolved' | 'cancelled'
 
 export type ResourceKind = 'file' | 'image' | 'text' | 'binary'
 
+/* ------------------------------------------------------------------------- *
+ * v24 structural / domain vocabulary
+ *
+ * Closed unions taken from `docs/domain-model-v24.md` §2. They are the only
+ * concept vocabulary the text parsers emit; unknown values are never guessed.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Kinds of explicit structural/domain concept the text parsers can prove from a
+ * source marker (front matter, heading outline, Pandoc fenced div, HTML
+ * `<article>/<main>/<section>`, LaTeX sectioning, contract tag).
+ *
+ * A parser emits one of these as `NodeMetadata.domain.kind`; `Book`/`Article`
+ * and the standalone concepts (`part`, `person`, `venue`, `condition`,
+ * `paragraph`) are also emitted as their own node kinds by the parser.
+ */
+export type StructuralKind =
+  | 'book'
+  | 'part'
+  | 'chapter'
+  | 'article'
+  | 'section'
+  | 'paragraph'
+  | 'condition'
+  | 'person'
+  | 'venue'
+
+/** The ten formal statement kinds; `proof` is evidence, not a claim. */
+export type StatementKind =
+  | 'definition'
+  | 'lemma'
+  | 'proof'
+  | 'property'
+  | 'axiom'
+  | 'theorem'
+  | 'corollary'
+  | 'claim'
+  | 'example'
+  | 'remark'
+
+/** Form of a chapter-like unit (§2.1 `Chapter.form`). */
+export type ChapterForm = 'chapter' | 'preface' | 'appendix' | 'index' | 'frontmatter'
+
+/** Logical form of a condition, mapped only from an explicit marker. */
+export type ConditionForm =
+  | 'precondition'
+  | 'postcondition'
+  | 'invariant'
+  | 'guard'
+  | 'assumption'
+  | 'hypothesis'
+  | 'constraint'
+  | 'goal'
+  | 'unknown'
+
+/** Evaluable condition state. Only explicit evidence may set satisfied/violated. */
+export type ConditionStatus = 'satisfied' | 'violated' | 'unknown' | 'unverifiable'
+
+/** Statement status, derived only from explicit proof/label links. */
+export type StatementStatus = 'stated' | 'proved' | 'unproved' | 'disproved' | 'axiomatic' | 'unverifiable'
+
+/** Proof completeness, derived only from an explicit closed/unterminated proof environment. */
+export type ProofStatus = 'complete' | 'incomplete' | 'admitted' | 'sorry' | 'unverifiable'
+
+/** Publication venue form; `unknown` when the source only names a venue string. */
+export type VenueForm = 'journal' | 'proceedings' | 'conference' | 'preprint' | 'unknown'
+
+/** Any explicit structural form a concept may carry. */
+export type StructuralForm = ChapterForm | ConditionForm | VenueForm | 'sectioning' | 'unknown'
+
+/** Status field of a structural concept: condition state or statement state. */
+export type StructuralStatus = ConditionStatus | StatementStatus
+
+/** The two condition relation primitives. `requires` is necessary, `meets` sufficient. */
+export type StructuralRelation = 'requires' | 'meets'
+
+/** Authority role of a `Person` node. */
+export type StructuralRole = 'author' | 'editor'
+
+/** Office sheet/cell concept kinds (CSV/TSV surface; xlsx stays deferred). */
+export type OfficeKind = 'sheet' | 'cell' | 'range'
+
+/** Cell value type from the raw text; never an evaluated result. */
+export type CellValueType = 'text' | 'number' | 'boolean' | 'error' | 'date' | 'empty' | 'unknown'
+
+/** Every structural concept kind. */
+export const StructuralKindValues: readonly StructuralKind[] = [
+  'book',
+  'part',
+  'chapter',
+  'article',
+  'section',
+  'paragraph',
+  'condition',
+  'person',
+  'venue',
+]
+
+/** Every formal statement kind. */
+export const StatementKindValues: readonly StatementKind[] = [
+  'definition',
+  'lemma',
+  'proof',
+  'property',
+  'axiom',
+  'theorem',
+  'corollary',
+  'claim',
+  'example',
+  'remark',
+]
+
+/** True when `value` is a formal statement kind. */
+export function isStatementKind(value: unknown): value is StatementKind {
+  return isOneOf(value, StatementKindValues)
+}
+
+/** True when `value` is a structural concept kind. */
+export function isStructuralKind(value: unknown): value is StructuralKind {
+  return isOneOf(value, StructuralKindValues)
+}
+
 export type InteractionStageMode = 'full' | 'light' | 'skip'
 
 /** Labels used by the composer controls and settings page. */

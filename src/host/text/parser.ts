@@ -33,6 +33,7 @@
 import { AstNode } from '../../shared/ast.js'
 import type { AstTree, SourceSpan } from '../../shared/ast.js'
 import { InvalidArgumentError } from '../../shared/error.js'
+import type { ConceptMetadata } from '../../shared/entity.js'
 import { createHash } from 'node:crypto'
 
 /** Maximum source text, in UTF-16 code units (1 MiB). */
@@ -398,6 +399,10 @@ export type MetadataSource =
   | 'documentclass'
   | 'html'
   | 'annotation'
+  | 'paragraph'
+  | 'summary'
+  | 'command'
+  | 'sheet'
   | 'none'
 
 /** Scheme of a `NodeReference`: what kind of thing the target locates. */
@@ -550,6 +555,13 @@ export interface NodeMetadata extends FlatFragment {
   /** Body-free locator for this node. */
   reference?: NodeReference
   source?: MetadataSource
+  /**
+   * Explicit structural/domain concept this node refines, when the parser can
+   * prove one locally (`docs/domain-extraction-v24.md`). Body-free; absent when
+   * no explicit marker exists. `locator`/`partOf`/`contains` here are natural
+   * keys, never public handles.
+   */
+  domain?: ConceptMetadata
   span: SourceSpan
 }
 

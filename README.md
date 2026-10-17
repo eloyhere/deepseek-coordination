@@ -2,172 +2,363 @@
 
 **English** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh-CN.md)
 
-A **DeepSeek Harness plugin bundle**. It is a *dual-face* Cordis plugin: a **host half** that
-runs in the DSH Node process and owns an HTTP route surface, and a **client half** that runs in
-the DSH Web GUI and mounts UI into two host slots.
+A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-> **Status: first real UI.** The plugin's UI is a `协调` settings page holding the
-> permission-takeover switch, and three coordination selectors injected into the composer tool
-> row. Built from Material UI (MUI) React components.
+**Status: v0.10.0 (2026-10-18).** This release follows the v0.9.2 tooltip fix and lands the settings catalog, the file layer and the data-structure adoption pass. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
-## What the pieces mean
-
-| Term | What it is |
+| Status | Meaning in this README |
 |---|---|
-| **Plugin** | A module exporting `apply(ctx)`, mounted by a row in a config layer |
-| **Bundle** | An npm package whose `package.json` declares `dsh.bundle.patch` — the layer of rows it contributes |
-| **Profile** | A runnable composition under `$DSH_HOME/profiles/<name>` listing the bundles to apply, in order |
-| **Host half** | `lib/index.mjs`, ESM for Node, built from `src/index.ts` |
-| **Client half** | `lib/client.js`, CJS for the browser, built from `src/client/index.ts` |
+| **Wired** | Registered by `src/index.ts` or called by the composed service, routes or tools. |
+| **Library-only** | Implemented and tested as a module, but not driven by the current turn lifecycle or exposed through a route/tool. |
+| **Design/planned** | Documented or declared in config/schema, with no runtime consumer yet. |
 
-This repository is the **bundle**. A profile is what a user boots; nothing here is both.
+## What it is
 
-## Project structure
+| Piece | Location | Role |
+|---|---|---|
+| Bundle | `cordis.patch.yml`, `dsh.bundle` in `package.json` | Inserts one `deepseek-coordination` row into a DSH profile roster. |
+| Host half | `lib/index.mjs` (ESM, Node) | `CoordinationService`, the `coordination` SQLite database, 7 tools, 14 route paths and the agent hooks. |
+| Client half | `lib/client.js` (CJS, browser, `__ModuleLoader__` wrapper) | React 18 + Material UI 9: composer dropdowns, settings page, takeover dialog. |
+| Database | `%DSH_HOME%\coordination\coordination.db` by default | Plugin-owned SQLite file; 60 tables, 7 triggers, 40 indexes, schema version 23. Never DSH's `harness` database. |
+
+The plugin does not replace DSH's agent loop. It records coordination state, locks one profession per task, exposes the composer selection and file metadata, asks DSH to compact when context pressure crosses a threshold, and relays approvals/questions to a human through its own dialog.
+
+The five composer controls are **权限 (permission), 职能 (profession), 交互 (interaction), 情景 (scene), 验证 (validation)**. The command face (`/goal`, `/plan`, `/feedback`, `/compact`, `/permission`) is defined as a message prefix, not a sixth dropdown.
+
+## Install and build
+
+| Requirement | Detail |
+|---|---|
+| Node.js | `package.json` declares `>=18`, but the host imports `node:sqlite`; use a Node build that ships it. Verified on Node 24.21.0. |
+| pnpm | pnpm 11 is used by the release workflow; npm also runs the same scripts. |
+| DSH | A DSH installation with the `dsh` CLI and a web-capable profile (`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`). |
+| Peer packages | See the table below; they come from the DSH installation, not from this package. |
+
+```powershell
+cd deepseek-coordination
+pnpm install
+pnpm typecheck          # tsc -p tsconfig.json --noEmit
+pnpm test               # tsdown test build + node --test
+pnpm build              # lib/index.mjs, lib/index.d.mts, lib/client.js
+pnpm pack               # prepack builds first; produces the installable tarball
+```
+
+`pnpm run test:tsc` type-checks the test tree. `pnpm run pack:check` validates the packed runtime files and syntax-checks the host entry. `npm` equivalents work, because the scripts are ordinary npm scripts.
+
+| Peer package | Range | Side |
+|---|---|---|
+| `@deepseek-ai/cordis` | `^4.0.1` | Host runtime |
+| `@deepseek-ai/dsh-host-webserver` | `^0.1.0-rc.7 \|\| ^0.2.0-rc.0` | Host route registration |
+| `@deepseek-ai/dsh-client-runtime`, `-locale`, `-ui-slots`, `-ui-settings` | `^0.1.0-rc.7 \|\| ^0.2.0-rc.0` | Browser module table |
+| `react` | `^18.2.0` | Browser module table; never bundled |
+
+### Install into a profile
+
+Install the packed tarball, not the GitHub source:
+
+```powershell
+pnpm pack
+dsh plugin --profile <name> add .\deepseek-coordination-0.10.0.tgz
+dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
+```
+
+**Raw `github:eloyhere/deepseek-coordination` installs are unsupported.** `lib/` is gitignored, pnpm 11 refuses unapproved git prepare scripts, and the installed package then fails at activation with `ERR_MODULE_NOT_FOUND` for `lib/index.mjs`. The tag-triggered GitHub Actions workflow (`.github/workflows/release.yml`) builds and attaches the verified tarball to the release; install that artifact.
+
+**npm latest is still the old `0.1.9` dsh-os line.** Do not install by package name yet. A local checkout can be linked with `dsh plugin --profile <name> add .` after `pnpm build`.
+
+`dsh plugin add` writes the dependency and the bundle row. If the profile still records a different package spec, replace it rather than assuming the new code loaded; check `dsh --profile <name> --dump-config` and the installed `package.json` version.
+
+| Artifact | Format | Size in this build |
+|---|---|---|
+| `lib/index.mjs` | Host ESM, `platform: node` | 715,867 B |
+| `lib/index.d.mts` | Host declarations | 8,653 B |
+| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 995,762 B |
+
+Material UI and emotion are bundled into `lib/client.js`; React comes from the host module table. The client bundle is large because MUI is inlined, not because it ships a second React.
+
+## Architecture
+
+Host half (`src/index.ts`):
+
+- exports `name`, `inject = ['webServer', 'tools']` and `Config`; `apply()` resolves config, creates the service, recovers interrupted turns and installs every effect through `ctx.effect`.
+- `CoordinationService` (`src/host/coordination.ts`) is the Cordis `coordination` service. It owns the database, module host and the composed modules: session, selection, turn, profession, plan, goal, compact, directive, permission, takeover/gate, provider, cache and command.
+- SQLite is opened with `node:sqlite` (`DatabaseSync`), foreign keys, a 5 s busy timeout and WAL outside `:memory:`. Triggers refuse changing a locked profession and make `orchestration_trace` append-only.
+- The `/deepseek-coordination` prefix route answers JSON `{ ok, value | error }`; request bodies are capped at 1 MiB and unknown paths return 404 with the route envelope.
+- Seven tools are registered through `ctx.tools`; the three composer tools are re-registered after `POST /locale`, because their descriptions are part of the model-facing prompt.
+- Hooks: `agent/pre-step` opens the coordination turn and runs the compaction governor; `agent/turn-stopping` closes it as `done`; `agent/error` closes it as failed; `approval/request` and `user-questions/request` feed the takeover gate. A 60 s timer deletes expired lock rows.
+
+Client half (`src/client/index.ts`):
+
+- `inject = ['slots', 'locale']`; `package.json`'s `dsh.client.inject` separately lists the four module-table packages.
+- `settings.section` (order 50) mounts `CoordinationSettings`; `conversation.input.left` (order 40) mounts the composer controls and the takeover dialog as siblings.
+- Language follows `ctx.locale.getLocale().active`, normalises `zh*`/`en*` onto `zh-CN`/`en-US`, and reports changes to `POST /locale`. The host rebuilds localized tool descriptions from that report.
+- The client bridge uses same-origin `fetch` with a 3 s selection timeout and 2 s takeover/locale timeouts. Unreachable hosts fall back to a per-session `localStorage` copy for the five choices; a permission preset is never written offline.
+- The composer components are memoised on `sessionId` only, because the slot also passes the composer input on every keystroke; re-rendering this row would make emotion touch `<head>` and close DSH's popover.
 
 ```text
-.
+deepseek-coordination/
 ├─ src/
-│  ├─ index.ts            Host half: liveness and echo routes
-│  └─ client/
-│     └─ index.ts         Client half: `协调` settings page, composer mount, takeover rule
-├─ lib/                   Build output (git-ignored, never edited by hand)
-│  ├─ index.mjs           Host half
-│  └─ client.js           Client half
-├─ cordis.patch.yml       Bundle patch: inserts this plugin's row into a profile roster
-├─ package.json           dsh.bundle + dsh.client declarations, dual exports map
-├─ pnpm-lock.yaml         Pinned dev toolchain and DSH client packages
-├─ pnpm-workspace.yaml    pnpm settings (build-script allowlist)
-├─ tsconfig.json          Type checking only (`noEmit`)
-├─ tsdown.config.ts       Dual-target build: host ESM + client CJS with the module-loader wrapper
-├─ CHANGELOG.md          English release history
-├─ CHANGELOG.zh-CN.md    Chinese release history
-└─ LICENSE
+│  ├─ index.ts                 # host composition root: service, routes, tools, hooks
+│  ├─ host/
+│  │  ├─ coordination.ts      # CoordinationService (Cordis service "coordination")
+│  │  ├─ config.ts             # Schemastery schema + resolveConfig()
+│  │  ├─ database.ts           # SQLite schema (23), 60 tables, triggers
+│  │  ├─ dsh.ts                # narrow DSH ports + turn lifecycle
+│  │  ├─ tools.ts              # 7 model-facing tools
+│  │  ├─ chain.ts              # bounded Chain projection engine
+│  │  ├─ node-registry.ts      # NodeCard registry and describe()
+│  │  ├─ parse-service.ts      # workspace-bound parse + read service
+│  │  ├─ token.ts              # TokenGovernor and pure policy
+│  │  ├─ takeover-gate.ts      # approval/question waterfall gate
+│  │  ├─ selection.ts turn.ts profession.ts …   # selection, lock, lifecycle
+│  │  ├─ bayesian.ts comprehension.ts organization.ts … # library engines
+│  │  └─ text/                 # P0 parsers: JS/TS, CSS/HTML/MD, TeX, formulas, graph
+│  ├─ client/
+│  │  ├─ index.ts              # slots, locale store, nav icon, takeover CSS
+│  │  ├─ controls.ts           # five composer dropdowns, tooltips, offline replay
+│  │  ├─ settings.ts           # 13-group, 151-control settings catalog
+│  │  ├─ takeover.ts           # approval/question dialog
+│  │  ├─ bridge.ts store.ts i18n.ts theme.ts selection-cache.ts
+│  └─ shared/                  # entity/enum/selection/i18n/error + data structures
+├─ test/                       # 24 *.test.ts + helpers.ts
+├─ docs/                       # 10 design, audit, copy and contract documents
+├─ lib/                        # build output; gitignored, never edited by hand
+├─ cordis.patch.yml            # bundle row inserted into a profile
+├─ scripts/check-pack.mjs      # tarball runtime-file verification
+└─ .github/workflows/release.yml
 ```
 
-## What the plugin mounts
+## Composer controls
 
-| Where | Slot | Content |
+| Control | Options | What it does |
 |---|---|---|
-| Settings | `settings.section` | A `协调` page with the permission-takeover switch and nothing else |
-| Composer tool row | `conversation.input.left` | Three selectors in the free space right of the access-mode control |
+| 权限 Permission | DSH preset catalog, or a neutral “follow DSH” state | Writes the chosen preset to DSH immediately through `ctx.permissionPresets`; never persists it in the coordination DB. Only shown while the local 权限接管 switch is on. |
+| 职能 Profession | decision / outcome / resource / personnel / qualification / execution | Locked for the active task. Selecting another value is refused with `PROFESSION_LOCKED` and opens the rebuild/abandon dialog. |
+| 交互 Interaction | emotion / think / heuristic / converge / orchestrate | Stored for the next turn in the `selection` row. |
+| 情景 Scene | dialogue / writing / office / research / engineering / iterate | Stored for the next turn. `writing` sits between `dialogue` and `office`. |
+| 验证 Validation | low / medium / high | Stored for the next turn; the copy states that all three levels search. |
 
-The selectors run left to right — **职能** (决策 / 成果 / 资源 / 人员 / 任职 / 执行), **交互**
-(感情 / 思维 / 启发 / 收束), **情景** (对话 / 写作 / 办公 / 研究 / 工程 / 迭代).
+- Every control and every option has a tooltip. A single-owner `tooltipVisibility` store ensures only one composer tooltip is visible; placement is left/right, exit is a 160 ms fade, and the fade popper is pointer-transparent.
+- Clicking a dropdown opens its menu on the first click; there is no state change on pointerdown/mousedown that would swallow the Select click.
+- A locked profession trigger is disabled and carries an accessible name with the lock explanation; option `MenuItem`s carry the label plus hint for keyboard and screen-reader users.
+- Tooltips obey the host's `ui.showTooltip` gate; the local “show hints” preference can only narrow them, never resurrect a host-disabled tooltip.
+- Saves are optimistic and debounced by 120 ms. A rejected save reverts to the last host-confirmed state; offline edits are replayed when the host returns. A full-access preset needs an explicit second confirmation.
+- While the host state is loading, selects stay disabled and show a loading line. A missing preset catalog is shown as a missing catalog, not invented.
 
-**Permission takeover.** The host's access-mode control is resident chrome, not a slot, so the
-plugin cannot replace it by registration. With the switch on, an injected rule hides it —
+Validation budgets are policy, not a claim that the whole pipeline runs today:
 
-```css
-button[aria-label^="访问模式"], button[aria-label^="Access mode"] { display: none !important; }
-```
+| Level | Queries × results | Evidence scope | Interaction scope |
+|---|---|---|---|
+| low | 1 × 3 | Current turn only | Selected interaction |
+| medium | 2 × 5 | Current session | Selected interaction |
+| high | 4 × 8 | All local content | All interactions |
 
-— and `conversation.input.left` renders a replacement dropdown at the left edge of the same row.
-The selector targets the control's accessible name (its CSS-module class names are hashed), so a
-host release that renames that label breaks the rule. The switch position persists in
-`localStorage`.
+The budgets live in `src/host/comprehension.ts` and the shared `ValidationBudgetByLevel` table. `ComprehensionModule` is library-only and is not driven by the current `CoordinationService` turn lifecycle, so the composer persists the level without executing these searches yet.
 
-## Requirements
+### Scenes and the writing profile
 
-| | |
+| Scene | Thinking / effort | Plan | Outline | Revision | Score | Bash | Web | Max iterations |
+|---|---|---|---|---|---|---|---|---|
+| dialogue | disabled / medium | – | – | – | – | no | yes | 1 |
+| writing | enabled / high | yes | yes | yes | yes | no | yes | 3 |
+| office | disabled / medium | yes | – | – | – | no | yes | 1 |
+| research | enabled / high | yes | – | – | – | no | yes | 3 |
+| engineering | enabled / high | yes | – | – | – | yes | yes | 3 |
+| iterate | enabled / high | – | – | – | yes | no | yes | 3 |
+
+`writing` requires an outline and at least one revision round, requires a quality score, disallows bash, allows web search and caps the loop at three iterations. The pass threshold is `0.6`; `plan.ts` uses that writing threshold. The rest of the scene table is config and copy today, not a fully driven per-scene pipeline.
+
+## Profession lock and turn lifecycle
+
+- One task has exactly one profession. `turn.create` writes `profession NOT NULL`, `locked = 1` and one profession record plus one `lock` trace event.
+- While a non-terminal turn exists, `SelectionModule.set` refuses a different profession with `ProfessionLockedError`; the HTTP layer answers 409 `PROFESSION_LOCKED`. The selection is not mutated.
+- `POST /profession/rebuild` ends the active task as `abandoned`, creates a replacement turn with a new ordinal and profession, copies the prompt/command, and emits `rebuild` + `lock` trace events. It requires an active turn.
+- `POST /profession/abandon` closes the active task without a replacement; the next task may choose again. Both reselect flags are forced true by `resolveConfig`.
+- SQLite repeats the rule: `trg_turn_profession_lock`, `trg_profession_record_lock`, `trg_subtask_profession_lock` abort a profession change while locked; `trg_turn_profession_unlock` and `trg_subtask_profession_unlock` refuse clearing the flag.
+
+| Hook | Effect |
 |---|---|
-| Node.js | `>= 18` |
-| Package manager | pnpm (npm works; the examples below use pnpm) |
-| DSH | an installation that ships the `dsh` CLI, plus a profile with `@deepseek-ai/dsh-web-app` |
+| `agent/pre-step` | Ensure the coordination session, open (or reuse) one Turn for the DSH turn; also runs the token governor before `next()`. |
+| `agent/turn-stopping` | Close the Turn as `done`; the profession unlocks for the next turn. |
+| `agent/error` | Close the Turn as `failed`. |
+| Host start | `recoverInterrupted()` marks every non-terminal Turn failed with reason `turn was interrupted by a host restart`. |
+| Every 60 s | Delete ended locks older than `defaultLease`. |
 
-## Build
+Terminal turn states (`done`, `failed`, `cancelled`, `abandoned`) are irreversible. The turn hook records turn metadata and an empty prompt row; it does not mirror the DSH conversation into the coordination database.
 
-```console
-$ pnpm install
-$ pnpm typecheck        # tsc -p tsconfig.json --noEmit
-$ pnpm build            # tsdown --config tsdown.config.ts
-```
+## Settings and configuration
 
-| Output | Face | Format |
+The settings page is driven by `SETTINGS_CONTROLS` in `src/shared/selection.ts`: **151 controls in 13 groups, 130 writable host rows, covering 155 non-secret config leaves**. The 18 top-level config keys include `database` and `databasePath`, which are deliberately not projected or writable.
+
+| Group | Defaults / scope | Write path |
 |---|---|---|
-| `lib/index.mjs` + `lib/index.d.mts` | Host | ESM, `platform: node` |
-| `lib/client.js` | Client | CJS, `platform: browser`, wrapped in `__ModuleLoader__.load()` |
+| `session` | `maxTurnPerSession=1000`, `defaultLease=30000 ms`, `clarifyTimeout=30000 ms` | Host rows through `/config` |
+| `profession` | enabled/lock/rebuild/abandon forced `true`; default mirrors `defaults.profession`; audit/errorHint `true` | Forced flags read-only; audit/errorHint host rows (audit has no consumer) |
+| `plan` | threshold `0.5`, maxRebuild `3`, 8 weights summing to 1, 8 dimension thresholds | Host rows; weights re-normalise on save |
+| `orchestration` | maxReject `2`, maxSubTask `32`, groundTruth `true`, timeout `5000 ms`, shell ground truth `false`, modelRouting `true` | Host rows; `groundTruthTimeout` has no consumer |
+| `cache` | enabled `true`, ttl `60000 ms`, fingerprintWindow `50`, effortWarning `true` | Host rows; `fingerprintWindow` has no consumer |
+| `bayesian` | prior `0.5`, stopEntropy `0.05`, infoGain `0.01`, maxRoutes `12`, calibrationFloor `0.1` | Host rows; `calibrationFloor` has no consumer |
+| `comprehension` | stageTimeout `30000 ms`, searchEnabled `true`, maxEvidence `8`, highHistoryWindow `50` | Host rows |
+| `compaction` | auto `true`, soft `0.70`, hard `0.88`, reserve `2048`, recentTurns `6`, cooldown `30000 ms`, maxPerSession `20` | auto/soft/hard host rows; structural fields read-only |
+| `ui` | toolbar `true` (deprecated alias), showTooltip `true`, takeover `false`, refreshInterval `5000 ms`, compact `true`, locale `auto` | Host rows plus the two local switches; toolbar/locale read-only |
+| `scenes` | six scene profiles, 13 fields each; writing threshold `0.6` | Host rows; only the writing score threshold is read by `plan.ts` |
+| `parser` | enabled `true`, 1 MiB, 200k tokens, depth `256`, 2 s, cache `256`, graph 20k/100k | enabled + four limits host rows; depth and graph caps planned |
+| `chain` | depth `8`, links `50`, tokenBudget `1500` | Host rows |
+| `tools` | maxResultBytes `0` | Planned/read-only; not consumed |
+| `defaults` | profession `execution`, interaction `think`, scene `dialogue`, validation `medium`, command `none` | Host rows |
 
-The widgets are Material UI components. `react` arrives through the module table and is never
-bundled; `@mui/material` and emotion are not in that table, so `alwaysBundle` inlines them into
-`lib/client.js`. That is why the client half is now ~749 kB (~156 kB gzip).
+`GET /deepseek-coordination/config` returns `{ values, defaults }`; `defaults` is `resolveConfig(undefined)`, so the page never duplicates a default literal. `POST /config` accepts a flat dotted patch such as `{ "plan.threshold": 0.7 }`, validates it against the catalog and the real Schemastery schema, applies it to the live config, re-resolves invariants (weight normalisation, alias mirror, forced flags, compaction clamps), rebuilds `TokenGovernor` when compaction changes, and best-effort persists through `ctx.settings.update`.
 
-## Install into a profile
+Persistence is explicit: `persisted: true` only when DSH accepted the settings write; otherwise the change is live for this process and the page says so. Unknown keys, `databasePath` and `database` are rejected with `INVALID_ARGUMENT`. Known but non-editable keys are reported in `ignored` and never written. `POST /config/compaction` remains as a small compatibility route for the old auto/soft/hard patch.
 
-```console
-# from this checkout
-$ dsh plugin --profile web add ./
+The page is Material UI end to end: one default-expanded `Accordion` per group, a `List` of rows, six scene tables (no scene dropdown), `Checkbox` for booleans, `RadioGroup` for enums, `Slider` for ratio-like numbers, `TextField type="number"` for counts/bytes/milliseconds, and `Chip` only for the `主机 / 本机 / 强制 / 只读 / 计划中` status plus connection state. There is no save button; controls apply on change/blur. A forced row draws a disabled control, a read-only row shows a value, and a planned row says the runtime does not read it yet. The settings nav icon is a host-shell workaround: the shell accepts only `{ id, order, label }` for a section, so the plugin decorates its nav button with a CSS mask of the Material `sync` glyph.
 
-# or from a packed tarball
-$ pnpm pack
-$ dsh plugin --profile web add ./deepseek-coordination-0.4.0.tgz
-```
+## Service-level takeover
 
-`dsh plugin add` writes the package into the profile's `package.json` (as a dependency *and* into
-`dsh.profile.bundles`) because this package declares `dsh.bundle`. Verify the layer without booting:
+- With `ui.takeover` on, `TakeoverGate` listens to DSH's `approval/request` and `user-questions/request` waterfalls. It records a durable pending row, emits `takeover/pending`, and waits for a human answer delivered through the client routes.
+- A timeout, an aborted request signal, an explicit cancel, or plugin unload calls `next()`; the gate never turns “nobody answered” into `allowed-once` or a fabricated answer. `unavailable` is the host's fail-closed outcome and is rejected as a user decision.
+- The dialog polls `/takeover/pending` every 1 s only while the local 权限接管 switch is on, the session id is real and the document is visible. The first pending request is rendered; a `1 / N` badge appears for a queue.
+- Approval offers 仅本次允许 / 拒绝 / 取消; only `allowed-once` and `rejected` are submitted, while cancel/Esc/backdrop use the cancel route. Questions render radios for single-select, checkboxes for multi-select and optional free text; submit stays disabled until every question is answered.
+- **Both switches are needed**: host `ui.takeover` (default `false`) opens the gate; the local 权限接管 switch makes the dialog poll. With the host switch off, the gate delegates immediately and there is nothing to show.
 
-```console
-$ dsh --profile web --dump-config     # expect a "# == deepseek-coordination" layer
-$ dsh --profile web
-```
+## Auto-compaction and the token governor
 
-To run a throwaway instance for development, boot a separate profile on its own port:
-`dsh --profile debug --port 3081 --no-open`.
+`TokenGovernor` estimates context (CJK-aware O(n) estimator with a bounded 256-entry memo), plans a budget against `contextWindow - reserve`, and asks DSH's `compactIfNeeded` at `agent/pre-step` when utilisation crosses a threshold. Defaults: soft `0.70`, hard `0.88`, reserve `max(2048, 8% of window)` capped at 25%, recentTurns `6`, cooldown `30 s`, `maxPerSession 20`.
 
-## Plugin contract rules
+The soft threshold is editable as a 0.30–0.90 ratio; the hard threshold as 0.30–0.98 and strictly above soft. The old 60/70/80/88% values remain valid choices (`0.60`, `0.70`, `0.80`, `0.88`) even though the catalog now uses a slider rather than a four-item picker. Auto compaction is disabled by `compaction.auto=false`, but an explicit compact command is not governed by that switch.
 
-These are the ones that fail silently rather than loudly:
+Fail-safe rules are deliberate: the hook never blocks the step; a missing compaction port, `null`/`undefined` result, timeout, throw, spent per-session allowance or unelapsed cooldown all become a no-op, and the agent proceeds to `next()`. The governor snaps the policy at construction, so a live settings change also rebuilds it. DSH owns the actual safe range and replacement; this plugin only decides when it is worth asking.
 
-- **Hard dependencies belong in `inject`.** `apply()` runs only after every injected service is
-  ready. `ctx.get('x')` is an *optional* read and returns `undefined` before the service exists.
-- **Registrations are disposed automatically.** `ctx.on`, `ctx.tools.register`, `ctx.slots.inject`
-  and friends are owned by the plugin's fiber. For anything else, return a disposer from
-  `ctx.effect(() => cleanup)` — that is how the route surface, the injected `<style>` unregister on unload.
-- **`inject` and `dsh.client.inject` are different declarations.** The first lists client
-  *services* (`slots`); the second lists module-table *packages* (`react`,
-  `@deepseek-ai/dsh-client-*`). Both are required.
-- **Only `react` and `@deepseek-ai/dsh-client-*` come from the module table.** Everything else —
-  everything else — must be bundled; a missing table row throws at load time.
-- **`__ModuleLoader__`'s `id` must equal the package name.** It is the resolution key.
-- **`files` is a whitelist.** Only what it lists ships; if the manifest points at a path the
-  tarball lacks, the plugin installs cleanly and then fails to load.
+## File tools, parser and Chain
 
-## Known issues
+The file layer is wired as four model-facing tools, alongside the three composer tools:
 
-- The replacement dropdown mirrors the host's three presets (仅可查看 / 工作区内修改 / 完全权限)
-  but selecting one does **not** dispatch `/permission` yet: the command face lives on the composer
-  bar, which this slot cannot reach.
-- The takeover selector keys off the host control's accessible name; renaming it breaks the hide
-  rule.
-- The selectors are presentation only: a chosen 职能 / 交互 / 情景 is **not** sent to the model or
-  the session yet.
-- Verified in a running `dsh web` debug profile (settings page, composer mount, takeover hide
-  rule); the widget styling was confirmed from screenshots, not from an automated visual test.
+| Tool | Purpose |
+|---|---|
+| `coordination_parse` | Parse a workspace file or supplied text. Exactly one of `path`/`text`; returns references, diagnostics, charset, truncation and node cards, never the file body. |
+| `coordination_describe` | Read one `NodeCard` and optionally `summary`/`description`/`usage`/`purpose` by handle; never the body. |
+| `coordination_chain` | Query one bounded relation chain: dependencies, dependents, satisfies, satisfied_by, baseline, prerequisites, unmet, path or cycle. Depth ≤ 8, links ≤ 50, ~1,500 tokens; never an AST or graph object. |
+| `coordination_read` | The only tool that returns file content. Reads a byte range (end exclusive) or a line range (1-based inclusive), capped at 256 KiB / 2,000 lines / 16k tokens per call. |
 
-## Repository history
+P0 parsers are lexical and deterministic: JS/TS/JSX (imports, exports, `require`, dynamic import, symbols, comments), CSS/HTML/Markdown (`@import`/`url()`, script/link/img, links/images/headings/front matter/fenced divs/formulas), TeX (theorem-like environments, proofs, labels/refs, math, `\input`/`\include`), generic formulas (Markdown/TeX/spreadsheet/MathML/OMML/unknown; no evaluation), and a lexical dependency graph (external filtering, topological order, cycles, levels, isolated vertices). Malformed input produces diagnostics and `truncated`, not a crash.
 
-- `0.1.0`–`0.1.9` — the repository hosted **dsh-os**, a cross-platform atomic OS-interaction
-  surface (PowerShell 5.1 / 7.6 and POSIX verbs, 50 golden cases). Last commit `3ba4a45`, tagged
-  `v0.1.5` … `v0.1.9`.
-- `87ddab9` — replaced by a standalone Vite single-page scaffold.
-- `0.2.0` — reshaped into this plugin bundle layout.
-- `0.3.0` — first UI, built as an Angular custom element.
-- `0.4.0` — the Angular element replaced by MDUI 2 web components.
-- `0.5.0` — MDUI removed; the widgets are plain React components owned by this plugin.
-- `0.6.0` — those components replaced by Material UI (`@mui/material` + emotion).
+Every parsed node is **blueprint-only**: `path`, UTF-8 `byteStart`/`byteEnd`, 1-based `lineStart`/`lineEnd`, `sha256:<hex>` fingerprint and `charset`; no `text`, `body`, `content` or AST. The same holds for `NodeCard` and `ChainLink`. `coordination_read` is the single content path; it rejects absolute paths, UNC paths, traversal and symlink escapes, refuses NUL/binary/undecodable content, and hashes what it returns.
 
-Nothing is lost: every earlier state is reachable from git history.
+| Limit | Value |
+|---|---|
+| Source text per parse | 1 MiB; prefix parsed and marked `truncated` |
+| Tokens per parse | 200,000 |
+| AST depth | 256 |
+| Parse wall clock | 2,000 ms |
+| Diagnostics retained | 100 |
+| Node metadata per parse | 20,000 |
+| Dependency graph | 20,000 vertices / 100,000 edges, fail-closed |
+| Formulas | 5,000 per scan / 512 references |
+| Parse cache | 256 files, LRU keyed `path+mtime+size+parserId` |
+| Read range | 256 KiB / 2,000 lines / 16,000 estimated tokens |
+| Chain projection | depth ≤ 8 / links ≤ 50 / ~1,500 tokens; 50k nodes / 200k edges fail-closed |
 
-```console
-# Inspect the dsh-os project without touching this checkout
-$ git worktree add ../dsh-os v0.1.9
-```
+`parser.enabled` is read when the file tools are registered; parser limits and `chain.depth`/`links`/`tokenBudget` are captured when the lazy tool runtime creates its `ParseService`/`ChainEngine`. A live change through `/config` therefore does not retune an already-created runtime; it takes effect on the next registration (today a locale change or restart). The workspace root falls back to `process.cwd()` because the plugin entry does not receive DSH's workspace root; a host whose cwd is not the workspace must pass a root through tool options.
 
-## References
+**No write or refresh tool exists.** The v24 write contract needs `expectedFingerprint` conflict detection, transactional reparse and range recomputation, explicit charset/BOM changes and a watcher/rename policy; none is implemented, so a writer would risk overwriting concurrent edits or returning stale ranges. `coordination_write` and `coordination_refresh` are design/planned.
 
-- DSH plugin tutorials: <https://github.com/deepseek-ai/deepseek-harness/tree/master/docs/user/develop>
-- [Package and install a plugin](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)
-- [Plugins and lifecycle](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/framework/index.md)
+## Data structures
 
-## License
+The shared library in `src/shared/` is pure ES2022: hash/LRU, nodes, binary/B+ and red-black trees, heaps, stack/deque/queue, ordered maps/sets/skip lists, AST/token stream, directed graph, trie and sparse grid. The current runtime uses:
 
-MIT © 2026 Eloy Kim. See [LICENSE](LICENSE).
+- `LruList` for the token-estimator memo, parse cache, node registry and chain projection cache.
+- `BinaryHeap` for `selectContext`, preserving the old total order (value desc → created asc → id byte-asc → input index).
+- `RedBlackTree` predecessor/successor for numeric agreement; the exact argmax proof is in the adoption document.
+- `OrderedSet` for first-seen dedupe in comprehension/emotion/permission; `Queue` for the permission-command token stream.
+- `DirectedGraph` for the dependency graph and one graph per chain relation.
+
+The second adoption pass is measured and randomized-tested. Its honest caveat: on the 20k-chunk **wide** synthetic case the heap is not faster than V8 sort (17.7 ms vs 15.9 ms); it wins when the budget fills early and is never worse in result. `SparseGrid` and `BPlusTree` are regression-tested in the shared library but **not wired into a runtime path**; do not infer they are used.
+
+## Tools and routes
+
+| Tool | What it returns |
+|---|---|
+| `coordination_selection` | Read or patch the five selections for a session (including `command` and DSH `preset`); returns `SelectionState` with lock, presets and config projection. |
+| `coordination_profession` | Read the current profession record; set a profession only before/without an active task. A locked task returns `PROFESSION_LOCKED` and leaves the selection unchanged. |
+| `coordination_professionlock` | Read the lock state/profession of the active turn, or of a given turn ordinal. |
+| `coordination_parse` | Body-free parse projection (references, diagnostics, charset, truncation, cards). |
+| `coordination_describe` | Body-free `NodeCard` and requested metadata fields. |
+| `coordination_chain` | Bounded `ChainProjection` only. |
+| `coordination_read` | The only content-returning tool; capped byte/line range. |
+
+All routes live under `/deepseek-coordination`; there are **14 paths / 16 method handlers**:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/ping` | Liveness; returns plugin name, `pong`, current locale. |
+| POST | `/echo` | Echo a JSON body (diagnostic). |
+| GET, POST | `/selection` | Read `SelectionState`; patch the five choices. |
+| GET | `/presets` | DSH permission-preset catalog projected for the dropdown. |
+| POST | `/permission` | Apply one DSH preset immediately. |
+| GET, POST | `/config` | Read `{ values, defaults }`; apply a flat config patch. |
+| POST | `/config/compaction` | Compatibility patch for `auto`/`soft`/`hard`. |
+| GET | `/takeover/pending` | Pending approval/question windows for a session. |
+| POST | `/takeover/answer` | Deliver a validated human answer; invalid answers keep the window open. |
+| POST | `/takeover/cancel` | Cancel a window and delegate to the host default. |
+| POST | `/profession/rebuild` | End the active task and create a replacement with a new profession. |
+| POST | `/profession/abandon` | End the active task without a replacement. |
+| POST | `/locale` | Report the client language; re-registers localized tool descriptions. |
+| GET | `/state` | Selection plus coordination metrics (`session`, `turn`, `plan`, `subtask`, `trace`, `takeover`, `schema`). |
+
+There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol`, `searchSummary` or `commentsOf` tool. The four file tools carry inline EN/zh-CN copy because the shared `ToolName` table has no keys for them yet; the three composer tools use the shared copy table.
+
+## Data, privacy and safety
+
+- The plugin owns an independent SQLite database. It never opens DSH's `harness` database. The default path is `%DSH_HOME%\coordination\coordination.db`; `database`/`databasePath` are deployment-only and are neither projected nor writable from `/config`.
+- Parser nodes, `NodeCard`s, `ChainLink`s and their tool results never carry file bodies, attachments or ASTs. Only `coordination_read` returns text, and only for the requested range.
+- File paths are workspace-relative; absolute paths, drive-rooted paths, UNC paths, `..` escapes and symlink escapes are rejected before a read. Binary/NUL/undecodable content is refused rather than guessed.
+- The turn hook records turn metadata and an empty prompt row; it does not mirror the DSH transcript. No file content is copied into the coordination database.
+- Permission presets are written to DSH immediately (full access needs a second confirmation) and are never stored in the offline localStorage copy. Offline replay covers only the five stored selection fields.
+- Takeover never auto-approves. Timeout, abort, cancel and unload delegate with `next()`; only a human decision delivered through the answer route settles a window.
+- Fail-closed behaviour is explicit: invalid takeover answers leave the window open; `PROFESSION_LOCKED` leaves the selection intact; parser uncertainty is `unverifiable`; graph/parse overflow is `truncated`; compaction failure is a no-op; chain `unknown` never auto-passes.
+- The coordination DB stores task/audit rows (including `prompt` and trace rows), not credentials or provider secrets. The config projection contains no DSH credential, token or provider key.
+
+## Testing, quality and limitations
+
+| Check | Result |
+|---|---|
+| `pnpm test` | **433 tests, 432 pass, 1 skipped (GC-only), 0 fail**, ~2.5 s on Node 24.21.0 |
+| `pnpm typecheck` / `pnpm test:tsc` | Clean |
+| `pnpm build` | Host + client bundles green; MUI `"use client"` directive warnings are non-fatal |
+| `pnpm run pack:check` | OK: `deepseek-coordination-0.10.0.tgz` (410,582 B); four runtime files present |
+| Release CI | `.github/workflows/release.yml` runs typecheck, test:tsc, tests, pack:check and attaches the tarball to a `v*` GitHub Release |
+
+Parser and structure numbers are guards, not promises: a 100k-character parse test stays under 3 s; the data-structure report records B+ tree 10k inserts at 8.3/9.8 ms, skip-list 10k inserts at 6.4 ms, red-black 10k random set/delete at 13.5 ms, sparse grid 10k cells at 5.1 ms, and `hashString` 100k calls at 4.3 ms on the audit machine. The complexity audit records the ordinal `COUNT(*)` → `MAX(ordinal)` change (≈65–69 ms → ≈12–14 ms for 2,000 statements) and route ranking (2,400 → 200 posterior statements for 200 × 12 routes).
+
+Known limitations, stated rather than hidden:
+
+1. **No persistent node/edge graph.** The domain model's `node`/`edge`/`snapshot` tables (schema 24 design) are not created; the live DB is schema 23. `NodeRegistry` and `ChainEngine` are in-memory per tool runtime, so handles are deterministic but not durable and evidence/status cannot be stored.
+2. **Book/Article hierarchy, Person/Venue, Chapter/Section/Paragraph nodes, Condition status, Sign promotion, office sheets and proof status** are design/planned. Only file-level `book`/`article`, generic headings, TeX statements/proofs and document formulas are projected.
+3. **Validation/comprehension and the wider pipeline are library-only.** The composer persists interaction/scene/validation; `ComprehensionModule`, `OrganizationModule`, `OrchestrationModule`, `BayesianModule`, `CognitionModule`, `EmotionModule`, `LearningModule`, `PredictModule`, `ResourceModule` and `ScoreModule` are tested modules but not driven by the composed turn lifecycle. Scene policy beyond the writing threshold is the same.
+4. **`parser.maxAstDepth`, `parser.dependencyGraphMaxVertices`/`Edges` and `tools.maxResultBytes` are planned.** They are stored and shown but have no runtime consumer; `renderJson` is still unbounded.
+5. **Workspace root is `process.cwd()`** unless the tool caller passes a root; DSH's workspace root is not plumbed into `registerCoordinationTools` by the entry.
+6. **`parser.enabled` and file-layer limits are captured at registration/first runtime creation.** A live `/config` change does not retune an existing runtime; re-register (locale change or restart) to apply.
+7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog tests and the takeover/bridge tests; visual verification remains manual/screenshot-based.
+8. **Node engine mismatch.** `package.json` says `>=18`, while the host requires a Node build with `node:sqlite` (22.5+ in practice; CI and this verification use 24.21.0).
+9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.10.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
+
+## Documentation, layout and license
+
+| Document | Status and purpose |
+|---|---|
+| [docs/deepseek-coordination-v24.md](docs/deepseek-coordination-v24.md) | Authoritative intended behavior (v23 + v24 revision); the code implements a subset. |
+| [docs/domain-model-v24.md](docs/domain-model-v24.md) | Design only: 39 concepts, 38 relations, Book/Article, Sheet/Formula, Statement/Condition/Require/Meet, Chain projection. Not the live schema. |
+| [docs/file-processing-v24.md](docs/file-processing-v24.md) | P0 parser/file-processing contract; implemented and wired through the four file tools. |
+| [docs/feature-wiring-audit-v24.md](docs/feature-wiring-audit-v24.md) | Completed release-surface audit: what v0.7–v0.9 shipped, what is agent-reachable, and the remaining gaps. |
+| [docs/settings-catalog-v24.md](docs/settings-catalog-v24.md) | Authoritative settings catalog: 151 controls, 130 writable, 155 keys, 18 top-level keys. |
+| [docs/data-structure-adoption-v24.md](docs/data-structure-adoption-v24.md) | Second adoption pass: LruList, BinaryHeap, RedBlackTree, OrderedSet, Queue; measured caveats. |
+| [docs/complexity-audit-v24.md](docs/complexity-audit-v24.md) | Completed time/space audit and the first adoption pass. |
+| [docs/data-structures-report.md](docs/data-structures-report.md) | Phase-1 shared-library contract and benchmarks. |
+| [docs/module-contract.md](docs/module-contract.md) | Host/client boundaries, naming and trace rules. |
+| [docs/ui-copy-v24.md](docs/ui-copy-v24.md) | UI copy design; strings land in `src/shared/i18n.ts`. |
+
+### Repository history
+
+`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` adds the settings catalog, the four file tools, the second data-structure pass and the verified tarball. Earlier states remain in git history and tags.
+
+MIT © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).

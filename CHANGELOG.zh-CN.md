@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.10.0 | 2026-10-18 | pending | 设置目录、文件工具、数据结构采纳、可安装包 |
 | 0.9.2 | 2026-10-18 | `73a273d` | 同一时刻只允许一个下拉框 tooltip |
 | 0.9.1 | 2026-10-18 | `31f64da` | 恢复可用的下拉框 tooltip，移除全局合成锚点 |
 | 0.9.0 | 2026-10-18 | `ad7d59f` | 共享算法库、蓝图领域模型、P0 解析器、全局 tooltip 宿主 |
@@ -39,6 +40,58 @@
 | 0.1.5 | 2026-10-13 | `b29c0e3` | workflow_plan 与缓存实测 |
 | 0.1.2 | 2026-10-13 | `e4fade7` | permissions 在无 permission.json 时可用 |
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
+
+## [0.10.0] — 2026-10-18
+
+设置页、文件层、数据结构采纳和发布打包一起落地。这是第一个提供可安装
+tarball 的版本；`lib/` 不提交进 git，因此裸 `github:` 源码安装仍不受支持。
+
+### 新增
+
+- **设置目录** —— 13 组共 151 个控件，覆盖全部 155 个非秘密配置叶子且每项恰好一次
+  （130 个可写主机行）。`GET /config` 返回 `{ values, defaults }`；`POST /config`
+  接受扁平点路径补丁，按真实 Schemastery schema 校验类型/范围，实时应用并重新解析
+  权重归一、别名镜像、强制开关、压缩夹取等不变量；压缩相关改动会重建
+  `TokenGovernor`，最后尽力通过 `ctx.settings.update` 持久化。未知键、`databasePath`
+  和 `database` 被拒绝；强制/只读/计划中键返回 `ignored`。
+- **设置页** —— MUI 折叠面板（默认全部展开）、List 行、六张情景表、复选/单选/
+  滑块/数字控件、状态 chip 和重试入口。宿主设置区的导航只接受
+  `{id, order, label}`，因此本插件在自己的导航行上绘制 Material `sync` 图标；
+  输入栏主题未改。
+- **文件层** —— `coordination_parse`、`coordination_describe`、
+  `coordination_chain`、`coordination_read`：有界解析服务、带确定性 handle 的节点
+  注册表、宿主侧关系链投影，以及唯一会返回正文的工具。`parser.enabled` 在注册
+  文件工具时读取；解析上限与 `chain.depth / links / tokenBudget` 在惰性文件工具
+  运行时首次创建时捕获。
+- **数据结构采纳** —— `LruList` 记忆、保持旧全序的 `BinaryHeap` 选择、共享
+  `hashString`、`RedBlackTree` 数值一致性、`OrderedSet` 首次出现去重，以及
+  `Queue` 权限命令解析。随机引用测试与实测取舍见
+  `docs/data-structure-adoption-v24.md`。
+- **打包** —— `prepack` 在 `npm pack` 前构建；`npm run pack:check` 校验 tarball
+  中的四个运行时文件并检查宿主入口语法；tag 触发的 GitHub Actions 工作流会把
+  打包产物附加到 Release。
+
+### 变更
+
+- 文件工具运行时已消费 `parser.enabled`、四个解析上限和全部 `chain.*`，因此这些行
+  改为可写主机行；文案明确说明重启/重新注册后生效，不再宣称即改即生效。
+- 六个模块测试的配置字面量补上 `ui.locale`、`compaction`、`parser`、`chain`、
+  `tools` 和 `scenes`，`npm run test:tsc` 重新通过。
+
+### 修复
+
+- 用 `github:eloyhere/deepseek-coordination` 安装会得到一个没有
+  `lib/index.mjs` 的五文件包，激活时报 `ERR_MODULE_NOT_FOUND`。仓库现在提供
+  经过校验的 Release tarball，并明确把裸 git 安装标为不支持。
+- `selectContext` 的堆补上零词元候选路径与随机等价测试，不会漏掉仍可接受的候选
+  或打乱平局顺序。
+- 数值一致性使用前驱/后继覆盖 argmax 的精确证明，而不是近似采样；随机暴力对照
+  覆盖负数与重复值。
+
+### 验证
+
+`npm run typecheck`、`npm run test:tsc` 通过；`npm test` 为 **433 个测试，
+432 通过，1 个仅 GC 跳过，0 失败**；`npm run build`、`npm run pack:check` 通过。
 
 ## [0.9.2] — 2026-10-18
 

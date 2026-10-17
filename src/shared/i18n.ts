@@ -41,6 +41,16 @@ import type {
   Scene,
   Validation,
 } from './enum.js'
+import {
+  SETTINGS_CATALOG_FIELD_IDS,
+  SETTINGS_CATALOG_GROUPS,
+  SETTINGS_CONTROL_CHIPS,
+} from './selection.js'
+import type {
+  SettingsCatalogFieldId,
+  SettingsCatalogGroupId,
+  SettingsControlChip,
+} from './selection.js'
 import type { CoordinationErrorCode } from './error.js'
 
 /** The two languages the plugin ships. `zh-CN` is the default and the fallback. */
@@ -115,6 +125,14 @@ export interface ComposerCopy {
   readonly lockedLine: string
   /** Unlocked explanation shown while the profession can still be chosen. */
   readonly unlockedLine: string
+  /** Validation is frozen while the turn's plan is open; says when it lifts. */
+  readonly frozenByPlan: string
+  /** Interaction is frozen while the turn's goal is set; says when it lifts. */
+  readonly frozenByGoal: string
+  /** Rejection when a frozen validation is patched anyway (server refusal). */
+  readonly frozenPlanRejected: string
+  /** Rejection when a frozen interaction is patched anyway (server refusal). */
+  readonly frozenGoalRejected: string
   /** Host-unreachable line; appended as a second line, never replacing the hint. */
   readonly offlineLine: string
   /** The local-only clause ("only saved on this device"). */
@@ -329,6 +347,44 @@ export interface SettingsStatesCopy {
   readonly saved: string
 }
 
+/**
+ * Small labels the full settings catalog needs: chip text, the default-value
+ * marker, inline validation and the honest "stored but not read yet" note.
+ */
+export interface SettingsCatalogValuesCopy {
+  readonly chips: Readonly<Record<SettingsControlChip, string>>
+  readonly commandOptions: Readonly<Record<'none' | 'goal' | 'plan' | 'feedback' | 'compact' | 'permission', string>>
+  readonly thinkingOptions: Readonly<Record<'enabled' | 'disabled', string>>
+  readonly defaultValue: string
+  readonly scene: string
+  readonly allScenes: string
+  /** Table headers of the per-scene policy tables. */
+  readonly field: string
+  readonly value: string
+  readonly status: string
+  readonly notWired: string
+  /** Read when the file-tool runtime is created; an existing one keeps its limits. */
+  readonly captured: string
+  readonly normalized: string
+  readonly invalidNumber: string
+  readonly outOfRange: string
+  readonly alias: string
+  readonly loadFailed: string
+  readonly notPersisted: string
+  readonly retry: string
+  readonly unsupported: string
+}
+
+/** Copy of one catalog group (same three lines as the legacy page groups). */
+export type SettingsCatalogGroupCopy = SettingsGroupCopy
+
+/** Copy of the full settings catalog: 13 groups and one row per feature. */
+export interface SettingsCatalogCopy {
+  readonly groups: Readonly<Record<SettingsCatalogGroupId, SettingsCatalogGroupCopy>>
+  readonly fields: Readonly<Record<SettingsCatalogFieldId, SettingsFieldCopy>>
+  readonly values: SettingsCatalogValuesCopy
+}
+
 /** Copy of the `协调` settings page (v24 §3, §5.9). */
 export interface SettingsCopy {
   /** Section title / settings-menu label. */
@@ -343,6 +399,8 @@ export interface SettingsCopy {
   readonly footer: string
   readonly groups: Readonly<Record<SettingsGroupId, SettingsGroupCopy>>
   readonly fields: Readonly<Record<SettingsFieldId, SettingsFieldCopy>>
+  /** v24 §19: the full feature/config surface, one row per feature/key. */
+  readonly catalog: SettingsCatalogCopy
   readonly values: SettingsValuesCopy
   readonly states: SettingsStatesCopy
 }
@@ -403,6 +461,21 @@ function recordOf<T extends string, V>(values: readonly T[], build: (value: T) =
   const result = {} as Record<T, V>
   for (const value of values) result[value] = build(value)
   return result
+}
+
+/**
+ * Resolve one settings row's copy.
+ *
+ * The 28 ids of the pre-catalog page live in `settings.fields`; every newer row
+ * lives in `settings.catalog.fields`. A row carries exactly one copy id, so no
+ * control ever has two label sources.
+ */
+export function settingsControlCopy(
+  settings: SettingsCopy,
+  copy: string,
+): SettingsFieldCopy | undefined {
+  const legacy = (settings.fields as Readonly<Record<string, SettingsFieldCopy | undefined>>)[copy]
+  return legacy ?? (settings.catalog.fields as Readonly<Record<string, SettingsFieldCopy | undefined>>)[copy]
 }
 
 /* ------------------------------------------------------------------------- *
@@ -705,6 +778,340 @@ const ZH_TAKEOVER: TakeoverCopy = {
   queueLabel: '第 {index} / {total} 条',
 }
 
+/* ------------------------------------------------------------------------- *
+ * Chinese — full settings catalog (v24 §19)
+ * ------------------------------------------------------------------------- */
+
+const ZH_CATALOG_GROUPS: Readonly<Record<SettingsCatalogGroupId, SettingsCatalogGroupCopy>> = {
+  session: {
+    title: '会话与默认值',
+    desc: '新任务从哪个默认值开始，以及会话级上限。',
+    helper: '这些值写入主机配置；保存后立即生效。',
+  },
+  profession: {
+    title: '职能与审计',
+    desc: '一个任务只有一个职能：怎么锁、怎么留痕。',
+    helper: '锁定与重选是强制项，只能查看；审计轨迹始终记录。',
+  },
+  scenes: {
+    title: '情景策略',
+    desc: '六个情景各自的执行策略；相同项只显示一次。',
+    helper: '选一个情景查看字段；写作阈值由计划评分读取，其余字段保存后等执行器接入。',
+  },
+  plan: {
+    title: '计划评分',
+    desc: '计划过没过、差在哪、最多重建几次。',
+    helper: '权重保存后按总和归一；维度是每一项的最低要求。',
+  },
+  orchestration: {
+    title: '子任务与验收',
+    desc: '拆多少子任务、退回几次、怎么验收。',
+    helper: '验收优先用可核对的证据；超时或无法判定一律算不通过。',
+  },
+  cache: {
+    title: '缓存',
+    desc: '相同请求复用结果，省时间也省额度。',
+    helper: '关掉只影响复用，不影响答案本身。',
+  },
+  bayesian: {
+    title: '概率推断',
+    desc: '初始概率、停止条件和路线数量。',
+    helper: '这些值只调整推断的松紧，不改变结论格式。',
+  },
+  comprehension: {
+    title: '理解与检索',
+    desc: '理解一次请求的时间预算和资料上限。',
+    helper: '三档验证都会检索；这里的上限对所有档位生效。',
+  },
+  compaction: {
+    title: '自动压缩',
+    desc: '上下文变长时自动压缩，省额度又不丢关键内容。',
+    helper: '开关和两个阈值可改；保留额度、冷却等属于主机策略，只能查看。',
+  },
+  ui: {
+    title: '界面与显示',
+    desc: '输入框显示哪些控件、多久刷新一次、用什么语言。',
+    helper: '语言跟随 DSH；接管弹窗默认关闭。',
+  },
+  parser: {
+    title: '文件解析',
+    desc: '读取工作区文件时的资源上限。',
+    helper: '解析器在文件工具首次使用时创建；上限在那时读取，已创建的解析器要到重启或重新注册才换新值。',
+  },
+  chain: {
+    title: '关系链',
+    desc: '模型看到的关系链投影有多深、多宽。',
+    helper: '关系链实例在文件工具首次使用时创建；深度、条数与预算在那时读取，已创建的实例要到重启或重新注册才换新值。',
+  },
+  tools: {
+    title: '工具输出',
+    desc: '工具结果返回给模型时的字节上限。',
+    helper: '0 表示不限制，与当前行为一致；上限功能尚未接入。',
+  },
+}
+
+const ZH_CATALOG_VALUES: SettingsCatalogValuesCopy = {
+  chips: {
+    host: '主机',
+    local: '本机',
+    forced: '强制',
+    readOnly: '只读',
+    planned: '计划中',
+  },
+  commandOptions: {
+    none: '无',
+    goal: '目标',
+    plan: '计划',
+    feedback: '反馈',
+    compact: '压缩',
+    permission: '权限',
+  },
+  thinkingOptions: { enabled: '开启', disabled: '关闭' },
+  defaultValue: '默认',
+  scene: '情景',
+  allScenes: '所有情景',
+  field: '字段',
+  value: '值',
+  status: '状态',
+  notWired: '已保存；当前版本尚未读取这一项。',
+  captured: '保存后不会改动已经创建的文件工具；重启或重新注册工具后生效。',
+  normalized: '保存后按总和归一，这里显示归一后的值。',
+  invalidNumber: '请输入数字。',
+  outOfRange: '超出允许范围。',
+  alias: '别名，只读。',
+  loadFailed: '主机返回的配置不完整。',
+  notPersisted: '已在本进程生效；主机未保存。',
+  retry: '重试',
+  unsupported: '主机不支持在线修改，请在配置文件中设置。',
+}
+
+const ZH_CATALOG_FIELDS: Readonly<Record<SettingsCatalogFieldId, SettingsFieldCopy>> = {
+  maxTurnPerSession: {
+    label: '会话轮次上限',
+    hint: '一个会话最多保留多少轮；达到上限后拒绝新任务。',
+  },
+  defaultLease: {
+    label: '默认租约',
+    hint: '资源锁默认租用多久；调用方只能要得更短。',
+  },
+  clarifyTimeout: {
+    label: '澄清与接管超时',
+    hint: '接管窗口和自动压缩等待答案的毫秒数；这是唯一的超时键。',
+  },
+  defaultCommand: {
+    label: '默认命令',
+    hint: '新任务默认带哪个命令面；none 走完整流程。',
+  },
+  professionEnabled: {
+    label: '职能功能',
+    hint: '强制开启：职能是核心约束，不能整体关掉。',
+  },
+  professionDefaultAlias: {
+    label: '职能默认（别名）',
+    hint: 'defaults.profession 的别名，只读；改默认职能会同步这里。',
+  },
+  planThreshold: {
+    label: '计划通过线',
+    hint: '综合评分达到多少才算通过；低于它要重建。',
+  },
+  planMaxRebuild: {
+    label: '最多重建次数',
+    hint: '连续重建几次后仍不过，就交给人处理。',
+  },
+  'planWeight.feasibility': { label: '权重 · 可行性', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planWeight.coverage': { label: '权重 · 覆盖度', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planWeight.clarity': { label: '权重 · 清晰度', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planWeight.specificity': { label: '权重 · 具体性', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planWeight.alignment': { label: '权重 · 一致性', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planWeight.risk': { label: '权重 · 风险', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planWeight.cost': { label: '权重 · 成本', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planWeight.efficiency': { label: '权重 · 效率', hint: '这项在综合评分里占多大比重；八项会自动归一。' },
+  'planDimension.feasibility': { label: '门槛 · 可行性', hint: '可行性低于这个值就判定不通过。' },
+  'planDimension.coverage': { label: '门槛 · 覆盖度', hint: '覆盖度低于这个值就判定不通过。' },
+  'planDimension.clarity': { label: '门槛 · 清晰度', hint: '清晰度低于这个值就判定不通过。' },
+  'planDimension.specificity': { label: '门槛 · 具体性', hint: '具体性低于这个值就判定不通过。' },
+  'planDimension.alignment': { label: '门槛 · 一致性', hint: '与理解结果不一致到低于这个值，就判定不通过。' },
+  'planDimension.risk': { label: '门槛 · 风险', hint: '风险高于这个值就判定不通过；越低越好。' },
+  'planDimension.cost': { label: '门槛 · 成本', hint: '成本高于这个值就判定不通过；越低越好。' },
+  'planDimension.efficiency': { label: '门槛 · 效率', hint: '效率低于这个值就判定不通过。' },
+  maxReject: {
+    label: '退回上限',
+    hint: '一个子任务最多被退回几次；到上限只能接受部分或升级。',
+  },
+  maxSubTask: {
+    label: '子任务上限',
+    hint: '一次拆分最多能产生多少个子任务。',
+  },
+  groundTruthTimeout: {
+    label: '验收超时',
+    hint: '确定性检查最多等多久；超时按不通过处理。',
+  },
+  allowShellGroundTruth: {
+    label: '允许命令验收',
+    hint: '允许用命令退出码作为验收证据；默认关闭，避免误执行。',
+  },
+  cacheTtl: {
+    label: '缓存有效期',
+    hint: '缓存结果保留多少毫秒；0 表示立即过期。',
+  },
+  cacheFingerprintWindow: {
+    label: '指纹窗口',
+    hint: '参与指纹计算的最近消息条数上限。',
+  },
+  cacheEffortWarning: {
+    label: '推理强度提醒',
+    hint: '强度变更导致缓存失效时提醒一次。',
+  },
+  prior: {
+    label: '初始概率',
+    hint: '没有任何证据前，一条路线成功的默认概率。',
+  },
+  stopEntropy: {
+    label: '停止熵',
+    hint: '不确定性低于这个值就停止继续推断。',
+  },
+  infoGain: {
+    label: '信息增益下限',
+    hint: '新增证据至少要带来这么多新信息才被采纳。',
+  },
+  maxRoutes: {
+    label: '路线上限',
+    hint: '一次最多比较多少条候选路线。',
+  },
+  calibrationFloor: {
+    label: '校准下限',
+    hint: '校准分数低于这个值时，不再把它当作证据。',
+  },
+  stageTimeout: {
+    label: '阶段超时',
+    hint: '单个理解阶段最多花多少毫秒，超时就跳过检索。',
+  },
+  maxEvidence: {
+    label: '证据条数上限',
+    hint: '每次检索最多保留多少条证据。',
+  },
+  highHistoryWindow: {
+    label: '历史窗口',
+    hint: '最高档验证最多回看多少条本地历史。',
+  },
+  recentTurns: {
+    label: '保留轮次',
+    hint: '压缩时原样保留最近多少轮对话。',
+  },
+  cooldown: {
+    label: '压缩冷却',
+    hint: '两次自动压缩之间至少间隔多少毫秒。',
+  },
+  maxPerSession: {
+    label: '每会话上限',
+    hint: '一个会话最多自动压缩多少次。',
+  },
+  toolbarDeprecated: {
+    label: '工作流下拉框（旧键）',
+    hint: '已废弃的旧开关，只读；请改本机的工作流开关。',
+  },
+  parserEnabled: {
+    label: '解析总开关',
+    hint: '在注册文件工具时读取；改动要等下一次重注册（重启或切换语言）后生效。',
+  },
+  maxFileBytes: {
+    label: '单文件字节上限',
+    hint: '单文件最多读多少字节，超出只解析前缀并标记截断。',
+  },
+  maxTokens: {
+    label: '词元上限',
+    hint: '单文件最多产出多少词元，超出停止并标记。',
+  },
+  maxAstDepth: {
+    label: '语法树深度',
+    hint: '语法树最多到多深，超出停止并标记。',
+  },
+  timeoutMs: {
+    label: '解析超时',
+    hint: '单文件解析最多多少毫秒，超时返回已收集的引用。',
+  },
+  cacheCapacity: {
+    label: '解析缓存条数',
+    hint: '解析结果缓存最多保留多少个文件。',
+  },
+  dependencyGraphMaxVertices: {
+    label: '依赖图节点上限',
+    hint: '依赖图最多多少节点，超出停止并标记。',
+  },
+  dependencyGraphMaxEdges: {
+    label: '依赖图边上限',
+    hint: '依赖图最多多少条边，超出停止并标记。',
+  },
+  chainDepth: {
+    label: '关系链深度',
+    hint: '一次投影最多向下走几层，上限为 8。',
+  },
+  chainLinks: {
+    label: '关系链条数',
+    hint: '一次投影最多返回多少条关系。',
+  },
+  chainTokenBudget: {
+    label: '关系链词元预算',
+    hint: '一次投影大约占用多少词元。',
+  },
+  toolMaxResultBytes: {
+    label: '工具结果字节上限',
+    hint: '工具返回给模型的字节上限；0 表示不限制。',
+  },
+  'scene.thinking': {
+    label: '思考模式',
+    hint: '是否把推理过程摊开；对话和办公默认关闭。',
+  },
+  'scene.reasoningEffort': {
+    label: '推理强度',
+    hint: '原样传给宿主模型的强度名，例如 high；本插件不改写。',
+  },
+  'scene.requirePlan': {
+    label: '必须出计划',
+    hint: '这一情景是否必须先有可评分的计划。',
+  },
+  'scene.requireScore': {
+    label: '必须评分',
+    hint: '这一情景是否必须给产出打分。',
+  },
+  'scene.requireOutline': {
+    label: '必须先列提纲',
+    hint: '先列提纲再写正文；写作默认开启。',
+  },
+  'scene.requireRevision': {
+    label: '必须修订',
+    hint: '至少要改一稿；写作默认开启。',
+  },
+  'scene.requirePredict': {
+    label: '必须预测',
+    hint: '动手前先写出预测和验证方式；研究和工程默认开启。',
+  },
+  'scene.requireCitation': {
+    label: '必须引用',
+    hint: '结论必须带出处；研究默认开启。',
+  },
+  'scene.allowBash': {
+    label: '允许命令',
+    hint: '允许运行命令；只有工程默认开启。',
+  },
+  'scene.sandboxOnly': {
+    label: '仅限工作区',
+    hint: '只能动工作区里的文件，越界一律拒绝。',
+  },
+  'scene.maxIteration': {
+    label: '最大迭代',
+    hint: '这一情景最多循环几轮。',
+  },
+  'scene.allowWeb': {
+    label: '允许联网（所有情景）',
+    hint: '六个情景共用一个开关，一次写入全部六项。',
+  },
+  'scene.scoreThreshold': {
+    label: '情景评分阈值（所有情景）',
+    hint: '六个情景共用一个阈值；写作的阈值会被计划评分读取。',
+  },
+}
+
 const ZH: Copy = {
   controls: recordOf(CONTROL_NAMES, (name) => ({
     label: ControlLabel[name],
@@ -740,6 +1147,10 @@ const ZH: Copy = {
     optionAria: '{label}。{hint}',
     lockedLine: '任务已开始，职能锁定；完成或新建任务后可改。',
     unlockedLine: '现在可以选；任务一开始就锁定。',
+    frozenByPlan: '计划进行中，验证已冻结；计划结束或重建后自动恢复。',
+    frozenByGoal: '目标进行中，交互已冻结；清除目标或本轮结束后自动恢复。',
+    frozenPlanRejected: '计划进行中，验证改不了；等计划结束或重建。',
+    frozenGoalRejected: '目标进行中，交互改不了；先清除目标或结束本轮。',
     offlineLine: '主机未连接；这里的选择只存本机，不影响任务。',
     localOnly: '只存本机',
     permissionCatalogMissing: 'DSH 没有提供权限预设，这里只显示说明，不能切换。',
@@ -771,12 +1182,13 @@ const ZH: Copy = {
   takeover: ZH_TAKEOVER,
   settings: {
     title: '协调',
-    intro: '为下一个任务设默认值；界面开关立即生效。',
-    applyNote: '开关立即生效，没有保存按钮。',
+    intro: '为下一个任务设默认值；设置保存后生效，个别上限要等工具重新注册。',
+    applyNote: '改动会立即保存；个别上限要等工具重新注册后才生效。',
     whyLock: '一个任务只有一个职能，出事时才能找到唯一责任人：干活的不能自己验收，验收的不能自己改口。锁定只在任务内有效，换任务随时可以换。',
-    footer: '只读项来自主机配置；本页不写入主机。下拉框提示与设置说明使用同一份文案。',
+    footer: '只读项来自主机配置；可编辑项写回主机并尝试持久化。提示与说明共用一份文案。',
     groups: ZH_GROUPS,
     fields: ZH_FIELDS,
+    catalog: { groups: ZH_CATALOG_GROUPS, fields: ZH_CATALOG_FIELDS, values: ZH_CATALOG_VALUES },
     values: ZH_VALUES,
     states: ZH_STATES,
   },
@@ -1142,6 +1554,340 @@ const EN_TAKEOVER: TakeoverCopy = {
   queueLabel: '{index} of {total}',
 }
 
+/* ------------------------------------------------------------------------- *
+ * English — full settings catalog (v24 §19)
+ * ------------------------------------------------------------------------- */
+
+const EN_CATALOG_GROUPS: Readonly<Record<SettingsCatalogGroupId, SettingsCatalogGroupCopy>> = {
+  session: {
+    title: 'Session & defaults',
+    desc: 'Where a new task starts, and the per-session caps.',
+    helper: 'These values are written to host config and apply immediately.',
+  },
+  profession: {
+    title: 'Profession & audit',
+    desc: 'One duty per task: how it locks and how it is recorded.',
+    helper: 'The lock and reselect flags are forced and read-only; the audit trail always records.',
+  },
+  scenes: {
+    title: 'Scene policy',
+    desc: 'Per-scene execution policy; identical fields appear once.',
+    helper: 'Pick a scene to see its fields; plan scoring reads the writing threshold, the rest waits for the scene executor.',
+  },
+  plan: {
+    title: 'Plan scoring',
+    desc: 'Whether a plan passes, what failed, and how many rebuilds.',
+    helper: 'Weights are normalised to sum 1 on save; each dimension is a floor.',
+  },
+  orchestration: {
+    title: 'Subtasks & verification',
+    desc: 'How many subtasks, how many rejections, how work is accepted.',
+    helper: 'Acceptance prefers checkable evidence; a timeout or an undecidable check fails closed.',
+  },
+  cache: {
+    title: 'Cache',
+    desc: 'Reuse results for identical requests to save time and budget.',
+    helper: 'Turning it off only drops reuse; answers are unaffected.',
+  },
+  bayesian: {
+    title: 'Probability inference',
+    desc: 'Starting probability, stop rule and route count.',
+    helper: 'These values adjust how tight inference is, not the shape of an answer.',
+  },
+  comprehension: {
+    title: 'Understanding & retrieval',
+    desc: 'Time and material limits for understanding one request.',
+    helper: 'All three validation levels search; these caps apply to every level.',
+  },
+  compaction: {
+    title: 'Auto-compaction',
+    desc: 'Compacts a long context automatically without losing what matters.',
+    helper: 'The switch and two thresholds are editable; reserve and cooldown are host policy and read-only.',
+  },
+  ui: {
+    title: 'Interface & display',
+    desc: 'Which controls show, how often to refresh, and the language.',
+    helper: 'Language follows DSH; the takeover dialog is off by default.',
+  },
+  parser: {
+    title: 'File parsing',
+    desc: 'Resource caps when reading workspace files.',
+    helper: 'The parser is created on first file-tool use; the caps are read then, and an existing parser keeps its values until a restart or re-registration.',
+  },
+  chain: {
+    title: 'Relation chain',
+    desc: 'How deep and wide the chain projection the model sees is.',
+    helper: 'The chain instance is created on first file-tool use; depth, links and budget are read then, and an existing instance keeps its values until a restart or re-registration.',
+  },
+  tools: {
+    title: 'Tool output',
+    desc: 'Byte cap on a tool result returned to the model.',
+    helper: '0 means no cap, matching current behaviour; the cap is not wired yet.',
+  },
+}
+
+const EN_CATALOG_VALUES: SettingsCatalogValuesCopy = {
+  chips: {
+    host: 'Host',
+    local: 'This device',
+    forced: 'Forced',
+    readOnly: 'Read-only',
+    planned: 'Planned',
+  },
+  commandOptions: {
+    none: 'None',
+    goal: 'Goal',
+    plan: 'Plan',
+    feedback: 'Feedback',
+    compact: 'Compact',
+    permission: 'Permission',
+  },
+  thinkingOptions: { enabled: 'On', disabled: 'Off' },
+  defaultValue: 'Default',
+  scene: 'Scene',
+  allScenes: 'All scenes',
+  field: 'Field',
+  value: 'Value',
+  status: 'Status',
+  notWired: 'Saved; this build does not read this value yet.',
+  captured: 'Does not change an already-created file tool; it applies after a restart or tool re-registration.',
+  normalized: 'Normalised on save; the value shown is the normalised one.',
+  invalidNumber: 'Enter a number.',
+  outOfRange: 'Outside the allowed range.',
+  alias: 'Alias, read-only.',
+  loadFailed: 'The host returned an incomplete config.',
+  notPersisted: 'Active for this process; the host did not save it.',
+  retry: 'Retry',
+  unsupported: 'This host cannot change it online; set it in the configuration file.',
+}
+
+const EN_CATALOG_FIELDS: Readonly<Record<SettingsCatalogFieldId, SettingsFieldCopy>> = {
+  maxTurnPerSession: {
+    label: 'Turn cap per session',
+    hint: 'How many turns a session keeps; new tasks are refused at the cap.',
+  },
+  defaultLease: {
+    label: 'Default lease',
+    hint: 'Default resource-lock lease in milliseconds; callers may ask for less.',
+  },
+  clarifyTimeout: {
+    label: 'Clarify & takeover timeout',
+    hint: 'Milliseconds a takeover or compaction waits for an answer; the only timeout key.',
+  },
+  defaultCommand: {
+    label: 'Default command',
+    hint: 'Command face a new task starts with; none runs the full flow.',
+  },
+  professionEnabled: {
+    label: 'Profession feature',
+    hint: 'Forced on: the profession dimension is core and cannot be switched off.',
+  },
+  professionDefaultAlias: {
+    label: 'Profession default (alias)',
+    hint: 'Alias of defaults.profession, read-only; changing the default updates it.',
+  },
+  planThreshold: {
+    label: 'Plan pass line',
+    hint: 'Overall score a plan must reach; below it the plan is rebuilt.',
+  },
+  planMaxRebuild: {
+    label: 'Max rebuilds',
+    hint: 'Rebuilds allowed before the plan goes to a human.',
+  },
+  'planWeight.feasibility': { label: 'Weight · Feasibility', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planWeight.coverage': { label: 'Weight · Coverage', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planWeight.clarity': { label: 'Weight · Clarity', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planWeight.specificity': { label: 'Weight · Specificity', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planWeight.alignment': { label: 'Weight · Alignment', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planWeight.risk': { label: 'Weight · Risk', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planWeight.cost': { label: 'Weight · Cost', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planWeight.efficiency': { label: 'Weight · Efficiency', hint: 'Share of the overall score; all eight weights are normalised together.' },
+  'planDimension.feasibility': { label: 'Floor · Feasibility', hint: 'A plan fails when feasibility falls below this value.' },
+  'planDimension.coverage': { label: 'Floor · Coverage', hint: 'A plan fails when coverage falls below this value.' },
+  'planDimension.clarity': { label: 'Floor · Clarity', hint: 'A plan fails when clarity falls below this value.' },
+  'planDimension.specificity': { label: 'Floor · Specificity', hint: 'A plan fails when specificity falls below this value.' },
+  'planDimension.alignment': { label: 'Floor · Alignment', hint: 'A plan fails when alignment with the request falls below this value.' },
+  'planDimension.risk': { label: 'Floor · Risk', hint: 'A plan fails when risk rises above this value; lower is better.' },
+  'planDimension.cost': { label: 'Floor · Cost', hint: 'A plan fails when cost rises above this value; lower is better.' },
+  'planDimension.efficiency': { label: 'Floor · Efficiency', hint: 'A plan fails when efficiency falls below this value.' },
+  maxReject: {
+    label: 'Rejection cap',
+    hint: 'Times a subtask may be rejected; then only partial acceptance or escalation.',
+  },
+  maxSubTask: {
+    label: 'Subtask cap',
+    hint: 'Subtasks one split may create.',
+  },
+  groundTruthTimeout: {
+    label: 'Acceptance timeout',
+    hint: 'How long a deterministic check may run; a timeout counts as a failure.',
+  },
+  allowShellGroundTruth: {
+    label: 'Command acceptance',
+    hint: 'Lets a command exit code count as acceptance evidence; off by default.',
+  },
+  cacheTtl: {
+    label: 'Cache lifetime',
+    hint: 'Milliseconds a cached result stays valid; 0 expires it at once.',
+  },
+  cacheFingerprintWindow: {
+    label: 'Fingerprint window',
+    hint: 'Upper bound on recent messages used for a fingerprint.',
+  },
+  cacheEffortWarning: {
+    label: 'Effort-change warning',
+    hint: 'Warns once when a reasoning-effort change invalidates the cache.',
+  },
+  prior: {
+    label: 'Starting probability',
+    hint: 'Default success probability of a route before any evidence.',
+  },
+  stopEntropy: {
+    label: 'Stop entropy',
+    hint: 'Stops inferring once uncertainty falls below this value.',
+  },
+  infoGain: {
+    label: 'Information-gain floor',
+    hint: 'New evidence must add at least this much information to count.',
+  },
+  maxRoutes: {
+    label: 'Route cap',
+    hint: 'Candidate routes compared at once.',
+  },
+  calibrationFloor: {
+    label: 'Calibration floor',
+    hint: 'A calibration score below this value no longer counts as evidence.',
+  },
+  stageTimeout: {
+    label: 'Stage timeout',
+    hint: 'Milliseconds one understanding stage may spend; search is skipped on timeout.',
+  },
+  maxEvidence: {
+    label: 'Evidence cap',
+    hint: 'Evidence entries kept per search.',
+  },
+  highHistoryWindow: {
+    label: 'History window',
+    hint: 'Local history entries the high validation level may read.',
+  },
+  recentTurns: {
+    label: 'Kept turns',
+    hint: 'Recent turns kept verbatim during compaction.',
+  },
+  cooldown: {
+    label: 'Compaction cooldown',
+    hint: 'Minimum milliseconds between two automatic compactions.',
+  },
+  maxPerSession: {
+    label: 'Per-session cap',
+    hint: 'Automatic compactions allowed per session.',
+  },
+  toolbarDeprecated: {
+    label: 'Workflow selectors (legacy)',
+    hint: 'Deprecated legacy switch, read-only; use the local workflow switch instead.',
+  },
+  parserEnabled: {
+    label: 'Parser switch',
+    hint: 'Read when the file tools are registered; a change applies after the next re-registration (restart or language switch).',
+  },
+  maxFileBytes: {
+    label: 'Bytes per file',
+    hint: 'Bytes read per file; beyond it only the prefix is parsed and marked truncated.',
+  },
+  maxTokens: {
+    label: 'Tokens per file',
+    hint: 'Tokens emitted per file; parsing stops and marks truncation above it.',
+  },
+  maxAstDepth: {
+    label: 'Syntax-tree depth',
+    hint: 'Maximum syntax-tree depth; deeper nodes stop and mark truncation.',
+  },
+  timeoutMs: {
+    label: 'Parse timeout',
+    hint: 'Milliseconds one parse may run; collected references are returned on timeout.',
+  },
+  cacheCapacity: {
+    label: 'Parse cache size',
+    hint: 'Files kept in the parse-result cache.',
+  },
+  dependencyGraphMaxVertices: {
+    label: 'Graph node cap',
+    hint: 'Maximum nodes in a dependency graph; exceeding it stops and marks truncation.',
+  },
+  dependencyGraphMaxEdges: {
+    label: 'Graph edge cap',
+    hint: 'Maximum edges in a dependency graph; exceeding it stops and marks truncation.',
+  },
+  chainDepth: {
+    label: 'Chain depth',
+    hint: 'Levels one projection may follow; capped at 8.',
+  },
+  chainLinks: {
+    label: 'Chain links',
+    hint: 'Links one projection may return.',
+  },
+  chainTokenBudget: {
+    label: 'Chain budget',
+    hint: 'Approximate word units one projection may use.',
+  },
+  toolMaxResultBytes: {
+    label: 'Tool result bytes',
+    hint: 'Byte cap on a tool result returned to the model; 0 means no cap.',
+  },
+  'scene.thinking': {
+    label: 'Thinking mode',
+    hint: 'Whether reasoning is shown; off by default for dialogue and office.',
+  },
+  'scene.reasoningEffort': {
+    label: 'Reasoning effort',
+    hint: 'Effort name passed to the host model unchanged, e.g. high.',
+  },
+  'scene.requirePlan': {
+    label: 'Plan required',
+    hint: 'Whether this scene must produce a scoreable plan first.',
+  },
+  'scene.requireScore': {
+    label: 'Score required',
+    hint: 'Whether this scene must score its output.',
+  },
+  'scene.requireOutline': {
+    label: 'Outline required',
+    hint: 'Outline before drafting; on by default for writing.',
+  },
+  'scene.requireRevision': {
+    label: 'Revision required',
+    hint: 'At least one revision round; on by default for writing.',
+  },
+  'scene.requirePredict': {
+    label: 'Prediction required',
+    hint: 'State a prediction and its check before acting; on for research and engineering.',
+  },
+  'scene.requireCitation': {
+    label: 'Citation required',
+    hint: 'Conclusions must cite sources; on by default for research.',
+  },
+  'scene.allowBash': {
+    label: 'Commands allowed',
+    hint: 'Lets the scene run commands; only engineering enables it by default.',
+  },
+  'scene.sandboxOnly': {
+    label: 'Workspace only',
+    hint: 'Only workspace files may change; anything outside is refused.',
+  },
+  'scene.maxIteration': {
+    label: 'Max iterations',
+    hint: 'Loop rounds allowed for this scene.',
+  },
+  'scene.allowWeb': {
+    label: 'Web access (all scenes)',
+    hint: 'One switch for all six scenes; writes all six values.',
+  },
+  'scene.scoreThreshold': {
+    label: 'Score threshold (all scenes)',
+    hint: 'One threshold for all six scenes; the writing value is read by plan scoring.',
+  },
+}
+
 const EN: Copy = {
   controls: recordOf(CONTROL_NAMES, (name) => ({
     label: EN_CONTROL_LABELS[name],
@@ -1177,6 +1923,10 @@ const EN: Copy = {
     optionAria: '{label}. {hint}',
     lockedLine: 'Task started: profession locked. Finish it or start a new task to change it.',
     unlockedLine: 'You can choose now; it locks when the task starts.',
+    frozenByPlan: 'A plan is running, so validation is frozen; it unfreezes when the plan ends or is rebuilt.',
+    frozenByGoal: 'A goal is set, so interaction is frozen; it unfreezes when the goal is cleared or the turn ends.',
+    frozenPlanRejected: 'A plan is running, so validation cannot change yet; finish or rebuild the plan.',
+    frozenGoalRejected: 'A goal is set, so interaction cannot change yet; clear it or finish the turn.',
     offlineLine: 'Host unreachable; choices here are saved on this device only and do not affect the task.',
     localOnly: 'saved on this device only',
     permissionCatalogMissing: 'DSH exposes no permission presets; this is informational and cannot be switched.',
@@ -1208,12 +1958,13 @@ const EN: Copy = {
   takeover: EN_TAKEOVER,
   settings: {
     title: 'Coordination',
-    intro: 'Defaults for the next task; display switches apply immediately.',
-    applyNote: 'Switches apply immediately; there is no save button.',
+    intro: 'Defaults for the next task; saved values apply on change, though a few caps wait for tool re-registration.',
+    applyNote: 'Changes save immediately; a few caps take effect only after the tools re-register.',
     whyLock: 'One duty per task means one accountable owner: whoever does the work cannot sign it off, and whoever signs off cannot quietly change it. The lock lasts only for the task; a new task can choose another duty.',
-    footer: 'Read-only items come from host config; this page never writes to the host. Tooltips and hints share one source.',
+    footer: 'Read-only rows come from host config; editable rows write back and try to persist. Tooltips and hints share one source.',
     groups: EN_GROUPS,
     fields: EN_FIELDS,
+    catalog: { groups: EN_CATALOG_GROUPS, fields: EN_CATALOG_FIELDS, values: EN_CATALOG_VALUES },
     values: EN_VALUES,
     states: EN_STATES,
   },

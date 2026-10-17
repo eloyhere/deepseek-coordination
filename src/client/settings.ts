@@ -1,47 +1,56 @@
 /**
- * The `协调` settings page (v24 §3, `docs/ui-copy-v24.md` §5.9).
+ * The `协调` settings page (v24 §3, §19).
  *
- * Six groups, 24 rows, one page: permission & takeover, workflow & selectors,
- * profession & audit, scene & validation defaults, language & display, advanced.
- * Every row always shows its explanation — no rule lives only in a tooltip.
+ * One page, one row per feature, driven entirely by `SETTINGS_CONTROLS` in
+ * `src/shared/selection.ts`. The layout is Material UI end to end:
  *
- * Row types, and why each is honest:
- *  - editable rows write only local storage (`:takeover`, `:workflow`,
- *    `:tooltips`, `:compact`, `:refresh`) and carry the `本机` chip;
- *  - forced rows (profession lock / reselect after rebuild / after abandon) show
- *    a disabled "on" switch and the `强制` chip — not a control that could lie;
- *  - host-config rows show the value only when the host sent
- *    `SelectionState.config`; without it they say `跟随主机配置` instead of
- *    pretending to read a deployment default;
- *  - session-backed rows (default profession / scene / interaction /
- *    validation) show the current session's accepted selection with the
- *    `当前会话` chip when a composer selection is known;
- *  - derived rows (the taken-over control, the DSH catalog, the current
- *    language) are read-only and say where they come from.
+ *  - one `Accordion` per catalog group, with a `List` of rows inside;
+ *  - a `Table` per scene for the eleven scene-scoped fields — there is no scene
+ *    dropdown, every scene is visible as its own table;
+ *  - `Checkbox` for booleans, `RadioGroup` for enums, `Slider` for ratio-like
+ *    numbers and `TextField type="number"` for counts/bytes/milliseconds;
+ *  - `Typography` for titles, hints, defaults and errors, and `Chip` for the
+ *    `主机` / `本机` / `强制` / `只读` / `计划中` status.
  *
- * The local rows persist through the composer's preference stores; the two
- * original switches keep using `store.ts`. Language is read-only: DSH is the
- * authority (`ctx.locale`), and this page never calls `setLocale`.
- *
- * There is no save button: switches apply immediately (v24 §3.1).
+ * Every row has a unique id (`setting:<config path>`), a label, the value the
+ * host reports, the schema default the host reports, its range/step, a hint and
+ * a tooltip. Writes are optimistic: the control moves immediately, then only
+ * the host's answer is kept; a refusal or an old host reverts it and says why.
+ * A row whose value the shipped runtime does not read says so instead of
+ * pretending to work, and a file-layer row says its limits are captured when
+ * the lazy tool runtime is created (not live).
  */
 import * as React from 'react'
-import Switch from '@mui/material/Switch'
-import Select, { type SelectChangeEvent } from '@mui/material/Select'
-import MenuItem from '@mui/material/MenuItem'
+import Accordion from '@mui/material/Accordion'
+import AccordionDetails from '@mui/material/AccordionDetails'
+import AccordionSummary from '@mui/material/AccordionSummary'
+import Button from '@mui/material/Button'
+import Checkbox from '@mui/material/Checkbox'
+import Chip from '@mui/material/Chip'
+import FormControl from '@mui/material/FormControl'
+import FormControlLabel from '@mui/material/FormControlLabel'
+import FormLabel from '@mui/material/FormLabel'
+import List from '@mui/material/List'
+import ListItem from '@mui/material/ListItem'
+import Radio from '@mui/material/Radio'
+import RadioGroup from '@mui/material/RadioGroup'
+import Slider from '@mui/material/Slider'
+import Table from '@mui/material/Table'
+import TableBody from '@mui/material/TableBody'
+import TableCell from '@mui/material/TableCell'
+import TableHead from '@mui/material/TableHead'
+import TableRow from '@mui/material/TableRow'
+import TextField from '@mui/material/TextField'
 import Tooltip from '@mui/material/Tooltip'
-import { ThemeProvider } from '@mui/material/styles'
+import Typography from '@mui/material/Typography'
+import { ThemeProvider, createTheme } from '@mui/material/styles'
 import { theme } from './theme.js'
 import { currentLocale, useCopy } from './i18n.js'
 import { setTakeover, setWorkflow, takeoverStore, workflowStore } from './store.js'
 import {
-  applyLocalCompaction,
   compactStore,
   localSettingsBlocked,
-  readBoolean,
-  readNumber,
   refreshStore,
-  selectionConfig,
   selectionFeed,
   setCompact,
   setRefreshSeconds,
@@ -49,15 +58,18 @@ import {
   subscribeSelectionFeed,
   tooltipsStore,
 } from './controls.js'
-import type { CompactionConfigView } from './controls.js'
+import { loadConfig, saveConfig } from './bridge.js'
 import {
-  COMPACTION_THRESHOLD_OPTIONS,
-  compactionPercent,
-  compactionRatio,
-  isValidCompactionThreshold,
-  saveCompaction,
-} from './bridge.js'
+  SETTINGS_CATALOG_GROUPS,
+  settingsControlsOf,
+  settingsSceneControls,
+  settingsSharedSceneControls,
+  writeConfigPath,
+} from '../shared/selection.js'
+import type { ConfigScalar, ConfigValues, ConfigView, SettingsControl } from '../shared/selection.js'
+import { settingsControlCopy } from '../shared/i18n.js'
 import {
+  CommandValues,
   InteractionValues,
   ProfessionValues,
   SceneValues,
@@ -65,126 +77,32 @@ import {
   isOneOf,
 } from '../shared/enum.js'
 import type { Copy } from '../shared/i18n.js'
-import type { SettingsChipId, SettingsFieldId } from '../shared/i18n.js'
 
-const MuiSwitch: React.ComponentType<Record<string, unknown>> =
-  Switch as unknown as React.ComponentType<Record<string, unknown>>
-const MuiSelect: React.ComponentType<Record<string, unknown>> =
-  Select as unknown as React.ComponentType<Record<string, unknown>>
-const MuiTooltip: React.ComponentType<Record<string, unknown>> =
-  Tooltip as unknown as React.ComponentType<Record<string, unknown>>
+/* MUI's generics describe every overload; the plugin passes one narrow shape. */
+type Loose = React.ComponentType<Record<string, unknown>>
 
-/* ------------------------------------------------------------------------- *
- * Styles
- * ------------------------------------------------------------------------- */
-
-const SECTION_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 14,
-}
-const HEADER_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  flexWrap: 'wrap',
-}
-const HEADING_STYLE: React.CSSProperties = { margin: 0, fontSize: 15 }
-const INTRO_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary, #666)',
-}
-const GROUP_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-  paddingTop: 10,
-  borderTop: '1px solid var(--dsw-alias-separator, #e0e0e0)',
-}
-const GROUP_TITLE_STYLE: React.CSSProperties = { margin: 0, fontSize: 13, fontWeight: 600 }
-const GROUP_DESC_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary, #666)',
-}
-const GROUP_ROWS_STYLE: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8 }
-const GROUP_HELPER_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontSize: 11,
-  opacity: 0.7,
-}
-const ROW_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 2,
-  paddingLeft: 6,
-}
-const ROW_READONLY_STYLE: React.CSSProperties = {
-  borderLeft: '2px solid var(--dsw-alias-separator, #d9d9d9)',
-}
-const ROW_FORCED_STYLE: React.CSSProperties = { borderLeft: '2px solid #a15c00' }
-const ROW_HEAD_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  minHeight: 24,
-}
-const LABEL_STYLE: React.CSSProperties = { fontSize: 13, flex: 1 }
-const HINT_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontSize: 12,
-  color: 'var(--dsw-alias-label-secondary, #666)',
-}
-const NOTE_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontSize: 11,
-  color: '#a15c00',
-}
-const SAVED_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontSize: 11,
-  color: 'var(--dsw-alias-label-secondary, #666)',
-}
-const VALUE_STYLE: React.CSSProperties = { fontSize: 12, opacity: 0.85 }
-const CHIP_STYLE: React.CSSProperties = {
-  fontSize: 10,
-  padding: '1px 6px',
-  borderRadius: 8,
-  border: '1px solid var(--dsw-alias-separator, #d0d0d0)',
-  color: 'var(--dsw-alias-label-secondary, #666)',
-  whiteSpace: 'nowrap',
-}
-const STATUS_CHIP_STYLE: React.CSSProperties = {
-  ...CHIP_STYLE,
-  fontSize: 11,
-  padding: '2px 8px',
-}
-const HELP_STYLE: React.CSSProperties = {
-  width: 18,
-  height: 18,
-  lineHeight: '16px',
-  padding: 0,
-  borderRadius: 9,
-  border: '1px solid var(--dsw-alias-separator, #c9c9c9)',
-  background: 'transparent',
-  color: 'inherit',
-  fontSize: 11,
-  cursor: 'help',
-}
-const FOOTER_STYLE: React.CSSProperties = {
-  margin: '6px 0 0',
-  fontSize: 11,
-  opacity: 0.7,
-}
-const BANNER_STYLE: React.CSSProperties = {
-  margin: 0,
-  padding: '4px 8px',
-  borderLeft: '2px solid #a15c00',
-  fontSize: 12,
-  color: '#a15c00',
-}
-const SELECT_SX = { width: 116, fontSize: 12, height: 28, backgroundColor: 'transparent' }
+const MuiAccordion = Accordion as unknown as Loose
+const MuiAccordionDetails = AccordionDetails as unknown as Loose
+const MuiAccordionSummary = AccordionSummary as unknown as Loose
+const MuiButton = Button as unknown as Loose
+const MuiCheckbox = Checkbox as unknown as Loose
+const MuiChip = Chip as unknown as Loose
+const MuiFormControl = FormControl as unknown as Loose
+const MuiFormControlLabel = FormControlLabel as unknown as Loose
+const MuiFormLabel = FormLabel as unknown as Loose
+const MuiList = List as unknown as Loose
+const MuiListItem = ListItem as unknown as Loose
+const MuiRadio = Radio as unknown as Loose
+const MuiRadioGroup = RadioGroup as unknown as Loose
+const MuiSlider = Slider as unknown as Loose
+const MuiTable = Table as unknown as Loose
+const MuiTableBody = TableBody as unknown as Loose
+const MuiTableCell = TableCell as unknown as Loose
+const MuiTableHead = TableHead as unknown as Loose
+const MuiTableRow = TableRow as unknown as Loose
+const MuiTextField = TextField as unknown as Loose
+const MuiTooltip = Tooltip as unknown as Loose
+const MuiTypography = Typography as unknown as Loose
 
 /* ------------------------------------------------------------------------- *
  * Row primitives
@@ -195,13 +113,7 @@ function HelpButton(props: { label: string; title: string }): React.ReactElement
   const [open, setOpen] = React.useState(false)
   return React.createElement(
     MuiTooltip,
-    {
-      title: props.title,
-      placement: 'left',
-      open,
-      onClose: () => { setOpen(false) },
-      describeChild: true,
-    },
+    { title: props.title, placement: 'left', open, onClose: () => { setOpen(false) }, describeChild: true },
     React.createElement(
       'button',
       {
@@ -220,689 +132,936 @@ function HelpButton(props: { label: string; title: string }): React.ReactElement
   )
 }
 
-/**
- * One setting row: label, control, chip, always-visible hint, optional note.
- * Read-only and forced rows are visually distinct (left rule + chip) and their
- * `?` button carries the reason, so a locked row explains itself on keyboard
- * focus, not only on hover.
- */
-function SettingRow(props: {
-  copy: Copy
-  id: SettingsFieldId
-  chip: SettingsChipId
-  control: React.ReactNode
-  note?: string
-}): React.ReactElement {
-  const settings = props.copy.settings
-  const field = settings.fields[props.id]
-  const chipLabel = settings.values[props.chip]
-  const reason = [field.hint, props.note, chipReason(settings, props.chip)]
-    .filter((line): line is string => line !== undefined && line.length > 0)
-    .join(' ')
-  const rowStyle = props.chip === 'forced'
-    ? { ...ROW_STYLE, ...ROW_FORCED_STYLE }
-    : props.chip === 'local'
-      ? ROW_STYLE
-      : { ...ROW_STYLE, ...ROW_READONLY_STYLE }
-  return React.createElement(
-    'div',
-    { style: rowStyle, 'data-setting': props.id },
-    React.createElement(
-      'div',
-      { style: ROW_HEAD_STYLE },
-      React.createElement('span', { style: LABEL_STYLE }, field.label),
-      props.control,
-      React.createElement('span', { style: CHIP_STYLE }, chipLabel),
-      React.createElement(HelpButton, { label: settings.values.help, title: reason }),
-    ),
-    React.createElement('p', { style: HINT_STYLE }, field.hint),
-    props.note === undefined ? null : React.createElement('p', { style: NOTE_STYLE }, props.note),
-  )
-}
-
-/** The why-line a chip adds to the row's explanation. */
-function chipReason(settings: Copy['settings'], chip: SettingsChipId): string {
-  switch (chip) {
-    case 'forced':
-      return settings.values.forced
-    case 'readOnlyHost':
-      return settings.states.readOnlyHost
-    case 'readOnlyPolicy':
-      return settings.values.readOnlyPolicy
-    case 'session':
-      return settings.values.session
-    case 'local':
-      return settings.values.localOnly
-    case 'host':
-      return settings.values.host
-    default:
-      return ''
-  }
-}
-
-/** An editable or forced switch. A disabled switch keeps its reason reachable. */
-function SwitchControl(props: {
+/** A checkbox for one boolean config value (labelled by the row's label). */
+function CheckControl(props: {
+  inputId: string
   label: string
   checked: boolean
   disabled?: boolean
   onChange?: (value: boolean) => void
 }): React.ReactElement {
-  return React.createElement(MuiSwitch, {
+  return React.createElement(MuiCheckbox, {
     size: 'small',
     checked: props.checked,
     disabled: props.disabled === true,
-    // MUI 9 forwards html-input props through `slotProps`; `inputProps` would be
-    // spread onto the root span and leave the switch without an accessible name.
-    slotProps: { input: { 'aria-label': props.label } },
+    slotProps: { input: { id: props.inputId, 'aria-label': props.label } },
     onChange: (event: { target: { checked: boolean } }) => {
       if (props.onChange !== undefined) props.onChange(event.target.checked)
     },
   })
 }
 
-/** A read-only value: no switch is drawn, so it cannot look clickable. */
-function ValueControl(props: { value: string }): React.ReactElement {
-  return React.createElement('span', { style: VALUE_STYLE }, props.value)
+/** A radio group for one enum config value — no dropdown anywhere on the page. */
+function RadioControl(props: {
+  label: string
+  value: string
+  options: readonly string[]
+  disabled: boolean
+  optionLabel: (value: string) => string
+  onCommit: (value: string) => void
+}): React.ReactElement {
+  return React.createElement(
+    MuiFormControl,
+    { component: 'fieldset', sx: FIELD_SET_SX },
+    React.createElement(MuiFormLabel, { component: 'legend', sx: VISUALLY_HIDDEN_SX }, props.label),
+    React.createElement(
+      MuiRadioGroup,
+      {
+        row: true,
+        value: props.value,
+        'aria-label': props.label,
+        onChange: (event: { target: { value: string } }) => { props.onCommit(event.target.value) },
+      },
+      props.options.map((option) => React.createElement(MuiFormControlLabel, {
+        key: option,
+        value: option,
+        disabled: props.disabled,
+        control: React.createElement(MuiRadio, { size: 'small' }),
+        label: React.createElement(MuiTypography, { variant: 'caption' }, props.optionLabel(option)),
+        sx: { mr: 1 },
+      })),
+    ),
+  )
 }
 
-/** The one settings dropdown (auto-refresh interval), local-only. */
-function IntervalSelect(props: {
+/** A slider for a ratio-like number (0–1, 0.3–0.9, …); commits on release. */
+function SliderControl(props: {
   label: string
   value: number
-  copy: Copy
-  onChange: (value: number) => void
+  min: number
+  max: number
+  step: number
+  disabled: boolean
+  onCommit: (value: number) => void
 }): React.ReactElement {
-  const values = props.copy.settings.values
-  const options = [
-    { value: '2', label: values.refresh2 },
-    { value: '5', label: values.refresh5 },
-    { value: '10', label: values.refresh10 },
-    { value: '0', label: values.refreshPaused },
-  ]
-  const current = options.find((option) => option.value === String(props.value)) ?? options[1]
+  const [draft, setDraft] = React.useState(props.value)
+  React.useEffect(() => { setDraft(props.value) }, [props.value])
   return React.createElement(
-    MuiSelect,
-    {
-      value: String(props.value),
-      displayEmpty: false,
-      renderValue: () => current.label,
-      inputProps: { 'aria-label': props.label },
-      sx: SELECT_SX,
-      onChange: (event: SelectChangeEvent<unknown>) => {
-        props.onChange(Number(String(event.target.value)))
+    'span',
+    { style: SLIDER_WRAP_STYLE },
+    React.createElement(MuiSlider, {
+      size: 'small',
+      min: props.min,
+      max: props.max,
+      step: props.step,
+      value: draft,
+      disabled: props.disabled,
+      valueLabelDisplay: 'auto',
+      sx: SLIDER_SX,
+      slotProps: { input: { 'aria-label': props.label } },
+      onChange: (_event: unknown, next: number | number[]) => {
+        setDraft(Array.isArray(next) ? (next[0] as number) : next)
       },
-    },
-    options.map((option) => React.createElement(
-      MenuItem,
-      { key: option.value, value: option.value, sx: { fontSize: 12, minHeight: 28 } },
-      option.label,
-    )),
+      onChangeCommitted: (_event: unknown, next: number | number[]) => {
+        const committed = Array.isArray(next) ? (next[0] as number) : next
+        if (committed !== props.value) props.onCommit(committed)
+      },
+    }),
+    React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary' }, String(draft)),
   )
 }
 
 /**
- * The compaction trigger dropdown: the four offered shares plus the current
- * host value when it is a valid percentage outside that set (never lie about
- * what the host reports). With no host config the control is disabled and says
- * "跟随主机配置".
+ * A MUI number field for a non-ratio number (turns, milliseconds, bytes,
+ * counts). The inline error is the local parse/min/max check; the host is still
+ * the authority and its rejection lands on the row below.
  */
-function CompactionSelect(props: {
+function NumberFieldControl(props: {
+  inputId: string
   label: string
-  value: number | undefined
-  unknownLabel: string
+  value: number
+  min?: number
+  max?: number
+  step?: number
   disabled: boolean
-  onChange: (value: number) => void
+  onCommit: (value: number) => void
+  messages: { invalid: string; range: string }
 }): React.ReactElement {
-  const offered = props.value !== undefined
-    && !COMPACTION_THRESHOLD_OPTIONS.includes(props.value)
-    && isValidCompactionThreshold(props.value)
-    ? [...COMPACTION_THRESHOLD_OPTIONS, props.value].sort((left, right) => left - right)
-    : COMPACTION_THRESHOLD_OPTIONS
-  const display = props.value === undefined ? props.unknownLabel : `${props.value}%`
-  return React.createElement(
-    MuiSelect,
-    {
-      value: props.value === undefined ? '' : String(props.value),
-      displayEmpty: true,
-      renderValue: () => display,
-      disabled: props.disabled || props.value === undefined,
-      inputProps: { 'aria-label': props.label },
-      sx: SELECT_SX,
-      onChange: (event: SelectChangeEvent<unknown>) => {
-        const next = Number(String(event.target.value))
-        if (isValidCompactionThreshold(next)) props.onChange(next)
+  const [draft, setDraft] = React.useState<string>(String(props.value))
+  const [error, setError] = React.useState<string | null>(null)
+  React.useEffect(() => {
+    setDraft(String(props.value))
+    setError(null)
+  }, [props.value])
+  const commit = (): void => {
+    const trimmed = draft.trim()
+    const parsed = Number(trimmed)
+    if (trimmed === '' || !Number.isFinite(parsed)) {
+      setError(props.messages.invalid)
+      setDraft(String(props.value))
+      return
+    }
+    const below = props.min !== undefined && parsed < props.min
+    const above = props.max !== undefined && parsed > props.max
+    if (below || above) {
+      setError(props.messages.range)
+      setDraft(String(props.value))
+      return
+    }
+    if (parsed !== props.value) props.onCommit(parsed)
+  }
+  return React.createElement(MuiTextField, {
+    type: 'number',
+    size: 'small',
+    variant: 'outlined',
+    value: draft,
+    disabled: props.disabled,
+    error: error !== null,
+    helperText: error ?? undefined,
+    sx: NUMBER_SX,
+    slotProps: {
+      htmlInput: {
+        id: props.inputId,
+        'aria-label': props.label,
+        min: props.min,
+        max: props.max,
+        step: props.step,
       },
     },
-    offered.map((option) => React.createElement(
-      MenuItem,
-      { key: String(option), value: String(option), sx: { fontSize: 12, minHeight: 28 } },
-      `${option}%`,
-    )),
-  )
+    onChange: (event: { target: { value: string } }) => {
+      setDraft(event.target.value)
+      setError(null)
+    },
+    onBlur: commit,
+    onKeyDown: (event: { key: string; preventDefault: () => void }) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        commit()
+      }
+    },
+  })
 }
 
-function Group(props: {
-  title: string
-  desc: string
-  helper: string
-  children?: React.ReactNode
+/** A single-line text field (the free-form reasoning-effort value). */
+function TextFieldControl(props: {
+  inputId: string
+  label: string
+  value: string
+  disabled: boolean
+  onCommit: (value: string) => void
 }): React.ReactElement {
-  return React.createElement(
-    'section',
-    { style: GROUP_STYLE },
-    React.createElement('h3', { style: GROUP_TITLE_STYLE }, props.title),
-    React.createElement('p', { style: GROUP_DESC_STYLE }, props.desc),
-    React.createElement('div', { style: GROUP_ROWS_STYLE }, props.children),
-    React.createElement('p', { style: GROUP_HELPER_STYLE }, props.helper),
-  )
+  const [draft, setDraft] = React.useState(props.value)
+  React.useEffect(() => { setDraft(props.value) }, [props.value])
+  const commit = (): void => {
+    const next = draft.trim()
+    if (next.length === 0 || next === props.value) {
+      setDraft(props.value)
+      return
+    }
+    props.onCommit(next)
+  }
+  return React.createElement(MuiTextField, {
+    type: 'text',
+    size: 'small',
+    variant: 'outlined',
+    value: draft,
+    disabled: props.disabled,
+    sx: TEXT_SX,
+    slotProps: { htmlInput: { id: props.inputId, 'aria-label': props.label, maxLength: 200 } },
+    onChange: (event: { target: { value: string } }) => { setDraft(event.target.value) },
+    onBlur: commit,
+    onKeyDown: (event: { key: string; preventDefault: () => void }) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        commit()
+      }
+    },
+  })
 }
 
 /* ------------------------------------------------------------------------- *
- * Value derivation — never claim a value that was not read
+ * Value formatting — never invent a value
  * ------------------------------------------------------------------------- */
 
-function professionValue(copy: Copy, value: unknown): string {
-  return isOneOf(value, ProfessionValues) ? copy.professions[value].label : copy.settings.values.followHostConfig
+type OptionDomain = 'profession' | 'interaction' | 'scene' | 'validation' | 'command' | 'thinking' | 'locale'
+
+/** Which label table an enum control's options use. */
+function optionDomain(control: SettingsControl): OptionDomain {
+  const key = control.keys[0] ?? ''
+  if (key === 'defaults.profession' || key === 'profession.default') return 'profession'
+  if (key === 'defaults.interaction') return 'interaction'
+  if (key === 'defaults.scene') return 'scene'
+  if (key === 'defaults.validation') return 'validation'
+  if (key === 'defaults.command') return 'command'
+  if (control.options !== undefined && control.options.length === 2 && control.options.includes('enabled')) {
+    return 'thinking'
+  }
+  return 'locale'
 }
 
-function interactionValue(copy: Copy, value: unknown): string {
-  return isOneOf(value, InteractionValues) ? copy.interactions[value].label : copy.settings.values.followHostConfig
+function optionLabel(copy: Copy, control: SettingsControl, value: string): string {
+  const values = copy.settings.catalog.values
+  switch (optionDomain(control)) {
+    case 'profession':
+      return isOneOf(value, ProfessionValues) ? copy.professions[value].label : value
+    case 'interaction':
+      return isOneOf(value, InteractionValues) ? copy.interactions[value].label : value
+    case 'scene':
+      return isOneOf(value, SceneValues) ? copy.scenes[value].label : value
+    case 'validation':
+      return isOneOf(value, ValidationValues) ? copy.validations[value].label : value
+    case 'command':
+      return isOneOf(value, CommandValues) ? values.commandOptions[value] : value
+    case 'thinking':
+      return value === 'enabled' || value === 'disabled' ? values.thinkingOptions[value] : value
+    case 'locale':
+      if (value === 'auto') return copy.settings.values.followHost
+      if (value === 'zh-CN') return copy.settings.values.chinese
+      if (value === 'en-US') return copy.settings.values.english
+      return value
+  }
 }
 
-function sceneValue(copy: Copy, value: unknown): string {
-  return isOneOf(value, SceneValues) ? copy.scenes[value].label : copy.settings.values.followHostConfig
+/** Human text for a value the host reported. Booleans are on/off in the copy. */
+function displayConfigValue(copy: Copy, control: SettingsControl, value: unknown): string {
+  if (typeof value === 'boolean') return value ? copy.settings.values.on : copy.settings.values.off
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'string') {
+    return control.kind === 'enum' ? optionLabel(copy, control, value) : value
+  }
+  return copy.settings.values.unavailable
 }
 
-function validationValue(copy: Copy, value: unknown): string {
-  return isOneOf(value, ValidationValues) ? copy.validations[value].label : copy.settings.values.followHostConfig
+/** `kind · 默认 X · min–max · step` for one row, from the host's real defaults. */
+function metaLine(copy: Copy, control: SettingsControl, defaultValue: unknown): string {
+  const values = copy.settings.catalog.values
+  const parts: string[] = [control.kind]
+  if (defaultValue !== undefined) {
+    parts.push(`${values.defaultValue} ${displayConfigValue(copy, control, defaultValue)}`)
+  }
+  if (control.kind === 'number') {
+    if (control.min !== undefined || control.max !== undefined) {
+      parts.push(`${control.min ?? '−∞'}–${control.max ?? '∞'}`)
+    }
+    if (control.step !== undefined) parts.push(String(control.step))
+  }
+  return parts.join(' · ')
 }
 
-function booleanValue(copy: Copy, value: boolean | undefined): string {
-  if (value === undefined) return copy.settings.values.followHostConfig
-  return value ? copy.settings.values.on : copy.settings.values.off
-}
-
-/** DSH's fallback locale setting; only the three documented values are claimed. */
-function localeSettingValue(copy: Copy, value: string | undefined): string {
-  if (value === 'zh-CN') return copy.settings.values.chinese
-  if (value === 'en-US') return copy.settings.values.english
-  if (value === 'auto') return copy.settings.values.followHost
-  return copy.settings.values.followHostConfig
+/** Ratio-like numbers get a slider; counts, bytes and milliseconds a field. */
+function isRatioControl(control: SettingsControl): boolean {
+  return control.kind === 'number'
+    && control.min !== undefined
+    && control.max !== undefined
+    && control.max - control.min <= 1
 }
 
 /* ------------------------------------------------------------------------- *
  * Page
  * ------------------------------------------------------------------------- */
 
+type LoadState = 'loading' | 'ready' | 'offline' | 'unsupported' | 'invalid'
+
+/** Display preference a host interval maps onto (`2 / 5 / 10` seconds). */
+function refreshOption(milliseconds: number): number {
+  if (milliseconds <= 2000) return 2
+  if (milliseconds <= 5000) return 5
+  return 10
+}
+
+/** Deep-copy the live values so an optimistic write never mutates state. */
+function copyValues(values: ConfigValues): ConfigValues {
+  return JSON.parse(JSON.stringify(values)) as ConfigValues
+}
+
+/** Apply one control's scalar to a copy of the values, for the optimistic step. */
+function withControlValue(view: ConfigView, control: SettingsControl, value: ConfigScalar): ConfigView {
+  const values = copyValues(view.values)
+  for (const key of control.keys) {
+    writeConfigPath(values as unknown as Record<string, unknown>, key, value)
+  }
+  return { values, defaults: view.defaults }
+}
+
+const CHIP_COLOR: Readonly<Record<string, 'default' | 'warning' | 'success'>> = {
+  host: 'default',
+  local: 'default',
+  forced: 'warning',
+  readOnly: 'default',
+  planned: 'warning',
+}
+
+/**
+ * Settings-only type scale.
+ *
+ * The host settings shell renders its menus at 14px with a 12px minimum; the
+ * composer's compact 12px theme must stay untouched, so the page derives its
+ * own theme and pins every variant in pixels (a `rem` caption would shrink
+ * below the host minimum whenever the host root font is small).
+ */
+const settingsTheme = createTheme(theme, {
+  typography: {
+    fontSize: 14,
+    body1: { fontSize: 14 },
+    body2: { fontSize: 14 },
+    subtitle1: { fontSize: 14, fontWeight: 600 },
+    subtitle2: { fontSize: 14, fontWeight: 600 },
+    caption: { fontSize: 12 },
+    h6: { fontSize: 16, fontWeight: 600 },
+    button: { fontSize: 13, textTransform: 'none' },
+  },
+  components: {
+    MuiChip: { styleOverrides: { root: { height: 22 }, label: { fontSize: 12 } } },
+    MuiFormControlLabel: { styleOverrides: { label: { fontSize: 12 } } },
+    MuiInputBase: { styleOverrides: { input: { fontSize: 13 } } },
+    MuiTableCell: { styleOverrides: { root: { fontSize: 12 } } },
+    MuiSlider: { styleOverrides: { valueLabel: { fontSize: 12 } } },
+  },
+})
+
 export function CoordinationSettings(): React.ReactElement {
   const copy = useCopy()
+  const settings = copy.settings
+  const catalog = settings.catalog
+  const values = settings.values
+  const [view, setView] = React.useState<ConfigView | null>(null)
+  const [load, setLoad] = React.useState<LoadState>('loading')
+  const [status, setStatus] = React.useState<{ text: string; error: boolean } | null>(null)
+  const [errors, setErrors] = React.useState<Record<string, string>>({})
+  const [busy, setBusy] = React.useState<ReadonlySet<string>>(new Set())
   const takeoverOn = React.useSyncExternalStore(takeoverStore.subscribe, takeoverStore.snapshot, takeoverStore.snapshot)
   const workflowOn = React.useSyncExternalStore(workflowStore.subscribe, workflowStore.snapshot, workflowStore.snapshot)
-  const tooltipsOn = React.useSyncExternalStore(tooltipsStore.subscribe, tooltipsStore.snapshot, tooltipsStore.snapshot)
-  const compactOn = React.useSyncExternalStore(compactStore.subscribe, compactStore.snapshot, compactStore.snapshot)
   const feed = React.useSyncExternalStore(subscribeSelectionFeed, selectionFeed, selectionFeed)
-  const settings = copy.settings
-  const values = settings.values
-  const state = feed.state
-  const config = selectionConfig(state)
-  // Future host fields (model routing, the compaction block) are read
-  // defensively: a config key this build does not know yet is still displayed
-  // when the host sends it.
-  const rawConfig = config as Record<string, unknown>
-  const compaction = config.compaction
-  const autoCompact = readBoolean(compaction?.auto)
-  // The host stores soft/hard as 0–1 utilisation ratios; the selects speak
-  // percent, so both directions go through the bridge's conversion helpers.
-  const softRatio = readNumber(compaction?.soft)
-  const softPercent = softRatio === undefined ? undefined : compactionPercent(softRatio)
-  const hardRatio = readNumber(compaction?.hard)
-  const hardPercent = hardRatio === undefined ? undefined : compactionPercent(hardRatio)
-  const reserve = readNumber(compaction?.reserve)
-  const [compactionBusy, setCompactionBusy] = React.useState(false)
-  const [compactionStatus, setCompactionStatus] = React.useState<{ text: string; error: boolean } | null>(null)
-  const compactionTimer = React.useRef<number | null>(null)
-  React.useEffect(() => () => {
-    if (compactionTimer.current !== null) window.clearTimeout(compactionTimer.current)
-  }, [])
-  const presetCount = state === null ? undefined : state.presets.length
-  const resolvedLocale = currentLocale()
-  const languageValue = resolvedLocale === 'en-US' ? values.english : values.chinese
-  const offline = feed.state !== null && feed.offline
-  const statusChip = feed.state === null
-    ? null
-    : feed.offline
-      ? values.disconnected
-      : values.connected
-  const refreshSeconds = React.useSyncExternalStore(
-    // The refresh interval is a local preference owned by the composer module;
-    // its store is the same one the poll reads.
-    refreshStore.subscribe,
-    refreshStore.snapshot,
-    refreshStore.snapshot,
-  )
   const storageBlocked = localSettingsBlocked()
 
-  /**
-   * Write one auto-compaction change to the host.
-   *
-   * The control moves immediately (optimistic), then only the host's answer is
-   * kept: a refusal or an old host build reverts to the previous values and
-   * says why. One request per change — no debounce, because the switch fires
-   * once and the threshold select fires once per choice.
-   */
-  const changeCompaction = (patch: { auto?: boolean; soft?: number }): void => {
-    if (compactionBusy) return
-    setCompactionBusy(true)
-    setCompactionStatus(null)
-    const previous: Partial<CompactionConfigView> = {
-      ...(autoCompact === undefined ? {} : { auto: autoCompact }),
-      ...(softRatio === undefined ? {} : { soft: softRatio }),
-    }
-    applyLocalCompaction(patch)
+  const refresh = React.useCallback((): void => {
+    setLoad('loading')
+    setStatus(null)
     void (async () => {
-      const outcome = await saveCompaction(patch)
-      setCompactionBusy(false)
-      if (outcome.values === null) {
-        applyLocalCompaction(previous)
-        setCompactionStatus({
+      const outcome = await loadConfig()
+      if (outcome.config === null) {
+        setLoad(outcome.unsupported ? 'unsupported' : outcome.reached ? 'invalid' : 'offline')
+        return
+      }
+      setView(outcome.config)
+      setLoad('ready')
+      // Adopt the host display defaults only while the operator has never
+      // chosen locally; an explicit local choice keeps priority.
+      compactStore.adopt(outcome.config.values.ui.compact)
+      tooltipsStore.adopt(outcome.config.values.ui.showTooltip)
+      refreshStore.adopt(refreshOption(outcome.config.values.ui.refreshInterval))
+    })()
+  }, [])
+
+  React.useEffect(() => { refresh() }, [refresh])
+
+  /** Write one row's value: local stores stay local, everything else goes host. */
+  const commit = (control: SettingsControl, value: ConfigScalar): void => {
+    // Local display preferences are useful offline too, so they commit before
+    // the host-readiness guard.
+    if (control.local === 'takeover') {
+      setTakeover(value === true)
+      return
+    }
+    if (control.local === 'workflow') {
+      setWorkflow(value === true)
+      return
+    }
+    if (view === null || load !== 'ready') return
+    if (control.keys.length === 0) return
+    const patch: Record<string, ConfigScalar> = {}
+    for (const key of control.keys) patch[key] = value
+    const previous = view
+    const wasBusy = busy
+    setView(withControlValue(view, control, value))
+    setErrors((current) => {
+      if (!(control.id in current)) return current
+      const next = { ...current }
+      delete next[control.id]
+      return next
+    })
+    setBusy(new Set([...busy, control.id]))
+    setStatus(null)
+    void (async () => {
+      const outcome = await saveConfig(patch)
+      setBusy(wasBusy)
+      if (outcome.config === null) {
+        setView(previous)
+        const reason = !outcome.reached
+          ? settings.states.offline
+          : outcome.code === 'INVALID_ARGUMENT'
+            ? copy.errors.INVALID_ARGUMENT
+            : settings.states.hostRejected
+        setErrors((current) => ({ ...current, [control.id]: reason }))
+        setStatus({
           text: outcome.unsupported ? settings.states.configUnsupported : settings.states.hostRejected,
           error: true,
         })
         return
       }
-      applyLocalCompaction(outcome.values)
-      setCompactionStatus({ text: settings.states.saved, error: false })
-      if (compactionTimer.current !== null) window.clearTimeout(compactionTimer.current)
-      compactionTimer.current = window.setTimeout(() => setCompactionStatus(null), 4000)
+      setView(outcome.config)
+      // Display controls also move their local preference, so the composer
+      // reflects the change immediately instead of waiting for a remount.
+      if (control.keys.includes('ui.showTooltip')) setTooltips(value === true)
+      if (control.keys.includes('ui.compact')) setCompact(value === true)
+      if (control.keys.includes('ui.refreshInterval') && typeof value === 'number') {
+        setRefreshSeconds(refreshOption(value))
+      }
+      setStatus({
+        text: outcome.persisted ? settings.states.saved : catalog.values.notPersisted,
+        error: false,
+      })
     })()
   }
 
-  const permissionRows = [
-    React.createElement(SettingRow, {
-      key: 'takeoverPermission',
-      copy,
-      id: 'takeoverPermission',
-      chip: 'local',
-      control: React.createElement(SwitchControl, {
-        label: settings.fields.takeoverPermission.label,
-        checked: takeoverOn,
-        onChange: (value: boolean) => { setTakeover(value) },
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'takeoverControl',
-      copy,
-      id: 'takeoverControl',
-      chip: 'readOnly',
-      control: React.createElement(ValueControl, {
-        value: takeoverOn ? values.pluginPermission : values.hostAccessMode,
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'takeoverDialogs',
-      copy,
-      id: 'takeoverDialogs',
-      chip: 'readOnlyHost',
-      control: hostBooleanControl(copy, settings.fields.takeoverDialogs.label, readBoolean(config.takeover)),
-    }),
-    React.createElement(SettingRow, {
-      key: 'permissionCatalog',
-      copy,
-      id: 'permissionCatalog',
-      chip: 'readOnly',
-      // An offline/absent projection cannot say whether DSH exposed presets:
-      // only a live host answer with an empty catalog earns the no-catalog note.
-      ...(state !== null && !offline && presetCount === 0 ? { note: settings.states.noCatalog } : {}),
-      control: React.createElement(ValueControl, {
-        value: state === null || offline ? values.followHostConfig : values.dshCatalog,
-      }),
-    }),
-  ]
+  /** Resolve one row's current/default value from the host view. */
+  const valueOf = (control: SettingsControl): unknown => {
+    if (view === null || control.keys.length === 0) return undefined
+    return readPath(view.values, control.keys[0] as string)
+  }
+  const defaultOf = (control: SettingsControl): unknown => {
+    if (view === null || control.keys.length === 0) return undefined
+    return readPath(view.defaults, control.keys[0] as string)
+  }
 
-  const composerRows = [
-    React.createElement(SettingRow, {
-      key: 'composerWorkflow',
-      copy,
-      id: 'composerWorkflow',
-      chip: 'local',
-      control: React.createElement(SwitchControl, {
-        label: settings.fields.composerWorkflow.label,
-        checked: workflowOn,
-        onChange: (value: boolean) => { setWorkflow(value) },
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'composerTooltips',
-      copy,
-      id: 'composerTooltips',
-      chip: 'local',
-      control: React.createElement(SwitchControl, {
-        label: settings.fields.composerTooltips.label,
-        checked: tooltipsOn,
-        onChange: (value: boolean) => { setTooltips(value) },
-      }),
-    }),
-  ]
+  /** A derived row's text value (never a config value it did not read). */
+  const derivedText = (control: SettingsControl): string => {
+    switch (control.id) {
+      case 'setting:derived.currentLocale':
+        return currentLocale() === 'en-US' ? values.english : values.chinese
+      case 'setting:derived.takeoverControl':
+        return takeoverOn ? values.pluginPermission : values.hostAccessMode
+      case 'setting:derived.permissionCatalog':
+        return feed.state === null ? values.unavailable : values.dshCatalog
+      case 'setting:policy.writingFlow':
+        return values.writingFlow
+      case 'setting:local.takeoverPermission':
+        return takeoverOn ? values.on : values.off
+      case 'setting:local.composerWorkflow':
+        return workflowOn ? values.on : values.off
+      default:
+        return values.unavailable
+    }
+  }
 
-  const professionRows = [
-    React.createElement(SettingRow, {
-      key: 'professionLock',
-      copy,
-      id: 'professionLock',
-      chip: 'forced',
-      control: React.createElement(SwitchControl, {
-        label: settings.fields.professionLock.label,
-        checked: true,
-        disabled: true,
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'professionDefault',
-      copy,
-      id: 'professionDefault',
-      // `defaults.profession` is host config, not the session's live choice: the
-      // composer's current profession belongs in the composer, not under a
-      // "default" row. Without the projection the row says so instead of guessing.
-      chip: 'readOnlyHost',
-      control: React.createElement(ValueControl, {
-        value: professionValue(copy, config.defaultProfession),
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'professionRebuild',
-      copy,
-      id: 'professionRebuild',
-      chip: 'forced',
-      control: React.createElement(SwitchControl, {
-        label: settings.fields.professionRebuild.label,
-        checked: true,
-        disabled: true,
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'professionAbandon',
-      copy,
-      id: 'professionAbandon',
-      chip: 'forced',
-      control: React.createElement(SwitchControl, {
-        label: settings.fields.professionAbandon.label,
-        checked: true,
-        disabled: true,
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'professionAudit',
-      copy,
-      id: 'professionAudit',
-      chip: 'readOnlyHost',
-      control: hostBooleanControl(copy, settings.fields.professionAudit.label, readBoolean(config.audit)),
-    }),
-    React.createElement(SettingRow, {
-      key: 'professionErrorHint',
-      copy,
-      id: 'professionErrorHint',
-      chip: 'readOnlyHost',
-      control: hostBooleanControl(copy, settings.fields.professionErrorHint.label, readBoolean(config.errorHint)),
-    }),
-  ]
+  /** The input for one control; the final fallback is a read-only text row. */
+  const renderInput = (control: SettingsControl, label: string): React.ReactNode => {
+    const inputId = `${control.id}:input`
+    const rawValue = valueOf(control)
+    const editable = control.chip === 'host' && control.keys.length > 0 && load === 'ready'
+    const disabled = !editable || busy.has(control.id)
 
-  const sceneRows = [
-    React.createElement(SettingRow, {
-      key: 'defaultScene',
-      copy,
-      id: 'defaultScene',
-      chip: state === null ? 'readOnlyHost' : 'session',
-      control: React.createElement(ValueControl, {
-        value: state === null
-          ? sceneValue(copy, config.defaultScene)
-          : sceneValue(copy, state.selection.scene),
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'defaultValidation',
-      copy,
-      id: 'defaultValidation',
-      chip: state === null ? 'readOnlyHost' : 'session',
-      note: copy.composer.validationNote,
-      control: React.createElement(ValueControl, {
-        value: state === null
-          ? validationValue(copy, config.defaultValidation)
-          : validationValue(copy, state.selection.validation),
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'defaultInteraction',
-      copy,
-      id: 'defaultInteraction',
-      chip: state === null ? 'readOnlyHost' : 'session',
-      control: React.createElement(ValueControl, {
-        value: state === null
-          ? interactionValue(copy, config.defaultInteraction)
-          : interactionValue(copy, state.selection.interaction),
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'writingFlow',
-      copy,
-      id: 'writingFlow',
-      chip: 'readOnlyPolicy',
-      control: React.createElement(ValueControl, { value: values.writingFlow }),
-    }),
-  ]
+    if (control.local !== undefined) {
+      const checked = control.local === 'takeover' ? takeoverOn : workflowOn
+      return React.createElement(CheckControl, {
+        inputId,
+        label,
+        checked,
+        onChange: (next: boolean) => { commit(control, next) },
+      })
+    }
+    if (control.kind === 'boolean' && control.keys.length > 0 && rawValue !== undefined) {
+      return React.createElement(CheckControl, {
+        inputId,
+        label,
+        checked: rawValue === true,
+        disabled,
+        ...(control.chip === 'host' ? { onChange: (next: boolean) => { commit(control, next) } } : {}),
+      })
+    }
+    if (control.chip === 'host' && control.kind === 'enum' && typeof rawValue === 'string') {
+      return React.createElement(RadioControl, {
+        label,
+        value: rawValue,
+        options: control.options ?? [],
+        disabled,
+        optionLabel: (option: string) => optionLabel(copy, control, option),
+        onCommit: (next: string) => { commit(control, next) },
+      })
+    }
+    if (control.chip === 'host' && control.kind === 'number' && typeof rawValue === 'number') {
+      if (isRatioControl(control)) {
+        return React.createElement(SliderControl, {
+          label,
+          value: rawValue,
+          min: control.min as number,
+          max: control.max as number,
+          step: control.step ?? 0.01,
+          disabled,
+          onCommit: (next: number) => { commit(control, next) },
+        })
+      }
+      return React.createElement(NumberFieldControl, {
+        inputId,
+        label,
+        value: rawValue,
+        ...(control.min === undefined ? {} : { min: control.min }),
+        ...(control.max === undefined ? {} : { max: control.max }),
+        ...(control.step === undefined ? {} : { step: control.step }),
+        disabled,
+        onCommit: (next: number) => { commit(control, next) },
+        messages: { invalid: catalog.values.invalidNumber, range: catalog.values.outOfRange },
+      })
+    }
+    if (control.chip === 'host' && control.kind === 'text' && typeof rawValue === 'string') {
+      return React.createElement(TextFieldControl, {
+        inputId,
+        label,
+        value: rawValue,
+        disabled,
+        onCommit: (next: string) => { commit(control, next) },
+      })
+    }
+    if (rawValue !== undefined && control.kind !== 'boolean') {
+      return React.createElement(
+        MuiTypography,
+        { variant: 'body2', sx: VALUE_SX },
+        displayConfigValue(copy, control, rawValue),
+      )
+    }
+    // Derived rows and an absent host answer never invent a value.
+    return React.createElement(
+      MuiTypography,
+      { variant: 'body2', sx: VALUE_SX },
+      control.derived === true ? derivedText(control) : values.unavailable,
+    )
+  }
 
-  const languageRows = [
-    React.createElement(SettingRow, {
-      key: 'defaultLocale',
-      copy,
-      id: 'defaultLocale',
-      chip: 'readOnlyHost',
-      control: React.createElement(ValueControl, {
-        value: localeSettingValue(copy, typeof config.locale === 'string' ? config.locale : undefined),
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'currentLocale',
-      copy,
-      id: 'currentLocale',
-      chip: 'readOnly',
-      control: React.createElement(ValueControl, { value: languageValue }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'compact',
-      copy,
-      id: 'compact',
-      chip: 'local',
-      control: React.createElement(SwitchControl, {
-        label: settings.fields.compact.label,
-        checked: compactOn,
-        onChange: (value: boolean) => { setCompact(value) },
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'refreshInterval',
-      copy,
-      id: 'refreshInterval',
-      chip: 'local',
-      control: React.createElement(IntervalSelect, {
-        label: settings.fields.refreshInterval.label,
-        value: refreshSeconds,
-        copy,
-        onChange: (value: number) => { setRefreshSeconds(value) },
-      }),
-    }),
-  ]
+  /** One row in a group's `List` (the same layout the shared scene rows use). */
+  const renderRow = (control: SettingsControl): React.ReactElement => {
+    const field = settingsControlCopy(settings, control.copy) ?? { label: control.id, hint: '' }
+    const rawDefault = defaultOf(control)
+    const label = control.scene === undefined
+      ? field.label
+      : `${copy.scenes[control.scene].label} · ${field.label}`
+    const inputId = `${control.id}:input`
+    const editable = control.chip === 'host' && control.keys.length > 0 && load === 'ready'
+    // A slider carries its own accessible name through `slotProps.input`; a
+    // radio group through `aria-label`. Only real inputs get a htmlFor label.
+    const labelled = editable && control.kind !== 'enum' && !isRatioControl(control)
+    const meta = metaLine(copy, control, rawDefault)
+    const notes: string[] = []
+    if (control.copy === 'professionDefaultAlias') notes.push(catalog.values.alias)
+    if (control.wired === false && control.derived !== true) notes.push(catalog.values.notWired)
+    // The file layer captures its limits when the lazy tool runtime is created:
+    // say so instead of implying that an existing runtime picks them up.
+    if (control.wired && (control.group === 'parser' || control.group === 'chain') && control.copy !== 'parserEnabled') {
+      notes.push(catalog.values.captured)
+    }
+    if (control.copy.startsWith('planWeight.')) notes.push(catalog.values.normalized)
+    const reason = [field.hint, ...notes, catalog.values.chips[control.chip]]
+      .filter((line) => line.length > 0)
+      .join(' ')
 
-  const compactionRows = [
-    React.createElement(SettingRow, {
-      key: 'autoCompact',
-      copy,
-      id: 'autoCompact',
-      chip: autoCompact === undefined ? 'readOnlyHost' : 'host',
-      control: autoCompact === undefined
-        ? React.createElement(ValueControl, { value: values.followHostConfig })
-        : React.createElement(SwitchControl, {
-          label: settings.fields.autoCompact.label,
-          checked: autoCompact,
-          disabled: compactionBusy,
-          onChange: (value: boolean) => { changeCompaction({ auto: value }) },
+    return React.createElement(
+      MuiListItem,
+      {
+        key: control.id,
+        id: control.id,
+        component: 'div',
+        style: rowStyle(control),
+        'data-setting': control.id,
+        'data-config-key': control.keys.join(','),
+        'data-control-type': control.kind,
+        'data-control-copy': control.copy,
+        'data-control-chip': control.chip,
+        role: 'group',
+        'aria-labelledby': `${control.id}:label`,
+      },
+      React.createElement(
+        'div',
+        { style: ROW_HEAD_STYLE },
+        React.createElement(
+          MuiTypography,
+          {
+            id: `${control.id}:label`,
+            component: labelled ? 'label' : 'span',
+            ...(labelled ? { htmlFor: inputId } : {}),
+            variant: 'body2',
+            sx: LABEL_SX,
+          },
+          label,
+        ),
+        renderInput(control, label),
+        React.createElement(MuiChip, {
+          size: 'small',
+          variant: 'outlined',
+          color: CHIP_COLOR[control.chip] ?? 'default',
+          label: catalog.values.chips[control.chip],
+          sx: { ml: 'auto' },
         }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'compactionThreshold',
-      copy,
-      id: 'compactionThreshold',
-      chip: softPercent === undefined ? 'readOnlyHost' : 'host',
-      control: React.createElement(CompactionSelect, {
-        label: settings.fields.compactionThreshold.label,
-        value: softPercent,
-        unknownLabel: values.followHostConfig,
-        disabled: compactionBusy,
-        // The select offers percent; the host route expects the 0–1 ratio.
-        onChange: (value: number) => { changeCompaction({ soft: compactionRatio(value) }) },
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'hardPrune',
-      copy,
-      id: 'hardPrune',
-      chip: 'readOnlyHost',
-      control: React.createElement(ValueControl, {
-        value: hardPercent === undefined ? values.followHostConfig : `${hardPercent}%`,
-      }),
-    }),
-    React.createElement(SettingRow, {
-      key: 'reserve',
-      copy,
-      id: 'reserve',
-      chip: 'readOnlyHost',
-      control: React.createElement(ValueControl, {
-        value: reserve === undefined ? values.followHostConfig : String(reserve),
-      }),
-    }),
-    compactionStatus === null
-      ? null
-      : React.createElement(
-        'p',
-        {
-          key: 'compaction-status',
-          role: 'status',
-          style: compactionStatus.error ? NOTE_STYLE : SAVED_STYLE,
-        },
-        compactionStatus.text,
+        React.createElement(HelpButton, { label: values.help, title: reason }),
       ),
-  ]
+      React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0 } }, field.hint),
+      meta.length === 0
+        ? null
+        : React.createElement(MuiTypography, { variant: 'caption', color: 'text.disabled', component: 'p', sx: { m: 0 } }, meta),
+      ...notes.map((note) => React.createElement(
+        MuiTypography,
+        { key: note, variant: 'caption', color: 'warning.main', component: 'p', sx: { m: 0 } },
+        note,
+      )),
+      errors[control.id] === undefined
+        ? null
+        : React.createElement(
+          MuiTypography,
+          { role: 'alert', variant: 'caption', color: 'error', component: 'p', sx: { m: 0 } },
+          errors[control.id],
+        ),
+    )
+  }
 
-  const advancedRows = [
-    React.createElement(SettingRow, {
-      key: 'cacheEnabled',
-      copy,
-      id: 'cacheEnabled',
-      chip: 'readOnlyHost',
-      control: hostBooleanControl(copy, settings.fields.cacheEnabled.label, readBoolean(config.cacheEnabled)),
-    }),
-    React.createElement(SettingRow, {
-      key: 'webSearch',
-      copy,
-      id: 'webSearch',
-      chip: 'readOnlyHost',
-      control: hostBooleanControl(copy, settings.fields.webSearch.label, readBoolean(config.searchEnabled)),
-    }),
-    React.createElement(SettingRow, {
-      key: 'groundTruth',
-      copy,
-      id: 'groundTruth',
-      chip: 'readOnlyHost',
-      control: hostBooleanControl(copy, settings.fields.groundTruth.label, readBoolean(rawConfig.groundTruth)),
-    }),
-    React.createElement(SettingRow, {
-      key: 'modelRouting',
-      copy,
-      id: 'modelRouting',
-      chip: 'readOnlyHost',
-      control: hostBooleanControl(copy, settings.fields.modelRouting.label, readBoolean(rawConfig.modelRouting)),
-    }),
-  ]
+  /** A scene table: one row per scene-scoped field, no dropdown involved. */
+  const renderSceneTable = (scene: (typeof SceneValues)[number]): React.ReactElement => {
+    const rows = settingsSceneControls(scene)
+    return React.createElement(
+      'div',
+      { key: scene, style: SCENE_BLOCK_STYLE },
+      React.createElement(MuiTypography, { variant: 'subtitle2', component: 'h4', sx: { m: 0, mb: 0.5 } }, copy.scenes[scene].label),
+      React.createElement(
+        MuiTable,
+        { size: 'small', 'aria-label': copy.scenes[scene].label },
+        React.createElement(
+          MuiTableHead,
+          null,
+          React.createElement(
+            MuiTableRow,
+            null,
+            React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, catalog.values.field),
+            React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, catalog.values.value),
+            React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, catalog.values.defaultValue),
+            React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, catalog.values.status),
+          ),
+        ),
+        React.createElement(
+          MuiTableBody,
+          null,
+          rows.map((control) => {
+            const field = settingsControlCopy(settings, control.copy) ?? { label: control.id, hint: '' }
+            const label = `${copy.scenes[scene].label} · ${field.label}`
+            return React.createElement(
+              MuiTableRow,
+              {
+                key: control.id,
+                id: control.id,
+                'data-setting': control.id,
+                'data-config-key': control.keys.join(','),
+                'data-control-type': control.kind,
+                'data-control-chip': control.chip,
+                'aria-label': label,
+              },
+              React.createElement(
+                MuiTableCell,
+                { sx: TABLE_CELL_SX },
+                React.createElement(MuiTypography, { variant: 'caption', component: 'span' }, field.label),
+                React.createElement(HelpButton, { label: values.help, title: field.hint }),
+              ),
+              React.createElement(MuiTableCell, { sx: TABLE_CELL_SX }, renderInput(control, label)),
+              React.createElement(
+                MuiTableCell,
+                { sx: TABLE_CELL_SX },
+                React.createElement(
+                  MuiTypography,
+                  { variant: 'caption', color: 'text.secondary' },
+                  displayConfigValue(copy, control, defaultOf(control)),
+                ),
+              ),
+              React.createElement(
+                MuiTableCell,
+                { sx: TABLE_CELL_SX },
+                React.createElement(MuiChip, {
+                  size: 'small',
+                  variant: 'outlined',
+                  color: CHIP_COLOR[control.chip] ?? 'default',
+                  label: catalog.values.chips[control.chip],
+                }),
+              ),
+            )
+          }),
+        ),
+      ),
+    )
+  }
+
+  const groupChildren = (group: (typeof SETTINGS_CATALOG_GROUPS)[number]): React.ReactNode[] => {
+    const controls = settingsControlsOf(group)
+    if (group === 'profession') {
+      const rows = controls.map(renderRow)
+      if (feed.state !== null && feed.state.locked) {
+        rows.push(React.createElement(
+          MuiListItem,
+          { key: 'locked', component: 'div', role: 'status' },
+          React.createElement(
+            MuiTypography,
+            { variant: 'caption', color: 'warning.main', component: 'p', sx: { m: 0 } },
+            settings.states.settingsLocked,
+          ),
+        ))
+      }
+      // The two-sentence "why lock" paragraph belongs to this group.
+      rows.push(React.createElement(
+        MuiListItem,
+        { key: 'why-lock', component: 'div' },
+        React.createElement(
+          MuiTypography,
+          { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0 } },
+          settings.whyLock,
+        ),
+      ))
+      return rows
+    }
+    if (group === 'scenes') {
+      const shared = settingsSharedSceneControls().map(renderRow)
+      // The shared rows write all six scenes at once; the policy row is a
+      // constant, not a config key.
+      const policy = controls
+        .filter((control) => control.keys.length === 0 && !control.scene)
+        .map(renderRow)
+      return [
+        // Six Tables, one per scene: the scene selector is gone.
+        React.createElement(
+          MuiListItem,
+          { key: 'scene-tables', component: 'div', style: { display: 'block' } },
+          ...SceneValues.map(renderSceneTable),
+        ),
+        ...shared,
+        ...policy,
+      ]
+    }
+    return controls.map(renderRow)
+  }
+
+  const statusChip = load === 'ready'
+    ? values.connected
+    : load === 'loading'
+      ? values.loading
+      : values.disconnected
+  const banner = load === 'offline'
+    ? settings.states.offline
+    : load === 'unsupported'
+      ? settings.states.configUnsupported
+      : load === 'invalid'
+        ? catalog.values.loadFailed
+        : null
 
   return React.createElement(
     ThemeProvider,
-    { theme },
+    { theme: settingsTheme },
     React.createElement(
       'section',
       { style: SECTION_STYLE },
       React.createElement(
         'div',
         { style: HEADER_STYLE },
-        React.createElement('h2', { style: HEADING_STYLE }, settings.title),
-        statusChip === null
-          ? null
-          : React.createElement('span', { style: STATUS_CHIP_STYLE }, statusChip),
+        React.createElement(MuiTypography, { variant: 'h6', component: 'h2', sx: { m: 0 } }, settings.title),
+        React.createElement(MuiChip, {
+          size: 'small',
+          variant: 'outlined',
+          color: load === 'ready' ? 'success' : 'default',
+          label: statusChip,
+        }),
       ),
-      React.createElement('p', { style: INTRO_STYLE }, settings.intro),
-      offline ? React.createElement('p', { style: BANNER_STYLE, role: 'status' }, settings.states.offline) : null,
-      React.createElement(Group, {
-        title: settings.groups.permission.title,
-        desc: settings.groups.permission.desc,
-        helper: settings.groups.permission.helper,
-      }, ...permissionRows),
-      React.createElement(Group, {
-        title: settings.groups.composer.title,
-        desc: settings.groups.composer.desc,
-        helper: settings.groups.composer.helper,
-      }, ...composerRows),
-      React.createElement(
-        Group,
+      React.createElement(MuiTypography, { variant: 'body2', color: 'text.secondary', component: 'p', sx: { m: 0 } }, settings.intro),
+      React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0 } }, settings.applyNote),
+      banner === null
+        ? null
+        : React.createElement(
+          'div',
+          { role: 'status', style: BANNER_STYLE },
+          React.createElement(MuiTypography, { variant: 'caption', color: 'warning.main' }, banner),
+          React.createElement(MuiButton, { size: 'small', variant: 'outlined', onClick: refresh }, catalog.values.retry),
+        ),
+      load === 'loading'
+        ? React.createElement(MuiTypography, { variant: 'caption', role: 'status', component: 'p', sx: { m: 0 } }, settings.states.loading)
+        : null,
+      status === null
+        ? null
+        : React.createElement(
+          MuiTypography,
+          {
+            variant: 'caption',
+            role: 'status',
+            component: 'p',
+            color: status.error ? 'warning.main' : 'text.secondary',
+            sx: { m: 0 },
+          },
+          status.text,
+        ),
+      storageBlocked
+        ? React.createElement(
+          MuiTypography,
+          { variant: 'caption', color: 'warning.main', role: 'status', component: 'p', sx: { m: 0 } },
+          settings.states.storageBlocked,
+        )
+        : null,
+      ...SETTINGS_CATALOG_GROUPS.map((group) => React.createElement(
+        GroupAccordion,
         {
-          title: settings.groups.profession.title,
-          desc: settings.groups.profession.desc,
-          helper: settings.groups.profession.helper,
+          key: group,
+          title: catalog.groups[group].title,
+          desc: catalog.groups[group].desc,
+          helper: catalog.groups[group].helper,
+          // The user asked the catalog to open fully: every group is expanded
+          // until the operator collapses it.
+          initialOpen: true,
         },
-        ...professionRows,
-        state !== null && state.locked
-          ? React.createElement('p', { style: NOTE_STYLE, role: 'status' }, settings.states.settingsLocked)
-          : null,
-        React.createElement('p', { style: GROUP_HELPER_STYLE }, settings.whyLock),
-      ),
-      React.createElement(Group, {
-        title: settings.groups.scene.title,
-        desc: settings.groups.scene.desc,
-        helper: settings.groups.scene.helper,
-      }, ...sceneRows),
-      React.createElement(
-        Group,
-        {
-          title: settings.groups.language.title,
-          desc: settings.groups.language.desc,
-          helper: settings.groups.language.helper,
-        },
-        ...languageRows,
-        storageBlocked
-          ? React.createElement('p', { style: NOTE_STYLE, role: 'status' }, settings.states.storageBlocked)
-          : null,
-      ),
-      React.createElement(Group, {
-        title: settings.groups.compaction.title,
-        desc: settings.groups.compaction.desc,
-        helper: settings.groups.compaction.helper,
-      }, ...compactionRows),
-      React.createElement(Group, {
-        title: settings.groups.advanced.title,
-        desc: settings.groups.advanced.desc,
-        helper: settings.groups.advanced.helper,
-      }, ...advancedRows),
-      React.createElement('p', { style: FOOTER_STYLE }, settings.footer),
-      React.createElement('p', { style: FOOTER_STYLE }, settings.applyNote),
+        groupChildren(group),
+      )),
+      React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0 } }, settings.footer),
+    ),
+  )
+}
+
+/** One collapsible catalog group: MUI Accordion + List of rows. */
+function GroupAccordion(props: {
+  title: string
+  desc: string
+  helper: string
+  initialOpen: boolean
+  children?: React.ReactNode[]
+}): React.ReactElement {
+  return React.createElement(
+    MuiAccordion,
+    { defaultExpanded: props.initialOpen, disableGutters: true, elevation: 0, sx: ACCORDION_SX },
+    React.createElement(
+      MuiAccordionSummary,
+      { sx: SUMMARY_SX },
+      React.createElement(MuiTypography, { variant: 'subtitle2', component: 'h3', sx: { m: 0, flex: 1 } }, props.title),
+    ),
+    React.createElement(
+      MuiAccordionDetails,
+      { sx: DETAILS_SX },
+      React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0, mb: 0.5 } }, props.desc),
+      React.createElement(MuiList, { dense: true, disablePadding: true, component: 'div' }, ...(props.children ?? [])),
+      React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0, mt: 1 } }, props.helper),
     ),
   )
 }
 
 /* ------------------------------------------------------------------------- *
- * Local helpers
+ * Styles
  * ------------------------------------------------------------------------- */
 
-/** A host boolean: a disabled switch when known, an honest text value otherwise. */
-function hostBooleanControl(copy: Copy, label: string, value: boolean | undefined): React.ReactElement {
-  if (value === undefined) {
-    return React.createElement(ValueControl, { value: booleanValue(copy, undefined) })
+const SECTION_STYLE: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 }
+const HEADER_STYLE: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }
+const ROW_HEAD_STYLE: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flexWrap: 'wrap',
+  minHeight: 32,
+}
+const LABEL_SX = { flex: '1 1 140px', minWidth: 120, fontSize: 14 }
+const VALUE_SX = { opacity: 0.85 }
+const SCENE_BLOCK_STYLE: React.CSSProperties = { marginTop: 8 }
+const BANNER_STYLE: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '4px 8px',
+  borderLeft: '2px solid #a15c00',
+}
+const HELP_STYLE: React.CSSProperties = {
+  width: 18,
+  height: 18,
+  lineHeight: '16px',
+  padding: 0,
+  borderRadius: 10,
+  border: '1px solid var(--dsw-alias-separator, #c9c9c9)',
+  background: 'transparent',
+  color: 'inherit',
+  fontSize: 12,
+  cursor: 'help',
+  flex: 'none',
+}
+const SLIDER_WRAP_STYLE: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 140 }
+const SLIDER_SX = { width: 110, py: 0.5 }
+const NUMBER_SX = { width: 140 }
+const TEXT_SX = { width: 150 }
+const FIELD_SET_SX = { border: 0, p: 0, m: 0, minWidth: 0 }
+const VISUALLY_HIDDEN_SX = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+}
+const ACCORDION_SX = {
+  borderTop: '1px solid var(--dsw-alias-separator, #e0e0e0)',
+  background: 'transparent',
+  '&:before': { display: 'none' },
+}
+const SUMMARY_SX = { minHeight: 40, px: 1 }
+const DETAILS_SX = { px: 1, pt: 0 }
+const TABLE_HEAD_SX = { fontSize: 12, fontWeight: 600, py: 0.25, px: 0.5 }
+const TABLE_CELL_SX = { py: 0.25, px: 0.5, verticalAlign: 'middle' }
+
+/** Row left rule: forced/planned are amber, unwired rows are read-only grey. */
+function rowStyle(control: SettingsControl): React.CSSProperties {
+  const base: React.CSSProperties = { display: 'block', padding: '6px 8px' }
+  if (control.chip === 'forced') return { ...base, borderLeft: '2px solid #a15c00' }
+  if (control.chip === 'planned') return { ...base, borderLeft: '2px dashed #a15c00' }
+  if (control.chip === 'host' && control.wired) return base
+  return { ...base, borderLeft: '2px solid var(--dsw-alias-separator, #d9d9d9)' }
+}
+
+/** Read one dotted path from a plain object tree. */
+function readPath(source: unknown, path: string): unknown {
+  let cursor: unknown = source
+  for (const part of path.split('.')) {
+    if (typeof cursor !== 'object' || cursor === null) return undefined
+    cursor = (cursor as Record<string, unknown>)[part]
   }
-  return React.createElement(SwitchControl, { label, checked: value, disabled: true })
+  return cursor
 }

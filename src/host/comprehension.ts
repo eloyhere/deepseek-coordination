@@ -58,6 +58,7 @@ import type {
   ThinkStageOutput,
 } from '../shared/service.js'
 import { InvalidArgumentError, InvalidStateError } from '../shared/error.js'
+import { OrderedSet } from '../shared/set.js'
 import { parseJson } from './database.js'
 import { mapComprehension, mapStage, mapTurn, text } from './row.js'
 import type { Row } from './row.js'
@@ -514,12 +515,13 @@ function matchedMarkers(content: string, markers: readonly string[]): string[] {
   return found
 }
 
+/** Distinct non-empty values in first-seen order (shared insertion-ordered set). */
 function unique(values: readonly string[]): string[] {
-  const result: string[] = []
+  const result = new OrderedSet<string>()
   for (const value of values) {
-    if (value.length > 0 && !result.includes(value)) result.push(value)
+    if (value.length > 0) result.add(value)
   }
-  return result
+  return result.toArray()
 }
 
 /** Split a prompt into sentences on CJK sentence stops, newlines and `. ` */

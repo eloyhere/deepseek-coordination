@@ -18,11 +18,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { Config, resolveConfig, type CoordinationConfig } from './host/config.js'
 import { CoordinationService } from './host/coordination.js'
 import { createRuntime, installTurnLifecycle } from './host/dsh.js'
+import { applyConfigPatch } from './host/selection.js'
 import { registerCoordinationTools, toolRegistryOf } from './host/tools.js'
 import type { TakeoverGateAnswer } from './host/takeover-gate.js'
 import { CoordinationError, toErrorJson } from './shared/error.js'
 import { normaliseLocale, type Locale } from './shared/i18n.js'
 import type { Profession } from './shared/enum.js'
+import type { ConfigPatch } from './shared/selection.js'
 
 export const name = 'deepseek-coordination'
 
@@ -95,6 +97,31 @@ function sessionOf(url: URL, body?: Record<string, unknown>): string {
   return (fromQuery ?? fromBody ?? '').trim()
 }
 
+/** The optional DSH settings port; not every host build exposes one. */
+interface SettingsUpdatePort {
+  update?: (namespace: string, patch: Record<string, unknown>) => unknown
+}
+
+/**
+ * Best-effort persistence of an already-applied settings patch.
+ *
+ * DSH owns persistence; the plugin never writes a second config file. When the
+ * host exposes `ctx.settings.update`, the patch is forwarded under the plugin
+ * name. A missing port or a refusal leaves the live config (already applied) in
+ * force and reports `persisted: false`, so the page can say "applies to this
+ * process only" instead of claiming a durable save.
+ */
+async function persistConfig(context: Context, patch: ConfigPatch): Promise<boolean> {
+  const settings = (context as unknown as { settings?: SettingsUpdatePort }).settings
+  if (settings === undefined || typeof settings.update !== 'function') return false
+  try {
+    await settings.update(name, { ...patch })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function apply(context: Context, configInput?: Partial<CoordinationConfig>): void {
   const config = resolveConfig(configInput)
   const runtime = createRuntime(context)
@@ -113,7 +140,7 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
 
   context.effect(() => installTurnLifecycle(context, {
     begin: async (observation) => {
-      await service.beginTurn(observation.session, observation.turn)
+      await service.beginTurn(observation.session, observation.turn, observation.prompt ?? '')
     },
     end: async (observation) => {
       service.endTurn(observation.session, 'done')
@@ -351,6 +378,49 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
           if (path === '/config/compaction' && method === 'POST') {
             const body = asRecord(await readJsonBody(request)) ?? {}
             json(response, { ok: true, value: service.applyCompactionPolicy(body) })
+            return
+          }
+
+          /*
+           * Full settings surface (v24 §19):
+           *   GET  /config -> ConfigView { values, defaults }
+           *   POST /config { patch: { "plan.threshold": 0.6 } }
+           *        -> { applied, ignored, normalised, persisted, config }
+           * The patch route validates against the config schema, applies to the
+           * live service config (the session projection derives from it), then
+           * attempts a DSH settings write. Unknown keys and `databasePath` are
+           * refused with INVALID_ARGUMENT, never silently ignored.
+           */
+          if (path === '/config' && method === 'GET') {
+            json(response, { ok: true, value: service.selection.configView() })
+            return
+          }
+
+          if (path === '/config' && method === 'POST') {
+            const body = asRecord(await readJsonBody(request))
+            const patch = asRecord(body?.patch) ?? body ?? {}
+            const outcome = applyConfigPatch(service.config, patch as ConfigPatch)
+            // The token governor snapshots the compaction policy at
+            // construction; re-apply the triple so a live edit reaches it.
+            if (outcome.compaction !== null) service.applyCompactionPolicy(outcome.compaction)
+            // Persist only what was actually written: ignored (forced /
+            // read-only / planned) paths must never leak into a DSH settings
+            // write, even though they were valid request keys.
+            const appliedPatch: Record<string, unknown> = {}
+            for (const key of outcome.applied) appliedPatch[key] = patch[key]
+            const persisted = outcome.applied.length > 0
+              ? await persistConfig(context, appliedPatch as ConfigPatch)
+              : false
+            json(response, {
+              ok: true,
+              value: {
+                applied: outcome.applied,
+                ignored: outcome.ignored,
+                normalised: outcome.normalised,
+                persisted,
+                config: service.selection.configView(),
+              },
+            })
             return
           }
 

@@ -36,12 +36,27 @@ import {
   toValidation,
 } from '../shared/enum.js'
 import type {
+  ConfigPatch,
+  ConfigValues,
+  ConfigView,
   PermissionPresetView,
   SelectionLockView,
   SelectionPatch,
+  SelectionFreezeMap,
+  SelectionFreezeView,
+  SelectionPhase,
   SelectionState,
   SelectionStateConfig,
+  SettingsControl,
 } from '../shared/selection.js'
+import {
+  EDITABLE_CONFIG_KEYS,
+  SETTINGS_CONTROLS_BY_KEY,
+  isEditableControl,
+  validateConfigScalar,
+  writeConfigPath,
+} from '../shared/selection.js'
+import { Config, resolveCompaction, resolveConfig, type CoordinationConfig } from './config.js'
 import {
   InvalidArgumentError,
   InvalidStateError,
@@ -49,10 +64,29 @@ import {
   ProfessionLockedError,
 } from '../shared/error.js'
 import { assertProfession, type ProfessionModule } from './profession.js'
-import { mapSelection, mapTurn } from './row.js'
+import { mapSelection, mapTurn, number, text } from './row.js'
 import type { Row } from './row.js'
 
 const ACTIVE_TURN = `status NOT IN ('done', 'failed', 'cancelled', 'abandoned')`
+
+/** Plan statuses that keep the plan (and therefore `validation`) frozen. */
+const ACTIVE_PLAN: ReadonlySet<string> = new Set(['draft', 'scored', 'active'])
+
+/** A goal row that is not a `cleared` tombstone keeps `interaction` frozen. */
+const CLEARED_GOAL = 'cleared'
+
+/** The active turn plus the status of the plan/goal it points at. */
+interface PhaseRow {
+  ordinal: number
+  status: string
+  created: number
+  planHandle?: string
+  planStatus?: string
+  planCreated?: number
+  goalHandle?: string
+  goalStatus?: string
+  goalCreated?: number
+}
 
 export class SelectionModule {
   private readonly host: ModuleHost
@@ -83,6 +117,7 @@ export class SelectionModule {
     assertSessionId(session)
     const selection = this.get(session)
     const turn = this.activeTurn(session)
+    const frozen = this.frozenPhases(session)
     const presets = this.listPreset()
     const preset = this.currentPreset(session)
     const config = this.configuration()
@@ -98,6 +133,7 @@ export class SelectionModule {
         : { defaultMode: this.host.sandboxPolicy.defaultMode }),
       tooltip: config.showTooltip,
       config,
+      ...(Object.keys(frozen).length === 0 ? {} : { frozen }),
     }
   }
 
@@ -142,9 +178,15 @@ export class SelectionModule {
   }
 
   /**
-   * Store one patch. A profession change against an active turn is refused;
-   * every other dimension is a preference for the next turn and stays writable.
-   * The permission preset is applied to DSH immediately and never persisted.
+   * Store one patch. The running phases are enforced here, not only in the
+   * composer: a profession change against an active turn is refused, a
+   * `validation` change while the turn's plan is open is refused, and an
+   * `interaction` change while the turn's goal is set is refused. The other
+   * dimensions are preferences for the next turn and stay writable.
+   *
+   * The phase check compares against the stored value: replaying an unchanged
+   * value is not an edit and stays lawful, so an offline replay cannot get
+   * stuck behind a freeze it never actually crossed.
    */
   set(session: string, patch: SelectionPatch): SelectionState {
     assertSessionId(session)
@@ -168,6 +210,34 @@ export class SelectionModule {
     if (patch.scene !== undefined) assertOneOf('scene', patch.scene, SceneValues)
     if (patch.validation !== undefined) assertOneOf('validation', patch.validation, ValidationValues)
     if (patch.command !== undefined) assertOneOf('command', patch.command, CommandValues)
+
+    const phases = this.phaseRow(session)
+    if (
+      patch.interaction !== undefined
+      && patch.interaction !== current.interaction
+      && phases?.goalStatus !== undefined
+      && phases.goalStatus !== CLEARED_GOAL
+    ) {
+      throw new InvalidStateError('interaction is frozen until the current goal is cleared', {
+        setting: 'interaction',
+        phase: 'goal',
+        turn: phases.ordinal,
+        ...(phases.goalHandle === undefined ? {} : { goal: phases.goalHandle }),
+      })
+    }
+    if (
+      patch.validation !== undefined
+      && patch.validation !== current.validation
+      && phases?.planStatus !== undefined
+      && ACTIVE_PLAN.has(phases.planStatus)
+    ) {
+      throw new InvalidStateError('validation is frozen until the current plan ends', {
+        setting: 'validation',
+        phase: 'plan',
+        turn: phases.ordinal,
+        ...(phases.planHandle === undefined ? {} : { plan: phases.planHandle }),
+      })
+    }
 
     if (patch.preset !== undefined) this.applyPermission(session, patch.preset)
 
@@ -309,6 +379,83 @@ export class SelectionModule {
     }
   }
 
+  /**
+   * Composer dimensions frozen by the session's running turn / plan / goal.
+   *
+   * Mapping (v24 §15.1): turn → `profession`, plan → `validation`,
+   * goal → `interaction`. The map is re-derived from the rows on every call —
+   * there is no stored flag and no client latch — so a finished plan, a cleared
+   * goal or a closed turn unfreezes the dropdown on the next poll, and every
+   * newly created plan/goal freezes it again for as long as that row is open.
+   */
+  frozenPhases(session: string): SelectionFreezeMap {
+    const row = this.phaseRow(session)
+    if (row === undefined) return {}
+    const frozen: SelectionFreezeMap = {
+      profession: {
+        phase: 'turn',
+        turn: row.ordinal,
+        status: row.status,
+        since: row.created,
+      },
+    }
+    if (row.planStatus !== undefined && ACTIVE_PLAN.has(row.planStatus)) {
+      const plan: SelectionFreezeView = {
+        phase: 'plan',
+        turn: row.ordinal,
+        status: row.planStatus,
+        ...(row.planHandle === undefined ? {} : { handle: row.planHandle }),
+        ...(row.planCreated === undefined ? {} : { since: row.planCreated }),
+      }
+      frozen.validation = plan
+    }
+    if (row.goalStatus !== undefined && row.goalStatus !== CLEARED_GOAL) {
+      const goal: SelectionFreezeView = {
+        phase: 'goal',
+        turn: row.ordinal,
+        status: row.goalStatus,
+        ...(row.goalHandle === undefined ? {} : { handle: row.goalHandle }),
+        ...(row.goalCreated === undefined ? {} : { since: row.goalCreated }),
+      }
+      frozen.interaction = goal
+    }
+    return frozen
+  }
+
+  /** One read for {@link frozenPhases}: active turn + its plan/goal status. */
+  private phaseRow(session: string): PhaseRow | undefined {
+    const row = this.host.db.get<Row>(
+      `SELECT t.ordinal, t.status, t.created,
+              p.handle AS plan_handle, p.status AS plan_status, p.created AS plan_created,
+              g.handle AS goal_handle, g.status AS goal_status, g.created AS goal_created
+         FROM turn t
+         JOIN session s ON s.identity = t.session
+         LEFT JOIN plan p ON p.identity = t.plan
+         LEFT JOIN goal g ON g.identity = t.goal
+        WHERE s.handle = ? AND ${ACTIVE_TURN.replaceAll('status', 't.status')}
+        ORDER BY t.identity DESC LIMIT 1`,
+      session,
+    )
+    if (row === undefined) return undefined
+    const planHandle = optionalText(row, 'plan_handle')
+    const planStatus = optionalText(row, 'plan_status')
+    const planCreated = optionalNumber(row, 'plan_created')
+    const goalHandle = optionalText(row, 'goal_handle')
+    const goalStatus = optionalText(row, 'goal_status')
+    const goalCreated = optionalNumber(row, 'goal_created')
+    return {
+      ordinal: number(row, 'ordinal', 0),
+      status: text(row, 'status', 'pending'),
+      created: number(row, 'created', 0),
+      ...(planHandle === undefined ? {} : { planHandle }),
+      ...(planStatus === undefined ? {} : { planStatus }),
+      ...(planCreated === undefined ? {} : { planCreated }),
+      ...(goalHandle === undefined ? {} : { goalHandle }),
+      ...(goalStatus === undefined ? {} : { goalStatus }),
+      ...(goalCreated === undefined ? {} : { goalCreated }),
+    }
+  }
+
   /** DSH's permission preset catalog projected for the dropdown. */
   listPreset(): PermissionPresetView[] {
     const port = this.host.permissionPresets
@@ -388,6 +535,201 @@ export class SelectionModule {
   } {
     return { interaction: InteractionLabel, permission: PermissionLabel }
   }
+
+  /**
+   * The full redacted configuration view (v24 §19) the settings page reads.
+   *
+   * `defaults` is `resolveConfig(undefined)`, so the page never carries a
+   * second copy of a default literal and can tell "changed" from "schema
+   * default". The projection is derived on every call: there is no cached
+   * second source of truth to fall out of sync after a patch.
+   */
+  configView(): ConfigView {
+    return buildConfigView(this.host.config)
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Full configuration view and patch (v24 §19, GET/POST /config)
+ * ------------------------------------------------------------------------- */
+
+/** Memoised schema defaults; `resolveConfig(undefined)` is deterministic. */
+let schemaDefaults: ConfigValues | undefined
+
+/** Project the resolved config into the redacted, wire-safe view. */
+export function buildConfigView(config: CoordinationConfig): ConfigView {
+  schemaDefaults ??= configValuesOf(resolveConfig(undefined))
+  return { values: configValuesOf(config), defaults: schemaDefaults }
+}
+
+/** The schema defaults alone, for tests and the docs catalog. */
+export function defaultConfigValues(): ConfigValues {
+  schemaDefaults ??= configValuesOf(resolveConfig(undefined))
+  return schemaDefaults
+}
+
+/** Copy every group; the view never aliases a live config object. */
+function configValuesOf(config: CoordinationConfig): ConfigValues {
+  return {
+    maxTurnPerSession: config.maxTurnPerSession,
+    defaultLease: config.defaultLease,
+    clarifyTimeout: config.clarifyTimeout,
+    profession: {
+      enabled: config.profession.enabled,
+      lock: config.profession.lock,
+      default: toProfession(config.profession.default),
+      rebuildCanReselect: config.profession.rebuildCanReselect,
+      abandonCanReselect: config.profession.abandonCanReselect,
+      audit: config.profession.audit,
+      errorHint: config.profession.errorHint,
+    },
+    plan: {
+      threshold: config.plan.threshold,
+      maxRebuild: config.plan.maxRebuild,
+      weights: { ...config.plan.weights },
+      dimensions: { ...config.plan.dimensions },
+    },
+    orchestration: { ...config.orchestration },
+    cache: { ...config.cache },
+    compaction: { ...config.compaction },
+    bayesian: { ...config.bayesian },
+    comprehension: { ...config.comprehension },
+    ui: { ...config.ui },
+    parser: { ...config.parser },
+    chain: { ...config.chain },
+    tools: { ...config.tools },
+    scenes: {
+      dialogue: { ...config.scenes.dialogue },
+      writing: { ...config.scenes.writing },
+      office: { ...config.scenes.office },
+      research: { ...config.scenes.research },
+      engineering: { ...config.scenes.engineering },
+      iterate: { ...config.scenes.iterate },
+    },
+    defaults: {
+      profession: toProfession(config.defaults.profession),
+      interaction: toInteraction(config.defaults.interaction),
+      scene: toScene(config.defaults.scene),
+      validation: toValidation(config.defaults.validation),
+      command: toCommandType(config.defaults.command),
+    },
+  }
+}
+
+/** Result of applying one settings patch to the live config. */
+export interface ConfigPatchOutcome {
+  /** Paths written to the live config. */
+  applied: string[]
+  /** Known but non-editable paths (forced/read-only/planned); not written. */
+  ignored: string[]
+  /** `plan.weights.*` paths the resolver re-normalised. */
+  normalised: string[]
+  /** The triple the caller must hand to `applyCompactionPolicy`, when touched. */
+  compaction: { auto: boolean; soft: number; hard: number } | null
+  /** The config after the write, projected for the wire. */
+  config: ConfigView
+}
+
+/**
+ * Apply one flat config patch to a live config object.
+ *
+ * Validation happens before a single field is written:
+ *  - `databasePath` / `database` are refused outright (deployment secret);
+ *  - an unknown path is `INVALID_ARGUMENT`, never silently dropped;
+ *  - a known but non-editable path (forced/read-only/planned/local) is
+ *    reported in `ignored` and left untouched;
+ *  - the scalar must satisfy the catalog type/range/options;
+ *  - the nested patch must satisfy the real Schemastery schema, so the rules
+ *    are the same ones `resolveConfig` enforces for a config file.
+ *
+ * The write re-resolves the whole config, which re-applies every invariant:
+ * plan weights normalise to 1, the forced profession flags stay true,
+ * `profession.default` mirrors `defaults.profession`, and the compaction policy
+ * is clamped. Callers that own a token governor must pass
+ * {@link ConfigPatchOutcome.compaction} back to `CoordinationService` so the
+ * governor snapshot is rebuilt (a plain field mutation cannot reach it).
+ */
+export function applyConfigPatch(config: CoordinationConfig, patch: ConfigPatch): ConfigPatchOutcome {
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+    throw new InvalidArgumentError('config patch must be an object', { received: typeof patch })
+  }
+  const applied: string[] = []
+  const ignored: string[] = []
+  const nested: Record<string, unknown> = {}
+  const compaction: Record<string, unknown> = {}
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === 'databasePath' || key === 'database') {
+      throw new InvalidArgumentError(`config key ${key} is not writable from settings`, {
+        key,
+        reason: 'deployment secret',
+      })
+    }
+    const entry: SettingsControl | undefined = SETTINGS_CONTROLS_BY_KEY.get(key)
+    if (entry === undefined) {
+      throw new InvalidArgumentError(`unknown config key: ${key}`, { key, allowed: [...EDITABLE_CONFIG_KEYS] })
+    }
+    if (!isEditableControl(entry)) {
+      ignored.push(key)
+      continue
+    }
+    const problem = validateConfigScalar(entry, value)
+    if (problem !== undefined) {
+      throw new InvalidArgumentError(`invalid value for ${key}: ${problem}`, { key, problem })
+    }
+    if (key.startsWith('compaction.')) compaction[key.slice('compaction.'.length)] = value
+    else writeConfigPath(nested, key, value)
+    applied.push(key)
+  }
+
+  try {
+    // The schema is the authority for types and ranges; the catalog checks
+    // above only reproduce its bounds for the settings page.
+    Config(nested)
+  } catch (error) {
+    throw new InvalidArgumentError(`config patch rejected: ${messageOf(error)}`, {
+      reason: messageOf(error),
+    })
+  }
+
+  const resolved = resolveConfig(mergeConfig(config, nested) as Partial<CoordinationConfig>)
+  Object.assign(config, resolved)
+
+  let compactionTriple: { auto: boolean; soft: number; hard: number } | null = null
+  if (Object.keys(compaction).length > 0) {
+    config.compaction = resolveCompaction({ ...config.compaction, ...compaction } as CoordinationConfig['compaction'])
+    compactionTriple = {
+      auto: config.compaction.auto,
+      soft: config.compaction.soft,
+      hard: config.compaction.hard,
+    }
+  }
+
+  return {
+    applied,
+    ignored,
+    normalised: applied.filter((key) => key.startsWith('plan.weights.')),
+    compaction: compactionTriple,
+    config: buildConfigView(config),
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** Deep merge a nested patch over the current config, never mutating either. */
+function mergeConfig(base: unknown, patch: unknown): unknown {
+  if (!isRecord(base) || !isRecord(patch)) return patch === undefined ? base : patch
+  const result: Record<string, unknown> = { ...base }
+  for (const [key, value] of Object.entries(patch)) {
+    result[key] = key in result ? mergeConfig(result[key], value) : value
+  }
+  return result
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -466,6 +808,18 @@ export function abandonProfession(deps: ProfessionRouteDeps, session: string): S
   })
 }
 
+/** Read an optional TEXT column from a LEFT JOIN (NULL means "no row"). */
+function optionalText(row: Row, key: string): string | undefined {
+  const value = row[key]
+  return typeof value === 'string' ? value : undefined
+}
+
+/** Read an optional INTEGER column from a LEFT JOIN (NULL means "no row"). */
+function optionalNumber(row: Row, key: string): number | undefined {
+  const value = row[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
 function assertSessionId(session: unknown): asserts session is string {
   if (typeof session !== 'string' || session.trim().length === 0) {
     throw new InvalidArgumentError('session must be a non-empty DSH session id')
@@ -480,4 +834,13 @@ function assertOneOf<T extends string>(field: string, value: unknown, allowed: r
 
 /* Re-exported for callers that build a patch from a form. */
 export type { SelectionPatch, SelectionState, SelectionStateConfig }
-export type { CommandType, Interaction, Profession, Scene, Validation }
+export type {
+  CommandType,
+  Interaction,
+  Profession,
+  Scene,
+  SelectionFreezeMap,
+  SelectionFreezeView,
+  SelectionPhase,
+  Validation,
+}

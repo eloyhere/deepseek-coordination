@@ -7,18 +7,27 @@
  * corresponding lifecycle step commits.
  */
 import type {
+  CellValueType,
   CommandType,
   Interaction,
+  OfficeKind,
   PlanMode,
   PlanStatus,
   Profession,
   ProfessionStatus,
+  ProofStatus,
   RecoverySuggestion,
   ResourceKind,
   Scene,
   ScoreCategory,
   StageName,
   StageStatus,
+  StatementKind,
+  StructuralForm,
+  StructuralKind,
+  StructuralRelation,
+  StructuralRole,
+  StructuralStatus,
   SubTaskStatus,
   TakeoverStatus,
   TakeoverType,
@@ -867,3 +876,121 @@ export interface Selection {
 
 /** Alias used where a DSH `Session` type would otherwise collide. */
 export type CoordinationSession = Session
+
+/* ------------------------------------------------------------------------- *
+ * v24 structural concept metadata (parser-layer contract)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Body-free metadata shared by every extracted structural/domain concept.
+ *
+ * It is the projection contract between the text parsers and the file layer: a
+ * parser attaches it to `NodeMetadata.domain` only when the source contains an
+ * explicit marker (front matter, heading outline, fenced div, HTML element,
+ * LaTeX sectioning command, contract tag, CSV/TSV structure). No field is ever
+ * inferred from prose.
+ *
+ * `locator` is the concept's natural key inside one parse. `partOf`/`contains`
+ * are **locators**, never public handles: handles are host-layer identifiers and
+ * a parser never fabricates one. The projection layer maps locators to the
+ * deterministic handles from `node-registry.ts`.
+ */
+export interface ConceptBase {
+  /** Structural, formal statement or office concept kind. */
+  kind: StructuralKind | StatementKind | OfficeKind
+  /** Natural key, e.g. `document:docs/a.md/chapter:2`; not a public handle. */
+  locator?: string
+  /** Locator of the parent concept, when containment is locally provable. */
+  partOf?: string
+  /** Locators of child concepts, in source order (capped). */
+  contains?: string[]
+}
+
+/**
+ * One explicit Book/Part/Chapter/Article/Section/Paragraph/Condition/Person/
+ * Venue concept.
+ *
+ * `status` is typed by `StructuralStatus`: a `Condition` uses `ConditionStatus`
+ * (`unknown` by default), a statement-kind concept uses `StatementStatus`.
+ * `proofStatus` exists only for `proof` concepts and is absent unless the proof
+ * environment itself is explicit.
+ */
+export interface StructuralConcept extends ConceptBase {
+  /** Structural kind, or the formal statement kind for a statement concept. */
+  kind: StructuralKind | StatementKind
+  /** Explicit form: chapter form, condition form, venue form, or `sectioning`. */
+  form?: StructuralForm
+  /** Condition state or statement state; absent when the kind has no state. */
+  status?: StructuralStatus
+  /** Proof completeness; only on a `proof` concept. */
+  proofStatus?: ProofStatus
+  /** 1-based ordinal among concepts of the same `kind` in the file. */
+  ordinal?: number
+  /** Source heading/sectioning level (1 = highest); absent when not a heading. */
+  level?: number
+  /** Explicit author names on a work node (never inferred). */
+  authors?: string[]
+  /** Explicit editor names on a work node (never inferred). */
+  editors?: string[]
+  /** Explicit venue name (front matter only). */
+  venue?: string
+  /** Explicit DOI string (front matter only). */
+  doi?: string
+  /** Explicit book title this work belongs to (front matter only). */
+  book?: string
+  /** Explicit article title (front matter only). */
+  article?: string
+  /** True when the concept came from an explicit marker; false for an implicit Article. */
+  explicit?: boolean
+  /** Condition relation primitive when the marker states one (`require`/`meet`). */
+  relation?: StructuralRelation
+  /** Cross-file target specifier as written (`SUMMARY.md` link), never resolved. */
+  target?: string
+  /** Authority role for a `person` concept. */
+  role?: StructuralRole
+  /**
+   * Natural locator/name of what a condition applies to (e.g. an attached
+   * symbol name); a handle for `Plan`/`SubTask` targets is host-only.
+   */
+  appliesTo?: string
+}
+
+/**
+ * Office sheet/cell concept, used by the bounded CSV/TSV parser. The values are
+ * structure only: a cell's raw text is never stored, only its address, type and
+ * the injection-risk flag for a leading spreadsheet metacharacter.
+ */
+export interface OfficeConcept extends ConceptBase {
+  kind: OfficeKind
+  /** 1-based ordinal among concepts of the same `kind` in the file. */
+  ordinal?: number
+  /** Workbook/sheet name this cell belongs to, when explicit. */
+  sheet?: string
+  /** A1 address (1-based), e.g. `B3`. */
+  address?: string
+  /** 0-based row index (matches `SparseGrid`/`Cell.rowIndex`). */
+  rowIndex?: number
+  /** 0-based column index (matches `SparseGrid`/`Cell.columnIndex`). */
+  columnIndex?: number
+  /** Sheet row count, on a `sheet` concept. */
+  rowCount?: number
+  /** Sheet column count, on a `sheet` concept. */
+  columnCount?: number
+  /** Non-empty cell count, on a `sheet` concept. */
+  cellCount?: number
+  /** Range shape, on a `range` concept. */
+  rangeForm?: 'cell' | 'row' | 'column' | 'named'
+  /** First A1 address of a `range` concept. */
+  start?: string
+  /** Last A1 address of a `range` concept (absent for a single cell). */
+  end?: string
+  /** True when a sheet/range scan hit a documented row/column/cell cap. */
+  truncated?: boolean
+  /** Cell value type derived from the raw text; never an evaluated result. */
+  valueType?: CellValueType
+  /** True when the raw text starts with `=`, `+`, `-`, `@`, tab or CR. */
+  injectionRisk?: boolean
+}
+
+/** Any concept a parser may put on `NodeMetadata.domain`. */
+export type ConceptMetadata = StructuralConcept | OfficeConcept

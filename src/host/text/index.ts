@@ -10,11 +10,11 @@
  * Nothing here is imported by the plugin entry point yet; the file layer and
  * the domain store will call these APIs in a later phase.
  */
-import { CssParser, HtmlParser, MarkdownParser } from './markup.js'
+import { CssParser, DelimitedParser, HtmlParser, MarkdownParser } from './markup.js'
 import { JavaScriptParser } from './javascript.js'
 import { LatexParser } from './tex.js'
 import { ParserRegistry, extensionOf } from './parser.js'
-import type { ParseOptions, ParseResult, Parser } from './parser.js'
+import type { NodeMetadata, ParseOptions, ParseResult, Parser } from './parser.js'
 import { createDependencyGraph } from './dependency.js'
 import type {
   DependencyCounts,
@@ -33,6 +33,7 @@ export const builtinParsers: readonly Parser[] = [
   new HtmlParser(),
   new MarkdownParser(),
   new LatexParser(),
+  new DelimitedParser(),
 ]
 
 /** Build a registry; pass a custom list to override the P0 set. */
@@ -80,8 +81,21 @@ export function refreshFileText(path: string, text: string, options: ParseOption
   return parseFileText(path, text, options)
 }
 
-/** One file handed to `buildDependencyGraph`. */
-export interface TextFile {
+/**
+ * Parser nodes that carry explicit structural/domain metadata
+ * (`NodeMetadata.domain`, see `docs/domain-extraction-v24.md`).
+ *
+ * This is the projection seam for the file layer: `ParseService.build()` should
+ * append these nodes to `ParsedFile.nodes` (they are already `NodeMetadata`, so
+ * `NodeRegistry.register` and `ChainEngine.index` accept them unchanged) and
+ * expose `domain.kind`/`domain.locator`/`partOf`/`contains` on the card/facts
+ * types. No body text is involved.
+ */
+export function domainNodesOf(result: ParseResult): NodeMetadata[] {
+  return (result.nodes ?? []).filter((node) => node.domain !== undefined)
+}
+
+/** One file handed to `buildDependencyGraph`. */export interface TextFile {
   path: string
   text: string
   /** File size in bytes, when the file layer knows it. */

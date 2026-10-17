@@ -47,6 +47,8 @@
 import type { AgentView, ModuleHost } from './module.js'
 import type { PermissionResult } from '../shared/entity.js'
 import { InvalidArgumentError } from '../shared/error.js'
+import { OrderedSet } from '../shared/set.js'
+import { Queue } from '../shared/stack.js'
 import { number, text } from './row.js'
 import type { Row } from './row.js'
 
@@ -268,9 +270,9 @@ export class PermissionModule {
     const session = number(turnRow, 'session')
 
     const tokens = tokenize(raw)
-    let verb = stripPrefix((tokens.shift() ?? '').toLowerCase())
+    let verb = stripPrefix((tokens.dequeue() ?? '').toLowerCase())
     if (verb === 'permission' || verb === '权限') {
-      verb = stripPrefix((tokens.shift() ?? '').toLowerCase())
+      verb = stripPrefix((tokens.dequeue() ?? '').toLowerCase())
     }
 
     if (AllowVerb.has(verb)) return this.commandAllow(session, tokens, raw)
@@ -284,37 +286,37 @@ export class PermissionModule {
    * Command helpers
    * ----------------------------------------------------------------------- */
 
-  private commandAllow(session: number, tokens: string[], raw: string): PermissionResult {
+  private commandAllow(session: number, tokens: Queue<string>, raw: string): PermissionResult {
     const parsed = extractApproval(tokens)
     if (parsed.error !== undefined) return { allowed: false, reason: parsed.error }
-    const subject = parsed.tokens.shift()?.trim() ?? ''
+    const subject = parsed.tokens.dequeue()?.trim() ?? ''
     if (subject.length === 0) {
       return { allowed: false, reason: 'allow needs a subject: allow <subject> <grant...>' }
     }
-    if (parsed.tokens.length === 0) {
+    if (parsed.tokens.size === 0) {
       return { allowed: false, reason: `allow for "${subject}" needs at least one grant` }
     }
     const reason =
       parsed.policy === undefined
         ? `permission command: ${raw}`
         : `permission command: ${raw} (approval=${parsed.policy})`
-    return this.request(subject, parsed.tokens, reason, session)
+    return this.request(subject, parsed.tokens.toArray(), reason, session)
   }
 
-  private commandDeny(tokens: string[]): PermissionResult {
-    const subject = tokens.shift()?.trim() ?? ''
+  private commandDeny(tokens: Queue<string>): PermissionResult {
+    const subject = tokens.dequeue()?.trim() ?? ''
     return {
       allowed: false,
       reason: subject.length === 0 ? 'permission denied by command' : `permission denied by command for "${subject}"`,
     }
   }
 
-  private commandRevoke(session: number, tokens: string[]): PermissionResult {
-    const subject = tokens.shift()?.trim() ?? ''
+  private commandRevoke(session: number, tokens: Queue<string>): PermissionResult {
+    const subject = tokens.dequeue()?.trim() ?? ''
     if (subject.length === 0) {
       return { allowed: false, reason: 'revoke needs a subject: revoke <subject> [grant...]' }
     }
-    const grants = tokens.length === 0 ? undefined : tokens
+    const grants = tokens.size === 0 ? undefined : tokens.toArray()
     this.revoke(subject, grants, session)
     return {
       allowed: false,
@@ -325,8 +327,8 @@ export class PermissionModule {
     }
   }
 
-  private commandStatus(session: number, tokens: string[]): PermissionResult {
-    const subject = tokens.shift()?.trim() ?? ''
+  private commandStatus(session: number, tokens: Queue<string>): PermissionResult {
+    const subject = tokens.dequeue()?.trim() ?? ''
     const entries =
       subject.length === 0
         ? this.list(session)
@@ -445,16 +447,13 @@ export class PermissionModule {
 /** Trimmed, de-duplicated grant names, or a reason the list is unusable. */
 function normaliseGrant(value: unknown): string[] | string {
   if (!Array.isArray(value)) return 'grant must be an array of permission names'
-  const seen = new Set<string>()
-  const grants: string[] = []
+  const grants = new OrderedSet<string>()
   for (const item of value) {
     const cleaned = typeof item === 'string' ? item.trim() : ''
     if (cleaned.length === 0) return 'every grant must be a non-empty name'
-    if (seen.has(cleaned)) continue
-    seen.add(cleaned)
-    grants.push(cleaned)
+    grants.add(cleaned)
   }
-  return grants
+  return grants.toArray()
 }
 
 function requireSubject(value: unknown): string {
@@ -471,12 +470,12 @@ function assertIdentity(name: string, value: unknown): asserts value is number {
 }
 
 /** Split a command line into tokens, honouring simple single/double quotes. */
-function tokenize(command: string): string[] {
-  const tokens: string[] = []
+function tokenize(command: string): Queue<string> {
+  const tokens = new Queue<string>()
   const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g
   for (const match of command.matchAll(pattern)) {
     const token = match[1] ?? match[2] ?? match[3] ?? ''
-    if (token.length > 0) tokens.push(token)
+    if (token.length > 0) tokens.enqueue(token)
   }
   return tokens
 }
@@ -491,22 +490,24 @@ function stripPrefix(token: string): string {
  * The value must be written with `=` or `:` (the command face canonicalises it
  * that way), so free prose such as "approval never needed" is not misread.
  */
-function extractApproval(tokens: string[]): {
-  tokens: string[]
+function extractApproval(tokens: Queue<string>): {
+  tokens: Queue<string>
   policy?: 'never' | 'ask'
   error?: string
 } {
-  const rest: string[] = []
+  const rest = new Queue<string>()
   let policy: 'never' | 'ask' | undefined
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index] ?? ''
+  while (tokens.size > 0) {
+    const token = tokens.dequeue() ?? ''
     const match = /^(?:--?)?approval(?:[=:](.+))?$/i.exec(token)
     if (match === null) {
-      rest.push(token)
+      rest.enqueue(token)
       continue
     }
     const inline = match[1]
-    const raw = inline === undefined ? tokens[index + 1] : inline
+    // A separate value is the very next token; `peek`/`dequeue` is the queue's
+    // O(1) equivalent of the former `tokens[index + 1]` lookahead.
+    const raw = inline === undefined ? tokens.dequeue() : inline
     if (raw === undefined) {
       return { tokens: rest, error: 'approval directive needs a policy: never or ask' }
     }
@@ -514,7 +515,6 @@ function extractApproval(tokens: string[]): {
     if (value !== 'never' && value !== 'ask') {
       return { tokens: rest, error: `unknown approval policy: ${raw}` }
     }
-    if (inline === undefined) index += 1
     policy = value
   }
   return { tokens: rest, ...(policy === undefined ? {} : { policy }) }

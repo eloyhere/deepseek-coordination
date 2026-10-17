@@ -131,6 +131,68 @@ export interface UiConfig {
   locale: string
 }
 
+/**
+ * File-processing policy (v24 `docs/file-processing-v24.md` §4, domain model §7).
+ *
+ * The values are the documented hard caps: 1 MiB of source text, 200 000
+ * tokens, AST depth 256, a 2 s parse budget, a 256-entry parse cache and the
+ * 20 000 / 100 000 dependency-graph bounds. They live in the schema so a
+ * deployment can tighten them in one place.
+ *
+ * Consumers and timing (`src/host/tools.ts`): `enabled` gates the four file
+ * tools at registration time and is re-checked live (a disabled parser makes the
+ * registered tools fail closed); every limit is re-applied to the lazy
+ * `ToolRuntime` when the config signature changes, so a `/config` patch reaches
+ * the next tool call instead of waiting for a restart. `maxAstDepth` is threaded
+ * into the parser's `maxDepth` and the two dependency-graph caps bound
+ * `ParseService.dependencyGraph`; all three are clamped to the parser-layer hard
+ * caps. The settings catalog still marks those three keys `planned`; that is a
+ * catalog flag, not a missing consumer.
+ */
+export interface ParserConfig {
+  /** Master switch for the file tools; read at registration and on every call. */
+  enabled: boolean
+  /** Maximum source text in bytes; the parser truncates and marks `truncated`. */
+  maxFileBytes: number
+  /** Maximum tokens emitted by one parse. */
+  maxTokens: number
+  /** AST depth handed to the parser (`maxDepth`), capped to `MAX_AST_DEPTH`. */
+  maxAstDepth: number
+  /** Parse wall-clock budget in milliseconds. */
+  timeoutMs: number
+  /** Parse-result cache capacity in files. */
+  cacheCapacity: number
+  /** Dependency-graph vertex cap, capped to the parser layer's hard cap. */
+  dependencyGraphMaxVertices: number
+  /** Dependency-graph edge cap, capped to the parser layer's hard cap. */
+  dependencyGraphMaxEdges: number
+}
+
+/**
+ * Chain-projection budget (domain model §3, §7): depth ≤ 8, links ≤ 50,
+ * ~1 500 tokens.
+ *
+ * `src/host/tools.ts` re-applies all three to the lazy `ToolRuntime` whenever the
+ * file-layer config signature changes, so a live `/config` patch reaches the
+ * next query while indexed handles stay valid (`ChainEngine.retune`).
+ */
+export interface ChainConfig {
+  depth: number
+  links: number
+  tokenBudget: number
+}
+
+/**
+ * Model-facing tool output budget. `0` means "no byte cap" (the historical
+ * unbounded `renderJson`); a positive value makes `renderJson` emit a valid JSON
+ * truncation envelope with an explicit marker and byte counts. The value is read
+ * per render, not captured at registration, so a live `/config` change applies
+ * to the very next tool result.
+ */
+export interface ToolConfig {
+  maxResultBytes: number
+}
+
 export interface CoordinationConfig {
   database: string
   databasePath: string
@@ -146,6 +208,12 @@ export interface CoordinationConfig {
   bayesian: BayesianConfig
   comprehension: ComprehensionConfig
   ui: UiConfig
+  /** v24 file-processing policy (`docs/file-processing-v24.md` §4). */
+  parser: ParserConfig
+  /** Chain-projection budget (domain model §3); applied live by `ToolRuntime`. */
+  chain: ChainConfig
+  /** Model-facing tool output budget; `0` keeps the unbounded render. */
+  tools: ToolConfig
   /** v24 §19: per-scene execution policy. */
   scenes: Record<Scene, SceneProfile>
   /** Defaults used when the composer sends no explicit selection. */
@@ -161,9 +229,9 @@ export interface CoordinationConfig {
 export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
   database: Schema.string().default('coordination'),
   databasePath: Schema.string().default(''),
-  maxTurnPerSession: Schema.number().min(1).default(1000),
-  defaultLease: Schema.number().min(1000).default(30000),
-  clarifyTimeout: Schema.number().min(1000).default(30000),
+  maxTurnPerSession: Schema.number().min(1).max(1_000_000).default(1000),
+  defaultLease: Schema.number().min(1000).max(86_400_000).default(30000),
+  clarifyTimeout: Schema.number().min(1000).max(600_000).default(30000),
   profession: Schema.object({
     enabled: Schema.boolean().default(true),
     lock: Schema.boolean().default(true),
@@ -185,16 +253,17 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
   }),
   plan: Schema.object({
     threshold: Schema.number().min(0).max(1).default(0.5),
-    maxRebuild: Schema.number().min(0).default(3),
+    maxRebuild: Schema.number().min(0).max(100).default(3),
     weights: Schema.object({
-      feasibility: Schema.number().default(0.15),
-      coverage: Schema.number().default(0.15),
-      clarity: Schema.number().default(0.1),
-      specificity: Schema.number().default(0.1),
-      alignment: Schema.number().default(0.2),
-      risk: Schema.number().default(0.1),
-      cost: Schema.number().default(0.1),
-      efficiency: Schema.number().default(0.1),
+      // 0..1 per weight; `resolveConfig` normalises the eight to sum 1.
+      feasibility: Schema.number().min(0).max(1).step(0.01).default(0.15),
+      coverage: Schema.number().min(0).max(1).step(0.01).default(0.15),
+      clarity: Schema.number().min(0).max(1).step(0.01).default(0.1),
+      specificity: Schema.number().min(0).max(1).step(0.01).default(0.1),
+      alignment: Schema.number().min(0).max(1).step(0.01).default(0.2),
+      risk: Schema.number().min(0).max(1).step(0.01).default(0.1),
+      cost: Schema.number().min(0).max(1).step(0.01).default(0.1),
+      efficiency: Schema.number().min(0).max(1).step(0.01).default(0.1),
     }).default({
       feasibility: 0.15,
       coverage: 0.15,
@@ -206,14 +275,14 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
       efficiency: 0.1,
     }),
     dimensions: Schema.object({
-      feasibility: Schema.number().default(0.5),
-      coverage: Schema.number().default(0.6),
-      clarity: Schema.number().default(0.5),
-      specificity: Schema.number().default(0.5),
-      alignment: Schema.number().default(0.7),
-      risk: Schema.number().default(0.7),
-      cost: Schema.number().default(0.8),
-      efficiency: Schema.number().default(0.5),
+      feasibility: Schema.number().min(0).max(1).step(0.01).default(0.5),
+      coverage: Schema.number().min(0).max(1).step(0.01).default(0.6),
+      clarity: Schema.number().min(0).max(1).step(0.01).default(0.5),
+      specificity: Schema.number().min(0).max(1).step(0.01).default(0.5),
+      alignment: Schema.number().min(0).max(1).step(0.01).default(0.7),
+      risk: Schema.number().min(0).max(1).step(0.01).default(0.7),
+      cost: Schema.number().min(0).max(1).step(0.01).default(0.8),
+      efficiency: Schema.number().min(0).max(1).step(0.01).default(0.5),
     }).default({
       feasibility: 0.5,
       coverage: 0.6,
@@ -249,10 +318,10 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
     },
   }),
   orchestration: Schema.object({
-    maxReject: Schema.number().min(0).default(2),
-    maxSubTask: Schema.number().min(1).default(32),
+    maxReject: Schema.number().min(0).max(100).default(2),
+    maxSubTask: Schema.number().min(1).max(1000).default(32),
     groundTruth: Schema.boolean().default(true),
-    groundTruthTimeout: Schema.number().min(100).default(5000),
+    groundTruthTimeout: Schema.number().min(100).max(600_000).default(5000),
     allowShellGroundTruth: Schema.boolean().default(false),
     modelRouting: Schema.boolean().default(true),
   }).default({
@@ -265,18 +334,18 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
   }),
   cache: Schema.object({
     enabled: Schema.boolean().default(true),
-    ttl: Schema.number().min(0).default(60000),
-    fingerprintWindow: Schema.number().min(1).default(50),
+    ttl: Schema.number().min(0).max(2_592_000_000).default(60000),
+    fingerprintWindow: Schema.number().min(1).max(10_000).default(50),
     effortWarning: Schema.boolean().default(true),
   }).default({ enabled: true, ttl: 60000, fingerprintWindow: 50, effortWarning: true }),
   compaction: Schema.object({
     auto: Schema.boolean().default(true),
     soft: Schema.number().min(0.3).max(0.9).default(0.7),
     hard: Schema.number().min(0.3).max(0.98).default(0.88),
-    reserve: Schema.number().min(512).default(2048),
+    reserve: Schema.number().min(512).max(10_000_000).default(2048),
     recentTurns: Schema.number().min(2).max(20).default(6),
     cooldown: Schema.number().min(5000).max(600000).default(30000),
-    maxPerSession: Schema.number().min(1).default(20),
+    maxPerSession: Schema.number().min(1).max(10_000).default(20),
   }).default({
     auto: true,
     soft: 0.7,
@@ -288,22 +357,22 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
   }),
   bayesian: Schema.object({
     prior: Schema.number().min(0).max(1).default(0.5),
-    stopEntropy: Schema.number().min(0).default(0.05),
-    infoGain: Schema.number().min(0).default(0.01),
-    maxRoutes: Schema.number().min(1).default(12),
+    stopEntropy: Schema.number().min(0).max(10).default(0.05),
+    infoGain: Schema.number().min(0).max(10).default(0.01),
+    maxRoutes: Schema.number().min(1).max(1000).default(12),
     calibrationFloor: Schema.number().min(0).max(1).default(0.1),
   }).default({ prior: 0.5, stopEntropy: 0.05, infoGain: 0.01, maxRoutes: 12, calibrationFloor: 0.1 }),
   comprehension: Schema.object({
-    stageTimeout: Schema.number().min(100).default(30000),
+    stageTimeout: Schema.number().min(100).max(600_000).default(30000),
     searchEnabled: Schema.boolean().default(true),
-    maxEvidence: Schema.number().min(1).default(8),
-    highHistoryWindow: Schema.number().min(0).default(50),
+    maxEvidence: Schema.number().min(1).max(1000).default(8),
+    highHistoryWindow: Schema.number().min(0).max(100_000).default(50),
   }).default({ stageTimeout: 30000, searchEnabled: true, maxEvidence: 8, highHistoryWindow: 50 }),
   ui: Schema.object({
     toolbar: Schema.boolean().default(true),
     showTooltip: Schema.boolean().default(true),
     takeover: Schema.boolean().default(false),
-    refreshInterval: Schema.number().min(500).default(5000),
+    refreshInterval: Schema.number().min(500).max(86_400_000).default(5000),
     compact: Schema.boolean().default(true),
     locale: Schema.union(['auto', 'zh-CN', 'en-US']).default('auto'),
   }).default({
@@ -314,6 +383,36 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
     compact: true,
     locale: 'auto',
   }),
+  // File-processing caps (docs/file-processing-v24.md §4, domain-model §7).
+  parser: Schema.object({
+    enabled: Schema.boolean().default(true),
+    maxFileBytes: Schema.number().min(1024).max(16_777_216).default(1_048_576),
+    maxTokens: Schema.number().min(1).max(2_000_000).default(200_000),
+    maxAstDepth: Schema.number().min(1).max(4096).default(256),
+    timeoutMs: Schema.number().min(50).max(60_000).default(2000),
+    cacheCapacity: Schema.number().min(1).max(100_000).default(256),
+    dependencyGraphMaxVertices: Schema.number().min(1).max(1_000_000).default(20_000),
+    dependencyGraphMaxEdges: Schema.number().min(1).max(5_000_000).default(100_000),
+  }).default({
+    enabled: true,
+    maxFileBytes: 1_048_576,
+    maxTokens: 200_000,
+    maxAstDepth: 256,
+    timeoutMs: 2000,
+    cacheCapacity: 256,
+    dependencyGraphMaxVertices: 20_000,
+    dependencyGraphMaxEdges: 100_000,
+  }),
+  // Chain projection (domain-model §3, §7): depth ≤ 8, links ≤ 50, ~1 500 tokens.
+  chain: Schema.object({
+    depth: Schema.number().min(1).max(8).default(8),
+    links: Schema.number().min(1).max(50).default(50),
+    tokenBudget: Schema.number().min(100).max(100_000).default(1500),
+  }).default({ depth: 8, links: 50, tokenBudget: 1500 }),
+  // Model-facing tool output budget; 0 keeps today's unbounded render.
+  tools: Schema.object({
+    maxResultBytes: Schema.number().min(0).max(16_777_216).default(0),
+  }).default({ maxResultBytes: 0 }),
   scenes: Schema.object({
     dialogue: sceneSchema(SceneProfiles.dialogue),
     writing: sceneSchema(SceneProfiles.writing),
@@ -353,7 +452,7 @@ function sceneSchema(profile: SceneProfile): SchemaDefinition<SceneProfile> {
     allowBash: Schema.boolean().default(profile.allowBash),
     allowWeb: Schema.boolean().default(profile.allowWeb),
     sandboxOnly: Schema.boolean().default(profile.sandboxOnly),
-    maxIteration: Schema.number().min(1).default(profile.maxIteration),
+    maxIteration: Schema.number().min(1).max(1000).default(profile.maxIteration),
     scoreThreshold: Schema.number().min(0).max(1).default(profile.scoreThreshold),
   }).default(profile) as SchemaDefinition<SceneProfile>
 }

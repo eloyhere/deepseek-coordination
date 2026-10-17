@@ -1,0 +1,60 @@
+name: release
+
+# `lib/` is gitignored, so a raw `github:` install can never work. This job
+# builds the package and attaches the packed tarball to the GitHub Release;
+# that tarball is the supported GitHub install artifact.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          node -e 'const p=require("./package.json"); const tag=process.env.GITHUB_REF_NAME; if (tag !== `v${p.version}`) { console.error(`tag ${tag} does not match package version v${p.version}`); process.exit(1) }'
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test typecheck
+        run: npm run test:tsc
+
+      - name: Test
+        run: npm test
+
+      - name: Pack and verify runtime files
+        run: npm run pack:check
+
+      - name: Pack release tarball
+        run: npm pack
+
+      - name: Attach tarball to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: deepseek-coordination-*.tgz
+          generate_release_notes: true

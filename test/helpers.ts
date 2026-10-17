@@ -104,6 +104,25 @@ const DEFAULT_CONFIG: CoordinationConfig = {
   bayesian: { prior: 0.5, stopEntropy: 0.05, infoGain: 0.01, maxRoutes: 12, calibrationFloor: 0.1 },
   comprehension: { stageTimeout: 30000, searchEnabled: true, maxEvidence: 8, highHistoryWindow: 50 },
   ui: { toolbar: true, showTooltip: true, takeover: false, refreshInterval: 5000, compact: true, locale: 'auto' },
+  // File-processing caps (docs/file-processing-v24.md §4): the documented hard
+  // limits. The file-tool runtime consumes `enabled` at registration and
+  // re-applies every limit (including maxAstDepth and the two dependency-graph
+  // caps) when the live config signature changes.
+  parser: {
+    enabled: true,
+    maxFileBytes: 1_048_576,
+    maxTokens: 200_000,
+    maxAstDepth: 256,
+    timeoutMs: 2000,
+    cacheCapacity: 256,
+    dependencyGraphMaxVertices: 20_000,
+    dependencyGraphMaxEdges: 100_000,
+  },
+  // Chain projection budget (domain-model §3/§7): read by the lazy file-tool
+  // runtime when it constructs ChainEngine.
+  chain: { depth: 8, links: 50, tokenBudget: 1500 },
+  // Model-facing tool output budget; 0 keeps today's unbounded render.
+  tools: { maxResultBytes: 0 },
   // v24 §19: the shared scene table is the schema's `scenes` default; testConfig
   // clones it, so a test may tighten one scene without leaking into the next.
   scenes: SceneProfiles,
@@ -262,6 +281,7 @@ let turnSerial = 0
 let promptSerial = 0
 let comprehensionSerial = 0
 let planSerial = 0
+let goalSerial = 0
 
 function now(): number {
   return Date.now()
@@ -362,6 +382,29 @@ export function insertPlan(db: CoordinationDatabase, turn: number, patch?: Recor
     rebuild: 0,
     mode: 'auto',
     orchestration: 0,
+    created: now(),
+    ...clean(patch),
+  })
+}
+
+/**
+ * Insert a `goal` row for `turn` and return its integer identity. The caller
+ * points `turn.goal` at it (the goal module does that in production), which is
+ * what the selection projection reads.
+ */
+export function insertGoal(
+  db: CoordinationDatabase,
+  session: number,
+  turn: number,
+  patch?: Record<string, unknown>,
+): number {
+  goalSerial += 1
+  return db.insert('goal', {
+    handle: `test-goal-${goalSerial}`,
+    turn,
+    session,
+    content: 'ship the change',
+    status: 'set',
     created: now(),
     ...clean(patch),
   })

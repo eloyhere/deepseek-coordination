@@ -38,7 +38,7 @@
  * | `budgetFor` | O(1) | O(1) |
  * | `planBudget` | O(1) | O(1) |
  * | `valuePerToken` | O(1) | O(1) |
- * | `selectContext` | O(n) scoring + O(n log n) sort (n <= 20,000) | O(n + k) |
+ * | `selectContext` | O(n) scoring + O(n + k log n) heap pops (worst O(n log n)) | O(n + k) |
  * | `shouldRetrieve` | O(1) | O(1) |
  * | `shouldCompact` | O(1) | O(1) |
  * | `normaliseCompactionPatch` | O(1) | O(1) |
@@ -53,11 +53,15 @@
  * removal is a single Set pass over normalised-prefix hashes, so there is no
  * O(n^2) MMR/Jaccard step and no O(n) full-content copy (a JSON round trip of
  * the whole transcript would allocate O(n) extra and serialise non-text
- * fields). The 20,000-chunk cap keeps the one sort O(n log n) with a fixed
- * ceiling; no heap is needed because every chunk costs at least one token, so
- * the selected count can never exceed the fill budget.
+ * fields). Candidates are heapified in O(n) and popped in value order, so a
+ * budget that fills after k accepts costs O(n + k log n) instead of sorting
+ * every candidate; a chunk with zero estimated tokens keeps its place in that
+ * order, so the heap is not abandoned while any can still be accepted.
  */
 import { InvalidArgumentError } from '../shared/error.js'
+import { hashString } from '../shared/hash.js'
+import { BinaryHeap } from '../shared/heap.js'
+import { LruList } from '../shared/lru.js'
 import type { CompactionPolicyConfig, CoordinationConfig } from './config.js'
 
 /* ------------------------------------------------------------------------- *
@@ -244,8 +248,7 @@ export function estimateTokens(text: string): number {
   const sample = memoKey(text)
   const cached = memo.get(sample.key)
   if (cached !== undefined && sampleMatches(cached, length, sample)) {
-    memo.delete(sample.key)
-    memo.set(sample.key, cached)
+    // `get` above already promoted the entry to most-recently used.
     memoHits += 1
     return cached.value
   }
@@ -463,7 +466,7 @@ export function valuePerToken(chunk: ContextChunk): number {
  *
  * @throws InvalidArgumentError for more than 20,000 chunks (fail-closed),
  * malformed chunks, or invalid options.
- * @complexity O(n) scoring + O(n log n) sort; space O(n + k). No O(n^2)
+ * @complexity O(n) scoring + O(n) heapify + O(k log n) pops (worst O(n log n)); space O(n + k). No O(n^2)
  * similarity step.
  */
 export function selectContext(
@@ -495,7 +498,7 @@ export function selectContext(
   const minScore = minScoreOption ?? 0
 
   // One validation + scoring pass. Every chunk is scored exactly once; the
-  // sort then compares precomputed values, never calls valuePerToken again.
+  // heap then compares precomputed values, never calls valuePerToken again.
   const scored: ScoredChunk[] = new Array(chunks.length)
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index]
@@ -527,12 +530,31 @@ export function selectContext(
     estimated += chunks[index].tokens
   }
 
-  const candidates = scored
-    .filter((entry) => !mandatory.has(entry.index) && entry.chunk.score >= minScore)
-    .sort(compareScored)
+  /*
+   * Candidates are ordered by the same total comparator the sort used:
+   * value desc, created asc, id byte-asc, input index asc. The comparator is
+   * total (the index tie-break is unique), so heapified pops are exactly the
+   * sorted order. A zero-token candidate stays acceptable after the budget is
+   * full, so it is counted here and the loop stops only when none remain.
+   */
+  const candidates: ScoredChunk[] = []
+  let zeroTokenCandidates = 0
+  for (const entry of scored) {
+    if (mandatory.has(entry.index) || entry.chunk.score < minScore) continue
+    candidates.push(entry)
+    if (entry.chunk.tokens === 0) zeroTokenCandidates += 1
+  }
+  const priority = new BinaryHeap<ScoredChunk>(compareScored, candidates)
 
   const accepted: number[] = []
-  for (const entry of candidates) {
+  for (;;) {
+    // Every remaining candidate costs at least one token, so none can fit once
+    // the budget is exhausted; zero-token candidates are the only exception.
+    if (estimated >= capacity && zeroTokenCandidates === 0) break
+    const entry = priority.pop()
+    if (entry === undefined) break
+    if (entry.chunk.tokens === 0) zeroTokenCandidates -= 1
+    else if (estimated >= capacity) continue
     // A duplicate of a kept chunk adds nothing but cost (LLMLingua-2: drop
     // redundancy); a chunk that does not fit is skipped, not fatal, so a later
     // smaller chunk can still use the remaining budget.
@@ -1011,7 +1033,12 @@ interface MemoSample {
 }
 
 const ShortTextLimit = 256
-const memo = new Map<string, MemoEntry>()
+/*
+ * The canonical array-backed LRU, not a second Map+eviction implementation.
+ * `get` promotes on a hit and `set` evicts the least-recently used entry at
+ * 256, which is exactly the policy this memo documented before.
+ */
+const memo = new LruList<string, MemoEntry>(TokenPolicy.estimator.memoCapacity)
 let memoHits = 0
 let memoMisses = 0
 
@@ -1137,7 +1164,7 @@ function memoKey(text: string): MemoSample {
   const middleStart = (length >>> 1) - 16
   const middle = text.slice(middleStart, middleStart + 32)
   const tail = text.slice(length - 32)
-  const key = `l${length}:${hash32(head)}:${hash32(middle)}:${hash32(tail)}`
+  const key = `l${length}:${hashKey(head)}:${hashKey(middle)}:${hashKey(tail)}`
   return { key, head, middle, tail }
 }
 
@@ -1148,21 +1175,14 @@ function sampleMatches(entry: MemoEntry, length: number, sample: MemoSample): bo
 }
 
 function remember(sample: MemoSample, length: number, value: number): void {
-  if (memo.size >= TokenPolicy.estimator.memoCapacity) {
-    const oldest = memo.keys().next()
-    if (!oldest.done) memo.delete(oldest.value)
-  }
+  // `set` replaces a collided key in place and evicts the least-recently used
+  // entry when the 256-entry capacity is exceeded.
   memo.set(sample.key, { length, head: sample.head, middle: sample.middle, tail: sample.tail, value })
 }
 
-/** FNV-1a, 32-bit, rendered base 36. Used only for memo keys and dedupe. */
-function hash32(text: string): string {
-  let hash = 0x811c9dc5
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return (hash >>> 0).toString(36)
+/** FNV-1a, 32-bit, rendered base 36. The shared hash is the same function. */
+function hashKey(text: string): string {
+  return hashString(text).toString(36)
 }
 
 /**
@@ -1178,7 +1198,7 @@ function dedupeSignature(text: string): string {
   if (length === 0) return '0:0:0:0'
   const prefixLength = Math.min(length, Math.max(8, Math.ceil(length * 0.8)), 512)
   const prefix = normalised.slice(0, prefixLength)
-  return `${Math.floor(Math.log2(length) * 4)}:${hash32(prefix)}:${hash32(`2:${prefix}`)}`
+  return `${Math.floor(Math.log2(length) * 4)}:${hashKey(prefix)}:${hashKey(`2:${prefix}`)}`
 }
 
 /** Lowercase alphanumerics and CJK, everything else folded to one space. */

@@ -43,6 +43,7 @@ import { clamp, round } from './module.js'
 import type { Action, Answer, Choice, Plan, Predict, Question, Reality, Turn } from '../shared/entity.js'
 import type { Validation } from '../shared/enum.js'
 import { InvalidArgumentError, InvalidStateError } from '../shared/error.js'
+import { RedBlackTree } from '../shared/redblack.js'
 import { mapPlan, mapTurn, bool, number, text } from './row.js'
 import type { Row } from './row.js'
 
@@ -103,19 +104,54 @@ function numbersOf(source: string): number[] {
   return found
 }
 
+/**
+ * Numeric agreement: each left number takes its best similarity against any
+ * right number, and the mean is returned.
+ *
+ * The old shape was a nested O(L*R) scan. Similarity is monotone in the
+ * distance from `value`, so only the nearest candidates can win:
+ *
+ * - for `candidate <= value`, moving the candidate toward `value` lowers
+ *   `value - candidate` while `max(|value|, |candidate|, 1)` never decreases
+ *   its ratio to that gap, so similarity cannot fall;
+ * - for `candidate >= value`, `1 - (candidate - value)/candidate = value/candidate`
+ *   rises as the candidate approaches `value`;
+ * - an exact candidate scores 1, the maximum.
+ *
+ * Therefore the predecessor and successor (plus an exact lookup) cover the
+ * argmax, and a red-black index makes the scan O((L+R) log R) instead of
+ * O(L*R). Ties contribute the same best value, so the returned mean is
+ * identical. `numbersOf` admits finite numbers only; the finite guards below
+ * are defensive (a non-finite key would break the tree comparator).
+ */
 function numericAgreement(left: readonly number[], right: readonly number[]): number {
   if (left.length === 0 || right.length === 0) return 1
+  const candidates = new RedBlackTree<number, true>()
+  for (const candidate of right) {
+    if (Number.isFinite(candidate)) candidates.set(candidate, true)
+  }
+  if (candidates.size === 0) return 1
   let total = 0
   for (const value of left) {
-    let best = 0
-    for (const candidate of right) {
-      const scale = Math.max(Math.abs(value), Math.abs(candidate), 1)
-      const similarity = clamp(1 - Math.abs(value - candidate) / scale, 0, 1)
-      if (similarity > best) best = similarity
+    if (!Number.isFinite(value)) continue
+    if (candidates.has(value)) {
+      total += 1
+      continue
     }
+    let best = 0
+    const lower = candidates.predecessor(value)
+    if (lower !== undefined) best = Math.max(best, numericSimilarity(value, lower))
+    const upper = candidates.successor(value)
+    if (upper !== undefined) best = Math.max(best, numericSimilarity(value, upper))
     total += best
   }
   return round(total / left.length, 4)
+}
+
+/** Similarity of one value/candidate pair, exactly the old inner-loop formula. */
+function numericSimilarity(value: number, candidate: number): number {
+  const scale = Math.max(Math.abs(value), Math.abs(candidate), 1)
+  return clamp(1 - Math.abs(value - candidate) / scale, 0, 1)
 }
 
 /** Read the `{ expected, observed }` pair a `reality` row stores. */

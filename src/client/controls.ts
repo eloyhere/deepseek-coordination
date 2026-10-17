@@ -508,7 +508,14 @@ function controlAria(copy: Copy, name: ControlName, current: string): string {
   })
 }
 
-function tooltipTitle(copy: Copy, name: ControlName, current: string, extra: string[]): React.ReactNode {
+function tooltipTitle(
+  copy: Copy,
+  name: ControlName,
+  current: string,
+  extra: string[],
+  /** Replaces the normal control hint while the control is frozen. */
+  hintOverride?: string,
+): React.ReactNode {
   const lines = [
     React.createElement(
       'div',
@@ -519,7 +526,11 @@ function tooltipTitle(copy: Copy, name: ControlName, current: string, extra: str
         current,
       }),
     ),
-    React.createElement('div', { key: 'hint', style: BODY_LINE_STYLE }, copy.controls[name].hint),
+    React.createElement(
+      'div',
+      { key: 'hint', style: BODY_LINE_STYLE },
+      hintOverride ?? copy.controls[name].hint,
+    ),
   ]
   for (const line of extra) {
     if (line.length > 0) {
@@ -691,7 +702,16 @@ function useSelection(sessionId: string, copy: Copy): SelectionHook {
     }
     publishSelectionFeed(next, local, sessionId)
     const previous = stateRef.current
-    if (previous !== null && selectionStateSignature(previous) === selectionStateSignature(next)) return
+    // The pinned poll signature covers the five choices and the legacy fields;
+    // the phase-freeze map is compared alongside it so a plan/goal that ends
+    // (or a new one that starts) re-renders the composer even when no choice
+    // changed. Both checks are cheap and the encoding stays exactly the one the
+    // complexity audit pinned.
+    const sameSignature = previous !== null
+      && selectionStateSignature(previous) === selectionStateSignature(next)
+    const sameFrozen = previous !== null
+      && JSON.stringify(previous.frozen ?? null) === JSON.stringify(next.frozen ?? null)
+    if (sameSignature && sameFrozen) return
     stateRef.current = next
     stateCache.set(sessionId, next)
     setState(next)
@@ -726,6 +746,16 @@ function useSelection(sessionId: string, copy: Copy): SelectionHook {
     }
     if (outcome.code === 'INVALID_ARGUMENT') {
       flashNotice(copyNow.composer.invalidSelection)
+      return
+    }
+    // The server names the frozen phase in `details`; say when it lifts instead
+    // of a generic failure. Any other INVALID_STATE keeps the generic line.
+    if (outcome.code === 'INVALID_STATE' && outcome.details?.phase === 'plan') {
+      flashNotice(copyNow.composer.frozenPlanRejected)
+      return
+    }
+    if (outcome.code === 'INVALID_STATE' && outcome.details?.phase === 'goal') {
+      flashNotice(copyNow.composer.frozenGoalRejected)
       return
     }
     flashNotice(copyNow.composer.requestFailed)
@@ -831,6 +861,24 @@ function useSelection(sessionId: string, copy: Copy): SelectionHook {
   const setValue = React.useCallback((patch: SelectionPatch, immediate = false): void => {
     const current = stateRef.current
     if (current === null) return
+    // Phase freezes are enforced by the host too; this guard only keeps a stale
+    // render from flashing an optimistic value the server will refuse anyway.
+    if (
+      patch.interaction !== undefined
+      && patch.interaction !== current.selection.interaction
+      && current.frozen?.interaction !== undefined
+    ) {
+      flashNotice(copyRef.current.composer.frozenByGoal)
+      return
+    }
+    if (
+      patch.validation !== undefined
+      && patch.validation !== current.selection.validation
+      && current.frozen?.validation !== undefined
+    ) {
+      flashNotice(copyRef.current.composer.frozenByPlan)
+      return
+    }
     // DSH owns the preset catalog; a permission preset must never be written to
     // the offline copy and then silently replayed as if it had been applied.
     if (patch.preset !== undefined && offlineRef.current) {
@@ -1214,6 +1262,12 @@ export const ComposerControls = React.memo(function ComposerControlsInner(
   const tooltipsOn = (state === null ? true : state.tooltip !== false) && tooltipsPreference
   const selection = state?.selection ?? EMPTY_SELECTION
   const locked = state?.locked === true
+  // Phase freezes arrive from the host on every poll: the client never stores a
+  // latch, so a plan that finishes or a goal that is cleared unfreezes the
+  // dropdown on the next answer (and a newly created plan/goal freezes again).
+  const frozen = state?.frozen
+  const frozenInteraction = frozen?.interaction
+  const frozenValidation = frozen?.validation
   const turnProfession = state?.turn?.profession
   const profession = locked && turnProfession !== undefined ? turnProfession : selection.profession
   // Host values are normalised, but a stale/unknown value must degrade to its
@@ -1335,10 +1389,24 @@ export const ComposerControls = React.memo(function ComposerControlsInner(
         copy,
         value: selection.interaction,
         options: options.interaction,
-        disabled: !ready,
-        title: tooltipTitle(copy, 'interaction', interactionLabel, [
-          ...(statusLine.length > 0 ? [statusLine] : []),
-        ]),
+        disabled: !ready || frozenInteraction !== undefined,
+        title: tooltipTitle(
+          copy,
+          'interaction',
+          interactionLabel,
+          [...(statusLine.length > 0 ? [statusLine] : [])],
+          // The normal hint is replaced while frozen, so the tooltip itself
+          // explains the freeze and when it lifts.
+          frozenInteraction === undefined ? undefined : copy.composer.frozenByGoal,
+        ),
+        triggerLabel: frozenInteraction === undefined
+          ? undefined
+          : fillTemplate(copy.composer.lockedAria, {
+            control: copy.controls.interaction.label,
+            currentLabel: copy.composer.currentLabel,
+            current: interactionLabel,
+            explanation: copy.composer.frozenByGoal,
+          }),
         tooltips: tooltipsOn,
         width: compact ? 96 : 110,
         compact,
@@ -1365,12 +1433,26 @@ export const ComposerControls = React.memo(function ComposerControlsInner(
         copy,
         value: selection.validation,
         options: options.validation,
-        disabled: !ready,
-        title: tooltipTitle(copy, 'validation', validationLabel, [
-          // v24 §6.3: every level searches; only the budget and scope differ.
-          copy.composer.validationNote,
-          ...(statusLine.length > 0 ? [statusLine] : []),
-        ]),
+        disabled: !ready || frozenValidation !== undefined,
+        title: tooltipTitle(
+          copy,
+          'validation',
+          validationLabel,
+          [
+            // v24 §6.3: every level searches; only the budget and scope differ.
+            ...(frozenValidation === undefined ? [copy.composer.validationNote] : []),
+            ...(statusLine.length > 0 ? [statusLine] : []),
+          ],
+          frozenValidation === undefined ? undefined : copy.composer.frozenByPlan,
+        ),
+        triggerLabel: frozenValidation === undefined
+          ? undefined
+          : fillTemplate(copy.composer.lockedAria, {
+            control: copy.controls.validation.label,
+            currentLabel: copy.composer.currentLabel,
+            current: validationLabel,
+            explanation: copy.composer.frozenByPlan,
+          }),
         tooltips: tooltipsOn,
         width: compact ? 88 : 100,
         compact,

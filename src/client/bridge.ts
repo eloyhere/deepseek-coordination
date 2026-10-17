@@ -43,7 +43,7 @@
 import type { Selection } from '../shared/entity.js'
 import type { Profession } from '../shared/enum.js'
 import { toCommandType, toInteraction, toProfession, toScene, toValidation } from '../shared/enum.js'
-import type { SelectionPatch, SelectionState } from '../shared/selection.js'
+import type { ConfigPatch, ConfigView, SelectionPatch, SelectionState } from '../shared/selection.js'
 import type { Locale } from '../shared/i18n.js'
 
 const ROUTE_PREFIX = '/deepseek-coordination'
@@ -472,6 +472,109 @@ export function isQuestionAnswerComplete(
     return true
   } catch {
     return false
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Full settings surface: GET /config and POST /config (v24 §19)
+ * ------------------------------------------------------------------------- */
+
+/** Outcome of `POST /deepseek-coordination/config`. */
+export interface ConfigSaveOutcome {
+  /** The host's post-write view, or `null` when the write was refused. */
+  config: ConfigView | null
+  applied: string[]
+  ignored: string[]
+  /** `plan.weights.*` paths the host re-normalised. */
+  normalised: string[]
+  /** True when DSH accepted the durable settings write. */
+  persisted: boolean
+  /** True when an old host build has no such route (404 route envelope). */
+  unsupported: boolean
+  /** False when the request never reached the host (offline / timeout). */
+  reached: boolean
+  code?: string
+  message?: string
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+}
+
+/** Narrow the wire answer without inventing any value. */
+function asConfigView(value: unknown): ConfigView | null {
+  const record = asRecord(value)
+  const values = asRecord(record?.values)
+  const defaults = asRecord(record?.defaults)
+  if (values === undefined || defaults === undefined) return null
+  return {
+    values: values as unknown as ConfigView['values'],
+    defaults: defaults as unknown as ConfigView['defaults'],
+  }
+}
+
+/** Result of `GET /deepseek-coordination/config`. */
+export interface ConfigLoadOutcome {
+  config: ConfigView | null
+  /** False when the request never reached the host (offline / timeout). */
+  reached: boolean
+  /** True when an old host build has no `/config` route. */
+  unsupported: boolean
+}
+
+/**
+ * Read the full redacted config the settings page renders.
+ *
+ * `config: null` means "unknown" (offline or an old host build); the page then
+ * shows its blocked/offline state instead of fabricating values. The two flags
+ * let it say which of the two happened.
+ */
+export async function loadConfig(): Promise<ConfigLoadOutcome> {
+  const { status, wire } = await call<unknown>('/config')
+  // A 404/501 means the host build has no config route at all (the running
+  // plugin host predates it), not that it answered with a broken payload.
+  const unsupported = isMissingRoute(status, wire) || status === 404 || status === 501
+  const reached = status !== null
+  if (wire === null || !wire.ok) return { config: null, reached, unsupported }
+  return { config: asConfigView(wire.value), reached, unsupported }
+}
+
+/**
+ * Apply one flat config patch on the host.
+ *
+ * The host validates the whitelist and the schema, applies the value live and
+ * attempts a DSH settings write. A rejection keeps its typed code and message;
+ * the settings page reverts its optimistic value and shows the reason.
+ */
+export async function saveConfig(patch: ConfigPatch): Promise<ConfigSaveOutcome> {
+  const { status, wire } = await call<unknown>('/config', {
+    method: 'POST',
+    body: JSON.stringify({ patch }),
+  })
+  const unsupported = isMissingRoute(status, wire) || status === 404 || status === 501
+  const reached = status !== null
+  if (wire === null || !wire.ok) {
+    return {
+      config: null,
+      applied: [],
+      ignored: [],
+      normalised: [],
+      persisted: false,
+      unsupported,
+      reached,
+      ...(wire !== null && !wire.ok && wire.error?.code !== undefined ? { code: wire.error.code } : {}),
+      ...(wire !== null && !wire.ok && wire.error?.message !== undefined ? { message: wire.error.message } : {}),
+    }
+  }
+  const record = asRecord(wire.value)
+  return {
+    config: asConfigView(record?.config),
+    applied: stringArray(record?.applied),
+    ignored: stringArray(record?.ignored),
+    normalised: stringArray(record?.normalised),
+    persisted: record?.persisted === true,
+    unsupported: false,
+    reached,
   }
 }
 
