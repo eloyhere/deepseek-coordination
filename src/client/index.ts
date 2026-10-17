@@ -7,11 +7,10 @@
  *     (`conversation.input.left` — the free space right of the access-mode
  *     control, the green region of the mock).
  *
- * The widgets are plain React components owned by this plugin: no third-party UI
- * framework, because the one framework the host guarantees is React itself (it
- * arrives through the module table). The dropdown is drawn here rather than with
- * the browser's <select>, whose popup is painted by the OS and cannot carry a
- * hover state or a corner radius.
+ * The widgets are Material UI (MUI) React components: React itself comes from
+ * the host's module table, while @mui/material and emotion are bundled into this
+ * file by tsdown (`alwaysBundle` inlines everything that is not `react` or
+ * `@deepseek-ai/dsh-client-*`).
  *
  * When takeover is on, the host's own access-mode control (the blue region) is
  * hidden with an injected rule and the replacement dropdown renders at the left
@@ -21,15 +20,18 @@
  *  - `inject` lists the client services used; package.json's `dsh.client.inject`
  *    separately lists module-table packages. Both are required.
  *  - Every registration is disposed with the plugin, including the injected
- *    stylesheet and takeover rule, through ctx.effect disposers.
+ *    takeover rule, through ctx.effect disposers.
  */
 import * as React from 'react'
+import Select, { type SelectChangeEvent } from '@mui/material/Select'
+import MenuItem from '@mui/material/MenuItem'
+import Switch from '@mui/material/Switch'
+import { createTheme, ThemeProvider } from '@mui/material/styles'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 
 const PLUGIN_ID = 'deepseek-coordination'
-const STYLE_ID = 'dsh-coordination-style'
 const TAKEOVER_ID = 'dsh-coordination-takeover'
 const STORAGE_KEY = 'deepseek-coordination:takeover'
 
@@ -52,127 +54,41 @@ const PERMISSION_FALLBACK = ['完全权限'] as const
  */
 const ACCESS_MODE_SELECTOR = 'button[aria-label^="访问模式"], button[aria-label^="Access mode"]'
 
-/** Component styles, injected once and removed on unload. */
-const CSS = `
-.dsh-coordination-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.dsh-coordination-field { position: relative; display: inline-flex; min-width: 0; }
-.dsh-coordination-trigger {
-  display: inline-flex; align-items: center; gap: 2px;
-  max-width: 120px; height: 24px; padding: 0 4px 0 8px;
-  border: 1px solid var(--dsw-alias-border-secondary, #d0d0d0); border-radius: 6px;
-  background: transparent; color: var(--dsw-alias-label-primary, inherit);
-  font: inherit; font-size: 12px; line-height: 20px; cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
-}
-.dsh-coordination-trigger:hover,
-.dsh-coordination-trigger[aria-expanded="true"] {
-  background: var(--dsw-alias-bg-hover, rgba(0, 0, 0, 0.06));
-  border-color: var(--dsw-alias-border-primary, #b8b8b8);
-}
-.dsh-coordination-trigger:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4f8cff); outline-offset: 1px; }
-.dsh-coordination-trigger__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-coordination-trigger__chevron { font-size: 10px; opacity: 0.6; }
-.dsh-coordination-popup {
-  position: fixed; z-index: 2147483000; margin: 0; padding: 4px;
-  list-style: none; min-width: 96px; max-height: 240px; overflow-y: auto;
-  border: 1px solid var(--dsw-alias-border-secondary, #e0e0e0); border-radius: 10px;
-  background: var(--dsw-alias-bg-overlay, #ffffff);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
-}
-.dsh-coordination-option {
-  padding: 4px 8px; border-radius: 6px; font-size: 12px; line-height: 20px;
-  white-space: nowrap; cursor: pointer;
-}
-.dsh-coordination-option:hover { background: var(--dsw-alias-bg-hover, rgba(0, 0, 0, 0.06)); }
-.dsh-coordination-option[aria-selected="true"] { color: var(--dsw-alias-brand-primary, #4f8cff); }
-.dsh-coordination-settings { display: flex; flex-direction: column; gap: 10px; }
-.dsh-coordination-settings__title { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 15px; }
-.dsh-coordination-settings__switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-.dsh-coordination-settings__switch input { width: 16px; height: 16px; cursor: pointer; }
-.dsh-coordination-settings__hint { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary, #666); }
-`
-
-/** A chevron drawn with CSS so no icon font is required. */
-function Chevron(): React.ReactElement {
-  return React.createElement('span', {
-    className: 'dsh-coordination-trigger__chevron',
-    'aria-hidden': true,
-  }, '▼')
-}
+/**
+ * A local theme, built once. The plugin must not reach into the host's own
+ * theme; a compact palette keeps the controls legible in either host theme.
+ */
+const theme = createTheme({
+  typography: { fontSize: 12 },
+  components: {
+    MuiSelect: { defaultProps: { size: 'small' } },
+    MuiMenuItem: { styleOverrides: { root: { fontSize: 12, minHeight: 28 } } },
+  },
+})
 
 /**
- * One dropdown: a styled trigger plus a popup positioned from the trigger's
- * rect. Fixed positioning keeps it out of the composer's overflow clip.
+ * MUI's generics describe every overload of onChange; the plugin only ever
+ * passes one shape, so the components are narrowed to the props used here.
  */
+const MuiSelect: React.ComponentType<Record<string, unknown>> = Select as unknown as React.ComponentType<Record<string, unknown>>
+const MuiSwitch: React.ComponentType<Record<string, unknown>> = Switch as unknown as React.ComponentType<Record<string, unknown>>
+
+/** One MUI select wired to a controlled value. */
 function Dropdown(props: {
   label: string
   options: readonly string[]
   value: string
   onChange: (value: string) => void
 }): React.ReactElement {
-  const [open, setOpen] = React.useState(false)
-  const [position, setPosition] = React.useState({ top: 0, left: 0 })
-  const triggerRef = React.useRef<HTMLButtonElement>(null)
-  const fieldRef = React.useRef<HTMLSpanElement>(null)
-
-  React.useEffect(() => {
-    if (!open) return
-    const close = (event: MouseEvent): void => {
-      const target = event.target
-      if (target instanceof Node && fieldRef.current?.contains(target) !== true) setOpen(false)
-    }
-    const escape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('click', close)
-    document.addEventListener('keydown', escape)
-    return () => {
-      document.removeEventListener('click', close)
-      document.removeEventListener('keydown', escape)
-    }
-  }, [open])
-
-  const toggle = (): void => {
-    if (open) {
-      setOpen(false)
-      return
-    }
-    const rect = triggerRef.current?.getBoundingClientRect()
-    if (rect !== undefined) setPosition({ top: Math.round(rect.bottom + 6), left: Math.round(rect.left) })
-    setOpen(true)
-  }
-
   return React.createElement(
-    'span',
-    { className: 'dsh-coordination-field', ref: fieldRef },
-    React.createElement('button', {
-      type: 'button',
-      className: 'dsh-coordination-trigger',
-      ref: triggerRef,
-      'aria-label': props.label,
-      'aria-haspopup': 'listbox',
-      'aria-expanded': open,
-      onClick: toggle,
+    MuiSelect,
+    {
+      value: props.value,
+      onChange: (event: SelectChangeEvent<unknown>) => { props.onChange(String(event.target.value)) },
+      inputProps: { 'aria-label': props.label },
+      sx: { width: 104, fontSize: 12, height: 28, backgroundColor: 'transparent' },
     },
-      React.createElement('span', { className: 'dsh-coordination-trigger__value' }, props.value),
-      React.createElement(Chevron, null)),
-    open
-      ? React.createElement('ul', {
-          className: 'dsh-coordination-popup',
-          role: 'listbox',
-          style: { top: position.top, left: position.left },
-        }, props.options.map((option) =>
-          React.createElement('li', {
-            key: option,
-            className: 'dsh-coordination-option',
-            role: 'option',
-            'aria-selected': option === props.value,
-            onClick: () => {
-              props.onChange(option)
-              setOpen(false)
-            },
-          }, option)))
-      : null,
+    props.options.map((option) => React.createElement(MenuItem, { key: option, value: option }, option)),
   )
 }
 
@@ -185,29 +101,33 @@ function CoordinationControls(): React.ReactElement {
   const [permission, setPermission] = React.useState<string>(PERMISSION_FALLBACK[0])
 
   return React.createElement(
-    'div',
-    { className: 'dsh-coordination-row' },
-    isOn
-      ? React.createElement(Dropdown, {
-          label: '权限接管',
-          options: PERMISSION_FALLBACK,
-          value: permission,
-          onChange: setPermission,
-        })
-      : null,
-    React.createElement(Dropdown, { label: '职能', options: DUTY_OPTIONS, value: duty, onChange: setDuty }),
-    React.createElement(Dropdown, {
-      label: '交互',
-      options: INTERACTION_OPTIONS,
-      value: interaction,
-      onChange: setInteraction,
-    }),
-    React.createElement(Dropdown, {
-      label: '情景',
-      options: SCENARIO_OPTIONS,
-      value: scenario,
-      onChange: setScenario,
-    }),
+    ThemeProvider,
+    { theme },
+    React.createElement(
+      'div',
+      { style: { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+      isOn
+        ? React.createElement(Dropdown, {
+            label: '权限接管',
+            options: PERMISSION_FALLBACK,
+            value: permission,
+            onChange: setPermission,
+          })
+        : null,
+      React.createElement(Dropdown, { label: '职能', options: DUTY_OPTIONS, value: duty, onChange: setDuty }),
+      React.createElement(Dropdown, {
+        label: '交互',
+        options: INTERACTION_OPTIONS,
+        value: interaction,
+        onChange: setInteraction,
+      }),
+      React.createElement(Dropdown, {
+        label: '情景',
+        options: SCENARIO_OPTIONS,
+        value: scenario,
+        onChange: setScenario,
+      }),
+    ),
   )
 }
 
@@ -260,23 +180,33 @@ function CoordinationSettings(props: { style: HTMLStyleElement }): React.ReactEl
   const isOn = React.useSyncExternalStore(subscribeTakeover, takeoverSnapshot, takeoverSnapshot)
 
   return React.createElement(
-    'section',
-    { className: 'dsh-coordination-settings' },
-    React.createElement('h2', { className: 'dsh-coordination-settings__title' }, '协调'),
-    React.createElement('label', { className: 'dsh-coordination-settings__switch' },
-      React.createElement('input', {
-        type: 'checkbox',
-        checked: isOn,
-        'aria-label': '权限接管',
-        onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
-          setTakeover(event.target.checked, props.style)
-        },
-      }),
-      React.createElement('span', null, '权限接管')),
-    React.createElement('p', { className: 'dsh-coordination-settings__hint' },
-      isOn
-        ? '已接管：输入框中的权限下拉已被隐藏，替换为协调面板的下拉。'
-        : '未接管：输入框保留宿主自带的权限下拉。'),
+    ThemeProvider,
+    { theme },
+    React.createElement(
+      'section',
+      { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+      React.createElement('h2', { style: { margin: 0, fontSize: 15 } }, '协调'),
+      React.createElement(
+        'label',
+        { style: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' } },
+        React.createElement(MuiSwitch, {
+          size: 'small',
+          checked: isOn,
+          inputProps: { 'aria-label': '权限接管' },
+          onChange: (event: { target: { checked: boolean } }) => {
+            setTakeover(event.target.checked, props.style)
+          },
+        }),
+        React.createElement('span', null, '权限接管'),
+      ),
+      React.createElement(
+        'p',
+        { style: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary, #666)' } },
+        isOn
+          ? '已接管：输入框中的权限下拉已被隐藏，替换为协调面板的下拉。'
+          : '未接管：输入框保留宿主自带的权限下拉。',
+      ),
+    ),
   )
 }
 
@@ -287,15 +217,6 @@ function CoordinationSettings(props: { style: HTMLStyleElement }): React.ReactEl
 export const inject = ['slots']
 
 export function apply(ctx: ClientContext): void {
-  ctx.effect(() => {
-    if (document.getElementById(STYLE_ID) !== null) return () => { /* owned elsewhere */ }
-    const style = document.createElement('style')
-    style.id = STYLE_ID
-    style.textContent = CSS
-    document.head.append(style)
-    return () => { style.remove() }
-  }, `${PLUGIN_ID}: component styles`)
-
   const takeoverStyle = document.createElement('style')
   takeoverStyle.id = TAKEOVER_ID
   document.head.append(takeoverStyle)

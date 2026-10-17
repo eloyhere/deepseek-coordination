@@ -8,7 +8,7 @@ the DSH Web GUI and mounts UI into two host slots.
 
 > **Status: first real UI.** The plugin's UI is a `协调` settings page holding the
 > permission-takeover switch, and three coordination selectors injected into the composer tool
-> row. Built from plain React components; no third-party UI framework.
+> row. Built from Material UI (MUI) React components.
 
 ## What the pieces mean
 
@@ -86,10 +86,9 @@ $ pnpm build            # tsdown --config tsdown.config.ts
 | `lib/index.mjs` + `lib/index.d.mts` | Host | ESM, `platform: node` |
 | `lib/client.js` | Client | CJS, `platform: browser`, wrapped in `__ModuleLoader__.load()` |
 
-The widgets are plain React components, and their CSS is a string injected once through
-`ctx.effect` — so the plugin ships no stylesheet asset and needs no extra build step. React itself
-is never bundled: it arrives through the module table, which is the contract for `react` and
-`@deepseek-ai/dsh-client-*`.
+The widgets are Material UI components. `react` arrives through the module table and is never
+bundled; `@mui/material` and emotion are not in that table, so `alwaysBundle` inlines them into
+`lib/client.js`. That is why the client half is now ~749 kB (~156 kB gzip).
 
 ## Install into a profile
 
@@ -152,6 +151,7 @@ These are the ones that fail silently rather than loudly:
 - `0.3.0` — first UI, built as an Angular custom element.
 - `0.4.0` — the Angular element replaced by MDUI 2 web components.
 - `0.5.0` — MDUI removed; the widgets are plain React components owned by this plugin.
+- `0.6.0` — those components replaced by Material UI (`@mui/material` + emotion).
 
 Nothing is lost: every earlier state is reachable from git history.
 

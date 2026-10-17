@@ -12,6 +12,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.6.0] — 2026-10-17
+
+The widgets move to Material UI: `@mui/material@9.5.0` with `@emotion/react` and
+`@emotion/styled`, rendered through a local `ThemeProvider` so the plugin never reaches into the
+host's own theme.
+
+### Added
+
+- MUI `Select`/`MenuItem` for the three selectors and MUI `Switch` for the takeover switch.
+
+### Changed
+
+- `@mui/material` and emotion are bundled into `lib/client.js` (`alwaysBundle`): they are not in
+  the host module table. Bundle size 12.80 kB → 748.89 kB (4.56 → 155.85 kB gzip).
+- MUI's generics reject this plugin's event shapes, so the two components are narrowed to the
+  props actually passed; the runtime components are unchanged.
+
 ## [0.5.0] — 2026-10-17
 
 MDUI out, plain React in. The one UI framework the host guarantees is React itself (it arrives

@@ -6,7 +6,7 @@
 进程里，负责一组 HTTP 路由；**Client 半边**运行在 DSH Web GUI 里，把 UI 挂载到宿主的两个插槽上。
 
 > **状态：已有第一版真实 UI。** 插件提供设置页里的 `协调` 分组（只含权限接管开关），以及在输入框
-> 工具栏中注入的三个协调选择器。界面由纯 React 组件构建，不依赖第三方 UI 框架。
+> 工具栏中注入的三个协调选择器。界面由 Material UI（MUI）的 React 组件构建。
 
 ## 几个概念
 
@@ -82,9 +82,9 @@ $ pnpm build            # tsdown --config tsdown.config.ts
 | `lib/index.mjs` + `lib/index.d.mts` | Host | ESM，`platform: node` |
 | `lib/client.js` | Client | CJS，`platform: browser`，外层包 `__ModuleLoader__.load()` |
 
-控件都是纯 React 组件，样式以字符串形式通过 `ctx.effect` 注入一次——所以插件不附带任何样式表
-资源，也不需要额外构建步骤。React 本身永远不打进产物：它由模块表提供，这正是 `react` 与
-`@deepseek-ai/dsh-client-*` 的契约。
+控件用的是 Material UI 组件。`react` 由模块表提供、永远不打进产物；`@mui/material` 与 emotion 不在
+该表里，因此由 `alwaysBundle` 内联进 `lib/client.js`——这也是 client 半边现在约 749 kB（gzip 约
+156 kB）的原因。
 
 ## 安装到 profile
 
@@ -141,6 +141,7 @@ $ dsh --profile web
 - `0.3.0` —— 第一版 UI，以 Angular 自定义元素实现。
 - `0.4.0` —— 用 MDUI 2 web components 替换 Angular 元素。
 - `0.5.0` —— 移除 MDUI，控件改由本插件自己的纯 React 组件绘制。
+- `0.6.0` —— 改用 Material UI（`@mui/material` + emotion）。
 
 内容没有丢：之前每个状态都能从 git 历史取回。
 

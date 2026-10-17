@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "DeepSeek Harness plugin bundle: a dual-face Cordis plugin with a host route surface and a web settings page.",
   "keywords": [
     "deepseek-harness",
@@ -83,5 +83,10 @@
     "react": "^18.2.0",
     "tsdown": "^0.22.14",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@mui/material": "^9.5.0"
   }
 }
