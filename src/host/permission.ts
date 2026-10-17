@@ -11,8 +11,10 @@
  *
  * Fail-closed rules:
  *
- * - `check` allows a permission only when the *latest* row for that
- *   (subject, grant) is `granted`. No row, `pending`, or `revoked` all deny.
+ * - `check` allows a permission only when at least one `granted` row exists for
+ *   that (subject, grant); a revoked or `pending` row never counts. Rows are
+ *   scoped per session but the capability question has no session argument, so
+ *   a grant remains usable while any session still holds it.
  * - An empty request (`grant: []`) asks for nothing and is allowed; it is the
  *   only path that does not require a grant row.
  * - `request` records what it can and reports `allowed: false` with a reason
