@@ -122,6 +122,8 @@ export interface PermissionPresetPort {
   catalog(): PermissionPresetCatalog
   current(session: unknown): string
   set(session: unknown, name: string): void
+  /** Optional: the preset's effective knobs, for the dropdown tooltip. */
+  resolve?(name: string): { sandbox?: string; approval?: string; name?: string; description?: string }
 }
 
 export interface SandboxPolicyView {
