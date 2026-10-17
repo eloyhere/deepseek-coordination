@@ -86,8 +86,9 @@ export class PermissionModule {
   /**
    * Whether `subject` currently holds every named grant. A request that names
    * no grant asks for nothing and is allowed; anything else must be covered by
-   * a latest-row `granted`, across every session (the ledger is global, the
-   * `list` view is per session).
+   * an active `granted` row. The ledger rows are per session, but this
+   * capability question has no session argument, so a grant counts while any
+   * session still holds it (the per-session `list` view shows the detail).
    */
   check(subject: string, grant: string[]): PermissionCheck {
     const name = typeof subject === 'string' ? subject.trim() : ''
@@ -100,17 +101,10 @@ export class PermissionModule {
       requested.push(cleaned)
     }
     if (requested.length === 0) return { allowed: true }
-    const latest = this.latestStatus(name)
+    const active = this.activeGrants(name)
     for (const value of requested) {
-      const status = latest.get(value)
-      if (status === Granted) continue
-      return {
-        allowed: false,
-        reason:
-          status === undefined
-            ? `permission "${value}" is not granted to "${name}"`
-            : `permission "${value}" for "${name}" is ${status}, not granted`,
-      }
+      if (active.has(value)) continue
+      return { allowed: false, reason: `permission "${value}" is not granted to "${name}"` }
     }
     return { allowed: true }
   }
@@ -348,15 +342,16 @@ export class PermissionModule {
    * Ledger helpers
    * ----------------------------------------------------------------------- */
 
-  /** Latest status per grant for one subject, across every session. */
-  private latestStatus(subject: string): Map<string, string> {
+  /** Grants of one subject that at least one session currently holds. */
+  private activeGrants(subject: string): Set<string> {
     const rows = this.host.db.all<Row>(
-      'SELECT grant, status FROM permission WHERE subject = ? ORDER BY identity ASC',
+      'SELECT DISTINCT grant FROM permission WHERE subject = ? AND status = ?',
       subject,
+      Granted,
     )
-    const latest = new Map<string, string>()
-    for (const row of rows) latest.set(text(row, 'grant'), text(row, 'status'))
-    return latest
+    const active = new Set<string>()
+    for (const row of rows) active.add(text(row, 'grant'))
+    return active
   }
 
   /** Grants of one subject that are already effective in one session. */

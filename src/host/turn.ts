@@ -300,19 +300,13 @@ export class TurnModule {
   recoverInterrupted(): number {
     const now = this.host.clock.now()
     return this.host.db.transaction(() => {
-      const rows = this.host.db.all<Row>(
-        `SELECT identity FROM turn WHERE ${ACTIVE_TURN} ORDER BY identity ASC`,
-      )
+      const rows = this.host.db.all<Row>(`SELECT * FROM turn WHERE ${ACTIVE_TURN} ORDER BY identity ASC`)
       for (const row of rows) {
-        const identity = Number(row.identity)
-        this.host.db.update('turn', { status: 'failed', finished: now }, 'identity = ?', identity)
-        this.host.db.run(
-          `UPDATE profession_record SET status = 'failed', reason = ?, finished = ?
-           WHERE turn = ? AND subtask IS NULL`,
-          INTERRUPTED_REASON,
-          now,
-          identity,
-        )
+        const turn = mapTurn(row)
+        this.host.db.update('turn', { status: 'failed', finished: now }, 'identity = ?', turn.identity)
+        this.professionModule().recordProfession(turn.identity, turn.profession, 'host', 'failed', {
+          reason: INTERRUPTED_REASON,
+        })
       }
       return rows.length
     })
