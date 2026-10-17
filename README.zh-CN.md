@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.10.0（2026-10-18）。** 它在 v0.9.2 的 tooltip 修复之后，加入设置目录、文件层和数据结构采用。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.10.0（2026-10-18）。** 它在 v0.9.2 的 tooltip 修复之后，加入设置目录、持久文件层、Turn 流水线、阶段冻结和数据结构采用。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -19,7 +19,7 @@
 | Bundle | `cordis.patch.yml`、`package.json` 的 `dsh.bundle` | 把一行 `deepseek-coordination` 插入 DSH profile 的 bundle 列表。 |
 | 宿主端 | `lib/index.mjs`（ESM，Node） | `CoordinationService`、`coordination` SQLite 库、7 个工具、14 条路由路径和 agent 钩子。 |
 | 浏览器端 | `lib/client.js`（CJS，浏览器，`__ModuleLoader__` 包装） | React 18 + Material UI 9：输入框下拉框、设置页、接管对话框。 |
-| 数据库 | 默认 `%DSH_HOME%\coordination\coordination.db` | 插件自有 SQLite 文件；60 张表、7 个触发器、40 个索引，schema 版本 23。从不打开 DSH 的 `harness` 库。 |
+| 数据库 | 默认 `%DSH_HOME%\coordination\coordination.db` | 插件自有 SQLite 文件；63 张表、7 个触发器、63 个索引，schema 版本 24。从不打开 DSH 的 `harness` 库。 |
 
 插件不替代 DSH 的 agent 循环。它记录协调状态、为每个任务锁定一个职能、提供输入框选择与文件元数据、在上下文压力越过阈值时请求 DSH 压缩，并把审批/提问转给人工对话框。
 
@@ -70,9 +70,9 @@ dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 
 | 产物 | 格式 | 本次构建大小 |
 |---|---|---|
-| `lib/index.mjs` | 宿主 ESM，`platform: node` | 715,867 B |
-| `lib/index.d.mts` | 宿主类型声明 | 8,653 B |
-| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 995,762 B |
+| `lib/index.mjs` | 宿主 ESM，`platform: node` | 940,726 B |
+| `lib/index.d.mts` | 宿主类型声明 | 9,095 B |
+| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 998,329 B |
 
 Material UI 与 emotion 被打进 `lib/client.js`，React 来自宿主模块表。客户端体积大是因为内联了 MUI，不是因为多带了一份 React。
 
@@ -102,7 +102,7 @@ deepseek-coordination/
 │  ├─ host/
 │  │  ├─ coordination.ts      # CoordinationService（Cordis service "coordination"）
 │  │  ├─ config.ts             # Schemastery schema + resolveConfig()
-│  │  ├─ database.ts           # SQLite schema（23），60 表，触发器
+│  │  ├─ database.ts           # SQLite schema（24），63 表，触发器
 │  │  ├─ dsh.ts                # 窄 DSH port + Turn 生命周期
 │  │  ├─ tools.ts              # 7 个模型可见工具
 │  │  ├─ chain.ts              # 有界 Chain 投影引擎
@@ -134,18 +134,19 @@ deepseek-coordination/
 |---|---|---|
 | 权限 | DSH 预设目录，或中性的“跟随 DSH” | 通过 `ctx.permissionPresets` 立即写入 DSH，不写入协调库。仅在本机“权限接管”开关打开时显示。 |
 | 职能 | 决策 / 成果 / 资源 / 人员 / 任职 / 执行 | 活动任务内锁定；选择其他值会返回 `PROFESSION_LOCKED`，并打开重建/丢弃对话框。 |
-| 交互 | 感情 / 思维 / 启发 / 收束 / 统筹 | 写入 `selection` 行，供下一 Turn 使用。 |
-| 情景 | 对话 / 写作 / 办公 / 研究 / 工程 / 迭代 | 写入下一 Turn；`writing` 位于“对话”和“办公”之间。 |
-| 验证 | low / medium / high | 写入下一 Turn；文案明确三档都会检索。 |
+| 交互 | 感情 / 思维 / 启发 / 收束 / 统筹 | 写入 `selection` 行，供下一 Turn 使用；活动 Turn 有未清除的目标时冻结。 |
+| 情景 | 对话 / 写作 / 办公 / 研究 / 工程 / 迭代 | 写入下一 Turn；`writing` 位于“对话”和“办公”之间；情景策略由 Turn 流水线读取。 |
+| 验证 | low / medium / high | 写入下一 Turn；活动 Turn 有 draft/scored/active 计划时冻结；三档都会检索。 |
 
 - 每个控件和每个选项都有 tooltip。`tooltipVisibility` 单所有权 store 保证同一时刻只有一个输入框 tooltip 可见；位置在左/右，退出为 160 ms 淡出，淡出中的 popper 不接收指针事件。
 - 下拉框第一次点击就打开菜单；pointerdown/mousedown 不改变状态，因此不会吞掉 Select 的点击。
 - 锁定的职能触发器被禁用，其无障碍名称带锁定解释；选项 `MenuItem` 带标签和提示，键盘与读屏用户无需悬停即可获得说明。
+- 阶段冻结每轮从主机重新推导：Turn → 职能，Plan → 验证，Goal → 交互。下拉框禁用但仍可聚焦，aria-label/tooltip 说明恢复时机；服务端对冻结字段的改值返回 `INVALID_STATE`（重复写原值允许）。
 - tooltip 受宿主 `ui.showTooltip` 总开关约束；本机“显示提示”只能收窄，不能恢复宿主已关闭的 tooltip。
 - 保存是乐观的，并做 120 ms 防抖。保存被拒绝时回退到最近一次宿主确认的状态；离线编辑在宿主恢复后重放。完全权限预设需要第二次显式确认。
 - 宿主状态加载中时下拉框保持禁用并显示 loading；权限目录缺失就显示缺失，不编造预设。
 
-验证预算是策略，不等于整条流水线已经在跑：
+验证预算由 Turn 流水线实际读取：
 
 | 档位 | 检索预算（次数 × 条数） | 证据范围 | 交互范围 |
 |---|---|---|---|
@@ -153,7 +154,7 @@ deepseek-coordination/
 | medium | 2 × 5 | 当前会话 | 当前选择的交互 |
 | high | 4 × 8 | 本地全部内容 | 全部交互 |
 
-预算定义在 `src/host/comprehension.ts` 和共享的 `ValidationBudgetByLevel` 表。`ComprehensionModule` 目前仅库级存在，`CoordinationService` 的 Turn 生命周期并不驱动它，因此输入框只持久化档位，尚未真正执行这些检索。
+预算定义在 `src/host/comprehension.ts` 和共享的 `ValidationBudgetByLevel` 表。`command=none` 的 Turn 现在由 `CoordinationService` 驱动 Comprehension → Organization → Plan/score；检索仍受 `allowWeb` 和缺失 web 端口约束。
 
 ### 情景与写作档
 
@@ -166,7 +167,7 @@ deepseek-coordination/
 | 工程 | 开启 / high | 是 | – | – | – | 是 | 是 | 3 |
 | 迭代 | 开启 / high | – | – | – | 是 | 否 | 是 | 3 |
 
-“写作”要求大纲和至少一轮修订，必须有质量评分，不允许 bash，允许联网，最多三轮。通过阈值为 `0.6`，`plan.ts` 使用该写作阈值。除这个阈值外，情景表目前主要是配置与文案，尚未由完整的情景流水线执行。
+“写作”要求大纲和至少一轮修订，必须有质量评分，不允许 bash，允许联网，最多三轮。通过阈值为 `0.6`，`plan.ts` 使用该写作阈值。Turn 流水线读取 reasoning effort、require-* 标志、引用/证据、`allowWeb` 与 `sandboxOnly`；`thinking`、`allowBash`、`maxIteration` 和非写作阈值仍是没有 DSH 端口/消费者的延迟诊断项。
 
 ## 职能锁定与 Turn 生命周期
 
@@ -188,7 +189,7 @@ deepseek-coordination/
 
 ## 设置与配置
 
-设置页由 `src/shared/selection.ts` 的 `SETTINGS_CONTROLS` 生成：**13 组、151 个控件、130 个可写宿主行，覆盖 155 个非秘密配置叶子**。18 个顶层配置键包含 `database` 与 `databasePath`，这两个键故意不投影、不可写。
+设置页由 `src/shared/selection.ts` 的 `SETTINGS_CONTROLS` 生成：**13 组、151 个控件、134 个可写宿主行，覆盖 155 个非秘密配置叶子**。18 个顶层配置键包含 `database` 与 `databasePath`，这两个键故意不投影、不可写。
 
 | 组 | 默认值 / 范围 | 写入路径 |
 |---|---|---|
@@ -322,24 +323,24 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 | 检查 | 结果 |
 |---|---|
-| `pnpm test` | **433 tests，432 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 2.5 s |
+| `pnpm test` | **473 tests，472 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3.3 s |
 | `pnpm typecheck` / `pnpm test:tsc` | 通过 |
 | `pnpm build` | 宿主 + 客户端 bundle 通过；MUI 的 `"use client"` directive 警告不致命 |
-| `pnpm run pack:check` | OK：`deepseek-coordination-0.10.0.tgz`（410,582 B），四个运行时文件齐全 |
+| `pnpm run pack:check` | OK：`deepseek-coordination-0.10.0.tgz`（492,156 B），四个运行时文件齐全 |
 | 发布 CI | `.github/workflows/release.yml` 运行 typecheck、test:tsc、测试、pack:check，并在 `v*` Release 附上 tarball |
 
 解析器与结构的数字是守卫，不是承诺：100k 字符解析测试保持在 3 秒内；数据结构报告记录 B+ 树 10k 插入 8.3/9.8 ms、skip list 10k 插入 6.4 ms、红黑树 10k 随机 set/delete 13.5 ms、稀疏网格 10k 单元 5.1 ms、`hashString` 100k 次 4.3 ms；复杂度审计记录 Turn 序号从 `COUNT(*)` 改为 `MAX(ordinal)`（2,000 条语句约 65–69 ms → 约 12–14 ms）以及路由排序（200 × 12 条路由的 2,400 次 posterior 查询降到 200 次）。
 
 已知限制，直接列出而不是隐藏：
 
-1. **没有持久化 node/edge 图。** 领域模型里的 `node`/`edge`/`snapshot`（schema 24 设计）没有建表，实际库是 schema 23。`NodeRegistry` 与 `ChainEngine` 是每个工具运行时的内存态：handle 是确定性的但不持久，证据/状态无法落库。
-2. **Book/Article 层级、Person/Venue、Chapter/Section/Paragraph 节点、Condition 状态、Sign 提升、office sheet、证明状态**均为设计/计划。当前只投影文件级 `book`/`article`、通用 heading、TeX statement/proof 和文档公式。
-3. **验证/comprehension 与更宽的流水线仅库级。** 输入框会持久化交互/情景/验证；`ComprehensionModule`、`OrganizationModule`、`OrchestrationModule`、`BayesianModule`、`CognitionModule`、`EmotionModule`、`LearningModule`、`PredictModule`、`ResourceModule`、`ScoreModule` 是有测试的模块，但当前组合 Turn 生命周期不驱动它们。情景策略除写作阈值外同理。
-4. **`parser.maxAstDepth`、`parser.dependencyGraphMaxVertices`/`Edges`、`tools.maxResultBytes` 仍是计划。** 它们会被保存和展示，但没有运行时消费者；`renderJson` 仍未限长。
-5. **工作区根是 `process.cwd()`**，除非工具调用方显式传入根目录；插件入口没有把 DSH workspace root 接进 `registerCoordinationTools`。
-6. **`parser.enabled` 与文件层上限在注册/首次运行时创建时捕获。** `/config` 热改不会调整已存在的运行时；需要重新注册（语言切换或重启）才生效。
-7. **没有浏览器 E2E。** UI 由类型、构建、settings-catalog 测试以及 takeover/bridge 测试覆盖；视觉验证仍是人工/截图。
-8. **Node 引擎声明不一致。** `package.json` 写 `>=18`，宿主实际需要带 `node:sqlite` 的 Node（实践上 22.5+；CI 与本次验证使用 24.21.0）。
+1. **持久图有边界。** `node`/`edge`/`snapshot` 已是 schema 24，跨运行时保留；但重水化只取最新 10k 节点 / 50k 边，删除的符号不会清理，超出窗口的旧 handle 返回 `NOT_FOUND`。
+2. **领域提取在解析器层，关系链投影仍不完整。** Book/Article/Part/Chapter/Section/Paragraph、Person/Venue、Condition、Sheet/Cell/Range、TeX 证明状态和 CSV/TSV 表格已产出并投影到节点卡；`partOf`/`condition` 边还不能通过 `coordination_chain` 查询。xlsx/docx/pptx、Sign 提升、Lean/Coq/Isabelle 状态和跨文件 Book 组合仍未实现。
+3. **核心 Turn 流水线已接线，更宽的引擎没有。** `command=none` 的 Turn 会运行 Comprehension → Organization → Plan/score，以及需要的 Predict 行；有端口的 scene 策略会生效。独立 Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score、计划重建循环和 decompose/dispatch/verify/synthesize 仍是库级。`thinking`、`allowBash`、`maxIteration` 和非写作阈值记录为延迟诊断，不伪造。
+4. **配置上限已生效。** `parser.maxAstDepth`、两个依赖图上限和 `tools.maxResultBytes` 都有消费者；parser/chain 上限会 retune 已存在运行时，不再留下陈旧运行时。
+5. **工作区根已解析，不再硬编码。** 工具参数 → service 根 → host 根 → sandbox policy 根 → 最后才回退 `process.cwd()`。
+6. **`parser.enabled` 仍需重新注册。** 其他文件层上限会即时 retune；关闭 parser 会立即失败关闭，但从工具列表增删四个工具仍要等下一次注册（重启）。
+7. **没有浏览器 E2E。** UI 由类型、构建、settings-catalog 测试以及 takeover/bridge/集成测试覆盖；视觉验证仍是人工/截图。
+8. **Node 引擎为 `>=22.13.0`。** `node:sqlite` 从 22.13.0/23.4.0 起不再需要实验开关；CI 与本次验证使用 24.21.0。
 9. **profile 里可能仍记录着旧的包 spec。** 请核对实际安装的版本（`dsh --profile <name> --dump-config` 或 profile 的 `package.json`）；安装 0.10.0 tarball 或链接已构建的 checkout，不要假定上一次安装已被升级。
 
 ## 文档、布局与许可
@@ -350,7 +351,9 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 | [docs/domain-model-v24.md](docs/domain-model-v24.md) | 仅设计：39 个概念、38 种关系、Book/Article、Sheet/Formula、Statement/Condition/Require/Meet、Chain 投影。不是实际 schema。 |
 | [docs/file-processing-v24.md](docs/file-processing-v24.md) | P0 解析/文件处理契约；已实现并通过四个文件工具接线。 |
 | [docs/feature-wiring-audit-v24.md](docs/feature-wiring-audit-v24.md) | 已完成的发布面审计：v0.7–v0.9 到底交付了什么、agent 能触达什么、还差什么。 |
-| [docs/settings-catalog-v24.md](docs/settings-catalog-v24.md) | 权威设置目录：151 控件、130 可写、155 个键、18 个顶层键。 |
+| [docs/settings-catalog-v24.md](docs/settings-catalog-v24.md) | 权威设置目录：151 控件、134 可写、155 个键、18 个顶层键。 |
+| [docs/persistence-v24.md](docs/persistence-v24.md) | schema 24 的 node/edge/snapshot 迁移、持久 handle 与有界重水化。 |
+| [docs/domain-extraction-v24.md](docs/domain-extraction-v24.md) | 解析器层 Book/Article、Condition、Sign/office/proof 提取矩阵与延迟格式。 |
 | [docs/data-structure-adoption-v24.md](docs/data-structure-adoption-v24.md) | 第二轮采用：LruList、BinaryHeap、RedBlackTree、OrderedSet、Queue；含实测 caveat。 |
 | [docs/complexity-audit-v24.md](docs/complexity-audit-v24.md) | 已完成的时空复杂度审计与第一轮采用。 |
 | [docs/data-structures-report.md](docs/data-structures-report.md) | 第一阶段共享库契约与基准。 |

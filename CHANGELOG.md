@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.10.0 | 2026-10-18 | pending | Settings catalog, file tools, data structures, installable package |
+| 0.10.0 | 2026-10-18 | `8a8d0f7` | Settings catalog, durable file layer, turn pipeline, phase freeze, data structures, installable package |
 | 0.9.2 | 2026-10-18 | `73a273d` | One dropdown tooltip at a time |
 | 0.9.1 | 2026-10-18 | `31f64da` | Restore working dropdown tooltips |
 | 0.9.0 | 2026-10-18 | `ad7d59f` | Shared algorithms, blueprint model, P0 parser, global tooltip host |
@@ -54,7 +54,7 @@ unsupported because `lib/` is not committed.
 ### Added
 
 - **Settings catalog** — 151 controls in 13 groups covering all 155 non-secret
-  config leaves exactly once (130 writable host rows). `GET /config` returns
+  config leaves exactly once (134 writable host rows). `GET /config` returns
   `{ values, defaults }`; `POST /config` accepts a flat dotted patch, validates
   type/range against the real Schemastery schema, applies live, re-resolves
   invariants (weight normalisation, alias mirror, forced flags, compaction
@@ -67,11 +67,25 @@ unsupported because `lib/` is not committed.
   The profile nav row gets the Material `sync` glyph because the host shell only
   accepts `{id, order, label}` for a settings section. No composer theme change.
 - **File layer** — `coordination_parse`, `coordination_describe`,
-  `coordination_chain` and `coordination_read`: bounded parse service, node
-  registry with deterministic handles, host-only chain projection and the only
-  content-returning tool. `parser.enabled` gates the tools at registration;
-  parser limits and `chain.depth / links / tokenBudget` are captured when the
-  lazy file-tool runtime is created.
+  `coordination_chain` and `coordination_read`: bounded parse service, durable
+  node/edge/snapshot graph (schema 24), deterministic handles that survive a
+  restart, host-only chain projection and the only content-returning tool.
+  Parser depth/token/time/cache and dependency-graph caps, chain budgets and
+  `tools.maxResultBytes` are live and retune an existing runtime; parser.enabled
+  still gates registration. The workspace root comes from the tool option,
+  service, host or sandbox policy before `process.cwd()`.
+- **Turn pipeline** — normal `command=none` turns drive comprehension (using the
+  turn's validation/interaction/scene), organization, plan creation/scoring and
+  required Predict rows; scene policy is enforced where ports exist and deferred
+  knobs are recorded as diagnostics. The pre-step hook is bounded and never
+  blocks `next()`.
+- **Phase freeze** — turn → profession, plan → validation, goal → interaction.
+  Freezes are re-derived from the host each poll, disable the matching dropdown,
+  keep it focusable with an explanatory aria-label/tooltip, and are enforced by
+  `POST /selection` (`INVALID_STATE`) as well as the UI.
+- **Domain extraction** — Book/Article/Part/Chapter/Section/Paragraph,
+  Person/Venue, Condition, Sheet/Cell/Range, CSV/TSV, TeX proof status and
+  parser-level domain metadata; body-free and additive to the P0 node model.
 - **Data-structure adoption** — `LruList` memo, `BinaryHeap` selection with the
   old total order, shared `hashString`, `RedBlackTree` numeric agreement,
   `OrderedSet` first-seen dedupe and a `Queue` permission-command parser.
@@ -84,9 +98,10 @@ unsupported because `lib/` is not committed.
 
 ### Changed
 
-- `parser.enabled`, the four parser limits and all three `chain.*` controls are
-  writable host rows now that the file-tool runtime consumes them. Their copy
-  states the restart/registration timing instead of claiming a live effect.
+- `parser.enabled`, all parser limits including depth/graph caps, all three
+  `chain.*` controls and `tools.maxResultBytes` are writable host rows now that
+  the runtime consumes them. Only `parser.enabled` still needs a re-registration
+  to add/remove the tools; the other limits retune live.
 - The six module-test config literals gained `ui.locale`, `compaction`, `parser`,
   `chain`, `tools` and `scenes`, so `npm run test:tsc` is clean again.
 
@@ -104,9 +119,9 @@ unsupported because `lib/` is not committed.
 
 ### Verification
 
-`npm run typecheck` and `npm run test:tsc` are clean; `npm test` is **433 tests,
-432 pass, 1 skipped (GC-only), 0 fail**; `npm run build` and
-`npm run pack:check` are green.
+`npm run typecheck` and `npm run test:tsc` are clean; `npm test` is **473 tests,
+472 pass, 1 skipped (GC-only), 0 fail**; `npm run build` and
+`npm run pack:check` (492,156-byte tarball) are green.
 
 ## [0.9.2] — 2026-10-18
 

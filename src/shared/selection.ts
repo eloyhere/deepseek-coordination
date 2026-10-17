@@ -543,6 +543,8 @@ interface SceneFieldSpec {
   readonly field: keyof SceneProfile
   readonly copy: string
   readonly kind: SettingsControlKind
+  /** True when the turn pipeline or plan scorer reads this field today. */
+  readonly wired?: boolean
   readonly min?: number
   readonly max?: number
   readonly step?: number
@@ -551,16 +553,19 @@ interface SceneFieldSpec {
 
 /** Fields whose six defaults differ, therefore one row per scene. */
 const SCENE_FIELDS: readonly SceneFieldSpec[] = [
+  // No DSH model-config write port; recorded as a deferred diagnostic.
   { field: 'thinking', copy: 'scene.thinking', kind: 'enum', options: ['enabled', 'disabled'] },
-  { field: 'reasoningEffort', copy: 'scene.reasoningEffort', kind: 'text' },
-  { field: 'requirePlan', copy: 'scene.requirePlan', kind: 'boolean' },
-  { field: 'requireScore', copy: 'scene.requireScore', kind: 'boolean' },
-  { field: 'requireOutline', copy: 'scene.requireOutline', kind: 'boolean' },
-  { field: 'requireRevision', copy: 'scene.requireRevision', kind: 'boolean' },
-  { field: 'requirePredict', copy: 'scene.requirePredict', kind: 'boolean' },
-  { field: 'requireCitation', copy: 'scene.requireCitation', kind: 'boolean' },
+  { field: 'reasoningEffort', copy: 'scene.reasoningEffort', kind: 'text', wired: true },
+  { field: 'requirePlan', copy: 'scene.requirePlan', kind: 'boolean', wired: true },
+  { field: 'requireScore', copy: 'scene.requireScore', kind: 'boolean', wired: true },
+  { field: 'requireOutline', copy: 'scene.requireOutline', kind: 'boolean', wired: true },
+  { field: 'requireRevision', copy: 'scene.requireRevision', kind: 'boolean', wired: true },
+  { field: 'requirePredict', copy: 'scene.requirePredict', kind: 'boolean', wired: true },
+  { field: 'requireCitation', copy: 'scene.requireCitation', kind: 'boolean', wired: true },
+  // No execution-policy port; never rewrites the human permission preset.
   { field: 'allowBash', copy: 'scene.allowBash', kind: 'boolean' },
-  { field: 'sandboxOnly', copy: 'scene.sandboxOnly', kind: 'boolean' },
+  { field: 'sandboxOnly', copy: 'scene.sandboxOnly', kind: 'boolean', wired: true },
+  // No iterative consumer yet.
   { field: 'maxIteration', copy: 'scene.maxIteration', kind: 'number', min: 1, max: 1000, step: 1 },
 ]
 
@@ -569,8 +574,8 @@ const SCENE_FIELDS: readonly SceneFieldSpec[] = [
  * writes all six keys instead of six duplicate rows.
  */
 const SCENE_SHARED_FIELDS: readonly SceneFieldSpec[] = [
-  { field: 'allowWeb', copy: 'scene.allowWeb', kind: 'boolean' },
-  { field: 'scoreThreshold', copy: 'scene.scoreThreshold', kind: 'number', min: 0, max: 1, step: 0.01 },
+  { field: 'allowWeb', copy: 'scene.allowWeb', kind: 'boolean', wired: true },
+  { field: 'scoreThreshold', copy: 'scene.scoreThreshold', kind: 'number', wired: true, min: 0, max: 1, step: 0.01 },
 ]
 
 const SCENE_CONTROLS: readonly SettingsControl[] = [
@@ -582,9 +587,9 @@ const SCENE_CONTROLS: readonly SettingsControl[] = [
         key: `scenes.${scene}.${spec.field}`,
         kind: spec.kind,
         scene,
-        // Only the writing scene's threshold is read by the plan scorer, and it
-        // is patched through the shared threshold row below.
-        wired: false,
+        // The turn pipeline reads the policy fields marked `wired`; the
+        // remaining knobs are saved and explicitly labelled as not consumed.
+        wired: spec.wired === true,
         ...(spec.min === undefined ? {} : { min: spec.min }),
         ...(spec.max === undefined ? {} : { max: spec.max }),
         ...(spec.step === undefined ? {} : { step: spec.step }),
@@ -599,9 +604,9 @@ const SCENE_CONTROLS: readonly SettingsControl[] = [
       copy: spec.copy,
       keys: SceneValues.map((scene) => `scenes.${scene}.${spec.field}`),
       kind: spec.kind,
-      // The shared threshold row reaches `plan.ts` (writing scene); allowWeb has
-      // no reader yet.
-      wired: spec.field === 'scoreThreshold',
+      // allowWeb reaches the comprehension search gate; the threshold row
+      // reaches `plan.ts` (writing scene only, as documented).
+      wired: spec.wired === true,
       ...(spec.min === undefined ? {} : { min: spec.min }),
       ...(spec.max === undefined ? {} : { max: spec.max }),
       ...(spec.step === undefined ? {} : { step: spec.step }),
@@ -717,25 +722,21 @@ const SCENE_POLICY_CONTROLS: readonly SettingsControl[] = [
 /**
  * The file tools (`src/host/tools.ts`) read the parser/chain config.
  *
- * Timing is part of the contract: `parser.enabled` is read by
- * `registerCoordinationTools()` when the file tools are registered, and the
- * limits are captured by `ToolRuntime` when it lazily creates `ParseService` /
- * `ChainEngine`. An already-created runtime keeps its captured limits until the
- * tools are registered again, so the page says exactly that instead of
- * claiming a live effect.
- *
- * `parser.maxAstDepth`, the two dependency-graph caps and
- * `tools.maxResultBytes` still have no reader, so they stay `planned`.
+ * All limits are consumed by the file tools: `parser.enabled` gates
+ * registration, the parser/chain budgets are applied by the live `ToolRuntime`
+ * and re-applied on config change, and `tools.maxResultBytes` caps every tool
+ * render. The page still names the restart-only edge: disabling the parser
+ * after registration removes tools only on the next registration.
  */
 const PARSER_CONTROLS: readonly SettingsControl[] = [
   control({ group: 'parser', copy: 'parserEnabled', key: 'parser.enabled', kind: 'boolean' }),
   control({ group: 'parser', copy: 'maxFileBytes', key: 'parser.maxFileBytes', kind: 'number', min: 1024, max: 16_777_216, step: 1024 }),
   control({ group: 'parser', copy: 'maxTokens', key: 'parser.maxTokens', kind: 'number', min: 1, max: 2_000_000, step: 1000 }),
-  control({ group: 'parser', copy: 'maxAstDepth', key: 'parser.maxAstDepth', kind: 'number', chip: 'planned', min: 1, max: 4096, step: 1, wired: false }),
+  control({ group: 'parser', copy: 'maxAstDepth', key: 'parser.maxAstDepth', kind: 'number', min: 1, max: 4096, step: 1 }),
   control({ group: 'parser', copy: 'timeoutMs', key: 'parser.timeoutMs', kind: 'number', min: 50, max: 60_000, step: 50 }),
   control({ group: 'parser', copy: 'cacheCapacity', key: 'parser.cacheCapacity', kind: 'number', min: 1, max: 100_000, step: 1 }),
-  control({ group: 'parser', copy: 'dependencyGraphMaxVertices', key: 'parser.dependencyGraphMaxVertices', kind: 'number', chip: 'planned', min: 1, max: 1_000_000, step: 1000, wired: false }),
-  control({ group: 'parser', copy: 'dependencyGraphMaxEdges', key: 'parser.dependencyGraphMaxEdges', kind: 'number', chip: 'planned', min: 1, max: 5_000_000, step: 1000, wired: false }),
+  control({ group: 'parser', copy: 'dependencyGraphMaxVertices', key: 'parser.dependencyGraphMaxVertices', kind: 'number', min: 1, max: 1_000_000, step: 1000 }),
+  control({ group: 'parser', copy: 'dependencyGraphMaxEdges', key: 'parser.dependencyGraphMaxEdges', kind: 'number', min: 1, max: 5_000_000, step: 1000 }),
 ]
 
 const CHAIN_CONTROLS: readonly SettingsControl[] = [
@@ -745,7 +746,7 @@ const CHAIN_CONTROLS: readonly SettingsControl[] = [
 ]
 
 const TOOL_CONTROLS: readonly SettingsControl[] = [
-  control({ group: 'tools', copy: 'toolMaxResultBytes', key: 'tools.maxResultBytes', kind: 'number', chip: 'planned', min: 0, max: 16_777_216, step: 1024, wired: false }),
+  control({ group: 'tools', copy: 'toolMaxResultBytes', key: 'tools.maxResultBytes', kind: 'number', min: 0, max: 16_777_216, step: 1024 }),
 ]
 
 /**

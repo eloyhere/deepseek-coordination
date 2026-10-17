@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.10.0 (2026-10-18).** This release follows the v0.9.2 tooltip fix and lands the settings catalog, the file layer and the data-structure adoption pass. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.10.0 (2026-10-18).** This release follows the v0.9.2 tooltip fix and lands the settings catalog, the durable file layer, the turn pipeline, phase freezes and the data-structure adoption pass. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -19,7 +19,7 @@ A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordinatio
 | Bundle | `cordis.patch.yml`, `dsh.bundle` in `package.json` | Inserts one `deepseek-coordination` row into a DSH profile roster. |
 | Host half | `lib/index.mjs` (ESM, Node) | `CoordinationService`, the `coordination` SQLite database, 7 tools, 14 route paths and the agent hooks. |
 | Client half | `lib/client.js` (CJS, browser, `__ModuleLoader__` wrapper) | React 18 + Material UI 9: composer dropdowns, settings page, takeover dialog. |
-| Database | `%DSH_HOME%\coordination\coordination.db` by default | Plugin-owned SQLite file; 60 tables, 7 triggers, 40 indexes, schema version 23. Never DSH's `harness` database. |
+| Database | `%DSH_HOME%\coordination\coordination.db` by default | Plugin-owned SQLite file; 63 tables, 7 triggers, 63 indexes, schema version 24. Never DSH's `harness` database. |
 
 The plugin does not replace DSH's agent loop. It records coordination state, locks one profession per task, exposes the composer selection and file metadata, asks DSH to compact when context pressure crosses a threshold, and relays approvals/questions to a human through its own dialog.
 
@@ -70,9 +70,9 @@ dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 
 | Artifact | Format | Size in this build |
 |---|---|---|
-| `lib/index.mjs` | Host ESM, `platform: node` | 715,867 B |
-| `lib/index.d.mts` | Host declarations | 8,653 B |
-| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 995,762 B |
+| `lib/index.mjs` | Host ESM, `platform: node` | 940,726 B |
+| `lib/index.d.mts` | Host declarations | 9,095 B |
+| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 998,329 B |
 
 Material UI and emotion are bundled into `lib/client.js`; React comes from the host module table. The client bundle is large because MUI is inlined, not because it ships a second React.
 
@@ -102,7 +102,7 @@ deepseek-coordination/
 │  ├─ host/
 │  │  ├─ coordination.ts      # CoordinationService (Cordis service "coordination")
 │  │  ├─ config.ts             # Schemastery schema + resolveConfig()
-│  │  ├─ database.ts           # SQLite schema (23), 60 tables, triggers
+│  │  ├─ database.ts           # SQLite schema (24), 63 tables, triggers
 │  │  ├─ dsh.ts                # narrow DSH ports + turn lifecycle
 │  │  ├─ tools.ts              # 7 model-facing tools
 │  │  ├─ chain.ts              # bounded Chain projection engine
@@ -133,14 +133,15 @@ deepseek-coordination/
 | Control | Options | What it does |
 |---|---|---|
 | 权限 Permission | DSH preset catalog, or a neutral “follow DSH” state | Writes the chosen preset to DSH immediately through `ctx.permissionPresets`; never persists it in the coordination DB. Only shown while the local 权限接管 switch is on. |
-| 职能 Profession | decision / outcome / resource / personnel / qualification / execution | Locked for the active task. Selecting another value is refused with `PROFESSION_LOCKED` and opens the rebuild/abandon dialog. |
-| 交互 Interaction | emotion / think / heuristic / converge / orchestrate | Stored for the next turn in the `selection` row. |
-| 情景 Scene | dialogue / writing / office / research / engineering / iterate | Stored for the next turn. `writing` sits between `dialogue` and `office`. |
-| 验证 Validation | low / medium / high | Stored for the next turn; the copy states that all three levels search. |
+| 职能 Profession | decision / outcome / resource / personnel / qualification / execution | Locked for the active turn. Selecting another value is refused with `PROFESSION_LOCKED` and opens the rebuild/abandon dialog. |
+| 交互 Interaction | emotion / think / heuristic / converge / orchestrate | Stored for the next turn; frozen while the active turn has a non-cleared goal. |
+| 情景 Scene | dialogue / writing / office / research / engineering / iterate | Stored for the next turn. `writing` sits between `dialogue` and `office`; the scene policy is read by the turn pipeline. |
+| 验证 Validation | low / medium / high | Stored for the next turn; frozen while the active turn has a draft/scored/active plan. All three levels search. |
 
 - Every control and every option has a tooltip. A single-owner `tooltipVisibility` store ensures only one composer tooltip is visible; placement is left/right, exit is a 160 ms fade, and the fade popper is pointer-transparent.
 - Clicking a dropdown opens its menu on the first click; there is no state change on pointerdown/mousedown that would swallow the Select click.
 - A locked profession trigger is disabled and carries an accessible name with the lock explanation; option `MenuItem`s carry the label plus hint for keyboard and screen-reader users.
+- Phase freezes are re-derived from the host on every poll: turn → profession, plan → validation, goal → interaction. The select is disabled but stays focusable, its aria-label and tooltip name when the freeze lifts, and the server refuses a changed value with `INVALID_STATE` (replaying the stored value is allowed).
 - Tooltips obey the host's `ui.showTooltip` gate; the local “show hints” preference can only narrow them, never resurrect a host-disabled tooltip.
 - Saves are optimistic and debounced by 120 ms. A rejected save reverts to the last host-confirmed state; offline edits are replayed when the host returns. A full-access preset needs an explicit second confirmation.
 - While the host state is loading, selects stay disabled and show a loading line. A missing preset catalog is shown as a missing catalog, not invented.
@@ -166,7 +167,7 @@ The budgets live in `src/host/comprehension.ts` and the shared `ValidationBudget
 | engineering | enabled / high | yes | – | – | – | yes | yes | 3 |
 | iterate | enabled / high | – | – | – | yes | no | yes | 3 |
 
-`writing` requires an outline and at least one revision round, requires a quality score, disallows bash, allows web search and caps the loop at three iterations. The pass threshold is `0.6`; `plan.ts` uses that writing threshold. The rest of the scene table is config and copy today, not a fully driven per-scene pipeline.
+`writing` requires an outline and at least one revision round, requires a quality score, disallows bash, allows web search and caps the loop at three iterations. The pass threshold is `0.6`; `plan.ts` uses that writing threshold. The turn pipeline reads reasoning effort, the require-* flags, citation/evidence, `allowWeb` and `sandboxOnly`; `thinking`, `allowBash`, `maxIteration` and non-writing thresholds remain deferred diagnostics because no DSH port or consumer exists yet.
 
 ## Profession lock and turn lifecycle
 
@@ -188,7 +189,7 @@ Terminal turn states (`done`, `failed`, `cancelled`, `abandoned`) are irreversib
 
 ## Settings and configuration
 
-The settings page is driven by `SETTINGS_CONTROLS` in `src/shared/selection.ts`: **151 controls in 13 groups, 130 writable host rows, covering 155 non-secret config leaves**. The 18 top-level config keys include `database` and `databasePath`, which are deliberately not projected or writable.
+The settings page is driven by `SETTINGS_CONTROLS` in `src/shared/selection.ts`: **151 controls in 13 groups, 134 writable host rows, covering 155 non-secret config leaves**. The 18 top-level config keys include `database` and `databasePath`, which are deliberately not projected or writable.
 
 | Group | Defaults / scope | Write path |
 |---|---|---|
@@ -322,24 +323,24 @@ There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol
 
 | Check | Result |
 |---|---|
-| `pnpm test` | **433 tests, 432 pass, 1 skipped (GC-only), 0 fail**, ~2.5 s on Node 24.21.0 |
+| `pnpm test` | **473 tests, 472 pass, 1 skipped (GC-only), 0 fail**, ~3.3 s on Node 24.21.0 |
 | `pnpm typecheck` / `pnpm test:tsc` | Clean |
 | `pnpm build` | Host + client bundles green; MUI `"use client"` directive warnings are non-fatal |
-| `pnpm run pack:check` | OK: `deepseek-coordination-0.10.0.tgz` (410,582 B); four runtime files present |
+| `pnpm run pack:check` | OK: `deepseek-coordination-0.10.0.tgz` (492,156 B); four runtime files present |
 | Release CI | `.github/workflows/release.yml` runs typecheck, test:tsc, tests, pack:check and attaches the tarball to a `v*` GitHub Release |
 
 Parser and structure numbers are guards, not promises: a 100k-character parse test stays under 3 s; the data-structure report records B+ tree 10k inserts at 8.3/9.8 ms, skip-list 10k inserts at 6.4 ms, red-black 10k random set/delete at 13.5 ms, sparse grid 10k cells at 5.1 ms, and `hashString` 100k calls at 4.3 ms on the audit machine. The complexity audit records the ordinal `COUNT(*)` → `MAX(ordinal)` change (≈65–69 ms → ≈12–14 ms for 2,000 statements) and route ranking (2,400 → 200 posterior statements for 200 × 12 routes).
 
 Known limitations, stated rather than hidden:
 
-1. **No persistent node/edge graph.** The domain model's `node`/`edge`/`snapshot` tables (schema 24 design) are not created; the live DB is schema 23. `NodeRegistry` and `ChainEngine` are in-memory per tool runtime, so handles are deterministic but not durable and evidence/status cannot be stored.
-2. **Book/Article hierarchy, Person/Venue, Chapter/Section/Paragraph nodes, Condition status, Sign promotion, office sheets and proof status** are design/planned. Only file-level `book`/`article`, generic headings, TeX statements/proofs and document formulas are projected.
-3. **Validation/comprehension and the wider pipeline are library-only.** The composer persists interaction/scene/validation; `ComprehensionModule`, `OrganizationModule`, `OrchestrationModule`, `BayesianModule`, `CognitionModule`, `EmotionModule`, `LearningModule`, `PredictModule`, `ResourceModule` and `ScoreModule` are tested modules but not driven by the composed turn lifecycle. Scene policy beyond the writing threshold is the same.
-4. **`parser.maxAstDepth`, `parser.dependencyGraphMaxVertices`/`Edges` and `tools.maxResultBytes` are planned.** They are stored and shown but have no runtime consumer; `renderJson` is still unbounded.
-5. **Workspace root is `process.cwd()`** unless the tool caller passes a root; DSH's workspace root is not plumbed into `registerCoordinationTools` by the entry.
-6. **`parser.enabled` and file-layer limits are captured at registration/first runtime creation.** A live `/config` change does not retune an existing runtime; re-register (locale change or restart) to apply.
-7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog tests and the takeover/bridge tests; visual verification remains manual/screenshot-based.
-8. **Node engine mismatch.** `package.json` says `>=18`, while the host requires a Node build with `node:sqlite` (22.5+ in practice; CI and this verification use 24.21.0).
+1. **Durable graph is bounded.** `node`/`edge`/`snapshot` are now schema 24 and survive a new runtime; rehydration is bounded to the newest 10k nodes / 50k edges, removed symbols are not pruned, and a handle older than the rehydration window is `NOT_FOUND`.
+2. **Domain extraction is parser-level; the chain projection is partial.** Book/Article/Part/Chapter/Section/Paragraph, Person/Venue, Condition, Sheet/Cell/Range, TeX proof status and CSV/TSV sheets are emitted and projected onto node cards. `partOf`/`condition` edges are not yet queryable through `coordination_chain`; xlsx/docx/pptx, Sign promotion, Lean/Coq/Isabelle status and cross-file Book composition remain deferred.
+3. **The core turn pipeline is wired, the wider engines are not.** Comprehension → Organization → Plan/score and required Predict rows now run for `command=none` turns, with the scene policy applied where ports exist. Standalone Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score, plan rebuild loops and decompose/dispatch/verify/synthesize remain library-only. `thinking`, `allowBash`, `maxIteration` and non-writing score thresholds are recorded as deferred diagnostics, not faked.
+4. **Configured caps are live.** `parser.maxAstDepth`, both dependency-graph caps and `tools.maxResultBytes` are consumed; parser/chain limits retune an existing runtime, and a config change no longer leaves a stale tool runtime.
+5. **Workspace root is resolved, not hard-coded.** Tool option → service root → host root → sandbox-policy root → `process.cwd()` only as the last fallback.
+6. **`parser.enabled` still needs registration.** The other file-layer limits retune live; turning the parser off fails closed immediately, but adding/removing the four tools requires the next registration (restart).
+7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog tests and the takeover/bridge/integration tests; visual verification remains manual/screenshot-based.
+8. **Node engine is `>=22.13.0`.** `node:sqlite` is unflagged from 22.13.0/23.4.0; CI and this verification use 24.21.0.
 9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.10.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
 
 ## Documentation, layout and license
@@ -350,7 +351,9 @@ Known limitations, stated rather than hidden:
 | [docs/domain-model-v24.md](docs/domain-model-v24.md) | Design only: 39 concepts, 38 relations, Book/Article, Sheet/Formula, Statement/Condition/Require/Meet, Chain projection. Not the live schema. |
 | [docs/file-processing-v24.md](docs/file-processing-v24.md) | P0 parser/file-processing contract; implemented and wired through the four file tools. |
 | [docs/feature-wiring-audit-v24.md](docs/feature-wiring-audit-v24.md) | Completed release-surface audit: what v0.7–v0.9 shipped, what is agent-reachable, and the remaining gaps. |
-| [docs/settings-catalog-v24.md](docs/settings-catalog-v24.md) | Authoritative settings catalog: 151 controls, 130 writable, 155 keys, 18 top-level keys. |
+| [docs/settings-catalog-v24.md](docs/settings-catalog-v24.md) | Authoritative settings catalog: 151 controls, 134 writable, 155 keys, 18 top-level keys. |
+| [docs/persistence-v24.md](docs/persistence-v24.md) | Schema 24 node/edge/snapshot migration, durable handles and bounded rehydration. |
+| [docs/domain-extraction-v24.md](docs/domain-extraction-v24.md) | Parser-level Book/Article, Condition, Sign/office/proof extraction matrix and deferred formats. |
 | [docs/data-structure-adoption-v24.md](docs/data-structure-adoption-v24.md) | Second adoption pass: LruList, BinaryHeap, RedBlackTree, OrderedSet, Queue; measured caveats. |
 | [docs/complexity-audit-v24.md](docs/complexity-audit-v24.md) | Completed time/space audit and the first adoption pass. |
 | [docs/data-structures-report.md](docs/data-structures-report.md) | Phase-1 shared-library contract and benchmarks. |

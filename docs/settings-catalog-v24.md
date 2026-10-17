@@ -42,7 +42,7 @@
 
 ## 总览
 
-- 控件总数：**151**（其中可写 130）
+- 控件总数：**151**（其中可写 134）
 - 覆盖配置键：**155**（配置共 18 个顶层键）
 - 未暴露：`databasePath`、`database`（部署路径 / 文件名，见文末）
 
@@ -260,11 +260,11 @@
 | 解析总开关 | `setting:parser.enabled` | `parser.enabled` | boolean | 开 | — | 可编辑 | src/host/tools.ts registerCoordinationTools() | 注册时读取；已注册的宿主需重启或重注册（如切换语言）才生效 |
 | 单文件字节上限 | `setting:parser.maxFileBytes` | `parser.maxFileBytes` | number | 1048576 | 1024–16777216（步长 1024） | 可编辑 | src/host/tools.ts ToolRuntime · src/host/parse-service.ts | 文件工具运行时首次创建时读取；已创建的运行时保持旧值（重启后生效） |
 | 词元上限 | `setting:parser.maxTokens` | `parser.maxTokens` | number | 200000 | 1–2000000（步长 1000） | 可编辑 | src/host/tools.ts ToolRuntime · src/host/parse-service.ts | 文件工具运行时首次创建时读取；上限只能收紧，不能突破解析器硬上限 |
-| 语法树深度 | `setting:parser.maxAstDepth` | `parser.maxAstDepth` | number | 256 | 1–4096（步长 1） | 计划中（只读） | 无（解析服务尚未读取该字段） | 配置已保存；当前版本没有读取它 |
+| 语法树深度 | `setting:parser.maxAstDepth` | `parser.maxAstDepth` | number | 256 | 1–4096（步长 1） | 可编辑 | src/host/tools.ts ToolRuntime · src/host/parse-service.ts | 传入解析器 `maxDepth`；已创建运行时通过 retune 即时收紧 |
 | 解析超时 | `setting:parser.timeoutMs` | `parser.timeoutMs` | number | 2000 | 50–60000（步长 50） | 可编辑 | src/host/tools.ts ToolRuntime · src/host/parse-service.ts | 文件工具运行时首次创建时读取；已创建的运行时保持旧值（重启后生效） |
 | 解析缓存条数 | `setting:parser.cacheCapacity` | `parser.cacheCapacity` | number | 256 | 1–100000（步长 1） | 可编辑 | src/host/tools.ts ToolRuntime · src/host/parse-service.ts | 文件工具运行时首次创建时读取；已创建的运行时保持旧值（重启后生效） |
-| 依赖图节点上限 | `setting:parser.dependencyGraphMaxVertices` | `parser.dependencyGraphMaxVertices` | number | 20000 | 1–1000000（步长 1000） | 计划中（只读） | 无（新增键；解析层未读取） | 配置已保存；当前版本没有读取它（见“接线状态”） |
-| 依赖图边上限 | `setting:parser.dependencyGraphMaxEdges` | `parser.dependencyGraphMaxEdges` | number | 100000 | 1–5000000（步长 1000） | 计划中（只读） | 无（新增键；解析层未读取） | 配置已保存；当前版本没有读取它（见“接线状态”） |
+| 依赖图节点上限 | `setting:parser.dependencyGraphMaxVertices` | `parser.dependencyGraphMaxVertices` | number | 20000 | 1–1000000（步长 1000） | 可编辑 | src/host/parse-service.ts dependencyGraph() | 失败关闭；超出时 `coordination_parse` 返回截断摘要 |
+| 依赖图边上限 | `setting:parser.dependencyGraphMaxEdges` | `parser.dependencyGraphMaxEdges` | number | 100000 | 1–5000000（步长 1000） | 可编辑 | src/host/parse-service.ts dependencyGraph() | 失败关闭；超出时 `coordination_parse` 返回截断摘要 |
 
 ## 关系链（`chain`）
 
@@ -278,7 +278,7 @@
 
 | 功能 | 控件 id | 配置键 | 类型 | 默认 | 范围 | 状态 | 消费者 | 备注 |
 |---|---|---|---|---|---|---|---|---|
-| 工具结果字节上限 | `setting:tools.maxResultBytes` | `tools.maxResultBytes` | number | 0 | 0–16777216（步长 1024） | 计划中（只读） | 无（新增键；renderJson 尚未限长） | 配置已保存；当前版本没有读取它（见“接线状态”） |
+| 工具结果字节上限 | `setting:tools.maxResultBytes` | `tools.maxResultBytes` | number | 0 | 0–16777216（步长 1024） | 可编辑 | src/host/tools.ts renderJson() | 七个工具统一限长；超出返回带 `truncated`/`marker`/`preview` 的合法 JSON，0 = 不限制 |
 
 ## 未暴露（不是遗漏）
 
@@ -300,26 +300,18 @@
 | v24 §9.3 Plan 评分 | `plan.threshold / maxRebuild / 8 权重 / 8 维度`；权重保存后归一。 |
 | v24 §12 贝叶斯 | `bayesian.*` 五个控件；`calibrationFloor` 为保留键。 |
 | v24 §15.2 设置页 | 强制开关（职能锁定 / 重建 / 丢弃）只读，其余按本目录分组折叠展示。 |
-| v24 §19 配置 | 新增 `parser.* / chain.* / tools.*` 三组（默认值取自 `docs/file-processing-v24.md` §4 与 `docs/domain-model-v24.md` §7）；文件工具已读取 `parser.enabled`、四个解析上限与 `chain.*`，`maxAstDepth`、两个依赖图上限和 `tools.maxResultBytes` 仍标为“计划中”。 |
+| v24 §19 配置 | 新增 `parser.* / chain.* / tools.*` 三组（默认值取自 `docs/file-processing-v24.md` §4 与 `docs/domain-model-v24.md` §7）；文件工具读取全部解析上限、依赖图上限、`chain.*` 与 `tools.maxResultBytes`，并支持运行时 retune。 |
 | v24 §22 i18n | 所有新文案在 `settings.catalog` 下中英逐键对应；`test/i18n.test.ts` + `test/settings-catalog.test.ts` 双向检查。 |
 
-## 计划中的键为什么仍然写进 schema
+## 接线与生效时机
 
-`parser.maxAstDepth`、`parser.dependencyGraphMaxVertices`、
-`parser.dependencyGraphMaxEdges` 与 `tools.maxResultBytes` 目前没有读取者，但文档
-（`file-processing-v24.md` §4、`domain-model-v24.md` §3/§7、复杂度审计 §10）已经
-规定了这些上限。把它们放进 schema 有三个约束：
-
-1. 页面显示的是真实配置值而不是常量副本；
-2. 不能被写成“开关已生效”——目录的消费者列写 `无`，页面显示“尚未读取”，
-   且 `POST /config` 不把它们放进可写白名单；
-3. 对应的解析服务 / 渲染器接线时只需读取同名字段，不需要再改一次 schema 或文案。
-
-`parser.enabled`、`parser.maxFileBytes / maxTokens / timeoutMs / cacheCapacity`
-与 `chain.depth / links / tokenBudget` 现在由 `src/host/tools.ts` 的 `ToolRuntime`
-读取：前四个解析上限和三个关系链预算在文件工具运行时**首次创建**时捕获，之后修
-改要等宿主重启；`parser.enabled` 在**注册**文件工具时读取，之后修改要等下一次重
-注册（重启或切换语言）。因此它们是可写的主机行，但页面不宣称“即改即生效”。
+文件层的全部上限现在都有读取者。`parser.maxFileBytes / maxTokens / maxAstDepth /
+timeoutMs / cacheCapacity`、两个依赖图上限、`chain.depth / links / tokenBudget`
+以及 `tools.maxResultBytes` 由 `src/host/tools.ts` 的 `ToolRuntime` 消费；已创建的
+运行时会比较配置签名并调用 `retune`，所以这些数值**即改即生效**，旧句柄仍然可用。
+`parser.enabled` 是唯一仍受注册时机约束的开关：关闭后现有调用失败关闭，但要从工
+具列表中真正移除/恢复四个文件工具，需要下一次注册（重启）。页面不把这一项写成即
+改即生效。
 
 ## 消费者索引
 
@@ -334,6 +326,6 @@
 | `src/host/token.ts` + `src/host/coordination.ts` | `compaction.auto / soft / hard / reserve / recentTurns / cooldown / maxPerSession` |
 | `src/host/selection.ts` | `defaults.*`、`profession.errorHint`、`ui.*` 投影 |
 | `src/host/takeover-gate.ts` + `src/host/takeover.ts` | `ui.takeover`、`clarifyTimeout` |
-| `src/host/tools.ts` | `parser.enabled`（注册时）、`parser.maxFileBytes / maxTokens / timeoutMs / cacheCapacity`、`chain.depth / links / tokenBudget`（首次创建运行时） |
+| `src/host/tools.ts` | `parser.enabled`（注册时）、其余 `parser.*`、`chain.*`、`tools.maxResultBytes`（每次调用签名检查 + retune） |
 | `src/host/turn.ts` / `resource.ts` / `profession.ts` | `maxTurnPerSession`、`defaultLease`、`profession.errorHint` |
 | `src/client/controls.ts` + `src/client/store.ts` | `ui.showTooltip / compact / refreshInterval`（本机偏好）以及本机两个开关 |

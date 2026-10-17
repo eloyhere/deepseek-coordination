@@ -285,16 +285,20 @@ test('forced, structural, alias and planned rows are never writable', () => {
     assert.equal(isEditableControl(control), false, `${key} must be read-only`)
   }
 
-  // The file-tool runtime reads these eight keys; they are writable host rows.
+  // The file-tool runtime reads these twelve keys; they are writable host rows.
   for (const key of [
     'parser.enabled',
     'parser.maxFileBytes',
     'parser.maxTokens',
     'parser.timeoutMs',
     'parser.cacheCapacity',
+    'parser.maxAstDepth',
+    'parser.dependencyGraphMaxVertices',
+    'parser.dependencyGraphMaxEdges',
     'chain.depth',
     'chain.links',
     'chain.tokenBudget',
+    'tools.maxResultBytes',
   ]) {
     const control = SETTINGS_CONTROLS_BY_KEY.get(key)
     assert.ok(control !== undefined, `${key} needs a row`)
@@ -302,20 +306,6 @@ test('forced, structural, alias and planned rows are never writable', () => {
     assert.equal(control.wired, true, `${key}: wired`)
     assert.equal(isEditableControl(control), true, `${key}: editable`)
     assert.equal(EDITABLE_CONFIG_KEYS.has(key), true, `${key}: whitelist`)
-  }
-
-  // These four still have no reader, so they remain planned read-only rows.
-  for (const key of [
-    'parser.maxAstDepth',
-    'parser.dependencyGraphMaxVertices',
-    'parser.dependencyGraphMaxEdges',
-    'tools.maxResultBytes',
-  ]) {
-    const control = SETTINGS_CONTROLS_BY_KEY.get(key)
-    assert.ok(control !== undefined, `${key} needs a row`)
-    assert.equal(control.chip, 'planned', `${key}: planned until a consumer reads it`)
-    assert.equal(control.wired, false, `${key}: wired`)
-    assert.equal(isEditableControl(control), false, `${key}: not editable`)
   }
 
   // Every editable row is a host row with at least one key, and vice versa.
@@ -427,20 +417,17 @@ test('known but non-editable rows are reported as ignored, never written', () =>
     'profession.lock': false,
     'profession.default': 'decision',
     'compaction.reserve': 4096,
-    'parser.maxAstDepth': 64,
     'ui.toolbar': false,
   })
   assert.deepEqual(outcome.applied, [])
   assert.deepEqual([...outcome.ignored].sort(), [
     'compaction.reserve',
-    'parser.maxAstDepth',
     'profession.default',
     'profession.lock',
     'ui.toolbar',
   ])
   assert.equal(config.profession.lock, true, 'the forced lock stays on')
   assert.equal(config.compaction.reserve, 2048)
-  assert.equal(config.parser.maxAstDepth, 256)
 })
 
 test('forced flags survive every patch and the resolver keeps the alias mirrored', () => {

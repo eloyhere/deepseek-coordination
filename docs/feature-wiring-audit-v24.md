@@ -7,7 +7,7 @@ record for that work; it is not a design change. Line numbers are from the worki
 tree at audit time (2026-10-18) and can drift by a few lines after edits.
 
 Verification after the full 0.10.0 milestone (see §7): `tsc` clean, `npm test`
-**433 tests, 432 pass, 1 skipped (GC-only), 0 fail**, `tsdown` host + client
+**473 tests, 472 pass, 1 skipped (GC-only), 0 fail**, `tsdown` host + client
 green.
 
 ## 1. Method
@@ -118,20 +118,22 @@ changes the answer. No filesystem probing and no extension guessing.
 - `coordination_read` is the only value with `content`; it is capped, hashed and
   refuses NUL/undecodable content and traversal/symlink escapes.
 
-## 5. Remaining gaps (not wired here)
+## 5. Remaining gaps (historical audit)
 
-1. **No persistence.** The domain model's `node`/`edge`/`snapshot` tables
-   (`docs/domain-model-v24.md:424`) do not exist. The registry and chain are
-   in-memory per tool runtime: a reload re-parses, handles/fingerprints are
-   deterministic, but statement/condition status and verifier evidence cannot be
-   stored. Needs `src/host/database.ts` + schema work.
+> This section records the state at the time of the v0.9 wiring pass. Items 1–3
+> and 5 have since been advanced by `docs/persistence-v24.md` and
+> `docs/domain-extraction-v24.md`; read those for the current limits.
+
+1. **Persistence (now schema 24).** The `node`/`edge`/`snapshot` tables exist and
+   the registry/chain rehydrate by durable handle; rehydration is bounded
+   (newest 10k nodes / 50k edges) and removed symbols are not pruned.
 2. **Book/Article hierarchy, Person/Venue, Chapter/Section/Paragraph nodes** —
-   only the file-level kind and generic `heading` nodes exist; no `part_of`
-   Book edges, no `published_in`, no citations, no editions.
-3. **Condition nodes and contract tags** — only explicit `::: require`/`::: meet`
-   divs produce edges. JS `@requires`/`@ensures`/`@pre`/`@post`/`@invariant`,
-   front-matter `requires:`/`meets:`, `condition.status`, `entails` and
-   `equivalent` are absent.
+   parser-level extraction now exists; `partOf`/condition edges are not yet
+   projected through `coordination_chain`, and cross-file Book composition is
+   deferred.
+3. **Condition nodes and contract tags** — parser-level Condition nodes and
+   `@requires`/`@ensures` extraction exist; condition status is not evaluated and
+   the chain still projects only explicit div edges.
 4. **Sign promotion** — tokens are lexed, no sign is promoted/persisted.
 5. **Spreadsheet/office parsing** — no xlsx/csv, Sheet/Cell/Range,
    `computes`/cell-`depends`; document formulas only.
@@ -190,7 +192,7 @@ approximated.
 ```
 npm run typecheck   # tsc -p tsconfig.json --noEmit        -> clean (exit 0)
 npm run test:tsc    # tsc -p tsconfig.test.json --noEmit   -> clean (exit 0)
-npm test            # tsdown test build + node --test      -> 433 tests, 432 pass,
+npm test            # tsdown test build + node --test      -> 473 tests, 472 pass,
                     #                                        1 skipped (--expose-gc), 0 fail
 npm run build       # tsdown host + client bundles          -> green (exit 0)
 ```

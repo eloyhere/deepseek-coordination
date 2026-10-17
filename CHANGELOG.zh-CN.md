@@ -17,7 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
-| 0.10.0 | 2026-10-18 | pending | 设置目录、文件工具、数据结构采纳、可安装包 |
+| 0.10.0 | 2026-10-18 | `8a8d0f7` | 设置目录、持久文件层、Turn 流水线、阶段冻结、数据结构采纳、可安装包 |
 | 0.9.2 | 2026-10-18 | `73a273d` | 同一时刻只允许一个下拉框 tooltip |
 | 0.9.1 | 2026-10-18 | `31f64da` | 恢复可用的下拉框 tooltip，移除全局合成锚点 |
 | 0.9.0 | 2026-10-18 | `ad7d59f` | 共享算法库、蓝图领域模型、P0 解析器、全局 tooltip 宿主 |
@@ -49,7 +49,7 @@ tarball 的版本；`lib/` 不提交进 git，因此裸 `github:` 源码安装�
 ### 新增
 
 - **设置目录** —— 13 组共 151 个控件，覆盖全部 155 个非秘密配置叶子且每项恰好一次
-  （130 个可写主机行）。`GET /config` 返回 `{ values, defaults }`；`POST /config`
+  （134 个可写主机行）。`GET /config` 返回 `{ values, defaults }`；`POST /config`
   接受扁平点路径补丁，按真实 Schemastery schema 校验类型/范围，实时应用并重新解析
   权重归一、别名镜像、强制开关、压缩夹取等不变量；压缩相关改动会重建
   `TokenGovernor`，最后尽力通过 `ctx.settings.update` 持久化。未知键、`databasePath`
@@ -59,10 +59,22 @@ tarball 的版本；`lib/` 不提交进 git，因此裸 `github:` 源码安装�
   `{id, order, label}`，因此本插件在自己的导航行上绘制 Material `sync` 图标；
   输入栏主题未改。
 - **文件层** —— `coordination_parse`、`coordination_describe`、
-  `coordination_chain`、`coordination_read`：有界解析服务、带确定性 handle 的节点
-  注册表、宿主侧关系链投影，以及唯一会返回正文的工具。`parser.enabled` 在注册
-  文件工具时读取；解析上限与 `chain.depth / links / tokenBudget` 在惰性文件工具
-  运行时首次创建时捕获。
+  `coordination_chain`、`coordination_read`：有界解析服务、持久 node/edge/snapshot
+  图（schema 24）、跨重启保留的确定性 handle、宿主侧关系链投影，以及唯一会返回
+  正文的工具。解析器深度/词元/时间/缓存与依赖图上限、关系链预算和
+  `tools.maxResultBytes` 已即时生效并会 retune 已有运行时；`parser.enabled` 仍需
+  重新注册才能增删工具。workspace root 依次取工具参数、service、host、sandbox
+  policy，最后才回退 `process.cwd()`。
+- **Turn 流水线** —— 普通 `command=none` Turn 驱动 comprehension（使用 turn 行的
+  validation/interaction/scene）、organization、plan 创建/评分和需要的 Predict
+  行；有端口的 scene 策略生效，无端口的项记录为诊断。pre-step 有界且永远不阻塞
+  `next()`。
+- **阶段冻结** —— Turn → 职能，Plan → 验证，Goal → 交互。冻结状态每轮从主机重新
+  推导，禁用对应下拉框但保留可聚焦的 aria-label/tooltip，并由 `POST /selection`
+  以 `INVALID_STATE` 强制，而不只是前端禁用。
+- **领域提取** —— Book/Article/Part/Chapter/Section/Paragraph、Person/Venue、
+  Condition、Sheet/Cell/Range、CSV/TSV、TeX 证明状态和解析器层领域元数据；
+  body-free，且对 P0 节点模型保持增量兼容。
 - **数据结构采纳** —— `LruList` 记忆、保持旧全序的 `BinaryHeap` 选择、共享
   `hashString`、`RedBlackTree` 数值一致性、`OrderedSet` 首次出现去重，以及
   `Queue` 权限命令解析。随机引用测试与实测取舍见
@@ -73,8 +85,9 @@ tarball 的版本；`lib/` 不提交进 git，因此裸 `github:` 源码安装�
 
 ### 变更
 
-- 文件工具运行时已消费 `parser.enabled`、四个解析上限和全部 `chain.*`，因此这些行
-  改为可写主机行；文案明确说明重启/重新注册后生效，不再宣称即改即生效。
+- 文件工具运行时已消费 `parser.enabled`、包括深度/依赖图在内的全部解析上限、
+  全部 `chain.*` 和 `tools.maxResultBytes`，因此这些行改为可写主机行；除
+  `parser.enabled` 仍需重新注册增删工具外，其余限制都会 retune 已有运行时。
 - 六个模块测试的配置字面量补上 `ui.locale`、`compaction`、`parser`、`chain`、
   `tools` 和 `scenes`，`npm run test:tsc` 重新通过。
 
@@ -90,8 +103,9 @@ tarball 的版本；`lib/` 不提交进 git，因此裸 `github:` 源码安装�
 
 ### 验证
 
-`npm run typecheck`、`npm run test:tsc` 通过；`npm test` 为 **433 个测试，
-432 通过，1 个仅 GC 跳过，0 失败**；`npm run build`、`npm run pack:check` 通过。
+`npm run typecheck`、`npm run test:tsc` 通过；`npm test` 为 **473 个测试，
+472 通过，1 个仅 GC 跳过，0 失败**；`npm run build`、`npm run pack:check`
+（tarball 492,156 B）通过。
 
 ## [0.9.2] — 2026-10-18
 

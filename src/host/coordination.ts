@@ -22,7 +22,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { CoordinationConfig } from './config.js'
 import type { DshRuntime } from './dsh.js'
-import { CoordinationDatabase, resolveDatabasePath } from './database.js'
+import { CoordinationDatabase, SCHEMA_VERSION, resolveDatabasePath } from './database.js'
 import { HandleGenerator, SystemClock } from './handle.js'
 import { createModuleHost, type AgentView, type ModuleHost } from './module.js'
 import { TokenGovernor, normaliseCompactionPatch } from './token.js'
@@ -840,7 +840,7 @@ export class CoordinationService extends Service {
       trace: this.db.count('orchestration_trace'),
       takeover: this.db.count('takeover'),
       database: this.db.path,
-      schema: 23,
+      schema: SCHEMA_VERSION,
     }
   }
 
