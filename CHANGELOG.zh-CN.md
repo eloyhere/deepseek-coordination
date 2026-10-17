@@ -41,6 +41,21 @@
 | 0.1.2 | 2026-10-13 | `e4fade7` | permissions 在无 permission.json 时可用 |
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
+## [未发布]
+
+### 变更
+
+- **包管理器改回 npm。** 删除 `pnpm-lock.yaml` 与 `pnpm-workspace.yaml`，改用
+  `package-lock.json`（lockfile v3）；发布工作流改为 `npm ci` 并以 `cache: npm`
+  缓存；README 命令统一为 `npm ci`、`npm run build`、`npm test` 与 `npm pack`。
+  pnpm 的 `allowBuilds` 白名单不再需要，因为 npm 默认执行安装脚本。
+- **显式声明 `react-dom`。** Material UI 对 `react-dom` 有 peer 依赖，而 npm 的
+  严格 peer 解析不会为 React 18 的 `react` 自动配一个 React 19 的 `react-dom`；
+  现在把 `react-dom@^18.2.0` 写成依赖，客户端 bundle 内联的就是同一代 React 18。
+- **`@deepseek-ai/dsh-client-ui-slots` 在 `devDependencies` 中锁到 0.1 线**
+  （`^0.1.0-rc.7`，解析为 0.1.0-rc.8）。否则 npm 会给构建装 0.2.0-rc.2 预发布版，
+  而其余 `dsh-client-*` 包以及本插件注入的宿主模块表都停在 0.1.0-rc.8。
+
 ## [0.10.0] — 2026-10-18
 
 设置页、文件层、数据结构采纳和发布打包一起落地。这是第一个提供可安装

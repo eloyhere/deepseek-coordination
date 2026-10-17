@@ -30,20 +30,20 @@ The five composer controls are **权限 (permission), 职能 (profession), 交�
 | Requirement | Detail |
 |---|---|
 | Node.js | `package.json` declares `>=18`, but the host imports `node:sqlite`; use a Node build that ships it. Verified on Node 24.21.0. |
-| pnpm | pnpm 11 is used by the release workflow; npm also runs the same scripts. |
+| npm | npm 11 (bundled with Node 24) installs from `package-lock.json` and drives the scripts and the release workflow. |
 | DSH | A DSH installation with the `dsh` CLI and a web-capable profile (`@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`). |
 | Peer packages | See the table below; they come from the DSH installation, not from this package. |
 
 ```powershell
 cd deepseek-coordination
-pnpm install
-pnpm typecheck          # tsc -p tsconfig.json --noEmit
-pnpm test               # tsdown test build + node --test
-pnpm build              # lib/index.mjs, lib/index.d.mts, lib/client.js
-pnpm pack               # prepack builds first; produces the installable tarball
+npm ci                  # or `npm install` in a fresh checkout
+npm run typecheck       # tsc -p tsconfig.json --noEmit
+npm test                # tsdown test build + node --test
+npm run build           # lib/index.mjs, lib/index.d.mts, lib/client.js
+npm pack                # prepack builds first; produces the installable tarball
 ```
 
-`pnpm run test:tsc` type-checks the test tree. `pnpm run pack:check` validates the packed runtime files and syntax-checks the host entry. `npm` equivalents work, because the scripts are ordinary npm scripts.
+`npm run test:tsc` type-checks the test tree. `npm run pack:check` validates the packed runtime files and syntax-checks the host entry. `package-lock.json` is committed; `npm ci` reproduces it exactly.
 
 | Peer package | Range | Side |
 |---|---|---|
@@ -57,14 +57,14 @@ pnpm pack               # prepack builds first; produces the installable tarball
 Install the packed tarball, not the GitHub source:
 
 ```powershell
-pnpm pack
+npm pack
 dsh plugin --profile <name> add .\deepseek-coordination-0.10.0.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
-**Raw `github:eloyhere/deepseek-coordination` installs are unsupported.** `lib/` is gitignored, pnpm 11 refuses unapproved git prepare scripts, and the installed package then fails at activation with `ERR_MODULE_NOT_FOUND` for `lib/index.mjs`. The tag-triggered GitHub Actions workflow (`.github/workflows/release.yml`) builds and attaches the verified tarball to the release; install that artifact.
+**Raw `github:eloyhere/deepseek-coordination` installs are unsupported.** `lib/` is gitignored, and the bundle is only built by `prepack` (or an explicit `npm run build`), which npm does not run for a git dependency; the installed package then fails at activation with `ERR_MODULE_NOT_FOUND` for `lib/index.mjs`. The tag-triggered GitHub Actions workflow (`.github/workflows/release.yml`) builds and attaches the verified tarball to the release; install that artifact.
 
-**npm latest is still the old `0.1.9` dsh-os line.** Do not install by package name yet. A local checkout can be linked with `dsh plugin --profile <name> add .` after `pnpm build`.
+**npm latest is still the old `0.1.9` dsh-os line.** Do not install by package name yet. A local checkout can be linked with `dsh plugin --profile <name> add .` after `npm run build`.
 
 `dsh plugin add` writes the dependency and the bundle row. If the profile still records a different package spec, replace it rather than assuming the new code loaded; check `dsh --profile <name> --dump-config` and the installed `package.json` version.
 
@@ -72,9 +72,9 @@ dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 |---|---|---|
 | `lib/index.mjs` | Host ESM, `platform: node` | 940,726 B |
 | `lib/index.d.mts` | Host declarations | 9,095 B |
-| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 998,329 B |
+| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 1,170,887 B |
 
-Material UI and emotion are bundled into `lib/client.js`; React comes from the host module table. The client bundle is large because MUI is inlined, not because it ships a second React.
+Material UI, emotion and `react-dom` are bundled into `lib/client.js`; React itself comes from the host module table. The inlined `react-dom` is the 18.3.1 line that matches the host's React 18 — npm refuses to auto-install a React 19 `react-dom` against a React 18 `react`. The client bundle is large because MUI and `react-dom` are inlined, not because it ships a second React.
 
 ## Architecture
 
@@ -121,7 +121,6 @@ deepseek-coordination/
 │  │  ├─ bridge.ts store.ts i18n.ts theme.ts selection-cache.ts
 │  └─ shared/                  # entity/enum/selection/i18n/error + data structures
 ├─ test/                       # 24 *.test.ts + helpers.ts
-├─ docs/                       # 10 design, audit, copy and contract documents
 ├─ lib/                        # build output; gitignored, never edited by hand
 ├─ cordis.patch.yml            # bundle row inserted into a profile
 ├─ scripts/check-pack.mjs      # tarball runtime-file verification
@@ -323,10 +322,10 @@ There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol
 
 | Check | Result |
 |---|---|
-| `pnpm test` | **473 tests, 472 pass, 1 skipped (GC-only), 0 fail**, ~3.3 s on Node 24.21.0 |
-| `pnpm typecheck` / `pnpm test:tsc` | Clean |
-| `pnpm build` | Host + client bundles green; MUI `"use client"` directive warnings are non-fatal |
-| `pnpm run pack:check` | OK: `deepseek-coordination-0.10.0.tgz` (492,156 B); four runtime files present |
+| `npm test` | **473 tests, 472 pass, 1 skipped (GC-only), 0 fail**, ~3.3 s on Node 24.21.0 |
+| `npm run typecheck` / `npm run test:tsc` | Clean |
+| `npm run build` | Host + client bundles green; MUI `"use client"` directive warnings are non-fatal |
+| `npm run pack:check` | OK: `deepseek-coordination-0.10.0.tgz` (538,358 B); four runtime files present |
 | Release CI | `.github/workflows/release.yml` runs typecheck, test:tsc, tests, pack:check and attaches the tarball to a `v*` GitHub Release |
 
 Parser and structure numbers are guards, not promises: a 100k-character parse test stays under 3 s; the data-structure report records B+ tree 10k inserts at 8.3/9.8 ms, skip-list 10k inserts at 6.4 ms, red-black 10k random set/delete at 13.5 ms, sparse grid 10k cells at 5.1 ms, and `hashString` 100k calls at 4.3 ms on the audit machine. The complexity audit records the ordinal `COUNT(*)` → `MAX(ordinal)` change (≈65–69 ms → ≈12–14 ms for 2,000 statements) and route ranking (2,400 → 200 posterior statements for 200 × 12 routes).
@@ -343,24 +342,7 @@ Known limitations, stated rather than hidden:
 8. **Node engine is `>=22.13.0`.** `node:sqlite` is unflagged from 22.13.0/23.4.0; CI and this verification use 24.21.0.
 9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.10.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
 
-## Documentation, layout and license
-
-| Document | Status and purpose |
-|---|---|
-| [docs/deepseek-coordination-v24.md](docs/deepseek-coordination-v24.md) | Authoritative intended behavior (v23 + v24 revision); the code implements a subset. |
-| [docs/domain-model-v24.md](docs/domain-model-v24.md) | Design only: 39 concepts, 38 relations, Book/Article, Sheet/Formula, Statement/Condition/Require/Meet, Chain projection. Not the live schema. |
-| [docs/file-processing-v24.md](docs/file-processing-v24.md) | P0 parser/file-processing contract; implemented and wired through the four file tools. |
-| [docs/feature-wiring-audit-v24.md](docs/feature-wiring-audit-v24.md) | Completed release-surface audit: what v0.7–v0.9 shipped, what is agent-reachable, and the remaining gaps. |
-| [docs/settings-catalog-v24.md](docs/settings-catalog-v24.md) | Authoritative settings catalog: 151 controls, 134 writable, 155 keys, 18 top-level keys. |
-| [docs/persistence-v24.md](docs/persistence-v24.md) | Schema 24 node/edge/snapshot migration, durable handles and bounded rehydration. |
-| [docs/domain-extraction-v24.md](docs/domain-extraction-v24.md) | Parser-level Book/Article, Condition, Sign/office/proof extraction matrix and deferred formats. |
-| [docs/data-structure-adoption-v24.md](docs/data-structure-adoption-v24.md) | Second adoption pass: LruList, BinaryHeap, RedBlackTree, OrderedSet, Queue; measured caveats. |
-| [docs/complexity-audit-v24.md](docs/complexity-audit-v24.md) | Completed time/space audit and the first adoption pass. |
-| [docs/data-structures-report.md](docs/data-structures-report.md) | Phase-1 shared-library contract and benchmarks. |
-| [docs/module-contract.md](docs/module-contract.md) | Host/client boundaries, naming and trace rules. |
-| [docs/ui-copy-v24.md](docs/ui-copy-v24.md) | UI copy design; strings land in `src/shared/i18n.ts`. |
-
-### Repository history
+## Repository history and license
 
 `0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` adds the settings catalog, the four file tools, the second data-structure pass and the verified tarball. Earlier states remain in git history and tags.
 

@@ -12,7 +12,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > DSH plugin bundle layout. Entries from `0.1.9` downwards describe **dsh-os**, a cross-platform
 > atomic OS-interaction surface, which is no longer on the branch tip but remains reachable in
 > git history and tagged `v0.1.5` … `v0.1.9`; see
-> [Repository history](README.md#repository-history). `Auto-commit: typecheck-passing snapshot`
+> [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
 ## Release map
@@ -42,6 +42,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.5 | 2026-10-13 | `b29c0e3` | `workflow_plan` and measured prefix cache |
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
+
+
+## [Unreleased]
+
+### Changed
+
+- **The package manager is npm again.** `pnpm-lock.yaml` and
+  `pnpm-workspace.yaml` are replaced by `package-lock.json` (lockfile v3); the
+  release workflow installs with `npm ci` and caches with `cache: npm`; the
+  README commands are `npm ci`, `npm run build`, `npm test` and `npm pack`. The
+  pnpm `allowBuilds` allowlist is no longer needed, because npm runs install
+  scripts by default.
+- **`react-dom` is declared.** Material UI peers on `react-dom`, and npm's
+  strict peer resolution refused to auto-install a React 19 `react-dom`
+  against the React 18 `react` the module table provides. `react-dom@^18.2.0`
+  is now a dependency, so the client bundle inlines the matching React 18 line.
+- **`@deepseek-ai/dsh-client-ui-slots` is pinned to the 0.1 line** in
+  `devDependencies` (`^0.1.0-rc.7`, resolving to 0.1.0-rc.8). npm would
+  otherwise build against the 0.2.0-rc.2 pre-release while every other
+  `dsh-client-*` package — and the host module table this plugin injects into —
+  is 0.1.0-rc.8.
 
 
 ## [0.10.0] — 2026-10-18
@@ -209,7 +230,7 @@ and question waterfalls with a React + Material UI takeover dialog.
   (本机/主机/强制/只读) and always-visible explanations; full-access permission
   now needs a second confirmation; `PROFESSION_LOCKED` opens a rebuild/abandon
   dialog backed by `POST /profession/rebuild` and `/profession/abandon`.
-- v24 file-processing spec ([docs/file-processing-v24.md](docs/file-processing-v24.md)):
+- v24 file-processing spec (`docs/file-processing-v24.md`):
   JS/TS + CSS/HTML/Markdown parsers, dependency/import graph, size and time caps.
 - New `coordination_profession`, `coordination_professionlock` and
   `coordination_selection` tools, localized and re-registered on locale change.

@@ -1,7 +1,7 @@
 {
   "name": "deepseek-coordination",
   "version": "0.10.0",
-  "description": "DeepSeek Harness plugin bundle: a dual-face Cordis plugin with a host route surface and a web settings page.",
+  "description": "A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -80,7 +80,7 @@
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.7 || ^0.2.0-rc.0",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.0-rc.8",
     "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.7 || ^0.2.0-rc.0",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.7 || ^0.2.0-rc.0",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.7",
     "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.7 || ^0.2.0-rc.0",
     "@types/node": "^26.2.0",
     "@types/react": "~18.3.1",
@@ -92,6 +92,7 @@
     "@deepseek-ai/schemastery": "^3.18.4",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
-    "@mui/material": "^9.5.0"
+    "@mui/material": "^9.5.0",
+    "react-dom": "^18.2.0"
   }
 }

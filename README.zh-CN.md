@@ -30,20 +30,20 @@
 | 要求 | 说明 |
 |---|---|
 | Node.js | `package.json` 声明 `>=18`，但宿主端使用 `node:sqlite`，必须使用带该模块的 Node 构建。本次验证使用 Node 24.21.0。 |
-| pnpm | 发布工作流使用 pnpm 11；npm 也能运行同一组 scripts。 |
+| npm | npm 11（随 Node 24 提供）按 `package-lock.json` 安装依赖，并驱动 scripts 与发布工作流。 |
 | DSH | 装有 `dsh` CLI 的 DSH，且 profile 含 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app`。 |
 | Peer 包 | 见下表；它们由 DSH 安装提供，不由本包携带。 |
 
 ```powershell
 cd deepseek-coordination
-pnpm install
-pnpm typecheck          # tsc -p tsconfig.json --noEmit
-pnpm test               # tsdown 测试构建 + node --test
-pnpm build              # 生成 lib/index.mjs、lib/index.d.mts、lib/client.js
-pnpm pack               # 先执行 prepack，生成可安装 tarball
+npm ci                  # 全新 checkout 也可用 `npm install`
+npm run typecheck       # tsc -p tsconfig.json --noEmit
+npm test                # tsdown 测试构建 + node --test
+npm run build           # 生成 lib/index.mjs、lib/index.d.mts、lib/client.js
+npm pack                # 先执行 prepack，生成可安装 tarball
 ```
 
-`pnpm run test:tsc` 检查测试树；`pnpm run pack:check` 校验 tarball 中的运行时文件并检查宿主入口语法。npm 的对应命令同样可用，因为这些 scripts 就是普通 npm scripts。
+`npm run test:tsc` 检查测试树；`npm run pack:check` 校验 tarball 中的运行时文件并检查宿主入口语法。仓库提交了 `package-lock.json`，`npm ci` 会精确复现它。
 
 | Peer 包 | 范围 | 端 |
 |---|---|---|
@@ -57,14 +57,14 @@ pnpm pack               # 先执行 prepack，生成可安装 tarball
 安装打包后的 tarball，不要装 GitHub 源码：
 
 ```powershell
-pnpm pack
+npm pack
 dsh plugin --profile <name> add .\deepseek-coordination-0.10.0.tgz
 dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 ```
 
-**不支持从 `github:eloyhere/deepseek-coordination` 直接安装。** `lib/` 被 gitignore，pnpm 11 会拒绝未经批准的 git prepare 脚本，安装后的包在激活时会因找不到 `lib/index.mjs` 报 `ERR_MODULE_NOT_FOUND`。打 tag 时触发的 GitHub Actions（`.github/workflows/release.yml`）会构建并把校验过的 tarball 附到 Release，请安装该产物。
+**不支持从 `github:eloyhere/deepseek-coordination` 直接安装。** `lib/` 被 gitignore，而 bundle 只在 `prepack`（或显式 `npm run build`）时构建，npm 安装 git 依赖时不会执行这一步，安装后的包在激活时会因找不到 `lib/index.mjs` 报 `ERR_MODULE_NOT_FOUND`。打 tag 时触发的 GitHub Actions（`.github/workflows/release.yml`）会构建并把校验过的 tarball 附到 Release，请安装该产物。
 
-**npm 上的 latest 仍是旧的 `0.1.9` dsh-os 线。** 目前不要按包名安装。本地 checkout 在 `pnpm build` 之后可以用 `dsh plugin --profile <name> add .` 链接。
+**npm 上的 latest 仍是旧的 `0.1.9` dsh-os 线。** 目前不要按包名安装。本地 checkout 在 `npm run build` 之后可以用 `dsh plugin --profile <name> add .` 链接。
 
 `dsh plugin add` 会写入依赖和 bundle 行。如果 profile 里仍记录着别的包 spec，请替换它，不要假定新代码已经加载；用 `dsh --profile <name> --dump-config` 和已安装的 `package.json` 版本核对。
 
@@ -72,9 +72,9 @@ dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 |---|---|---|
 | `lib/index.mjs` | 宿主 ESM，`platform: node` | 940,726 B |
 | `lib/index.d.mts` | 宿主类型声明 | 9,095 B |
-| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 998,329 B |
+| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 1,170,887 B |
 
-Material UI 与 emotion 被打进 `lib/client.js`，React 来自宿主模块表。客户端体积大是因为内联了 MUI，不是因为多带了一份 React。
+Material UI、emotion 与 `react-dom` 被打进 `lib/client.js`，React 本身来自宿主模块表。内联的 `react-dom` 是 18.3.1 线，与宿主的 React 18 匹配——npm 不会为 React 18 的 `react` 自动配一个 React 19 的 `react-dom`。客户端体积大是因为内联了 MUI 与 `react-dom`，不是因为多带了一份 React。
 
 ## 架构
 
@@ -121,7 +121,6 @@ deepseek-coordination/
 │  │  ├─ bridge.ts store.ts i18n.ts theme.ts selection-cache.ts
 │  └─ shared/                  # entity/enum/selection/i18n/error + 数据结构
 ├─ test/                       # 24 个 *.test.ts + helpers.ts
-├─ docs/                       # 10 份设计、审计、文案与契约文档
 ├─ lib/                        # 构建产物；gitignore，不手改
 ├─ cordis.patch.yml            # 插入 profile 的 bundle 行
 ├─ scripts/check-pack.mjs      # tarball 运行时文件校验
@@ -323,10 +322,10 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 | 检查 | 结果 |
 |---|---|
-| `pnpm test` | **473 tests，472 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3.3 s |
-| `pnpm typecheck` / `pnpm test:tsc` | 通过 |
-| `pnpm build` | 宿主 + 客户端 bundle 通过；MUI 的 `"use client"` directive 警告不致命 |
-| `pnpm run pack:check` | OK：`deepseek-coordination-0.10.0.tgz`（492,156 B），四个运行时文件齐全 |
+| `npm test` | **473 tests，472 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3.3 s |
+| `npm run typecheck` / `npm run test:tsc` | 通过 |
+| `npm run build` | 宿主 + 客户端 bundle 通过；MUI 的 `"use client"` directive 警告不致命 |
+| `npm run pack:check` | OK：`deepseek-coordination-0.10.0.tgz`（538,358 B），四个运行时文件齐全 |
 | 发布 CI | `.github/workflows/release.yml` 运行 typecheck、test:tsc、测试、pack:check，并在 `v*` Release 附上 tarball |
 
 解析器与结构的数字是守卫，不是承诺：100k 字符解析测试保持在 3 秒内；数据结构报告记录 B+ 树 10k 插入 8.3/9.8 ms、skip list 10k 插入 6.4 ms、红黑树 10k 随机 set/delete 13.5 ms、稀疏网格 10k 单元 5.1 ms、`hashString` 100k 次 4.3 ms；复杂度审计记录 Turn 序号从 `COUNT(*)` 改为 `MAX(ordinal)`（2,000 条语句约 65–69 ms → 约 12–14 ms）以及路由排序（200 × 12 条路由的 2,400 次 posterior 查询降到 200 次）。
@@ -343,24 +342,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 8. **Node 引擎为 `>=22.13.0`。** `node:sqlite` 从 22.13.0/23.4.0 起不再需要实验开关；CI 与本次验证使用 24.21.0。
 9. **profile 里可能仍记录着旧的包 spec。** 请核对实际安装的版本（`dsh --profile <name> --dump-config` 或 profile 的 `package.json`）；安装 0.10.0 tarball 或链接已构建的 checkout，不要假定上一次安装已被升级。
 
-## 文档、布局与许可
-
-| 文档 | 状态与用途 |
-|---|---|
-| [docs/deepseek-coordination-v24.md](docs/deepseek-coordination-v24.md) | 行为规格（v23 + v24 修订），是“应该怎样”的权威；代码实现其子集。 |
-| [docs/domain-model-v24.md](docs/domain-model-v24.md) | 仅设计：39 个概念、38 种关系、Book/Article、Sheet/Formula、Statement/Condition/Require/Meet、Chain 投影。不是实际 schema。 |
-| [docs/file-processing-v24.md](docs/file-processing-v24.md) | P0 解析/文件处理契约；已实现并通过四个文件工具接线。 |
-| [docs/feature-wiring-audit-v24.md](docs/feature-wiring-audit-v24.md) | 已完成的发布面审计：v0.7–v0.9 到底交付了什么、agent 能触达什么、还差什么。 |
-| [docs/settings-catalog-v24.md](docs/settings-catalog-v24.md) | 权威设置目录：151 控件、134 可写、155 个键、18 个顶层键。 |
-| [docs/persistence-v24.md](docs/persistence-v24.md) | schema 24 的 node/edge/snapshot 迁移、持久 handle 与有界重水化。 |
-| [docs/domain-extraction-v24.md](docs/domain-extraction-v24.md) | 解析器层 Book/Article、Condition、Sign/office/proof 提取矩阵与延迟格式。 |
-| [docs/data-structure-adoption-v24.md](docs/data-structure-adoption-v24.md) | 第二轮采用：LruList、BinaryHeap、RedBlackTree、OrderedSet、Queue；含实测 caveat。 |
-| [docs/complexity-audit-v24.md](docs/complexity-audit-v24.md) | 已完成的时空复杂度审计与第一轮采用。 |
-| [docs/data-structures-report.md](docs/data-structures-report.md) | 第一阶段共享库契约与基准。 |
-| [docs/module-contract.md](docs/module-contract.md) | 宿主/浏览器边界、命名与追踪规则。 |
-| [docs/ui-copy-v24.md](docs/ui-copy-v24.md) | UI 文案设计；字符串落在 `src/shared/i18n.ts`。 |
-
-### 仓库历史
+## 仓库历史与许可
 
 `0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball。旧状态仍在 git 历史和 tag 中。
 
