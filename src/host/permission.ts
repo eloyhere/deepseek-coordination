@@ -28,7 +28,7 @@
  * |-----------|----------------------------------------------------------------|
  * | `granted` | recorded and effective for `check`                             |
  * | `pending` | recorded but not honoured (an un-appliable approval policy)    |
- * | `revoked` | withdrawn; history is kept, the latest row still wins          |
+ * | `revoked` | withdrawn; the row is kept for audit, never for a check     |
  *
  * Command face (`execute`), parsed after the `permission` command type was
  * selected in the composer:
