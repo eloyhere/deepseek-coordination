@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "DeepSeek Harness plugin bundle: a dual-face Cordis plugin with a host route surface and a web settings page.",
   "keywords": [
     "deepseek-harness",
@@ -36,7 +36,6 @@
     "lib/index.mjs",
     "lib/index.d.mts",
     "lib/client.js",
-    "lib/static",
     "cordis.patch.yml"
   ],
   "dsh": {
@@ -55,9 +54,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown --config tsdown.config.ts && node scripts/copy-mdui.mjs",
-    "build:plugin": "tsdown --config tsdown.config.ts",
-    "copy:mdui": "node scripts/copy-mdui.mjs",
+    "build": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pack:check": "npm pack --dry-run"
   },
@@ -86,8 +83,5 @@
     "react": "^18.2.0",
     "tsdown": "^0.22.14",
     "typescript": "^5.6.0"
-  },
-  "dependencies": {
-    "mdui": "^2.1.5"
   }
 }

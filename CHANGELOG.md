@@ -12,6 +12,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.5.0] — 2026-10-17
+
+MDUI out, plain React in. The one UI framework the host guarantees is React itself (it arrives
+through the module table), so the widgets no longer need a third-party kit.
+
+### Changed
+
+- The dropdowns and the takeover switch are React components owned by this plugin; the popup is
+  drawn here (hover state on the trigger, 10px corner radius) instead of by the OS.
+- Widget CSS is a string injected once through `ctx.effect`, so the plugin ships no stylesheet
+  asset and the build needs no copy step.
+- `pnpm build` is a single `tsdown` run again; the host half serves no static files.
+
+### Removed
+
+- `mdui@2.1.5`, `scripts/copy-mdui.mjs`, `lib/static/`, and the `/static/*` route.
+
 ## [0.4.0] — 2026-10-17
 
 Angular out, MDUI 2 in. Angular needed a second toolchain (a separate `ng build`, its own

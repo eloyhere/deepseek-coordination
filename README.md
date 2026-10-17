@@ -8,7 +8,7 @@ the DSH Web GUI and mounts UI into two host slots.
 
 > **Status: first real UI.** The plugin's UI is a `协调` settings page holding the
 > permission-takeover switch, and three coordination selectors injected into the composer tool
-> row. Built from MDUI 2 web components; no second framework.
+> row. Built from plain React components; no third-party UI framework.
 
 ## What the pieces mean
 
@@ -27,15 +27,12 @@ This repository is the **bundle**. A profile is what a user boots; nothing here 
 ```text
 .
 ├─ src/
-│  ├─ index.ts            Host half: liveness routes + static serving of mdui.css
+│  ├─ index.ts            Host half: liveness and echo routes
 │  └─ client/
 │     └─ index.ts         Client half: `协调` settings page, composer mount, takeover rule
-├─ scripts/
-│  └─ copy-mdui.mjs       Copies MDUI's stylesheet into lib/static at build time
 ├─ lib/                   Build output (git-ignored, never edited by hand)
 │  ├─ index.mjs           Host half
-│  ├─ client.js           Client half, MDUI bundled in
-│  └─ static/mdui.css     Served by the host half
+│  └─ client.js           Client half
 ├─ cordis.patch.yml       Bundle patch: inserts this plugin's row into a profile roster
 ├─ package.json           dsh.bundle + dsh.client declarations, dual exports map
 ├─ pnpm-lock.yaml         Pinned dev toolchain and DSH client packages
@@ -81,20 +78,18 @@ host release that renames that label breaks the rule. The switch position persis
 ```console
 $ pnpm install
 $ pnpm typecheck        # tsc -p tsconfig.json --noEmit
-$ pnpm build            # tsdown --config tsdown.config.ts && node scripts/copy-mdui.mjs
+$ pnpm build            # tsdown --config tsdown.config.ts
 ```
 
 | Output | Face | Format |
 |---|---|---|
 | `lib/index.mjs` + `lib/index.d.mts` | Host | ESM, `platform: node` |
-| `lib/client.js` | Client | CJS, `platform: browser`, wrapped in `__ModuleLoader__.load()`, MDUI bundled in |
-| `lib/static/mdui.css` | Stylesheet | Copied from `node_modules/mdui`, served by the host half |
+| `lib/client.js` | Client | CJS, `platform: browser`, wrapped in `__ModuleLoader__.load()` |
 
-MDUI's **component JS is bundled** into the client half (`alwaysBundle` inlines everything that is
-not `react` or `@deepseek-ai/dsh-client-*`, which is the module-table contract). Its **stylesheet
-is not**: tsdown does not process CSS imports, so the file is copied into `lib/static/` and served
-from `/deepseek-coordination/static/mdui.css` — version-locked to the bundled JS and working
-without network access.
+The widgets are plain React components, and their CSS is a string injected once through
+`ctx.effect` — so the plugin ships no stylesheet asset and needs no extra build step. React itself
+is never bundled: it arrives through the module table, which is the contract for `react` and
+`@deepseek-ai/dsh-client-*`.
 
 ## Install into a profile
 
@@ -126,13 +121,12 @@ These are the ones that fail silently rather than loudly:
   ready. `ctx.get('x')` is an *optional* read and returns `undefined` before the service exists.
 - **Registrations are disposed automatically.** `ctx.on`, `ctx.tools.register`, `ctx.slots.inject`
   and friends are owned by the plugin's fiber. For anything else, return a disposer from
-  `ctx.effect(() => cleanup)` — that is how the route surface, the injected `<style>` and the MDUI
-  `<link>` unregister on unload.
+  `ctx.effect(() => cleanup)` — that is how the route surface, the injected `<style>` unregister on unload.
 - **`inject` and `dsh.client.inject` are different declarations.** The first lists client
   *services* (`slots`); the second lists module-table *packages* (`react`,
   `@deepseek-ai/dsh-client-*`). Both are required.
 - **Only `react` and `@deepseek-ai/dsh-client-*` come from the module table.** Everything else —
-  including MDUI — must be bundled; a missing table row throws at load time.
+  everything else — must be bundled; a missing table row throws at load time.
 - **`__ModuleLoader__`'s `id` must equal the package name.** It is the resolution key.
 - **`files` is a whitelist.** Only what it lists ships; if the manifest points at a path the
   tarball lacks, the plugin installs cleanly and then fails to load.
@@ -157,6 +151,7 @@ These are the ones that fail silently rather than loudly:
 - `0.2.0` — reshaped into this plugin bundle layout.
 - `0.3.0` — first UI, built as an Angular custom element.
 - `0.4.0` — the Angular element replaced by MDUI 2 web components.
+- `0.5.0` — MDUI removed; the widgets are plain React components owned by this plugin.
 
 Nothing is lost: every earlier state is reachable from git history.
 
@@ -170,7 +165,6 @@ $ git worktree add ../dsh-os v0.1.9
 - DSH plugin tutorials: <https://github.com/deepseek-ai/deepseek-harness/tree/master/docs/user/develop>
 - [Package and install a plugin](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)
 - [Plugins and lifecycle](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/framework/index.md)
-- MDUI 2 documentation: <https://www.mdui.org/zh-cn/docs/2/>
 
 ## License
 
