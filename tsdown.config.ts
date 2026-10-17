@@ -38,6 +38,12 @@ export default defineConfig([
     target: 'es2022',
     dts: true,
     clean: false,
+    define: {
+      // MUI and emotion read process.env.NODE_ENV. The browser has no `process`,
+      // and an unsubstituted read throws at module evaluation, which takes the
+      // whole web boot down ("import failed: process is not defined").
+      'process.env.NODE_ENV': '"production"',
+    },
     deps: {
       // The module table only knows react and @deepseek-ai/dsh-client-*:
       //  - neverBundle excludes them (they resolve via module-table require())

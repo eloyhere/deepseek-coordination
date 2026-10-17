@@ -12,6 +12,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.6.1] — 2026-10-17
+
+### Fixed
+
+- The client half referenced `process`, so the browser threw "import failed: process is not
+  defined" and the entire web boot failed ("1 entry did not activate"). MUI and emotion read
+  `process.env.NODE_ENV`; the build now defines it (`define: { 'process.env.NODE_ENV':
+  '"production"' }`), which also lets the bundler drop the development branches.
+- Client bundle: 748.89 kB → 525.35 kB (155.85 → 113.72 kB gzip) as a side effect.
+
 ## [0.6.0] — 2026-10-17
 
 The widgets move to Material UI: `@mui/material@9.5.0` with `@emotion/react` and
