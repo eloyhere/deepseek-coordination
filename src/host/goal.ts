@@ -33,10 +33,12 @@ export class GoalModule {
   /** The newest goal of a turn that is still in force, or `undefined`. */
   current(turn: number): Goal | undefined {
     const row = this.host.db.get<Row>(
-      'SELECT * FROM goal WHERE turn = ? AND status != \'cleared\' ORDER BY identity DESC LIMIT 1',
+      'SELECT * FROM goal WHERE turn = ? ORDER BY identity DESC LIMIT 1',
       turn,
     )
-    return row === undefined ? undefined : mapGoal(row)
+    if (row === undefined) return undefined
+    const goal = mapGoal(row)
+    return goal.status === 'cleared' ? undefined : goal
   }
 
   /** The current goal of a turn; a cleared or absent goal is a NotFoundError. */

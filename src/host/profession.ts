@@ -110,7 +110,11 @@ export class ProfessionModule {
         maxTurnPerSession: this.host.config.maxTurnPerSession,
       })
     }
-    const ordinal = current.ordinal + 1
+    const ordinalRow = this.host.db.get<{ next: number }>(
+      'SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM turn WHERE session = ?',
+      current.session,
+    )
+    const ordinal = Number(ordinalRow?.next ?? 1)
     const now = this.host.clock.now()
     const newIdentity = this.host.db.transaction(() => {
       const identity = this.host.db.insert('turn', {

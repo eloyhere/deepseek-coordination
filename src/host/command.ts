@@ -164,11 +164,7 @@ export class CommandModule {
     try {
       const output = await handler(turn, parsed.content)
       const message = typeof output === 'string' ? output : String(output)
-      return {
-        command: this.finish(command, message),
-        action: 'accepted',
-        ...(message.length === 0 ? {} : { message }),
-      }
+      return { command: this.finish(command, message), action: 'accepted', message }
     } catch (error) {
       const message = describeError(error)
       return { command: this.finish(command, message), action: 'rejected', message }

@@ -56,6 +56,8 @@
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:build": "tsdown --config tsdown.test.config.ts",
+    "test": "npm run test:build && node --test .tmp/test-build",
     "pack:check": "npm pack --dry-run"
   },
   "engines": {

@@ -170,9 +170,23 @@ export const ValidationLabel: Readonly<Record<Validation, string>> = {
 }
 
 export const ValidationHint: Readonly<Record<Validation, string>> = {
-  low: '只执行选定交互：不做贝叶斯推断，不搜索资料，不读取跨会话历史。',
-  medium: '对选定模式做贝叶斯推断：证据来自当前会话 + 联网搜索，不读取跨会话历史。',
-  high: '对全部交互模式做完整贝叶斯推断：当前会话 + 联网搜索 + 跨会话历史，并做全局加权融合。',
+  low: '少量联网检索（1 次 × 3 条），只结合当轮对话做轻量先验/后验更新；不读取跨会话历史。',
+  medium: '联网检索（2 次 × 5 条），结合当前会话全部内容做完整先验/后验更新；不读取跨会话历史。',
+  high: '联网检索（4 次 × 8 条），结合当前会话 + 本地全部会话历史 + 工作区文件，对所有交互做完整先验/后验更新与全局加权融合。',
+}
+
+/** The retrieval budget and evidence scope the Bayesian/comprehension policy uses. */
+export interface ValidationBudget {
+  query: number
+  result: number
+  scope: 'turn' | 'session' | 'local'
+  interaction: 'selected' | 'all'
+}
+
+export const ValidationBudgetByLevel: Readonly<Record<Validation, ValidationBudget>> = {
+  low: { query: 1, result: 3, scope: 'turn', interaction: 'selected' },
+  medium: { query: 2, result: 5, scope: 'session', interaction: 'selected' },
+  high: { query: 4, result: 8, scope: 'local', interaction: 'all' },
 }
 
 /**
@@ -195,7 +209,7 @@ export const ControlHint: Readonly<Record<ControlName, string>> = {
   profession: '任务内唯一且锁定的问责维度。选择后本 Turn 不可切换，只能重建或丢弃任务。',
   interaction: '决定 Agent 如何回应：感情 / 思维 / 启发 / 收束 / 统筹。',
   scene: '决定工作情景：对话 / 办公 / 研究 / 工程 / 迭代。',
-  validation: '决定证据与推断深度：low / medium / high。medium 与 high 允许联网搜索。',
+  validation: '决定检索预算与证据范围：low 当轮 / medium 当前会话 / high 本地全部内容。三档都联网并做贝叶斯更新。',
   permission: '决定本会话的沙箱与审批档位：仅可查看 / 工作区内修改 / 完全权限。',
 }
 

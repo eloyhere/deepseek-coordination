@@ -5,14 +5,15 @@
  *
  *   emotion -> think -> heuristic -> converge
  *
- * `emotion` and `think` always run. `heuristic` and `converge` are Bayesian
- * stages: they are skipped for `validation === 'low'` (v23 §6.3, §9.5) but a
- * row is still written for ordinal 3 and 4 with status `skipped`, so the
- * ordinal contract never depends on the validation level.
+ * `emotion` and `think` always run. Whether `heuristic` and `converge` run, how
+ * much evidence they may gather and which material scope they use is decided by
+ * the validation policy (`comprehensionPolicy`), not by a hard-coded level
+ * check. A disabled stage still writes a row for its ordinal with status
+ * `skipped`, so the ordinal contract never depends on the level or policy.
  *
  * Everything here is deterministic local analysis. There is no LLM call and no
  * DSH import. The only async work is optional evidence search through the
- * read-only `WebSearchPort`, and a failed or slow search never fails the
+ * read-only `WebSearchPort`; a failed or slow search never fails the
  * comprehension: the stage still commits as `done` with no search evidence.
  *
  * Persistence rules:
@@ -27,9 +28,11 @@
  *  - `comprehension.emotion` stores the numeric intensity, not an `emotion`
  *    table identity: this module never depends on the companion module.
  *  - `stageCount` counts the distinct ordinals that produced a `done` row, so a
- *    low-validation comprehension stores 2 while still writing four rows.
+ *    comprehension whose policy disables both Bayesian stages stores 2 while
+ *    still writing all four rows.
  *  - `confidence` aggregates the deterministic analytical stages (think,
- *    heuristic, converge) and falls back to the think stage for `low`.
+ *    heuristic, converge) and falls back to the think stage when no Bayesian
+ *    stage ran.
  *  - `entropy` is the normalised Shannon entropy of the last Bayesian stage
  *    (converge when it ran, otherwise heuristic); `route` and `failure` hold the
  *    ranked `RouteCandidate[]` arrays, `evidence` the labelled evidence list.
@@ -72,6 +75,169 @@ export interface ComprehendInput {
   validation: Validation
   context?: ComprehensionContext
   model?: string
+}
+
+/* ------------------------------------------------------------------------- *
+ * Validation policy
+ *
+ * The three validation levels differ only in policy: how much material is
+ * admitted, which scopes it may come from, how many searches run and whether
+ * the Bayesian stages run at all. The module never branches on the level name;
+ * it reads the resolved policy, so changing a level is a data edit here or an
+ * override passed to the constructor.
+ * ------------------------------------------------------------------------- */
+
+/** Which material a validation level may admit as evidence. */
+export type ComprehensionScope = 'turn' | 'session' | 'local'
+
+/** Whether the two Bayesian stages of a level run. */
+export interface ComprehensionStagePolicy {
+  heuristic: boolean
+  converge: boolean
+}
+
+/**
+ * The resolved policy of one validation level.
+ *
+ * - `search` requests evidence search. `config.comprehension.searchEnabled`
+ *   is already folded in (false disables search for every level), and the
+ *   `host.web` port availability is checked again at call time.
+ * - `scope` names the material the level may use: only the current turn, the
+ *   whole current session, or all local content.
+ * - `maxQueries` is the total search budget of one comprehension. The split
+ *   across the two Bayesian stages is `comprehensionQueryBudget(maxQueries)`.
+ * - `maxResults` is the per-query result cap, itself capped by
+ *   `config.comprehension.maxEvidence`; total volume is therefore
+ *   `maxQueries × maxResults` at most.
+ * - `historyLimit` and `evidenceLimit` bound how many caller-supplied history
+ *   entries and current-turn evidence entries are admitted.
+ * - `stages` decides whether `heuristic` and `converge` run. A disabled stage
+ *   still writes a `skipped` row with its ordinal, so the four-ordinal contract
+ *   never depends on the level. `converge` depends on `heuristic`: disabling
+ *   the heuristic stage disables converge as well.
+ * - `globalFusion` marks the level that also wants global fusion across
+ *   interaction modes (v23 §6.3 high).
+ */
+export interface ComprehensionPolicy {
+  validation: Validation
+  search: boolean
+  scope: ComprehensionScope
+  maxQueries: number
+  maxResults: number
+  historyLimit: number
+  evidenceLimit: number
+  stages: ComprehensionStagePolicy
+  globalFusion: boolean
+}
+
+/** A per-level override; nested `stages` is merged, not replaced. */
+export type ComprehensionPolicyPatch = Partial<Omit<ComprehensionPolicy, 'validation' | 'stages'>> & {
+  stages?: Partial<ComprehensionStagePolicy>
+}
+
+/**
+ * Defaults for the three levels.
+ *
+ * Every level searches the web; the levels differ in material volume and
+ * evidence scope. `low` keeps one query and three results within the current
+ * turn, `medium` two queries and five results across the session, `high` four
+ * queries and eight results across all local content plus global fusion.
+ * `low` still runs both Bayesian stages, just with the narrowest material.
+ */
+export const ComprehensionPolicyTable: Readonly<Record<Validation, ComprehensionPolicy>> = {
+  low: {
+    validation: 'low',
+    search: true,
+    scope: 'turn',
+    maxQueries: 1,
+    maxResults: 3,
+    historyLimit: 0,
+    evidenceLimit: 4,
+    stages: { heuristic: true, converge: true },
+    globalFusion: false,
+  },
+  medium: {
+    validation: 'medium',
+    search: true,
+    scope: 'session',
+    maxQueries: 2,
+    maxResults: 5,
+    historyLimit: 10,
+    evidenceLimit: 8,
+    stages: { heuristic: true, converge: true },
+    globalFusion: false,
+  },
+  high: {
+    validation: 'high',
+    search: true,
+    scope: 'local',
+    maxQueries: 4,
+    maxResults: 8,
+    historyLimit: 50,
+    evidenceLimit: 16,
+    stages: { heuristic: true, converge: true },
+    globalFusion: true,
+  },
+}
+
+/** Optional global caps applied on top of the level defaults. */
+export interface ComprehensionPolicyOptions {
+  /** `config.comprehension.searchEnabled`; false disables search for all levels. */
+  searchEnabled?: boolean
+  /** `config.comprehension.maxEvidence`; global per-query result cap. */
+  maxEvidence?: number
+  /** `config.comprehension.highHistoryWindow`; global history cap. */
+  highHistoryWindow?: number
+}
+
+/**
+ * Resolve one validation level into its effective policy.
+ *
+ * `comprehensionPolicy('low')` returns the documented defaults. Passing the
+ * configuration caps is how the host applies deployment limits; omitting them
+ * returns the level defaults unchanged. The returned object is a fresh copy,
+ * safe for the caller to keep or annotate.
+ */
+export function comprehensionPolicy(
+  validation: Validation,
+  options: ComprehensionPolicyOptions = {},
+): ComprehensionPolicy {
+  const base = ComprehensionPolicyTable[validation] ?? ComprehensionPolicyTable.medium
+  const searchEnabled = options.searchEnabled ?? true
+  const resultCap = options.maxEvidence === undefined ? base.maxResults : Math.max(1, Math.round(options.maxEvidence))
+  const historyCap =
+    options.highHistoryWindow === undefined ? base.historyLimit : Math.max(0, Math.round(options.highHistoryWindow))
+  return {
+    validation: base.validation,
+    search: base.search && searchEnabled,
+    scope: base.scope,
+    maxQueries: Math.max(0, Math.round(base.maxQueries)),
+    maxResults: Math.max(1, Math.min(base.maxResults, resultCap)),
+    historyLimit: Math.max(0, Math.min(base.historyLimit, historyCap)),
+    evidenceLimit: Math.max(0, Math.round(base.evidenceLimit)),
+    stages: { ...base.stages },
+    globalFusion: base.globalFusion,
+  }
+}
+
+/** The per-stage split of one `maxQueries` search budget. */
+export interface ComprehensionQueryBudget {
+  heuristic: number
+  converge: number
+}
+
+/**
+ * Split `maxQueries` across the two Bayesian stages, heuristic first:
+ * 0 -> (0, 0), 1 -> (1, 0), 2 -> (1, 1), 3 -> (2, 1), 4+ -> (2, 2).
+ * The budget above 2 buys a second query variant per stage.
+ */
+export function comprehensionQueryBudget(maxQueries: number): ComprehensionQueryBudget {
+  const budget = Math.max(0, Math.min(4, Math.round(maxQueries)))
+  if (budget === 0) return { heuristic: 0, converge: 0 }
+  if (budget === 1) return { heuristic: 1, converge: 0 }
+  if (budget === 2) return { heuristic: 1, converge: 1 }
+  if (budget === 3) return { heuristic: 2, converge: 1 }
+  return { heuristic: 2, converge: 2 }
 }
 
 /* ------------------------------------------------------------------------- *
@@ -634,9 +800,48 @@ const EngineeringMarker: readonly string[] = [
 
 export class ComprehensionModule {
   private readonly host: ModuleHost
+  private readonly policyOverrides: Partial<Record<Validation, ComprehensionPolicyPatch>>
 
-  constructor(host: ModuleHost) {
+  /**
+   * `policies` overrides one or more levels for this composition, for example
+   * `{ low: { search: false, stages: { heuristic: false, converge: false } } }`
+   * restores the v23 "low runs no Bayesian stage" behaviour without touching
+   * the module. Overrides are merged over `ComprehensionPolicyTable`, then the
+   * `config.comprehension` caps and the `searchEnabled` master switch are
+   * applied last.
+   */
+  constructor(host: ModuleHost, policies: Partial<Record<Validation, ComprehensionPolicyPatch>> = {}) {
     this.host = host
+    this.policyOverrides = policies
+  }
+
+  /**
+   * The effective policy of one level for this host: level defaults, then the
+   * constructor overrides, then the deployment caps from `config.comprehension`.
+   */
+  effectivePolicy(validation: Validation): ComprehensionPolicy {
+    const resolved = toValidation(validation)
+    const base = comprehensionPolicy(resolved, {
+      searchEnabled: this.host.config.comprehension.searchEnabled,
+      maxEvidence: this.host.config.comprehension.maxEvidence,
+      highHistoryWindow: this.host.config.comprehension.highHistoryWindow,
+    })
+    const patch = this.policyOverrides[resolved]
+    if (patch === undefined) return base
+    const merged: ComprehensionPolicy = {
+      ...base,
+      ...patch,
+      validation: resolved,
+      stages: { ...base.stages, ...(patch.stages ?? {}) },
+    }
+    return {
+      ...merged,
+      search: merged.search && this.host.config.comprehension.searchEnabled,
+      maxQueries: Math.max(0, Math.round(merged.maxQueries)),
+      maxResults: Math.max(1, Math.round(merged.maxResults)),
+      historyLimit: Math.max(0, Math.round(merged.historyLimit)),
+      evidenceLimit: Math.max(0, Math.round(merged.evidenceLimit)),
+    }
   }
 
   /**
@@ -662,6 +867,7 @@ export class ComprehensionModule {
     const validation = toValidation(input.validation)
     const scene = toScene(input.scene)
     const interaction = toInteraction(input.interaction)
+    const policy = this.effectivePolicy(validation)
     const context: StageContext = {
       ...(input.context ?? {}),
       scene,
@@ -691,15 +897,15 @@ export class ComprehensionModule {
 
     const chain: StageChain = {}
     for (const stage of ComprehensionStageOrder) {
-      if (validation === 'low' && (stage === 'heuristic' || stage === 'converge')) {
-        // A skipped stage still owns its ordinal: the record is written, the
-        // Bayesian work is not attempted, and no search is issued.
+      if (!stageEnabled(policy, stage)) {
+        // A policy-disabled stage still owns its ordinal: the record is
+        // written, the stage body is not attempted and no search is issued.
         this.writeStage({
           comprehension: identity,
           stage,
           status: 'skipped',
-          input: { stage, validation, scene, interaction },
-          output: { skipped: true, reason: 'validation-low' },
+          input: { stage, validation, policy: policySnapshot(policy) },
+          output: { skipped: true, reason: 'policy-disabled', validation },
         })
         continue
       }
@@ -716,12 +922,12 @@ export class ComprehensionModule {
       if (stage === 'heuristic') {
         const think = chain.think ?? (await this.think(input.prompt, chain.emotion ?? (await this.emotion(input.prompt, context))))
         chain.think = think
-        chain.heuristic = (await this.executeHeuristicStage(identity, input.prompt, think, context)).output
+        chain.heuristic = (await this.executeHeuristicStage(identity, input.prompt, think, context, policy)).output
         continue
       }
-      const heuristic = chain.heuristic ?? (await this.heuristic(input.prompt, chain.think ?? defaultThinkOutput()))
+      const heuristic = chain.heuristic ?? (await this.heuristic(input.prompt, chain.think ?? defaultThinkOutput(), context))
       chain.heuristic = heuristic
-      chain.converge = (await this.executeConvergeStage(identity, input.prompt, heuristic)).output
+      chain.converge = (await this.executeConvergeStage(identity, input.prompt, heuristic, policy)).output
     }
 
     const finished = this.host.clock.now()
@@ -772,10 +978,10 @@ export class ComprehensionModule {
    * the latest row per ordinal. The comprehension fields owned by the stage are
    * refreshed in the same transaction.
    *
-   * `heuristic` and `converge` stay skipped for a low-validation comprehension:
-   * the §6.3 rule ("no Bayesian inference, no search") holds for explicit stage
-   * re-runs too, so the method records another `skipped` row instead of running
-   * the stage.
+   * `heuristic` and `converge` are skipped only when the validation policy
+   * disables them; the method records another `skipped` row for the ordinal
+   * instead of running the stage, so an explicit re-run cannot bypass the
+   * policy either.
    */
   async runStage(comprehension: number, stage: StageName): Promise<ComprehensionStageRecord> {
     if (!isStageName(stage)) {
@@ -789,15 +995,16 @@ export class ComprehensionModule {
     const validation = toValidation(turn.validation)
     const scene = toScene(turn.scene)
     const interaction = toInteraction(turn.interaction)
+    const policy = this.effectivePolicy(validation)
     const context: StageContext = { scene, validation, interaction }
 
-    if (validation === 'low' && (stage === 'heuristic' || stage === 'converge')) {
+    if (!stageEnabled(policy, stage)) {
       return this.writeStage({
         comprehension,
         stage,
         status: 'skipped',
-        input: { stage, validation, scene, interaction },
-        output: { skipped: true, reason: 'validation-low' },
+        input: { stage, validation, policy: policySnapshot(policy) },
+        output: { skipped: true, reason: 'policy-disabled', validation },
       })
     }
     if (stage === 'emotion') {
@@ -808,7 +1015,7 @@ export class ComprehensionModule {
     }
     if (stage === 'heuristic') {
       const think = this.storedThink(record) ?? (await this.think(prompt, await this.emotion(prompt, context)))
-      return (await this.executeHeuristicStage(comprehension, prompt, think, context)).record
+      return (await this.executeHeuristicStage(comprehension, prompt, think, context, policy)).record
     }
     const heuristic = this.storedHeuristic(record)
     if (heuristic === undefined) {
@@ -817,7 +1024,7 @@ export class ComprehensionModule {
         { comprehension },
       )
     }
-    return (await this.executeConvergeStage(comprehension, prompt, heuristic)).record
+    return (await this.executeConvergeStage(comprehension, prompt, heuristic, policy)).record
   }
 
   /**
@@ -937,16 +1144,30 @@ export class ComprehensionModule {
    * `best` is the top route, entropy is normalised Shannon entropy and
    * confidence is `1 - entropy`.
    *
-   * Evidence is never invented: it is either caller-supplied session evidence
-   * (labelled `session: ...`) or real search-result titles/urls. A search that
-   * fails, times out or is unavailable contributes nothing and the stage still
-   * commits as `done`.
+   * Evidence is never invented: it is either caller-supplied session material
+   * admitted by the policy (labelled `session: ...`) or real search-result
+   * titles/urls. A search that fails, times out or is unavailable contributes
+   * nothing and the stage still commits as `done`.
+   *
+   * The validation policy decides the material scope, the search budget and the
+   * per-query result cap. The published signature carries no validation level,
+   * so a direct call resolves the deployment default level; `comprehend` and
+   * `runStage` pass the turn's level through `heuristicWithPolicy`.
    */
   async heuristic(prompt: string, think: ThinkStageOutput, context?: ComprehensionContext): Promise<HeuristicStageOutput> {
     const validation = context?.validation ?? toValidation(this.host.config.defaults.validation)
+    return this.heuristicWithPolicy(prompt, think, context, this.effectivePolicy(validation))
+  }
+
+  private async heuristicWithPolicy(
+    prompt: string,
+    think: ThinkStageOutput,
+    context: ComprehensionContext | undefined,
+    policy: ComprehensionPolicy,
+  ): Promise<HeuristicStageOutput> {
     const scene = context?.scene ?? toScene(this.host.config.defaults.scene)
     const interaction = this.currentInteraction(context)
-    const evidence = await this.successEvidence(prompt, think, context, validation)
+    const evidence = await this.successEvidence(prompt, think, context, policy)
 
     const scored = RouteCatalogue.map((definition) => ({
       definition,
@@ -982,11 +1203,21 @@ export class ComprehensionModule {
    * when the entropy is at or below `bayesian.stopEntropy` or when no failure
    * route is above 0.5.
    *
-   * The method searches failure cases when search is enabled and a web port
-   * exists. Its published signature carries no validation level, so the §6.3
-   * low gate is enforced by `comprehend` / `runStage` before it is called.
+   * The method searches failure cases when the policy allows search and a web
+   * port exists. Its published signature carries no validation level, so a
+   * direct call resolves the deployment default level; `comprehend` and
+   * `runStage` pass the turn's level through `convergeWithPolicy`.
    */
   async converge(prompt: string, heuristic: HeuristicStageOutput): Promise<ConvergeStageOutput> {
+    const policy = this.effectivePolicy(toValidation(this.host.config.defaults.validation))
+    return this.convergeWithPolicy(prompt, heuristic, policy)
+  }
+
+  private async convergeWithPolicy(
+    prompt: string,
+    heuristic: HeuristicStageOutput,
+    policy: ComprehensionPolicy,
+  ): Promise<ConvergeStageOutput> {
     const evidence: string[] = []
     const hitDefinitions = FailureCatalogue.filter((definition) =>
       definition.markers.some((marker) => markerHits(prompt, marker) > 0),
@@ -994,9 +1225,13 @@ export class ComprehensionModule {
     if (hitDefinitions.length > 0) {
       evidence.push(`session: 命中风险标记 ${hitDefinitions.map((definition) => definition.name).slice(0, 4).join(', ')}`)
     }
-    if (this.searchAllowed(undefined)) {
-      const found = await this.searchEvidence(this.failureQuery(prompt, heuristic), this.maxEvidence())
-      for (const entry of found) if (!evidence.includes(entry)) evidence.push(entry)
+    if (policy.search && this.host.web !== undefined) {
+      const budget = comprehensionQueryBudget(policy.maxQueries).converge
+      const queries = budget >= 1 ? [this.failureQuery(prompt, heuristic)] : []
+      if (budget >= 2) queries.push(this.pitfallQuery(prompt))
+      for (const entry of await this.searchQueries(queries, policy)) {
+        if (!evidence.includes(entry)) evidence.push(entry)
+      }
     }
 
     const scored = FailureCatalogue.map((definition) => ({
@@ -1103,15 +1338,16 @@ export class ComprehensionModule {
     prompt: string,
     think: ThinkStageOutput,
     context: ComprehensionContext,
+    policy: ComprehensionPolicy,
   ): Promise<StageOutcome<HeuristicStageOutput>> {
     const output = await this.guardStage(comprehension, 'heuristic', prompt, context, () =>
-      this.heuristic(prompt, think, context),
+      this.heuristicWithPolicy(prompt, think, context, policy),
     )
     const record = this.writeStage({
       comprehension,
       stage: 'heuristic',
       status: 'done',
-      input: { prompt: collapse(prompt, 500), think, context: contextSnapshot(context) },
+      input: { prompt: collapse(prompt, 500), think, context: contextSnapshot(context), policy: policySnapshot(policy) },
       output,
       confidence: output.confidence,
       entropyBefore: uniformEntropy(output.routes.length),
@@ -1130,9 +1366,10 @@ export class ComprehensionModule {
     comprehension: number,
     prompt: string,
     heuristic: HeuristicStageOutput,
+    policy: ComprehensionPolicy,
   ): Promise<StageOutcome<ConvergeStageOutput>> {
     const output = await this.guardStage(comprehension, 'converge', prompt, undefined, () =>
-      this.converge(prompt, heuristic),
+      this.convergeWithPolicy(prompt, heuristic, policy),
     )
     // Keep the heuristic evidence already stored and append the failure evidence.
     const evidence = readStrings(parseJson<unknown>(this.get(comprehension).evidence, []))
@@ -1385,41 +1622,54 @@ export class ComprehensionModule {
   }
 
   /* ----------------------------------------------------------------------- *
-   * Evidence search (optional, read-only, never fatal)
+   * Evidence search (policy-driven volume, read-only, never fatal)
    * ----------------------------------------------------------------------- */
 
-  private maxEvidence(): number {
-    return Math.max(1, Math.round(this.host.config.comprehension.maxEvidence))
-  }
-
-  /** Search needs medium/high validation, the config switch and a web port. */
-  private searchAllowed(validation: Validation | undefined): boolean {
-    if (!this.host.config.comprehension.searchEnabled) return false
-    if (this.host.web === undefined) return false
-    if (validation === 'low') return false
-    return true
+  /**
+   * Caller-supplied material admitted by the policy. `scope: 'turn'` admits no
+   * history (`historyLimit` is 0), `session` admits the configured window and
+   * `local` admits the whole window; the service is responsible for filling
+   * `context.evidence` / `context.history` with material matching the scope.
+   */
+  private sessionEvidence(context: ComprehensionContext | undefined, policy: ComprehensionPolicy): string[] {
+    const evidence: string[] = []
+    const admit = (entry: string): void => {
+      const label = collapse(entry, 300)
+      if (label.length === 0) return
+      const labelled = `session: ${label}`
+      if (!evidence.includes(labelled)) evidence.push(labelled)
+    }
+    for (const entry of (context?.evidence ?? []).slice(0, policy.evidenceLimit)) admit(entry)
+    for (const entry of (context?.history ?? []).slice(0, policy.historyLimit)) admit(entry)
+    return evidence
   }
 
   private async successEvidence(
     prompt: string,
     think: ThinkStageOutput,
     context: ComprehensionContext | undefined,
-    validation: Validation,
+    policy: ComprehensionPolicy,
   ): Promise<string[]> {
-    const evidence = this.sessionEvidence(context)
-    if (!this.searchAllowed(validation)) return evidence
-    const found = await this.searchEvidence(this.successQuery(prompt, think), this.maxEvidence())
-    for (const entry of found) if (!evidence.includes(entry)) evidence.push(entry)
+    const evidence = this.sessionEvidence(context, policy)
+    if (!policy.search || this.host.web === undefined) return evidence
+    const budget = comprehensionQueryBudget(policy.maxQueries).heuristic
+    if (budget <= 0) return evidence
+    const queries = budget >= 1 ? [this.successQuery(prompt, think)] : []
+    if (budget >= 2) queries.push(this.practiceQuery(prompt, think))
+    for (const entry of await this.searchQueries(queries, policy)) {
+      if (!evidence.includes(entry)) evidence.push(entry)
+    }
     return evidence
   }
 
-  private sessionEvidence(context: ComprehensionContext | undefined): string[] {
-    const evidence: string[] = []
-    for (const entry of context?.evidence ?? []) {
-      const label = collapse(entry, 300)
-      if (label.length > 0) evidence.push(`session: ${label}`)
+  /** Run at most `policy.maxQueries` queries, deduplicating the merged results. */
+  private async searchQueries(queries: readonly string[], policy: ComprehensionPolicy): Promise<string[]> {
+    const results: string[] = []
+    for (const query of unique(queries)) {
+      const found = await this.searchEvidence(query, policy.maxResults)
+      for (const entry of found) if (!results.includes(entry)) results.push(entry)
     }
-    return evidence
+    return results
   }
 
   private successQuery(prompt: string, think: ThinkStageOutput): string {
@@ -1429,9 +1679,22 @@ export class ComprehensionModule {
     return collapse(`${target} success cases best practice`, 240)
   }
 
+  /** Second success query, only used by levels whose budget is at least two. */
+  private practiceQuery(prompt: string, think: ThinkStageOutput): string {
+    const fallback = trimPunctuation(collapse(sentencesOf(prompt)[0] ?? prompt, 160))
+    const target = think.intent.length > 0 ? think.intent : fallback
+    return collapse(`${target} proven approach case study`, 240)
+  }
+
   private failureQuery(prompt: string, heuristic: HeuristicStageOutput): string {
     const subject = trimPunctuation(collapse(sentencesOf(prompt)[0] ?? prompt, 160))
     return collapse(`${subject} ${heuristic.best} failure cases risks`, 240)
+  }
+
+  /** Second failure query, only used by levels whose budget is at least four. */
+  private pitfallQuery(prompt: string): string {
+    const subject = trimPunctuation(collapse(sentencesOf(prompt)[0] ?? prompt, 160))
+    return collapse(`${subject} common mistakes pitfalls`, 240)
   }
 
   /**
@@ -1485,6 +1748,32 @@ export class ComprehensionModule {
 
 function isStageName(value: unknown): value is StageName {
   return isOneOf(value, ComprehensionStageOrder)
+}
+
+/**
+ * True when the policy lets the stage run. `emotion` and `think` are always
+ * enabled; `converge` additionally depends on `heuristic` because it consumes
+ * the success routes.
+ */
+function stageEnabled(policy: ComprehensionPolicy, stage: StageName): boolean {
+  if (stage === 'heuristic') return policy.stages.heuristic
+  if (stage === 'converge') return policy.stages.heuristic && policy.stages.converge
+  return true
+}
+
+/** The policy fields persisted into a stage `input` JSON for audit. */
+function policySnapshot(policy: ComprehensionPolicy): Record<string, unknown> {
+  return {
+    validation: policy.validation,
+    search: policy.search,
+    scope: policy.scope,
+    maxQueries: policy.maxQueries,
+    maxResults: policy.maxResults,
+    historyLimit: policy.historyLimit,
+    evidenceLimit: policy.evidenceLimit,
+    stages: { heuristic: policy.stages.heuristic, converge: policy.stages.converge },
+    globalFusion: policy.globalFusion,
+  }
 }
 
 function ordinalOf(stage: StageName): number {

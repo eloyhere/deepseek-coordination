@@ -297,7 +297,9 @@ export class OrchestrationModule {
     const submittedResult = requireText(result, 'submit requires a non-empty result')
     const submittedEvidence = requireText(evidence, 'submit requires non-empty evidence')
     const executor =
-      actor === undefined ? 'worker' : requireText(actor, 'submit actor must be a non-empty handle when provided')
+      actor === undefined
+        ? 'worker'
+        : requireText(actor, 'submit actor must be a non-empty handle when provided').trim()
 
     const dispatchTrace = this.latestTrace(current.parent, 'dispatch', subtask)
     this.host.db.transaction(() => {
@@ -353,7 +355,7 @@ export class OrchestrationModule {
       })
     }
 
-    const verifying = requireText(verifier, 'verify requires a non-empty verifier handle')
+    const verifying = requireText(verifier, 'verify requires a non-empty verifier handle').trim()
     const submitTrace = this.latestTrace(current.parent, 'submit', subtask)
     if (submitTrace === undefined) {
       throw new InvalidStateError(`subtask ${subtask} has no submit event, so verification cannot be attributed`, {
@@ -558,7 +560,9 @@ export class OrchestrationModule {
   synthesize(turn: number, actor?: string): Answer {
     const current = this.requireTurn(turn)
     const synthesizing =
-      actor === undefined ? 'parent' : requireText(actor, 'synthesize actor must be a non-empty handle when provided')
+      actor === undefined
+        ? 'parent'
+        : requireText(actor, 'synthesize actor must be a non-empty handle when provided').trim()
     const subtasks = this.list(turn)
     if (subtasks.length === 0) {
       throw new InvalidStateError(`turn ${turn} has no subtasks to synthesize`, { turn })

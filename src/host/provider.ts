@@ -67,7 +67,7 @@ import { NotFoundError, NotImplementedError, UpstreamError } from '../shared/err
  * `configuration_update` without invalidating the cache; xAI keeps affinity
  * through `x-grok-conv-id`.
  */
-export interface ProviderPolicyRow {
+interface ProviderPolicyRow {
   /** Case-insensitive substring match against the provider route id. */
   readonly route: RegExp
   readonly strategy: Readonly<CacheStrategy>
@@ -201,10 +201,10 @@ export class ProviderModule {
    * service's qualification path does.
    */
   checkQualification(route: string, requirement?: ProviderRequirement): boolean {
-    const view = this.resolve(route)
-    if (!view.live) return false
+    const entry = this.entry(route)
+    if (!entry.live) return false
     if (requirement === undefined) return true
-    const catalog = this.cached(route)
+    const catalog = this.cached(entry.route)
     if (catalog === undefined || catalog.length === 0) {
       this.host.logger?.debug('provider qualification has no observed catalog; call models(route) first', { route })
       return false

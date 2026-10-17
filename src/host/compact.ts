@@ -100,9 +100,8 @@ export class CompactModule {
     const snapshot = readSnapshot(result)
     const beforeSize = snapshot.before.length
     const afterSize = snapshot.after.length
-    if (beforeSize === 0 && afterSize === 0) {
-      throw new InvalidStateError('DSH compaction returned no recordable text', { turn, strategy })
-    }
+    // Content is recorded only when the port returned extractable text; a port
+    // that reports nothing still leaves an audit row with empty content.
     // after/before; a missing before cannot be divided by zero, so the ratio is
     // recorded as unchanged (1) and every real ratio is clamped to 0…1.
     const ratio = beforeSize === 0 ? 1 : clamp(afterSize / beforeSize, 0, 1)

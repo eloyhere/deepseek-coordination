@@ -787,6 +787,11 @@ export class PlanModule {
    * the pure measurement, never by recursing into `score`, and the old plan,
    * the rebuild record, the new plan and the turn pointer are written in one
    * transaction.
+   *
+   * The `plan_rebuild` row belongs to the *replacement* plan: `attempt` equals
+   * its `rebuild` counter, `dimension` is the comma-joined list of the replaced
+   * plan's failing dimensions, and `beforeScore` / `afterScore` are
+   * `JSON.stringify({ total })` for the old and the new weighted total.
    */
   rebuild(plan: number): Plan {
     const measurement = this.measure(plan)
@@ -840,7 +845,9 @@ export class PlanModule {
         identity,
         attempt,
         'score below threshold',
-        failing.join(','),
+        // §9.4 records which dimensions forced the rebuild; a manually
+        // requested rebuild of a passing plan simply has no failing dimension.
+        failing.length > 0 ? failing.join(',') : 'none',
         JSON.stringify({ total: beforeTotal }),
         JSON.stringify({ total: afterTotal }),
         now,

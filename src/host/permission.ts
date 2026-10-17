@@ -199,8 +199,8 @@ export class PermissionModule {
 
     const now = this.host.clock.now()
     this.host.db.transaction(() => {
-      const clauses = ['subject = ?', 'status <> ?']
-      const params: unknown[] = [Revoked, now, name, Revoked]
+      const clauses = ['subject = ?', `status <> '${Revoked}'`]
+      const params: unknown[] = [now, name]
       if (session !== undefined) {
         clauses.push('session = ?')
         params.push(session)
@@ -210,7 +210,7 @@ export class PermissionModule {
         params.push(...grants)
       }
       this.host.db.run(
-        `UPDATE permission SET status = ?, finished = ? WHERE ${clauses.join(' AND ')}`,
+        `UPDATE permission SET status = '${Revoked}', finished = ? WHERE ${clauses.join(' AND ')}`,
         ...params,
       )
     })

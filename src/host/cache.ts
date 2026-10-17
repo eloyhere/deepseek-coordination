@@ -32,8 +32,8 @@ import { DEFAULT_CACHE_STRATEGY } from './provider.js'
  *    `2026-01-02 03:04:05+08:00`) → `<timestamp>`.
  * 2. UUIDs → `<uuid>`.
  * 3. Long hex runs (32+ hex characters: request ids, content hashes) → `<hex>`.
- * 4. The *value* of a "current time is …" clause → `<time>`, stopping at the
- *    clause boundary so the rest of the sentence survives.
+ * 4. The *value* of a "current time is …" clause → `current time is <time>`,
+ *    stopping at the clause boundary so the rest of the sentence survives.
  *
  * A timestamp a user typed is normalised too; that is intentional: a request
  * that echoes the clock must not move the cache prefix.
@@ -146,6 +146,7 @@ export class CacheModule {
   checkEffortCacheBreak(session: number, newEffort: string, strategy?: CacheStrategy): boolean {
     const effective = strategy ?? DEFAULT_CACHE_STRATEGY
     const previous = this.efforts.get(session)
+    const now = this.host.clock.now()
     this.efforts.set(session, newEffort)
     if (previous === undefined || previous === newEffort) return false
     if (!effective.effortCacheBreak) return false
@@ -156,8 +157,8 @@ export class CacheModule {
          effortBreaks = effortBreaks + 1,
          changed = excluded.changed`,
       session,
-      this.host.clock.now(),
-      this.host.clock.now(),
+      now,
+      now,
     )
     return true
   }

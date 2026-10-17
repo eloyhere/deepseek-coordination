@@ -41,9 +41,17 @@
  *   whether the honest fallback or a real Brier-like score is written.
  * - Every write runs inside one `CoordinationDatabase.transaction`, and every
  *   domain failure is a typed error from `src/shared/error.ts`.
+ *
+ * Validation levels (v23 §6.3 override)
+ * -------------------------------------
+ * All three validation levels search and perform Bayesian prior/posterior
+ * updates. The level controls retrieval breadth and evidence scope, not
+ * whether inference happens: see `evidencePolicy`. Consequently `low` is
+ * never treated as "no Bayesian update" anywhere in this module.
  */
 import type { ModuleHost } from './module.js'
 import { clamp, round } from './module.js'
+import type { BayesianConfig } from './config.js'
 import type {
   Boundary,
   Calibration,
@@ -55,6 +63,8 @@ import type {
   Route,
   Stopping,
 } from '../shared/entity.js'
+import type { Validation } from '../shared/enum.js'
+import { toValidation } from '../shared/enum.js'
 import { InvalidArgumentError, InvalidStateError, NotFoundError } from '../shared/error.js'
 import { bool, number, text } from './row.js'
 import type { Row } from './row.js'
@@ -67,8 +77,108 @@ const DefaultLikelihoodWeight = 0.5
 const DefaultStopEntropy = 0.05
 const DefaultInfoGain = 0.01
 const DefaultMaxRoutes = 12
-/** Progress invariant compares entropies with this tolerance. */
-const EntropyTolerance = 1e-9
+
+/* ------------------------------------------------------------------------- *
+ * Evidence and convergence policy (v23 §6.3 override)
+ * ------------------------------------------------------------------------- */
+
+/** Where the evidence for a turn may be retrieved from. */
+export type EvidenceScope = 'turn' | 'session' | 'local'
+
+/** Which interaction modes receive the Bayesian update at this level. */
+export type EvidenceInteractionScope = 'selected' | 'all'
+
+/**
+ * One validation level's retrieval and inference policy.
+ *
+ * The user requirement that overrides v23 §6.3: every level searches and
+ * updates priors/posteriors (`bayesian` is always true). Levels differ only in
+ * how broadly evidence is retrieved:
+ *
+ * - `queries`    independent search queries the level may issue;
+ * - `maxResults` results requested per query;
+ * - `scope`      `turn` = current turn only, `session` = current session
+ *                history, `local` = session plus local cross-session history;
+ * - `interactions` `selected` = only the chosen interaction, `all` = every
+ *                interaction mode (the v23 §6.3 breadth distinction that
+ *                survives the override).
+ */
+export interface EvidencePolicy {
+  queries: number
+  maxResults: number
+  scope: EvidenceScope
+  bayesian: true
+  interactions: EvidenceInteractionScope
+}
+
+/**
+ * Proposed defaults for the three validation levels. `low` is intentionally
+ * narrow (one turn-scoped query) but is still a full Bayesian step; `high` is
+ * the broadest retrieval (local scope, all interactions).
+ */
+export const EvidencePolicyDefaults: Readonly<Record<Validation, EvidencePolicy>> = Object.freeze({
+  low: { queries: 1, maxResults: 3, scope: 'turn', bayesian: true, interactions: 'selected' },
+  medium: { queries: 2, maxResults: 5, scope: 'session', bayesian: true, interactions: 'selected' },
+  high: { queries: 4, maxResults: 8, scope: 'local', bayesian: true, interactions: 'all' },
+})
+
+/**
+ * Resolve the evidence policy of a validation level. Unknown values normalise
+ * to `medium` through `toValidation`, matching the rest of the shared enum
+ * surface, so a stale caller never loses its Bayesian step.
+ */
+export function evidencePolicy(validation: Validation): EvidencePolicy {
+  const level = toValidation(validation)
+  return { ...EvidencePolicyDefaults[level] }
+}
+
+/**
+ * Convergence ambition of one validation level.
+ *
+ * All levels converge, but a narrow-evidence level must not be held to the
+ * same certainty as a broad one. The base `config.bayesian.stopEntropy` and
+ * `config.bayesian.infoGain` are scaled per level:
+ *
+ * - `low`    2x threshold (stops earlier; turn-scoped evidence cannot justify
+ *            the same certainty);
+ * - `medium` 1x threshold;
+ * - `high`   0.5x threshold (must converge tighter because evidence is broad).
+ *
+ * `progressTolerance` is the minimum entropy decrease that counts as progress:
+ * 0 for `low`, 1e-9 bits for `medium`, 1e-6 bits for `high`.
+ */
+export interface ConvergencePolicy {
+  validation: Validation
+  stopEntropy: number
+  infoGain: number
+  progressTolerance: number
+  evidence: EvidencePolicy
+}
+
+const StopEntropyScale: Readonly<Record<Validation, number>> = { low: 2, medium: 1, high: 0.5 }
+const InfoGainScale: Readonly<Record<Validation, number>> = { low: 2, medium: 1, high: 0.5 }
+const ProgressTolerance: Readonly<Record<Validation, number>> = { low: 0, medium: 1e-9, high: 1e-6 }
+
+/** Resolve the convergence policy of a level against the configured base thresholds. */
+export function convergencePolicy(
+  validation: Validation,
+  config: Pick<BayesianConfig, 'stopEntropy' | 'infoGain'> = {
+    stopEntropy: DefaultStopEntropy,
+    infoGain: DefaultInfoGain,
+  },
+): ConvergencePolicy {
+  const level = toValidation(validation)
+  const stopEntropy =
+    Number.isFinite(config.stopEntropy) && config.stopEntropy >= 0 ? config.stopEntropy : DefaultStopEntropy
+  const infoGain = Number.isFinite(config.infoGain) && config.infoGain >= 0 ? config.infoGain : DefaultInfoGain
+  return {
+    validation: level,
+    stopEntropy: stopEntropy * StopEntropyScale[level],
+    infoGain: infoGain * InfoGainScale[level],
+    progressTolerance: ProgressTolerance[level],
+    evidence: evidencePolicy(level),
+  }
+}
 
 /* ------------------------------------------------------------------------- *
  * Pure numerics
@@ -551,11 +661,15 @@ export class BayesianModule {
   /**
    * Decide whether the converge loop may stop and record the decision.
    *
-   * Stopping rule (v22 §12, "Convergence Must Be Designed"):
-   * - `entropy(latest posterior) < config.bayesian.stopEntropy` (belief stable
-   *   enough), or
-   * - `KL(latest || previous posterior) < config.bayesian.infoGain` (belief
-   *   has stopped moving).
+   * Stopping rule (v22 §12, "Convergence Must Be Designed"), tuned by the
+   * turn's validation level through `convergencePolicy`:
+   * - `entropy(latest posterior) < effective stopEntropy`, or
+   * - `KL(latest || previous posterior) < effective infoGain`.
+   *
+   * Every validation level performs this Bayesian inference; `low` merely
+   * stops earlier (2x thresholds) because its evidence scope is narrow, while
+   * `high` demands tighter convergence (0.5x thresholds). The level is read
+   * from `turn.validation` unless an explicit override is supplied.
    *
    * The KL term needs two posterior rows; with fewer than two there is no
    * stability evidence and only the entropy term can stop. Without any
@@ -563,9 +677,11 @@ export class BayesianModule {
    * `stopping` row is written per call, with `criterion` naming the decisive
    * test and `value` the measured number.
    */
-  shouldStop(turn: number): boolean {
+  shouldStop(turn: number, validation?: Validation): boolean {
     const turnIdentity = requireIdentity(turn, 'turn')
-    this.requireTurn(turnIdentity)
+    const turnRow = this.requireTurn(turnIdentity)
+    const level = validation === undefined ? toValidation(text(turnRow, 'validation', 'medium')) : toValidation(validation)
+    const policy = convergencePolicy(level, this.host.config.bayesian)
     return this.host.db.transaction(() => {
       const latestRow = this.host.db.get<Row>(
         'SELECT * FROM posterior WHERE turn = ? ORDER BY identity DESC LIMIT 1',
@@ -587,11 +703,11 @@ export class BayesianModule {
           ? undefined
           : klDivergence(latest.probability, number(previousRow, 'probability', DefaultPrior))
 
-      if (entropy < this.stopEntropyThreshold()) {
+      if (entropy < policy.stopEntropy) {
         this.recordStopping(turnIdentity, 'entropy', entropy, true)
         return true
       }
-      if (divergence !== undefined && divergence < this.infoGainThreshold()) {
+      if (divergence !== undefined && divergence < policy.infoGain) {
         this.recordStopping(turnIdentity, 'infoGain', divergence, true)
         return true
       }
@@ -607,17 +723,26 @@ export class BayesianModule {
   /**
    * Progress invariant: iteration must not run in place. The step is
    * considered progress when the latest posterior entropy decreased relative
-   * to the previous posterior, or when the turn iteration advanced (a
-   * rebuild). It fails closed when no posterior exists: without a belief there
-   * is nothing to prove progress with.
+   * to the previous posterior, or when the turn iteration advanced past its
+   * first iteration (a rebuild). It fails closed when no posterior exists:
+   * without a belief there is nothing to prove progress with.
    *
-   * The optional `score` is read from the latest `answer` or `plan` score for
-   * the turn; it is informational and intentionally does not participate in
-   * `ok`, so this invariant never depends on the plan module.
+   * The optional `score` is read from the latest `answer` or `plan` score of
+   * the turn (falling back to the newest scored row of either category when a
+   * bare score cannot be tied to a turn); it is informational and
+   * intentionally does not participate in `ok`, so this invariant never
+   * depends on the plan module.
+   *
+   * Level awareness: the level is read from `turn.validation` (or the explicit
+   * override) and its `progressTolerance` decides how large an entropy
+   * decrease must be to count as progress. Every level still evaluates the
+   * same invariant; `low` is never skipped.
    */
-  progressInvariant(turn: number): ProgressInvariant {
+  progressInvariant(turn: number, validation?: Validation): ProgressInvariant {
     const turnIdentity = requireIdentity(turn, 'turn')
     const turnRow = this.requireTurn(turnIdentity)
+    const level = validation === undefined ? toValidation(text(turnRow, 'validation', 'medium')) : toValidation(validation)
+    const policy = convergencePolicy(level, this.host.config.bayesian)
     const iteration = number(turnRow, 'iteration', 1)
     const score = this.latestTurnScore(turnIdentity)
     const latestRow = this.host.db.get<Row>(
@@ -643,12 +768,13 @@ export class BayesianModule {
     )
     const previousEntropy =
       previousRow === undefined ? undefined : binaryEntropy(number(previousRow, 'probability', DefaultPrior))
-    const decreased = previousEntropy !== undefined && entropy < previousEntropy - EntropyTolerance
+    const decreased =
+      previousEntropy !== undefined && entropy < previousEntropy - policy.progressTolerance
     const advanced = iteration > 1
     if (decreased && advanced) {
       return {
         ok: true,
-        reason: `posterior entropy decreased to ${entropyValue} bits and turn iteration advanced to ${iteration}`,
+        reason: `posterior entropy decreased to ${entropyValue} bits and turn iteration advanced to ${iteration} (validation ${policy.validation})`,
         entropy: entropyValue,
         score,
         iteration,
@@ -657,7 +783,7 @@ export class BayesianModule {
     if (decreased) {
       return {
         ok: true,
-        reason: `posterior entropy decreased to ${entropyValue} bits`,
+        reason: `posterior entropy decreased to ${entropyValue} bits (validation ${policy.validation})`,
         entropy: entropyValue,
         score,
         iteration,
@@ -666,7 +792,7 @@ export class BayesianModule {
     if (advanced) {
       return {
         ok: true,
-        reason: `turn iteration advanced to ${iteration}`,
+        reason: `turn iteration advanced to ${iteration} (validation ${policy.validation})`,
         entropy: entropyValue,
         score,
         iteration,
@@ -676,8 +802,8 @@ export class BayesianModule {
       ok: false,
       reason:
         previousEntropy === undefined
-          ? `only one posterior is recorded for turn ${turnIdentity}; entropy has not decreased`
-          : `posterior entropy did not decrease and turn iteration is still ${iteration}`,
+          ? `only one posterior is recorded for turn ${turnIdentity}; entropy has not decreased (validation ${policy.validation})`
+          : `posterior entropy did not decrease and turn iteration is still ${iteration} (validation ${policy.validation})`,
       entropy: entropyValue,
       score,
       iteration,
