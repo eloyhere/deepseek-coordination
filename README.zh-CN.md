@@ -3,10 +3,10 @@
 [English](README.md) · **简体中文** · [更新日志](CHANGELOG.md)
 
 一个 **DeepSeek Harness 插件 bundle**。它是"双面" Cordis 插件：**Host 半边**运行在 DSH 的 Node
-进程里，负责一组 HTTP 路由；**Client 半边**运行在 DSH Web GUI 里，负责一个设置页。
+进程里，负责一组 HTTP 路由；**Client 半边**运行在 DSH Web GUI 里，把 UI 挂载到宿主的两个插槽上。
 
-> **状态：脚手架。** Host 半边目前只回应存活探测与 echo，Client 半边注册的是一个占位设置页，
-> 用来显示 Host 半边是否在线。两半已经端到端接通，剩下的工作是填路由实现与界面，而不是接线。
+> **状态：已有第一版真实 UI。** 插件提供设置页里的 `协调` 分组（只含权限接管开关），以及在输入框
+> 工具栏中注入的三个协调选择器。界面由 MDUI 2 web components 构建，没有第二套框架。
 
 ## 几个概念
 
@@ -25,18 +25,44 @@
 ```text
 .
 ├─ src/
-│  ├─ index.ts           Host 半边：Cordis 插件，注册 /deepseek-coordination/* 路由
+│  ├─ index.ts            Host 半边：存活探测路由 + 提供 mdui.css 静态文件
 │  └─ client/
-│     └─ index.ts        Client 半边：语言字典 + settings.section 设置页
-├─ lib/                  tsdown 构建产物（已 git 忽略，不要手改）
-├─ cordis.patch.yml      bundle patch：把本插件那一行插入 profile 配置
-├─ package.json          dsh.bundle / dsh.client 声明与双入口 exports
-├─ pnpm-lock.yaml        锁定的开发工具链与 DSH client 包
-├─ tsconfig.json         只做类型检查（noEmit）
-├─ tsdown.config.ts      双目标构建：Host 走 ESM，Client 走 CJS 并加模块加载器包装
+│     └─ index.ts         Client 半边：`协调` 设置页、输入框挂载、接管样式规则
+├─ scripts/
+│  └─ copy-mdui.mjs       构建时把 MDUI 样式表复制到 lib/static
+├─ lib/                   构建产物（已 git 忽略，不要手改）
+│  ├─ index.mjs           Host 半边
+│  ├─ client.js           Client 半边，MDUI 已内联
+│  └─ static/mdui.css     由 Host 半边提供
+├─ cordis.patch.yml       bundle patch：把本插件那一行插入 profile 配置
+├─ package.json           dsh.bundle / dsh.client 声明与双入口 exports
+├─ pnpm-lock.yaml         锁定的开发工具链与 DSH client 包
+├─ pnpm-workspace.yaml    pnpm 设置（构建脚本白名单）
+├─ tsconfig.json          只做类型检查（noEmit）
+├─ tsdown.config.ts       双目标构建：Host 走 ESM，Client 走 CJS 并加模块加载器包装
 ├─ CHANGELOG.md
 └─ LICENSE
 ```
+
+## 插件挂了什么
+
+| 位置 | 插槽 | 内容 |
+|---|---|---|
+| 设置页 | `settings.section` | `协调` 分组，只有一个权限接管开关 |
+| 输入框工具栏 | `conversation.input.left` | 权限控件右侧空白处的三个选择器 |
+
+三个选择器从左到右：**职能**（决策 / 成果 / 资源 / 人员 / 任职 / 执行）、**交互**（感情 / 思维 /
+启发 / 收束）、**情景**（对话 / 写作 / 办公 / 研究 / 工程 / 迭代）。
+
+**权限接管。** 宿主的权限控件是常驻 chrome、不是插槽，注册替换不了它。开关打开时注入一条规则把它
+隐藏：
+
+```css
+button[aria-label^="访问模式"], button[aria-label^="Access mode"] { display: none !important; }
+```
+
+然后由 `conversation.input.left` 在同一行最左侧渲染替换用的下拉框。选择器基于控件的可访问名称
+（它的 CSS-module 类名是哈希的），所以宿主改名会让规则失效。开关状态存在 `localStorage`。
 
 ## 环境要求
 
@@ -44,25 +70,26 @@
 |---|---|
 | Node.js | `>= 18` |
 | 包管理器 | pnpm（npm 亦可；下例用 pnpm） |
-| DSH | 装有 `dsh` CLI 的 DSH 安装，以及 `web` profile |
+| DSH | 装有 `dsh` CLI 的安装，且 profile 里含 `@deepseek-ai/dsh-web-app` |
 
 ## 构建
 
 ```console
 $ pnpm install
 $ pnpm typecheck        # tsc -p tsconfig.json --noEmit
-$ pnpm build            # ng build elements && tsdown --config tsdown.config.ts
+$ pnpm build            # tsdown --config tsdown.config.ts && node scripts/copy-mdui.mjs
 ```
-
-`build` 会产出清单指向的两个文件：
 
 | 产物 | 半边 | 格式 |
 |---|---|---|
 | `lib/index.mjs` + `lib/index.d.mts` | Host | ESM，`platform: node` |
-| `lib/client.js` | Client | CJS，`platform: browser`，外层包 `__ModuleLoader__.load()` |
+| `lib/client.js` | Client | CJS，`platform: browser`，外层包 `__ModuleLoader__.load()`，MDUI 已内联 |
+| `lib/static/mdui.css` | 样式表 | 从 `node_modules/mdui` 复制，由 Host 半边提供 |
 
-不要直接改 `lib/`，也不要手写 `__ModuleLoader__` 包装——那是由 `tsdown.config.ts` 的
-`banner` / `intro` / `footer` 生成的。永远改 `src/` 后重新构建。
+MDUI 的**组件 JS 被打进 client 半边**（`alwaysBundle` 会内联除 `react` 与
+`@deepseek-ai/dsh-client-*` 之外的一切，这是模块表的约定）。它的**样式表没有**：tsdown 不处理 CSS
+导入，所以文件被复制到 `lib/static/`，由 `/deepseek-coordination/static/mdui.css` 提供——与打包的
+JS 版本锁定，且不需要联网。
 
 ## 安装到 profile
 
@@ -72,69 +99,58 @@ $ dsh plugin --profile web add ./
 
 # 或者先打包成 tarball
 $ pnpm pack
-$ dsh plugin --profile web add ./deepseek-coordination-0.2.0.tgz
+$ dsh plugin --profile web add ./deepseek-coordination-0.4.0.tgz
 ```
 
-因为本包声明了 `dsh.bundle`，`dsh plugin add` 会把它同时写进 profile 的 `package.json`
-（作为依赖）和 `dsh.profile.bundles`。不启动也能校验这一层：
+因为本包声明了 `dsh.bundle`，`dsh plugin add` 会把它同时写进 profile 的 `package.json`（作为依赖）
+和 `dsh.profile.bundles`。不启动也能校验这一层：
 
 ```console
 $ dsh --profile web --dump-config     # 应出现 "# == deepseek-coordination" 层
 $ dsh --profile web
 ```
 
-## 两半如何通信
-
-两个半边从不互相 import，一律走 HTTP：
-
-| 路由（`POST`） | 请求体 | 响应 |
-|---|---|---|
-| `/deepseek-coordination/ping` | `{}` | `{"ok":true,"value":{"plugin":"deepseek-coordination","pong":true}}` |
-| `/deepseek-coordination/echo` | 任意 JSON | `{"ok":true,"value":<原样 JSON>}` |
-
-所有响应统一用一个信封：`{ ok: true, value }` 或 `{ ok: false, error }`。Client 半边用
-`fetch()` 发送 JSON 并读取该信封，不依赖共享的模块实例。
+调试时可以另起一个独立 profile 与端口：`dsh --profile debug --port 3081 --no-open`。
 
 ## 插件契约要点
 
 以下几条出错时不会报错，只会静默失效：
 
 - **硬依赖必须写进 `inject`。** `apply()` 只在所有被注入的服务就绪后运行。`ctx.get('x')` 是
-  *可选*读取，在服务就绪前返回 `undefined`，不能当作 `inject` 的替代。
-- **注册会被自动清理。** `ctx.on`、`ctx.tools.register`、`ctx.slots.inject` 等由插件的 fiber
-  持有。其他资源用 `ctx.effect(() => cleanup)` 返回清理函数——路由表面的注销就是这么做的。
-- **`inject` 与 `dsh.client.inject` 是两种声明。** 前者列 Client *服务*（`slots`、`locale`），
-  后者列模块表中的*包*（`react`、`@deepseek-ai/dsh-client-*`）。两者都需要。
-- **只有 `react` 与 `@deepseek-ai/dsh-client-*` 来自模块表。** Client 半边的其余依赖必须打进
-  产物——`tsdown.config.ts` 用 `neverBundle` / `alwaysBundle` 表达这一点，模块表缺行会在加载时抛错。
+  *可选*读取，在服务就绪前返回 `undefined`。
+- **注册会被自动清理。** `ctx.on`、`ctx.tools.register`、`ctx.slots.inject` 等由插件的 fiber 持有。
+  其他资源用 `ctx.effect(() => cleanup)` 返回清理函数——路由表面、接管 `<style>` 与 MDUI `<link>`
+  都是这样在卸载时移除的。
+- **`inject` 与 `dsh.client.inject` 是两种声明。** 前者列 Client *服务*（`slots`），后者列模块表中的
+  *包*（`react`、`@deepseek-ai/dsh-client-*`）。两者都需要。
+- **只有 `react` 与 `@deepseek-ai/dsh-client-*` 来自模块表。** 其余（包括 MDUI）必须打进产物；
+  模块表缺行会在加载时抛错。
 - **`__ModuleLoader__` 的 `id` 必须等于包名。** 它就是解析用的键。
-- **使用主题变量。** 颜色一律取自 `var(--dsw-alias-*)`，写死颜色会在两套主题中的一套里失效。
-- **`files` 是白名单。** 只有列出的文件会随包发布；若清单指向 tarball 里不存在的路径，插件能装
-  上，却加载失败。
+- **`files` 是白名单。** 只有列出的文件会随包发布；清单指向 tarball 里不存在的路径时，插件能装上，
+  却加载失败。
 
-## 发布
+## 已知问题
 
-- **npm registry 或 tarball** —— 发布前先构建 `lib/`（`pnpm publish` / `pnpm pack`），这样用户拿到
-  的是编译产物，也不需要任何安装期构建授权。
-- **直接从 git 安装** —— `dsh plugin add github:you/deepseek-coordination` 取的是*源码*而不是产物，
-  只有在包声明了自洽的 `prepare` 脚本时才可行，且用户要先在 profile 的 `pnpm-workspace.yaml`
-  里放行（`allowBuilds`）。本仓库没有 `prepare` 脚本，因此应发布编译后的产物。
+- 替换下拉的选项仍是兜底值（`完全权限`），尚未接入宿主真实的权限预设清单。
+- 接管选择器依赖宿主控件的可访问名称，宿主改名会让隐藏规则失效。
+- 三个选择器目前只是界面：选中的职能 / 交互 / 情景**尚未**发送给模型或会话。
+- 已在运行中的 `dsh web` 调试 profile 里验证（设置页、输入框挂载、接管隐藏规则）；控件样式是看
+  截图确认的，没有自动化视觉测试。
 
 ## 仓库历史
 
-- `0.1.0`–`0.1.9` —— 本仓库承载的是 **dsh-os**：跨平台原子级操作系统交互面（PowerShell 5.1 /
-  7.6 与 POSIX 动词实现、插件行、50 个 golden 用例）。最后提交 `3ba4a45`，带标签 `v0.1.5` … `v0.1.9`。
-- `87ddab9` —— 上述代码被替换为一个独立的 Vite 单页脚手架。
-- `0.2.0` —— 当前这套插件 bundle 结构，取代以上两者。
+- `0.1.0`–`0.1.9` —— 本仓库承载 **dsh-os**：跨平台原子级操作系统交互面（PowerShell 5.1 / 7.6 与
+  POSIX 动词、50 个 golden 用例）。最后提交 `3ba4a45`，带标签 `v0.1.5` … `v0.1.9`。
+- `87ddab9` —— 被替换为独立的 Vite 单页脚手架。
+- `0.2.0` —— 重塑为当前这套插件 bundle 结构。
+- `0.3.0` —— 第一版 UI，以 Angular 自定义元素实现。
+- `0.4.0` —— 用 MDUI 2 web components 替换 Angular 元素。
 
 内容没有丢：之前每个状态都能从 git 历史取回。
 
 ```console
 # 不动当前工作区，另开一份 dsh-os 的检出
 $ git worktree add ../dsh-os v0.1.9
-
-# 或者只把部分目录恢复到当前工作区
-$ git checkout 3ba4a45 -- src/host src/plugin src/permission tests tools
 ```
 
 ## 参考
@@ -142,6 +158,7 @@ $ git checkout 3ba4a45 -- src/host src/plugin src/permission tests tools
 - DSH 插件教程：<https://github.com/deepseek-ai/deepseek-harness/tree/master/docs/user/develop>
 - [打包与安装插件](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)
 - [插件与生命周期](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/framework/index.md)
+- MDUI 2 文档：<https://www.mdui.org/zh-cn/docs/2/>
 
 ## 许可证
 

@@ -12,6 +12,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.4.0] — 2026-10-17
+
+Angular out, MDUI 2 in. Angular needed a second toolchain (a separate `ng build`, its own
+tsconfig, a static-served element bundle) and pinned the plugin to a TypeScript range; MDUI 2 is
+framework-agnostic web components, so the widgets are now plain custom elements the React client
+half renders directly.
+
+### Added
+
+- `<mdui-switch>` for the permission-takeover switch and `<mdui-select>` / `<mdui-menu-item>` for
+  the three selectors, with `mdui@2.1.5`'s component JS bundled into `lib/client.js`.
+- `scripts/copy-mdui.mjs`: copies MDUI's stylesheet to `lib/static/mdui.css`, served by the host
+  half at `/deepseek-coordination/static/` — version-locked to the bundled JS, no CDN and no
+  network requirement.
+
+### Changed
+
+- The `协调` settings page now holds **only** the takeover switch; the selectors live in the
+  composer toolbar alone.
+- The host half's static route moved from `/elements/*` to `/static/*`; `files` ships `lib/static`
+  instead of `lib/elements`.
+- `pnpm build` is `tsdown` plus the stylesheet copy; the `build:elements` / `typecheck:elements`
+  scripts are gone.
+
+### Removed
+
+- `@angular/core`, `@angular/common`, `@angular/platform-browser`, `@angular/elements`, `rxjs`,
+  `tslib`, and the build-side `@angular/cli`, `@angular/build`, `@angular/compiler`,
+  `@angular/compiler-cli`.
+- `angular.json`, `tsconfig.elements.json`, and `src/elements/**` (the custom element that
+  wrapped the three selectors).
+
 ## [0.3.0] — 2026-10-17
 
 The plugin grows its first real UI: an Angular custom element mounted into the DSH Web host,
