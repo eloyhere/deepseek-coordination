@@ -32,10 +32,11 @@
  * | 6 | `unknown`    | no rule matched                                                        |
  *
  * Resolution order for one stored row is: message keywords, then the category
- * the row already carries (a caller that recorded `schema` is not downgraded to
- * `unknown`), then a learned pattern whose signature is contained in the
- * message signature, finally `unknown`. Only the `category` column is ever
- * rewritten — `message`, `stack` and `created` are history and stay untouched.
+ * the row already carries when it names a real failure class (a caller that
+ * recorded `schema` is not downgraded), then a learned pattern whose signature
+ * is contained in the message signature, finally `unknown`. Only the `category`
+ * column is ever rewritten — `message`, `stack` and `created` are history and
+ * stay untouched, and patterns, lessons and rollbacks are only ever appended.
  *
  * Remedy table
  * ------------
