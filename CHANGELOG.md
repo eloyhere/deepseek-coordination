@@ -1,5 +1,7 @@
 # Changelog
 
+[中文](CHANGELOG.zh-CN.md) · English
+
 All notable changes to this repository are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
@@ -10,7 +12,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > DSH plugin bundle layout. Entries from `0.1.9` downwards describe **dsh-os**, a cross-platform
 > atomic OS-interaction surface, which is no longer on the branch tip but remains reachable in
 > git history and tagged `v0.1.5` … `v0.1.9`; see
-> [Repository history](README.md#repository-history).
+> [Repository history](README.md#repository-history). `Auto-commit: typecheck-passing snapshot`
+> commits are internal checkpoints, not releases.
+
+## Release map
+
+| Version | Date | Commit | Summary |
+|---|---|---|---|
+| 0.9.2 | 2026-10-18 | `73a273d` | One dropdown tooltip at a time |
+| 0.9.1 | 2026-10-18 | `31f64da` | Restore working dropdown tooltips |
+| 0.9.0 | 2026-10-18 | `ad7d59f` | Shared algorithms, blueprint model, P0 parser, global tooltip host |
+| 0.8.0 | 2026-10-18 | `bef97b1` | Auto-compaction, service-level takeover, TokenGovernor, settings rewrite |
+| 0.7.0 | 2026-10-17 | `8c196ce` | Five dropdowns wired to the workflow, tooltips, i18n, v24 writing scene |
+| 0.6.5 | 2026-10-17 | `81b6296` | low/medium/high selector |
+| 0.6.4 | 2026-10-17 | `118d5b7` | Workflow switch |
+| 0.6.3 | 2026-10-17 | `6aa9bb9` | Permission labels aligned with the host |
+| 0.6.2 | 2026-10-17 | `16a38e7` | 统筹, permission options, popover flicker fix |
+| 0.6.1 | 2026-10-17 | `dce5374` | Browser `process` crash fix |
+| 0.6.0 | 2026-10-17 | `2a33ef0` | Material UI migration |
+| 0.5.0 | 2026-10-17 | `d318be5` | MDUI out, plain React in |
+| 0.4.0 | 2026-10-17 | `bf32401` | Angular out, MDUI 2 in |
+| 0.3.0 | 2026-10-17 | `c118132` | Angular Elements UI and permission takeover |
+| 0.2.0 | 2026-10-17 | `2b977cf` | Repository becomes a DSH plugin bundle |
+| 0.1.9 | 2026-10-13 | `3ba4a45` | String target read as wildcard |
+| 0.1.8 | 2026-10-13 | `8ee68dd` | Stored permission rules enforce; approval seam |
+| 0.1.7 | 2026-10-13 | `0a2c2c0` | Activation faults from 0.1.5/0.1.6 |
+| 0.1.6 | 2026-10-13 | `42ff514` | Tool description names the tool |
+| 0.1.5 | 2026-10-13 | `b29c0e3` | `workflow_plan` and measured prefix cache |
+| 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
+| 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
+
 
 ## [0.9.2] — 2026-10-18
 
@@ -269,7 +300,7 @@ plus the permission takeover of the composer's access-mode control.
 - **Angular Elements app** (`src/elements/`, built to `lib/elements/browser/`): a zoneless,
   standalone Angular 21 component defined as `<dsh-coordination-controls>`. It renders the three
   coordination selectors left to right — 职能 (决策/成果/资源/人员/任职/执行), 交互
-  (感情/思维/启发/收束), 情景 (对话/写作/办公/研究/工程/迭代) — and, when takeover is on, the
+  (感情/思维/启发/收束), and 情景 (对话/办公/研究/工程/迭代) — and, when takeover is on, the
   replacement permission dropdown ahead of them.
 - **`协调` settings section** (`settings.section`): the permission-takeover switch, the same
   selectors, and Material Symbols (Google Fonts) iconography.

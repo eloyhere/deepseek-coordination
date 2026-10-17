@@ -1,6 +1,6 @@
 # deepseek-coordination
 
-[English](README.md) · **简体中文** · [更新日志](CHANGELOG.md)
+[English](README.md) · **简体中文** · [更新日志](CHANGELOG.zh-CN.md) · [English changelog](CHANGELOG.md)
 
 一个 **DeepSeek Harness 插件 bundle**。它是"双面" Cordis 插件：**Host 半边**运行在 DSH 的 Node
 进程里，负责一组 HTTP 路由；**Client 半边**运行在 DSH Web GUI 里，把 UI 挂载到宿主的两个插槽上。
@@ -37,7 +37,8 @@
 ├─ pnpm-workspace.yaml    pnpm 设置（构建脚本白名单）
 ├─ tsconfig.json          只做类型检查（noEmit）
 ├─ tsdown.config.ts       双目标构建：Host 走 ESM，Client 走 CJS 并加模块加载器包装
-├─ CHANGELOG.md
+├─ CHANGELOG.md          英文版本历史
+├─ CHANGELOG.zh-CN.md    中文版本历史
 └─ LICENSE
 ```
 

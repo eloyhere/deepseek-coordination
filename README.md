@@ -1,6 +1,6 @@
 # deepseek-coordination
 
-**English** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
+**English** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh-CN.md)
 
 A **DeepSeek Harness plugin bundle**. It is a *dual-face* Cordis plugin: a **host half** that
 runs in the DSH Node process and owns an HTTP route surface, and a **client half** that runs in
@@ -39,7 +39,8 @@ This repository is the **bundle**. A profile is what a user boots; nothing here 
 ├─ pnpm-workspace.yaml    pnpm settings (build-script allowlist)
 ├─ tsconfig.json          Type checking only (`noEmit`)
 ├─ tsdown.config.ts       Dual-target build: host ESM + client CJS with the module-loader wrapper
-├─ CHANGELOG.md
+├─ CHANGELOG.md          English release history
+├─ CHANGELOG.zh-CN.md    Chinese release history
 └─ LICENSE
 ```
 
