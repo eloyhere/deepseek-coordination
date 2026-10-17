@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": {
+    "analytics": false,
+    "packageManager": "pnpm"
+  },
+  "projects": {
+    "elements": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src/elements",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "src/elements/main.ts",
+            "index": false,
+            "outputPath": "lib/elements",
+            "tsConfig": "tsconfig.elements.json",
+            "outputHashing": "none",
+            "optimization": true,
+            "sourceMap": false,
+            "styles": ["src/elements/styles.css"]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+/*
+ * Loaded by the host page as a stylesheet for the Angular element bundle.
+ * The Material Symbols face itself comes from Google Fonts, injected once by the
+ * plugin's client half; this file only guarantees the icon glyph box.
+ */
+.material-symbols-outlined {
+    font-family: 'Material Symbols Outlined', sans-serif;
+    font-weight: normal;
+    font-style: normal;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    -webkit-font-smoothing: antialiased;
+    font-variation-settings:
+        'FILL' 0,
+        'wght' 400,
+        'GRAD' 0,
+        'opsz' 20;
+}

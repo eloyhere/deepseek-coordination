@@ -51,7 +51,7 @@
 ```console
 $ pnpm install
 $ pnpm typecheck        # tsc -p tsconfig.json --noEmit
-$ pnpm build            # tsdown --config tsdown.config.ts
+$ pnpm build            # ng build elements && tsdown --config tsdown.config.ts
 ```
 
 `build` 会产出清单指向的两个文件：

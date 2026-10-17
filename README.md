@@ -28,18 +28,50 @@ This repository is the **bundle**. A profile is what a user boots; nothing here 
 ```text
 .
 ├─ src/
-│  ├─ index.ts           Host half: Cordis plugin registering /deepseek-coordination/* routes
-│  └─ client/
-│     └─ index.ts        Client half: locale dictionaries + settings.section page
-├─ lib/                  Build output from tsdown (git-ignored, never edited by hand)
+│  ├─ index.ts           Host half: routes + static serving of the Angular bundle
+│  ├─ client/
+│  │  └─ index.ts        Client half: `协调` settings page, composer mount, takeover rule
+│  └─ elements/          Angular Elements app (custom element <dsh-coordination-controls>)
+│     ├─ main.ts         Boots Angular and defines the element
+│     └─ controls.component.ts
+├─ lib/                  Build output (git-ignored, never edited by hand)
+│  ├─ index.mjs          Host half
+│  ├─ client.js          Client half (module-loader wrapper)
+│  └─ elements/browser/  Angular bundle served by the host half
+├─ angular.json          Angular build target (outputs into lib/elements)
+├─ tsconfig.elements.json
 ├─ cordis.patch.yml      Bundle patch: inserts this plugin's row into a profile roster
 ├─ package.json          dsh.bundle + dsh.client declarations, dual exports map
 ├─ pnpm-lock.yaml        Pinned dev toolchain and DSH client packages
+├─ pnpm-workspace.yaml   pnpm settings (build-script allowlist for the Angular toolchain)
 ├─ tsconfig.json         Type checking only (`noEmit`)
 ├─ tsdown.config.ts      Dual-target build: host ESM + client CJS with the module-loader wrapper
 ├─ CHANGELOG.md
 └─ LICENSE
 ```
+
+## What the plugin mounts
+
+| Where | Slot | Content |
+|---|---|---|
+| Settings | `settings.section` | A `协调` page: the permission-takeover switch and the three selectors |
+| Composer tool row | `conversation.input.left` | The same selectors, in the free space right of the access-mode control |
+
+The selectors run left to right — **职能** (决策 / 成果 / 资源 / 人员 / 任职 / 执行), **交互**
+(感情 / 思维 / 启发 / 收束), **情景** (对话 / 写作 / 办公 / 研究 / 工程 / 迭代) — and change
+immediately.
+
+**Permission takeover.** The host's access-mode control is resident chrome, not a slot, so the
+plugin cannot replace it by registration. With the switch on, an injected rule hides it —
+
+```css
+button[aria-label^="访问模式"], button[aria-label^="Access mode"] { display: none !important; }
+```
+
+— and the Angular element renders the replacement dropdown at the left edge of the same row. The
+selector targets the control's accessible name (its CSS-module class names are hashed), so a host
+release that renames that label breaks the rule. The switch position persists in `localStorage`.
+
 
 ## Requirements
 
@@ -54,15 +86,21 @@ This repository is the **bundle**. A profile is what a user boots; nothing here 
 ```console
 $ pnpm install
 $ pnpm typecheck        # tsc -p tsconfig.json --noEmit
-$ pnpm build            # tsdown --config tsdown.config.ts
+$ pnpm build            # ng build elements && tsdown --config tsdown.config.ts
 ```
 
-`build` produces the two artifacts the manifest points at:
+`build` produces three artifacts the manifest points at:
 
 | Output | Face | Format |
 |---|---|---|
 | `lib/index.mjs` + `lib/index.d.mts` | Host | ESM, `platform: node` |
 | `lib/client.js` | Client | CJS, `platform: browser`, wrapped in `__ModuleLoader__.load()` |
+| `lib/elements/browser/main.js` + `styles.css` | Angular element | ESM, served by the host half |
+
+The Angular bundle is **not** bundled into the client half: the client half loads it at run time
+from `GET /deepseek-coordination/elements/main.js`, which keeps the module-table contract intact
+(only `react` and `@deepseek-ai/dsh-client-*` may come from the host). `build:elements` and
+`build:plugin` build either half alone.
 
 Never edit `lib/` directly and never hand-write the `__ModuleLoader__` wrapper — `tsdown.config.ts`
 emits it (`banner` / `intro` / `footer`). Always change `src/` and rebuild.

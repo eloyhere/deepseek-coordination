@@ -1,18 +1,20 @@
 /**
  * deepseek-coordination — Host half (Cordis plugin running in the Node process)
  *
- * Current scope is a scaffold: it registers the plugin's HTTP route surface and
- * nothing else. Replace the route bodies with the real capability; the browser
- * half in src/client/index.ts calls these routes with fetch().
+ * Two responsibilities:
+ *  - serve the Angular Elements bundle that the client half mounts, so the
+ *    browser half never needs a second plugin row or a global script tag;
+ *  - keep the liveness/echo routes used by the settings page to prove the host
+ *    half is actually up.
  *
- * Before extending, keep these rules from the DSH plugin contract:
- *   - Hard dependencies go in `inject`, never a speculative ctx.get(): apply()
- *     runs only once every injected service is ready.
- *   - Everything registered through ctx is disposed on unload — return the
- *     route disposer from ctx.effect() so unload is clean.
- *   - The route prefix is absolute and has no trailing slash; kind 'prefix'
- *     matches every sub-path beneath it.
+ * Contract notes:
+ *  - Hard dependencies go in `inject`; apply() runs only once they are ready.
+ *  - Everything registered through ctx is disposed on unload — the route
+ *    disposer is returned from ctx.effect().
+ *  - The route prefix is absolute with no trailing slash; kind 'prefix' matches
+ *    every sub-path beneath it.
  */
+import { readFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -21,10 +23,23 @@ export const name = 'deepseek-coordination'
 
 export const inject = ['webServer']
 
-/** Route prefix owned by this plugin. Mirrors src/client/index.ts and the docs. */
+/** Route prefix owned by this plugin. Mirrors src/client/index.ts. */
 const ROUTE_PREFIX = '/deepseek-coordination'
 
-/** Unified JSON response envelope: { ok: true, value } | { ok: false, error } */
+/** Where the Angular build lands, relative to this module (bundled into lib/index.mjs). */
+const ELEMENTS_DIR = new URL('./elements/browser/', import.meta.url)
+
+/** Content types for the few file kinds tsdown/Angular emit here. */
+const CONTENT_TYPES: Readonly<Record<string, string>> = {
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+}
+
+/** Unified JSON response envelope: { ok: true, value } | { ok: false, error }. */
 function json(res: ServerResponse, body: unknown, status = 200): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
@@ -54,21 +69,50 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
+/**
+ * Serve one file from the Angular build directory.
+ *
+ * The request path is reduced to a basename chain and resolved inside the build
+ * directory, so `..` cannot escape it; unknown files answer 404 with the JSON
+ * envelope rather than a stack trace.
+ */
+async function serveElement(pathname: string, res: ServerResponse): Promise<void> {
+  const relative = pathname.slice(`${ROUTE_PREFIX}/elements/`.length)
+  if (relative === '' || relative.includes('..') || relative.includes('\\')) {
+    json(res, { ok: false, error: 'not found' }, 404)
+    return
+  }
+  const extension = relative.slice(relative.lastIndexOf('.'))
+  try {
+    const body = await readFile(new URL(relative, ELEMENTS_DIR))
+    res.writeHead(200, { 'content-type': CONTENT_TYPES[extension] ?? 'application/octet-stream' })
+    res.end(body)
+  } catch {
+    json(res, { ok: false, error: `not found: ${relative}` }, 404)
+  }
+}
+
 export function apply(ctx: Context): void {
   ctx.effect(() => {
     const dispose = ctx.webServer.register({
       kind: 'prefix',
       path: ROUTE_PREFIX,
       handler: async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+        const pathname = new URL(req.url ?? '/', 'http://x').pathname
+
+        // Static bundle: the browser fetches it as a module, so it must not be POST-only.
+        if (req.method === 'GET' && pathname.startsWith(`${ROUTE_PREFIX}/elements/`)) {
+          await serveElement(pathname, res)
+          return
+        }
+
         if (req.method !== 'POST') {
           res.writeHead(405)
           res.end()
           return
         }
-        const pathname = new URL(req.url ?? '/', 'http://x').pathname
 
         if (pathname === `${ROUTE_PREFIX}/ping`) {
-          // Liveness probe: the browser half uses it to confirm the host half is up.
           json(res, { ok: true, value: { plugin: name, pong: true } })
           return
         }
@@ -82,7 +126,6 @@ export function apply(ctx: Context): void {
         res.end()
       },
     })
-    // Returned disposer: the route unregisters automatically on plugin unload.
     return () => { dispose() }
   }, `${name}: ${ROUTE_PREFIX} routes`)
 }

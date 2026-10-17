@@ -1,0 +1,8 @@
+# pnpm settings live here from pnpm 10 on; the "pnpm" field in package.json is no longer read.
+# The Angular builder needs esbuild's postinstall to place its native binary, so the
+# build scripts of the toolchain are allowlisted rather than silently skipped.
+allowBuilds:
+  esbuild: true
+  lmdb: true
+  msgpackr-extract: true
+  '@parcel/watcher': true

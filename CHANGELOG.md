@@ -12,6 +12,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.3.0] — 2026-10-17
+
+The plugin grows its first real UI: an Angular custom element mounted into the DSH Web host,
+plus the permission takeover of the composer's access-mode control.
+
+### Added
+
+- **Angular Elements app** (`src/elements/`, built to `lib/elements/browser/`): a zoneless,
+  standalone Angular 21 component defined as `<dsh-coordination-controls>`. It renders the three
+  coordination selectors left to right — 职能 (决策/成果/资源/人员/任职/执行), 交互
+  (感情/思维/启发/收束), 情景 (对话/写作/办公/研究/工程/迭代) — and, when takeover is on, the
+  replacement permission dropdown ahead of them.
+- **`协调` settings section** (`settings.section`): the permission-takeover switch, the same
+  selectors, and Material Symbols (Google Fonts) iconography.
+- **Composer mount** (`conversation.input.left`): the element is injected into the free space of
+  the composer tool row — the region marked green in the review mock.
+- **Permission takeover**: with the switch on, an injected rule hides the host's access-mode
+  control (`button[aria-label^="访问模式"]` / `^="Access mode"`) — the blue region — and the
+  element renders the replacement dropdown in its place. The choice persists in `localStorage`.
+- Host route `GET /deepseek-coordination/elements/*` serving the built bundle from package files,
+  path-traversal guarded.
+
+### Changed
+
+- `pnpm build` now runs the Angular element build and the tsdown plugin build in one step
+  (`build:elements` / `build:plugin` remain available separately).
+- `files` ships `lib/elements`, so an installed copy carries the Angular bundle the host route
+  serves; without it the composer mount would load a 404.
+- `pnpm-workspace.yaml` allowlists the toolchain's build scripts (esbuild needs its postinstall);
+  pnpm 10+ no longer reads the `pnpm` field in `package.json`.
+
+### Known issues
+
+- The replacement dropdown's preset list is a fallback (`完全权限`) until the host's real preset
+  inventory is wired through the `permissions` attribute.
+- The takeover selector keys off the host control's accessible name; a DSH release that renames
+  the label breaks the hide rule until the selector is updated.
+- Verified by type check, both builds, a route smoke test and a packed-tarball listing — **not**
+  yet in a running DSH profile, so the visual result is unconfirmed.
+
 ## [0.2.0] — 2026-10-17
 
 The repository becomes a DeepSeek Harness plugin **bundle**: a dual-face Cordis plugin with a
