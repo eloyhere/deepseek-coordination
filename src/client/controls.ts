@@ -509,6 +509,9 @@ function Dropdown(props: {
       onChange: (event: SelectChangeEvent<unknown>) => { props.onChange(String(event.target.value)) },
       disabled: props.disabled === true,
       renderValue: () => label,
+      // MUI only calls renderValue for a filled value unless displayEmpty is
+      // set; the permission trigger uses the empty sentinel for "follow DSH".
+      displayEmpty: true,
       inputProps: { 'aria-label': ariaLabel },
       sx: selectSx(props.width),
     },
@@ -524,7 +527,7 @@ function Dropdown(props: {
       const body = props.tooltips
         ? React.createElement(
             MuiTooltip,
-            { title: option.hint, placement: 'right', describeChild: true, enterDelay: 250 },
+            { title: option.hint, placement: 'right', describeChild: true, enterDelay: 250, disableInteractive: true },
             labelSpan,
           )
         : labelSpan
@@ -535,10 +538,8 @@ function Dropdown(props: {
           value: option.value,
           disabled: option.disabled === true,
           sx: MENU_ITEM_SX,
-          // The MenuItem is the element holding keyboard focus, so the label and
-          // explanation ride it directly; the span stays out of the tab order so
-          // MUI ButtonBase keeps activating the item with Enter/Space.
-          ...(props.tooltips ? { 'aria-label': optionAria(option) } : {}),
+          // Accessible names never depend on the visual tooltip setting.
+          'aria-label': optionAria(option),
         },
         body,
       )

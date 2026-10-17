@@ -165,7 +165,7 @@
 |---|---|---|---|---|---|---|---|
 | 1 | 验证 · 控件 tooltip（渲染后） | 验证 · 当前：中<br>决定检索预算与证据范围：low 当轮 / medium 当前会话 / high 本地全部内容。三档都联网并做贝叶斯更新。medium 与 high 允许联网搜索；low 不做贝叶斯推断。 | 102 | 定查多少资料、看多远的历史；三档都会联网，只差检索量和证据范围。 | 32 | −69% | 102 字，含“检索预算 / 证据范围 / 贝叶斯”三个内部概念；附加句还与 §6.3 矛盾（三档都联网、都做贝叶斯）。 |
 | 2 | 职能 · 控件 tooltip（渲染后） | 职能 · 当前：执行<br>任务内唯一且锁定的问责维度。选择后本 Turn 不可切换，只能重建或丢弃任务。本 Turn 的职能已锁定为「执行」。重建（rebuild）或丢弃（abandon）任务后才能重新选择。 | 101 | 定这个任务由谁负哪一份责；选定后任务内不能改，要换只能重建或丢弃任务。 | 35 | −65% | 101 字；“问责维度”“Turn”“rebuild / abandon”都要背景知识，锁定规则说了两遍。 |
-| 3 | 情景 · 写作选项 | 内容创作与文本打磨，适合文章、文案、报告、邮件、技术文档。优点：结构化产出、多轮打磨。缺点：需要多轮交互，不适合即时问答。 | 61 | 文章、文案、报告、邮件；先列提纲再写，至少改一稿，最多 3 轮。要来回沟通。 | 38 | −38% | 61 字的规格书：优点 / 缺点两段式，读起来像需求文档，不像菜单提示。 |
+| 3 | 情景 · 写作选项 | 内容创作与文本打磨，适合文章、文案、报告、邮件、技术文档。优点：结构化产出、多轮打磨。缺点：需要多轮交互，不适合即时问答。 | 61 | 文章、文案、报告、邮件；先定受众、语气和字数，列提纲、再改稿，最多 3 轮；不跑命令。 | 43 | −30% | 61 字的规格书：优点 / 缺点两段式，读起来像需求文档，不像菜单提示。 |
 | 4 | 设置 · 权限接管 | 已接管时隐藏 DSH 输入框的访问模式控件，改用协调面板的权限下拉；未接管时保留 DSH 自带控件。 | 50 | 隐藏 DSH 的访问模式按钮，改用本插件的权限下拉。 | 26 | −48% | 50 字两段对照（已接管 / 未接管），把状态说明混进了开关本身。 |
 | 5 | 设置 · 职能审计 | 每次锁定、重建、丢弃写入 OrchestrationTrace，形成不可篡改的哈希链。 | 43 | 每次锁定、重建、丢弃都留一条改不掉的记录。 | 21 | −51% | 43 字，出现 OrchestrationTrace 与“哈希链”，非技术操作者无法判断后果。 |
 | 6 | 职能 · 决策选项 | 对是否执行、Plan 是否通过拥有最终批准权或否决权。任务内锁定，不可切换。 | 38 | 决定做不做、方案过不过；能叫停，也能放行。任务内锁定。 | 27 | −29% | 38 字，Plan / 最终批准权 / 否决权都是内部或法律化措辞。 |
@@ -219,13 +219,13 @@
 | 控件 | 值 | 中文标签 | English | 中文 tooltip（≤70） | English tooltip（≤120） | 长度检查 |
 |---|---|---|---|---|---|---|
 | 情景 | `dialogue` | 对话 | Dialogue | 闲聊和简单问答；快，但不够深入。 | Small talk and quick Q&A; fast but shallow. | zh 16/70 · en 43/120 ✅ |
-| 情景 | `writing` | 写作 | Writing | 文章、文案、报告、邮件；先列提纲再写，至少改一稿，最多 3 轮。要来回沟通。 | Articles, copy, reports, email; outline first, then at least one revision (max 3 rounds). Needs back-and-forth. | zh 38/70 · en 111/120 ✅ |
+| 情景 | `writing` | 写作 | Writing | 文章、文案、报告、邮件；先定受众、语气和字数，列提纲、再改稿，最多 3 轮；不跑命令。 | Articles, copy, reports, email; set audience, tone, and length, outline and revise, up to 3 rounds; no commands. | zh 43/70 · en 112/120 ✅ |
 | 情景 | `office` | 办公 | Office | 整理文件、生成报告；只在工作区内操作。 | Organises files and generates reports; limited to the workspace. | zh 19/70 · en 64/120 ✅ |
 | 情景 | `research` | 研究 | Research | 查资料、给证据和引用；慢，但结论有出处。 | Searches sources and cites evidence; slow, but conclusions are traceable. | zh 20/70 · en 73/120 ✅ |
 | 情景 | `engineering` | 工程 | Engineering | 写代码、构建、调试；能跑命令，改动不出工作区。 | Writes code, builds, and debugs; can run commands, with changes confined to the workspace. | zh 23/70 · en 90/120 ✅ |
 | 情景 | `iterate` | 迭代 | Iterate | 先写、再批、再改，循环打磨；质量高，调用次数多。 | Draft, critique, revise in a loop; high quality, more model calls. | zh 24/70 · en 66/120 ✅ |
 
-**说明：** 情景 tooltip 只写“做什么 + 一个代价”，不写“优点/缺点”两段式。写作的“最多 3 轮”来自 `SceneProfiles.writing.maxIteration`，不是文案自创；如果部署把 `scenes.writing.maxIteration` 改掉，这条文案要同步改。
+**说明：** 情景 tooltip 只写“做什么 + 一个代价”，不写“优点/缺点”两段式。写作的“受众、语气、字数、格式”四个边界来自 v24 §6.2：tooltip 放前三个，“格式”和“清楚/连贯/贴合受众”的检查放在设置页“写作流程”行；“不跑命令”对应 `allowBash=false`，“最多 3 轮”对应 `maxIteration=3`。部署改这些配置时，文案要同步改。
 
 #### 2.5.5 验证（3 条，≤70 / ≤120）
 
@@ -405,7 +405,7 @@
 | 13 | `defaultScene` | 默认情景 | Default scene | 下拉 / select | `defaults.scene` · 主机配置（config.ts） | 对话 | 新任务默认的工作方式；写作会先列提纲再改稿。 | The default working mode for new tasks; writing outlines first, then revises. | 只读（主机） |
 | 14 | `defaultValidation` | 默认验证 | Default validation | 下拉 / select | `defaults.validation` · 主机配置（config.ts） | 中 | 新任务默认查多少资料；三档都会联网检索。 | How much evidence new tasks gather by default; all three levels search the web. | 只读（主机） |
 | 15 | `defaultInteraction` | 默认交互 | Default interaction | 下拉 / select | `defaults.interaction` · 主机配置（config.ts） | 思维 | 新任务默认怎么回应；选统筹会拆子任务。 | How new tasks respond by default; orchestrate splits them into subtasks. | 只读（主机） |
-| 16 | `writingFlow` | 写作流程 | Writing flow | 只读 / read-only | `scenes.writing.*`（生效策略） · 主机配置（v24 情景策略） | 提纲→初稿→修订（最多 3 轮） | 写作流程固定：先提纲、再初稿、至少改一稿，最多 3 轮。 | Writing always outlines, drafts, then revises at least once, up to 3 rounds. | 只读（策略） |
+| 16 | `writingFlow` | 写作流程 | Writing flow | 只读 / read-only | `scenes.writing.*`（生效策略） · 主机配置（v24 情景策略） | 提纲→初稿→修订（最多 3 轮） | 写作流程固定：先定受众、语气、字数、格式，列提纲、写初稿、至少改一稿（最多 3 轮），并检查是否清楚、连贯、贴合受众。 | Writing sets audience, tone, length, and format; outlines, drafts, revises (max 3 rounds); checks clarity and fit. | 只读（策略） |
 | 17 | `defaultLocale` | 默认语言 | Default language | 下拉 / select | `ui.locale` · 主机配置（config.ts） | 跟随宿主 | 界面跟随 DSH 语言；这里只设 DSH 还没报语言时的兜底。 | The UI follows DSH's language; this only sets the fallback before DSH reports one. | 只读（主机） |
 | 18 | `currentLocale` | 当前语言 | Current language | 只读 / read-only | 无（DSH `ctx.locale`） · DSH 运行时 | 中文（跟随 DSH） | 当前实际显示的语言；由 DSH 设置决定。 | The language actually shown; decided by DSH's own setting. | 只读 |
 | 19 | `compact` | 紧凑模式 | Compact mode | 开关 / switch | localStorage `deepseek-coordination:compact`；默认取 `ui.compact` · 仅本机（客户端） | 开（跟随主机） | 下拉框更窄、行距更小，小屏能多放几个控件。 | Narrower dropdowns and tighter spacing so more controls fit on small screens. | 可编辑 |
@@ -685,7 +685,7 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 | `scenes.dialogue.label` | 对话 | Dialogue | zh 2/10 · en 8/20 ✅ |
 | `scenes.dialogue.hint` | 闲聊和简单问答；快，但不够深入。 | Small talk and quick Q&A; fast but shallow. | zh 16/70 · en 43/120 ✅ |
 | `scenes.writing.label` | 写作 | Writing | zh 2/10 · en 7/20 ✅ |
-| `scenes.writing.hint` | 文章、文案、报告、邮件；先列提纲再写，至少改一稿，最多 3 轮。要来回沟通。 | Articles, copy, reports, email; outline first, then at least one revision (max 3 rounds). Needs back-and-forth. | zh 38/70 · en 111/120 ✅ |
+| `scenes.writing.hint` | 文章、文案、报告、邮件；先定受众、语气和字数，列提纲、再改稿，最多 3 轮；不跑命令。 | Articles, copy, reports, email; set audience, tone, and length, outline and revise, up to 3 rounds; no commands. | zh 43/70 · en 112/120 ✅ |
 | `scenes.office.label` | 办公 | Office | zh 2/10 · en 6/20 ✅ |
 | `scenes.office.hint` | 整理文件、生成报告；只在工作区内操作。 | Organises files and generates reports; limited to the workspace. | zh 19/70 · en 64/120 ✅ |
 | `scenes.research.label` | 研究 | Research | zh 2/10 · en 8/20 ✅ |
@@ -819,7 +819,7 @@ Turn Session Thread Plan Trace 哈希链 编排 派发 沙箱 fail-closed 幂等
 | `settings.fields.defaultInteraction.label` | 默认交互 | Default interaction | zh 4/12 · en 19/32 ✅ |
 | `settings.fields.defaultInteraction.hint` | 新任务默认怎么回应；选统筹会拆子任务。 | How new tasks respond by default; orchestrate splits them into subtasks. | zh 19/70 · en 72/120 ✅ |
 | `settings.fields.writingFlow.label` | 写作流程 | Writing flow | zh 4/12 · en 12/32 ✅ |
-| `settings.fields.writingFlow.hint` | 写作流程固定：先提纲、再初稿、至少改一稿，最多 3 轮。 | Writing always outlines, drafts, then revises at least once, up to 3 rounds. | zh 28/70 · en 76/120 ✅ |
+| `settings.fields.writingFlow.hint` | 写作流程固定：先定受众、语气、字数、格式，列提纲、写初稿、至少改一稿（最多 3 轮），并检查是否清楚、连贯、贴合受众。 | Writing sets audience, tone, length, and format; outlines, drafts, revises (max 3 rounds); checks clarity and fit. | zh 59/70 · en 114/120 ✅ |
 | `settings.fields.defaultLocale.label` | 默认语言 | Default language | zh 4/12 · en 16/32 ✅ |
 | `settings.fields.defaultLocale.hint` | 界面跟随 DSH 语言；这里只设 DSH 还没报语言时的兜底。 | The UI follows DSH's language; this only sets the fallback before DSH reports one. | zh 31/70 · en 82/120 ✅ |
 | `settings.fields.currentLocale.label` | 当前语言 | Current language | zh 4/12 · en 16/32 ✅ |
