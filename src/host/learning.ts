@@ -53,7 +53,6 @@
  * explicitly through `rollback(error, target)`, which persists the record.
  */
 import type { ModuleHost } from './module.js'
-import { clamp, round } from './module.js'
 import { BayesianModule } from './bayesian.js'
 import type { Calibration, ErrorRecord, Pattern, Rollback } from '../shared/entity.js'
 import type { ErrorRemedy } from '../shared/service.js'
