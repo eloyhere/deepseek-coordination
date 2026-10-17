@@ -44,7 +44,14 @@ export type TurnStatus =
   | 'cancelled'
   | 'abandoned'
 
-export type SubTaskStatus = 'pending' | 'running' | 'submitted' | 'verified' | 'rejected' | 'partial'
+export type SubTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'submitted'
+  | 'verified'
+  | 'rejected'
+  | 'partial'
+  | 'abandoned'
 
 export type Verdict = 'pass' | 'fail' | 'partial' | 'unverifiable'
 
@@ -166,6 +173,57 @@ export const ValidationHint: Readonly<Record<Validation, string>> = {
   low: '只执行选定交互：不做贝叶斯推断，不搜索资料，不读取跨会话历史。',
   medium: '对选定模式做贝叶斯推断：证据来自当前会话 + 联网搜索，不读取跨会话历史。',
   high: '对全部交互模式做完整贝叶斯推断：当前会话 + 联网搜索 + 跨会话历史，并做全局加权融合。',
+}
+
+/**
+ * The composer's five dropdown controls (v23 §15.1). The command face is a
+ * message prefix rather than a control, so it is documented here but not shown
+ * as a sixth dropdown.
+ */
+export type ControlName = 'profession' | 'interaction' | 'scene' | 'validation' | 'permission'
+
+export const ControlLabel: Readonly<Record<ControlName, string>> = {
+  profession: '职能',
+  interaction: '交互',
+  scene: '情景',
+  validation: '验证',
+  permission: '权限',
+}
+
+/** Tooltip of the control itself, shown on hover before the menu opens. */
+export const ControlHint: Readonly<Record<ControlName, string>> = {
+  profession: '任务内唯一且锁定的问责维度。选择后本 Turn 不可切换，只能重建或丢弃任务。',
+  interaction: '决定 Agent 如何回应：感情 / 思维 / 启发 / 收束 / 统筹。',
+  scene: '决定工作情景：对话 / 办公 / 研究 / 工程 / 迭代。',
+  validation: '决定证据与推断深度：low / medium / high。medium 与 high 允许联网搜索。',
+  permission: '决定本会话的沙箱与审批档位：仅可查看 / 工作区内修改 / 完全权限。',
+}
+
+/** The three DSH sandbox modes the permission dropdown mirrors. */
+export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+
+export const SandboxModeValues: readonly SandboxMode[] = ['read-only', 'workspace-write', 'danger-full-access']
+
+/** Wording aligned with DSH's own access-mode menu (v22 §15, kept by v23 §16). */
+export const PermissionLabel: Readonly<Record<SandboxMode, string>> = {
+  'read-only': '仅可查看',
+  'workspace-write': '工作区内修改',
+  'danger-full-access': '完全权限',
+}
+
+export const PermissionHint: Readonly<Record<SandboxMode, string>> = {
+  'read-only': '只能读取工作区，不能写入或执行改动。',
+  'workspace-write': '可以在工作区内读写文件，越出工作区的写入会被拒绝。',
+  'danger-full-access': '不受工作区限制，可写入任意路径；风险最高。',
+}
+
+/** Reverse lookup for persisted Chinese labels and legacy settings. */
+export function toSandboxMode(value: unknown): SandboxMode {
+  if (isOneOf(value, SandboxModeValues)) return value
+  if (value === PermissionLabel['read-only']) return 'read-only'
+  if (value === PermissionLabel['workspace-write']) return 'workspace-write'
+  if (value === PermissionLabel['danger-full-access']) return 'danger-full-access'
+  return 'workspace-write'
 }
 
 export const CommandLabel: Readonly<Record<CommandType, string>> = {
