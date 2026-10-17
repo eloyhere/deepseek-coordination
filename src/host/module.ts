@@ -89,6 +89,15 @@ export interface GoalPort {
 
 export interface CompactionPort {
   compactNow(agent: AgentView, signal: AbortSignal): Promise<unknown>
+  /**
+   * DSH's own pressure policy: `null` when no safe range should be compacted.
+   * The governor only asks; DSH decides and performs the replacement.
+   */
+  compactIfNeeded?(
+    agent: AgentView,
+    trigger: 'pressure' | 'context-overflow',
+    signal: AbortSignal,
+  ): Promise<unknown>
 }
 
 export interface WebSearchPort {

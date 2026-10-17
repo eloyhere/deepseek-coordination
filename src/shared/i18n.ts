@@ -1,34 +1,35 @@
 /**
- * The plugin's single source of user-visible and model-facing copy (v23 §22).
+ * The plugin's single source of user-visible and model-facing copy (v24 §22,
+ * `docs/ui-copy-v24.md` §5).
  *
  * Authority for the active language is DSH's own `ctx.locale`; this module never
  * picks a language on its own. It publishes one `Copy` record per locale, so the
  * composer controls, the settings page, the typed errors and the `coordination_*`
  * tool descriptions all read the same strings instead of growing a second copy.
  *
- * Chinese is the reference language: every label and hint reuses the constants
- * in `./enum.ts`, which are the doc-mandated Chinese projection (§6.1-6.3,
- * §15.1, §15.2). English is a faithful per-key translation, never a placeholder.
+ * Chinese is the reference language and every string here is the v24 copy
+ * document's string, copied verbatim. English is a faithful per-key translation,
+ * never a placeholder. `src/shared/enum.ts` still exports its label/hint
+ * projection for compatibility and audit, but the hints in this file are the
+ * authority for the interface: the v24 document replaces the v23 tooltips.
  *
  * Data stays canonical: the database and the wire keep English identifiers
  * (`profession`, `scene`, …); only the presentation layer is translated.
+ *
+ * Length budgets (v24 §1.3) are enforced by `test/i18n.test.ts`:
+ * control tooltip 90/160, option and field tooltip 70/120, composer/status and
+ * error line 70/120, settings group copy 70/120, `settings.whyLock` 200/320.
  */
 import {
-  ControlHint,
   ControlLabel,
-  InteractionHint,
   InteractionLabel,
   InteractionValues,
-  PermissionHint,
   PermissionLabel,
-  ProfessionHint,
   ProfessionLabel,
   ProfessionValues,
   SandboxModeValues,
-  SceneHint,
   SceneLabel,
   SceneValues,
-  ValidationHint,
   ValidationLabel,
   ValidationValues,
 } from './enum.js'
@@ -60,7 +61,7 @@ export const DEFAULT_LOCALE: Locale = 'zh-CN'
  * The host's registry currently ships `zh` / `en`, while this plugin and the
  * design document speak `zh-CN` / `en-US`; `zh*` and `en*` (case-insensitive,
  * any region or script) therefore collapse onto the two shipped tags. Anything
- * unknown falls back to the Chinese default (v23 §22).
+ * unknown falls back to the Chinese default (v24 §22).
  */
 export function normaliseLocale(value: unknown): Locale {
   if (typeof value !== 'string') return DEFAULT_LOCALE
@@ -83,20 +84,21 @@ export type ControlCopy = LabelledCopy
 export type OptionCopy = LabelledCopy
 
 /**
- * Copy of one validation level. `hint` is the doc-mandated range description,
- * `budget` the retrieval budget (`1×3` …), `scope` the evidence scope, and
- * `tooltip` the composed menu text the composer renders.
+ * Copy of one validation level. `hint` is the doc-mandated tooltip,
+ * `budget` the retrieval budget (`1×3` …), and `scope` the evidence scope
+ * (v24 §5.6). Every level searches; the copy states it.
  */
 export interface ValidationCopy extends LabelledCopy {
   readonly budget: string
   readonly scope: string
-  readonly tooltip: string
 }
 
 /**
- * Composer runtime copy: tooltip skeleton, lock/offline/status lines, and the
- * permission-catalog rejections. Templates use `{name}` placeholders resolved by
- * {@link fillTemplate}.
+ * Composer runtime copy: tooltip skeleton, lock/offline/status lines, the
+ * permission-catalog rejections, the full-access confirmation and the
+ * profession-lock escalation dialog.
+ *
+ * Templates use `{name}` placeholders resolved by {@link fillTemplate}.
  */
 export interface ComposerCopy {
   /** The word in front of the option currently shown ("当前" / "Current"). */
@@ -109,13 +111,13 @@ export interface ComposerCopy {
   readonly lockedAria: string
   /** Accessible name of one MenuItem, which holds keyboard focus; `{label}` + `{hint}`. */
   readonly optionAria: string
-  /** Locked profession line; `{profession}` is the locked label. */
+  /** Locked profession line (v24 §2.6). */
   readonly lockedLine: string
   /** Unlocked explanation shown while the profession can still be chosen. */
   readonly unlockedLine: string
-  /** Host-unreachable line; `{localOnly}` is the local-only clause. */
+  /** Host-unreachable line; appended as a second line, never replacing the hint. */
   readonly offlineLine: string
-  /** The local-only clause ("selecting stores the choice locally"). */
+  /** The local-only clause ("only saved on this device"). */
   readonly localOnly: string
   /** Shown when DSH exposes no permission presets at all. */
   readonly permissionCatalogMissing: string
@@ -139,48 +141,210 @@ export interface ComposerCopy {
   readonly loadingSelection: string
   /** Approval-policy suffix of a preset tooltip; `{approval}`. */
   readonly approvalPolicy: string
-  /** Always-visible reminder that every validation level searches (§6.3). */
+  /** Always-visible reminder that every validation level searches (v24 §6.3). */
   readonly validationNote: string
   /** Short locked rejection. */
   readonly professionLocked: string
   /** Locked rejection that names the rebuild/abandon escape hatch. */
   readonly professionLockedRebuild: string
-  /** Invalid-patch rejection; `{message}`. */
+  /** Invalid-patch rejection; the previous choice was restored. */
   readonly invalidSelection: string
-  /** Generic host rejection when no more specific copy applies. */
+  /** Generic host rejection; the previous choice was restored. */
   readonly requestFailed: string
+  /** Title of the inline full-access confirmation. */
+  readonly permissionConfirmTitle: string
+  /** Consequence sentence of the inline full-access confirmation. */
+  readonly permissionConfirmBody: string
+  /** Confirm button of the full-access confirmation. */
+  readonly permissionConfirmAccept: string
+  /** Cancel button of the full-access confirmation; also the escalation dialog's 取消. */
+  readonly permissionConfirmCancel: string
+  /** Escalation dialog: the current (locked) profession; `{profession}`. */
+  readonly escalationCurrent: string
+  /** Escalation dialog: the refused profession; `{profession}`. */
+  readonly escalationRequested: string
+  /** Escalation dialog action: rebuild the task with the requested profession. */
+  readonly escalationRebuild: string
+  /** Escalation dialog action: abandon the task. */
+  readonly escalationAbandon: string
+  /** Shown when the host build has no rebuild/abandon route. */
+  readonly escalationUnsupported: string
 }
 
-/** One labelled switch row on the settings page. */
-export interface SettingsSwitchCopy {
+/**
+ * Copy of the service-level takeover dialog (v24 §16): approval windows and
+ * question windows. Plain-language rules from `docs/ui-copy-v24.md` §1.1 apply;
+ * `{index}` / `{total}` in {@link TakeoverCopy.queueLabel} are resolved by
+ * {@link fillTemplate}.
+ */
+export interface TakeoverCopy {
+  /** Generic dialog heading ("需要你决定"). */
+  readonly title: string
+  /** Heading of an approval window. */
+  readonly approvalTitle: string
+  /** Heading of a question window. */
+  readonly questionTitle: string
+  /** Approval action: allow this one call. */
+  readonly allowOnce: string
+  /** Approval action: reject. */
+  readonly reject: string
+  /** Dialog action: cancel the request (the answer is not submitted). */
+  readonly cancel: string
+  /** Question action: submit every answer. */
+  readonly submit: string
+  /** Placeholder of a question's optional free-text field. */
+  readonly customPlaceholder: string
+  /** Shown when the host says the request is already resolved. */
+  readonly expired: string
+  /** Shown when the host could not be reached; the dialog stays for a retry. */
+  readonly hostError: string
+  /** Queue indicator template, e.g. "第 1 / 3 条". */
+  readonly queueLabel: string
+}
+
+/* ------------------------------------------------------------------------- *
+ * Settings page copy (v24 §3, §5.9)
+ * ------------------------------------------------------------------------- */
+
+/** The settings groups, in render order (v24 §3.1 plus auto-compaction). */
+export const SETTINGS_GROUP_IDS = [
+  'permission',
+  'composer',
+  'profession',
+  'scene',
+  'language',
+  'compaction',
+  'advanced',
+] as const
+
+export type SettingsGroupId = (typeof SETTINGS_GROUP_IDS)[number]
+
+/** The 24 setting rows, in render order (v24 §3.2). */
+export const SETTINGS_FIELD_IDS = [
+  'takeoverPermission',
+  'takeoverControl',
+  'takeoverDialogs',
+  'permissionCatalog',
+  'composerWorkflow',
+  'composerTooltips',
+  'professionLock',
+  'professionDefault',
+  'professionRebuild',
+  'professionAbandon',
+  'professionAudit',
+  'professionErrorHint',
+  'defaultScene',
+  'defaultValidation',
+  'defaultInteraction',
+  'writingFlow',
+  'defaultLocale',
+  'currentLocale',
+  'compact',
+  'refreshInterval',
+  'autoCompact',
+  'compactionThreshold',
+  'hardPrune',
+  'reserve',
+  'cacheEnabled',
+  'webSearch',
+  'groundTruth',
+  'modelRouting',
+] as const
+
+export type SettingsFieldId = (typeof SETTINGS_FIELD_IDS)[number]
+
+/** The state chips a row can show; labels live in `settings.values`. */
+export const SETTINGS_CHIP_IDS = [
+  'forced',
+  'readOnlyHost',
+  'readOnlyPolicy',
+  'readOnly',
+  'local',
+  'host',
+  'session',
+] as const
+
+export type SettingsChipId = (typeof SETTINGS_CHIP_IDS)[number]
+
+/** One settings group: title, one-sentence description, always-visible helper. */
+export interface SettingsGroupCopy {
+  readonly title: string
+  readonly desc: string
+  readonly helper: string
+}
+
+/** One setting row: label plus the always-visible ≤70/120 explanation. */
+export interface SettingsFieldCopy {
   readonly label: string
   readonly hint: string
 }
 
-/** Copy of the `协调` settings page (v23 §15.2). */
+/** Status chips and option values (v24 §5.9.4). */
+export interface SettingsValuesCopy {
+  readonly followHost: string
+  readonly followHostConfig: string
+  readonly chinese: string
+  readonly english: string
+  readonly on: string
+  readonly off: string
+  readonly forced: string
+  readonly readOnly: string
+  readonly readOnlyHost: string
+  readonly readOnlyPolicy: string
+  readonly hostConfig: string
+  readonly localOnly: string
+  readonly local: string
+  readonly host: string
+  readonly session: string
+  readonly help: string
+  readonly loading: string
+  readonly unavailable: string
+  readonly default: string
+  readonly connected: string
+  readonly disconnected: string
+  readonly hostAccessMode: string
+  readonly pluginPermission: string
+  readonly dshCatalog: string
+  readonly writingFlow: string
+  readonly refresh2: string
+  readonly refresh5: string
+  readonly refresh10: string
+  readonly refreshPaused: string
+}
+
+/** Empty / offline / rejection states (v24 §5.9.5 plus the compaction saves). */
+export interface SettingsStatesCopy {
+  readonly offline: string
+  readonly loading: string
+  readonly empty: string
+  readonly hostRejected: string
+  readonly noCatalog: string
+  readonly unknownLocale: string
+  readonly readOnlyHost: string
+  readonly settingsLocked: string
+  readonly storageBlocked: string
+  /** An old host build has no `/config/compaction` route. */
+  readonly configUnsupported: string
+  /** Transient confirmation after a host config write. */
+  readonly saved: string
+}
+
+/** Copy of the `协调` settings page (v24 §3, §5.9). */
 export interface SettingsCopy {
   /** Section title / settings-menu label. */
   readonly title: string
-  /** Permission takeover switch, its hint, and both status lines. */
-  readonly takeover: SettingsSwitchCopy & { readonly onLine: string; readonly offLine: string }
-  /** Workflow switch, its hint, and both status lines. */
-  readonly workflow: SettingsSwitchCopy & { readonly onLine: string; readonly offLine: string }
-  /** The forced `职能 Profession` group. */
-  readonly professionGroup: {
-    readonly title: string
-    readonly lock: SettingsSwitchCopy
-    readonly defaultProfession: SettingsSwitchCopy
-    /** Read-only value of the default profession; `{profession}`. */
-    readonly defaultProfessionValue: string
-    readonly rebuildReselect: SettingsSwitchCopy
-    readonly abandonReselect: SettingsSwitchCopy
-    readonly audit: SettingsSwitchCopy
-    readonly lockErrorHint: SettingsSwitchCopy
-    /** Marks a disabled row as a display of a config default, not a hard rule. */
-    readonly displayOnly: string
-  }
-  /** Footer crediting the doc and DSH's preset catalog. */
+  /** One-line page intro. */
+  readonly intro: string
+  /** Footer note: switches apply immediately, there is no save button. */
+  readonly applyNote: string
+  /** The two-sentence "why lock" paragraph under the profession group. */
+  readonly whyLock: string
+  /** Footer crediting host config as the read-only source. */
   readonly footer: string
+  readonly groups: Readonly<Record<SettingsGroupId, SettingsGroupCopy>>
+  readonly fields: Readonly<Record<SettingsFieldId, SettingsFieldCopy>>
+  readonly values: SettingsValuesCopy
+  readonly states: SettingsStatesCopy
 }
 
 /** Copy of one model-facing tool: description plus per-parameter descriptions. */
@@ -204,12 +368,13 @@ export interface Copy {
   readonly validations: Readonly<Record<Validation, ValidationCopy>>
   readonly permissions: Readonly<Record<SandboxMode, OptionCopy>>
   readonly composer: ComposerCopy
+  readonly takeover: TakeoverCopy
   readonly settings: SettingsCopy
   readonly errors: Readonly<Record<CoordinationErrorCode, string>>
   readonly tools: Readonly<Record<ToolName, ToolCopy>>
 }
 
-/** The five composer dropdowns, in render order (v23 §15.1). */
+/** The five composer dropdowns, in render order (v24 §15.1). */
 const CONTROL_NAMES: readonly ControlName[] = [
   'profession',
   'interaction',
@@ -218,7 +383,7 @@ const CONTROL_NAMES: readonly ControlName[] = [
   'permission',
 ]
 
-/** Canonical retrieval budget per validation level (v23 §6.3). */
+/** Canonical retrieval budget per validation level (v24 §6.3). */
 const VALIDATION_BUDGET: Readonly<Record<Validation, string>> = {
   low: '1×3',
   medium: '2×5',
@@ -240,46 +405,259 @@ function recordOf<T extends string, V>(values: readonly T[], build: (value: T) =
   return result
 }
 
-function controlsOf(): Readonly<Record<ControlName, ControlCopy>> {
-  return recordOf(CONTROL_NAMES, (name) => ({ label: ControlLabel[name], hint: ControlHint[name] }))
-}
-
-function professionsOf(): Readonly<Record<Profession, OptionCopy>> {
-  return recordOf(ProfessionValues, (value) => ({ label: ProfessionLabel[value], hint: ProfessionHint[value] }))
-}
-
-function interactionsOf(): Readonly<Record<Interaction, OptionCopy>> {
-  return recordOf(InteractionValues, (value) => ({ label: InteractionLabel[value], hint: InteractionHint[value] }))
-}
-
-function scenesOf(): Readonly<Record<Scene, OptionCopy>> {
-  return recordOf(SceneValues, (value) => ({ label: SceneLabel[value], hint: SceneHint[value] }))
-}
-
-function permissionsOf(): Readonly<Record<SandboxMode, OptionCopy>> {
-  return recordOf(SandboxModeValues, (value) => ({ label: PermissionLabel[value], hint: PermissionHint[value] }))
-}
-
 /* ------------------------------------------------------------------------- *
- * Chinese — the reference language, built from the enum constants
+ * Chinese — the reference language (v24 §5, copied verbatim)
  * ------------------------------------------------------------------------- */
 
-const ZH_VALIDATION_SCOPE: Readonly<Record<Validation, string>> = {
-  low: '当轮对话',
-  medium: '当前会话',
-  high: '本地全部内容',
+const ZH_CONTROL_HINTS: Readonly<Record<ControlName, string>> = {
+  profession: '定这个任务由谁负哪一份责；选定后任务内不能改，要换只能重建或丢弃任务。',
+  interaction: '定它怎么回应你：陪你聊、深入想、找可行方向、排掉失败方向，或拆给多个代理。',
+  scene: '定这次用哪种工作方式；会改变流程、查资料的方式，以及能不能改文件。',
+  validation: '定查多少资料、看多远的历史；三档都会联网，只差检索量和证据范围。',
+  permission: '定这个会话能改什么；切换立刻生效，可能影响正在跑的任务。',
 }
 
-function zhValidations(): Readonly<Record<Validation, ValidationCopy>> {
-  return recordOf(ValidationValues, (level) => ({
-    label: ValidationLabel[level],
-    hint: ValidationHint[level],
-    budget: VALIDATION_BUDGET[level],
-    scope: ZH_VALIDATION_SCOPE[level],
-    // Matches the composer's earlier wording (the raw canonical level) and adds
-    // the retrieval budget the doc table states for this level.
-    tooltip: `档位 ${level} · ${VALIDATION_BUDGET[level]}：${ValidationHint[level]}`,
-  }))
+const ZH_PROFESSION_HINTS: Readonly<Record<Profession, string>> = {
+  decision: '决定做不做、方案过不过；能叫停，也能放行。任务内锁定。',
+  outcome: '对最后交付的东西负责：达不达标由它签字。任务内锁定。',
+  resource: '管额度和花费：用多少模型、搜索和缓存。任务内锁定。',
+  personnel: '管分工：谁来做、几个人、合不合规。任务内锁定。',
+  qualification: '只检查模型能不能胜任，不参与干活。任务内锁定。',
+  execution: '按给定条件把活做完，不验收自己的成果。任务内锁定。',
+}
+
+const ZH_INTERACTION_HINTS: Readonly<Record<Interaction, string>> = {
+  emotion: '先接住情绪：听你说、理解感受，不急着给方案。',
+  think: '把推理摊开，给深度分析和答案。',
+  heuristic: '先找走得通的路，按成功经验排序，给最值得试的方向。',
+  converge: '先排除走不通的路，说清边界、失败原因和止损点。',
+  orchestrate: '拆成子任务分给多个代理，独立验收后汇总；更慢更贵，简单对话不必用。',
+}
+
+const ZH_SCENE_HINTS: Readonly<Record<Scene, string>> = {
+  dialogue: '闲聊和简单问答；快，但不够深入。',
+  writing: '文章、文案、报告、邮件；先定受众、语气和字数，列提纲、再改稿，最多 3 轮；不跑命令。',
+  office: '整理文件、生成报告；只在工作区内操作。',
+  research: '查资料、给证据和引用；慢，但结论有出处。',
+  engineering: '写代码、构建、调试；能跑命令，改动不出工作区。',
+  iterate: '先写、再批、再改，循环打磨；质量高，调用次数多。',
+}
+
+const ZH_VALIDATION_HINTS: Readonly<Record<Validation, string>> = {
+  low: '也联网：1 次 × 3 条，只看这一轮，不翻旧会话。',
+  medium: '也联网：2 次 × 5 条，看当前会话全部内容，不翻旧会话。',
+  high: '也联网：4 次 × 8 条，加上全部本地会话和工作区文件，最全也最慢。',
+}
+
+const ZH_VALIDATION_SCOPE: Readonly<Record<Validation, string>> = {
+  low: '当轮',
+  medium: '当前会话',
+  high: '本地全部',
+}
+
+const ZH_PERMISSION_HINTS: Readonly<Record<SandboxMode, string>> = {
+  'read-only': '只能看：不改文件，也不跑会改东西的命令。',
+  'workspace-write': '能改工作区里的文件；改工作区外会被拒绝。',
+  'danger-full-access': '能改任何路径，不受工作区限制；风险最高，慎用。',
+}
+
+const ZH_GROUPS: Readonly<Record<SettingsGroupId, SettingsGroupCopy>> = {
+  permission: {
+    title: '权限与接管',
+    desc: '这个会话能改什么，以及权限控件由谁提供。',
+    helper: '权限选项来自 DSH；本插件只展示并写回，不另存一份。',
+  },
+  composer: {
+    title: '工作流与下拉框',
+    desc: '输入框里显示哪些选择器，要不要提示。',
+    helper: '关掉工作流只会隐藏下拉框，不会改变已保存的选择。',
+  },
+  profession: {
+    title: '职能与审计',
+    desc: '一个任务只有一个职能：怎么锁、怎么留痕。',
+    helper: '锁只在任务内生效；换任务时可以换职能。',
+  },
+  scene: {
+    title: '情景与验证默认',
+    desc: '新任务默认怎么做、查多少资料。',
+    helper: '验证三档都联网：低 1×3 当轮 / 中 2×5 会话 / 高 4×8 本地全部。',
+  },
+  language: {
+    title: '语言与显示',
+    desc: '界面语言、刷新快慢和疏密。',
+    helper: '语言跟随 DSH；这里不提供强制切换。',
+  },
+  compaction: {
+    title: '自动压缩',
+    desc: '上下文变长时自动压缩，省额度又不丢关键内容。',
+    helper: '开关和阈值写回主机；硬性阈值与保留额度只能查看。',
+  },
+  advanced: {
+    title: '高级',
+    desc: '主机级开关，影响所有会话；通常保持默认。',
+    helper: '这些值来自主机配置，在本页只读。',
+  },
+}
+
+const ZH_FIELDS: Readonly<Record<SettingsFieldId, SettingsFieldCopy>> = {
+  takeoverPermission: {
+    label: '权限接管',
+    hint: '隐藏 DSH 的访问模式按钮，改用本插件的权限下拉。',
+  },
+  takeoverControl: {
+    label: '接管权限控件',
+    hint: '只替换输入框的权限控件；DSH 的弹窗不受影响。',
+  },
+  takeoverDialogs: {
+    label: '接管宿主弹窗',
+    hint: '允许本插件接管 DSH 的审批、权限等弹窗；关掉就仍由 DSH 显示。',
+  },
+  permissionCatalog: {
+    label: '权限预设来源',
+    hint: '权限选项和审批方式由 DSH 提供；本插件不定义、不改写。',
+  },
+  composerWorkflow: {
+    label: '工作流下拉框',
+    hint: '显示职能、交互、情景、验证四个下拉框；关掉只是隐藏，不改选择。',
+  },
+  composerTooltips: {
+    label: '显示提示',
+    hint: '鼠标悬停或键盘聚焦时显示说明；关掉不影响功能。',
+  },
+  professionLock: {
+    label: '职能锁定',
+    hint: '强制开启：一个任务只能有一个职能，中途不能换。',
+  },
+  professionDefault: {
+    label: '默认职能',
+    hint: '新任务没选时用这个；任务一开始仍会锁定。',
+  },
+  professionRebuild: {
+    label: '重建后可重选',
+    hint: '重建会新建任务，新任务可以重新选职能。',
+  },
+  professionAbandon: {
+    label: '丢弃后可重选',
+    hint: '丢弃不新建任务；下一个任务可以重新选职能。',
+  },
+  professionAudit: {
+    label: '职能审计',
+    hint: '每次锁定、重建、丢弃都留一条改不掉的记录。',
+  },
+  professionErrorHint: {
+    label: '锁定错误提示',
+    hint: '改不动时，提示里直接说重建或丢弃该怎么做。',
+  },
+  defaultScene: {
+    label: '默认情景',
+    hint: '新任务默认的工作方式；写作会先列提纲再改稿。',
+  },
+  defaultValidation: {
+    label: '默认验证',
+    hint: '新任务默认查多少资料；三档都会联网检索。',
+  },
+  defaultInteraction: {
+    label: '默认交互',
+    hint: '新任务默认怎么回应；选统筹会拆子任务。',
+  },
+  writingFlow: {
+    label: '写作流程',
+    hint: '写作流程固定：先定受众、语气、字数、格式，列提纲、写初稿、至少改一稿（最多 3 轮），并检查是否清楚、连贯、贴合受众。',
+  },
+  defaultLocale: {
+    label: '默认语言',
+    hint: '界面跟随 DSH 语言；这里只设 DSH 还没报语言时的兜底。',
+  },
+  currentLocale: {
+    label: '当前语言',
+    hint: '当前实际显示的语言；由 DSH 设置决定。',
+  },
+  compact: {
+    label: '紧凑模式',
+    hint: '下拉框更窄、行距更小，小屏能多放几个控件。',
+  },
+  refreshInterval: {
+    label: '自动刷新间隔',
+    hint: '多久和主机同步一次选择状态；暂停后锁定状态可能过期。',
+  },
+  autoCompact: {
+    label: '自动压缩',
+    hint: '上下文变长时，由 DSH 在安全边界自动压缩；保留最近对话和固定事实，不压缩指令。',
+  },
+  compactionThreshold: {
+    label: '压缩触发阈值',
+    hint: '上下文占用超过这个比例后触发压缩；调高会更少压缩，上下文更长。',
+  },
+  hardPrune: {
+    label: '硬性裁剪阈值',
+    hint: '达到这个比例时必须裁剪；由主机配置决定，只能查看。',
+  },
+  reserve: {
+    label: '保留额度',
+    hint: '压缩时给最近内容和固定事实留出的空间；由主机配置决定，只能查看。',
+  },
+  cacheEnabled: {
+    label: '缓存优化',
+    hint: '复用相同请求的结果，省时间省额度；关掉可能更慢。',
+  },
+  webSearch: {
+    label: '联网检索',
+    hint: '允许各档位联网；关掉后只能用手头资料。',
+  },
+  groundTruth: {
+    label: '确定性验收',
+    hint: '能用命令或文件核对时，不靠模型自己说做完了。',
+  },
+  modelRouting: {
+    label: '模型分流',
+    hint: '允许按子任务难度换模型；关掉统一用当前模型。',
+  },
+}
+
+const ZH_VALUES: SettingsValuesCopy = {
+  followHost: '跟随宿主',
+  followHostConfig: '跟随主机配置',
+  chinese: '中文',
+  english: 'English',
+  on: '开',
+  off: '关',
+  forced: '强制',
+  readOnly: '只读',
+  readOnlyHost: '只读（主机）',
+  readOnlyPolicy: '只读（策略）',
+  hostConfig: '主机配置',
+  localOnly: '本机设置',
+  local: '本机',
+  host: '主机',
+  session: '当前会话',
+  help: '查看说明',
+  loading: '读取中…',
+  unavailable: '连接后显示',
+  default: '默认',
+  connected: '主机已连接',
+  disconnected: '主机未连接',
+  hostAccessMode: '宿主访问模式按钮',
+  pluginPermission: '本插件的权限下拉',
+  dshCatalog: 'DSH 目录',
+  writingFlow: '提纲→初稿→修订（最多 3 轮）',
+  refresh2: '2 秒',
+  refresh5: '5 秒',
+  refresh10: '10 秒',
+  refreshPaused: '暂停',
+}
+
+const ZH_STATES: SettingsStatesCopy = {
+  offline: '主机未连接，以下为本地设置。',
+  loading: '正在读取主机设置…',
+  empty: '还没有任务；下面显示的是默认值。',
+  hostRejected: '主机拒绝了这次修改，已保持原值。',
+  noCatalog: 'DSH 没有提供权限预设，只能查看说明。',
+  unknownLocale: '宿主语言无法识别，先按中文显示。',
+  readOnlyHost: '主机配置，只能查看；需要部署者修改。',
+  settingsLocked: '本会话有任务在跑，职能已锁定。',
+  storageBlocked: '浏览器禁用了本地存储，这次改动只在当前页面有效。',
+  configUnsupported: '主机不支持在线修改，请在配置文件中设置。',
+  saved: '已保存。',
 }
 
 const ZH_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
@@ -313,125 +691,412 @@ const ZH_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
   },
 }
 
+const ZH_TAKEOVER: TakeoverCopy = {
+  title: '需要你决定',
+  approvalTitle: '批准这次操作',
+  questionTitle: '回答一个问题',
+  allowOnce: '仅本次允许',
+  reject: '拒绝',
+  cancel: '取消',
+  submit: '提交',
+  customPlaceholder: '或自己写一个答案',
+  expired: '这条请求已失效，不会再提交。',
+  hostError: '没能提交，请稍后重试。',
+  queueLabel: '第 {index} / {total} 条',
+}
+
 const ZH: Copy = {
-  controls: controlsOf(),
-  professions: professionsOf(),
-  interactions: interactionsOf(),
-  scenes: scenesOf(),
-  validations: zhValidations(),
-  permissions: permissionsOf(),
+  controls: recordOf(CONTROL_NAMES, (name) => ({
+    label: ControlLabel[name],
+    hint: ZH_CONTROL_HINTS[name],
+  })),
+  professions: recordOf(ProfessionValues, (value) => ({
+    label: ProfessionLabel[value],
+    hint: ZH_PROFESSION_HINTS[value],
+  })),
+  interactions: recordOf(InteractionValues, (value) => ({
+    label: InteractionLabel[value],
+    hint: ZH_INTERACTION_HINTS[value],
+  })),
+  scenes: recordOf(SceneValues, (value) => ({
+    label: SceneLabel[value],
+    hint: ZH_SCENE_HINTS[value],
+  })),
+  validations: recordOf(ValidationValues, (level) => ({
+    label: ValidationLabel[level],
+    hint: ZH_VALIDATION_HINTS[level],
+    budget: VALIDATION_BUDGET[level],
+    scope: ZH_VALIDATION_SCOPE[level],
+  })),
+  permissions: recordOf(SandboxModeValues, (mode) => ({
+    label: PermissionLabel[mode],
+    hint: ZH_PERMISSION_HINTS[mode],
+  })),
   composer: {
     currentLabel: '当前',
     controlTitle: '{control} · {currentLabel}：{current}',
     controlAria: '{control}，{currentLabel}：{current}',
     lockedAria: '{control} · {currentLabel}：{current}。{explanation}',
     optionAria: '{label}。{hint}',
-    lockedLine: '本 Turn 的职能已锁定为「{profession}」。重建（rebuild）或丢弃（abandon）任务后才能重新选择。',
-    unlockedLine: '选择后会在本 Turn 开始时锁定，Turn 结束前不可切换。',
-    offlineLine: '未连接主机：{localOnly}。',
-    localOnly: '选择仅保存在本地',
-    permissionCatalogMissing: 'DSH 未提供权限预设目录，当前仅显示只读说明。',
-    permissionApplyFailed: 'DSH 未提供权限预设目录，无法切换权限。',
-    permissionOffline: '未连接主机，无法切换权限预设。',
-    permissionWriteNow: '切换后会立即写入本会话的 DSH 权限预设。',
+    lockedLine: '任务已开始，职能锁定；完成或新建任务后可改。',
+    unlockedLine: '现在可以选；任务一开始就锁定。',
+    offlineLine: '主机未连接；这里的选择只存本机，不影响任务。',
+    localOnly: '只存本机',
+    permissionCatalogMissing: 'DSH 没有提供权限预设，这里只显示说明，不能切换。',
+    permissionApplyFailed: 'DSH 没有提供权限预设，权限没有切换。',
+    permissionOffline: '主机未连接，权限不能切换。',
+    permissionWriteNow: '切换会立刻写进本会话的 DSH 权限。',
     permissionPresetDefault: '权限档位由 DSH 的权限预设定义。',
-    customPreset: '当前会话的权限预设不在目录中（自定义预设）。',
+    customPreset: '自定义权限预设，DSH 目录里没有；切换前先确认影响。',
     followDsh: '跟随 DSH',
     followDshMode: '跟随 DSH（默认：{mode}）',
-    permissionFollowHint: '当前未应用任何 DSH 权限预设，跟随 DSH 的默认档位。',
+    permissionFollowHint: '当前没有应用任何权限预设，跟随 DSH 的默认档位。',
     loadingSelection: '正在加载主机选择…',
-    approvalPolicy: '审批策略：{approval}',
-    validationNote: '三档都联网检索并做贝叶斯更新：low 1×3 当轮 / medium 2×5 当前会话 / high 4×8 本地全部内容。',
-    professionLocked: '职能已锁定：本 Turn 内不能切换。',
-    professionLockedRebuild: '职能已锁定：本 Turn 内不能切换。重建或丢弃任务后可重新选择。',
-    invalidSelection: '选择无效：{message}',
-    requestFailed: '主机拒绝了这次修改',
+    approvalPolicy: '审批方式：{approval}',
+    validationNote: '三档都联网：低 1×3 当轮 / 中 2×5 当前会话 / 高 4×8 本地全部。',
+    professionLocked: '职能已锁定，改动没有生效。',
+    professionLockedRebuild: '职能已锁定，改动没有生效；重建或丢弃任务后可改。',
+    invalidSelection: '这个选项无效，已恢复原选择。',
+    requestFailed: '主机拒绝了这次修改，已恢复原选择。',
+    permissionConfirmTitle: '完全权限需要再次确认',
+    permissionConfirmBody: '完全权限能改任何路径，不受工作区限制；确认后立即写进本会话。',
+    permissionConfirmAccept: '确认切换',
+    permissionConfirmCancel: '取消',
+    escalationCurrent: '当前职能：{profession}',
+    escalationRequested: '请求改为：{profession}',
+    escalationRebuild: '重建任务',
+    escalationAbandon: '丢弃任务',
+    escalationUnsupported: '主机不支持重建，请升级插件。',
   },
+  takeover: ZH_TAKEOVER,
   settings: {
     title: '协调',
-    takeover: {
-      label: '权限接管',
-      hint: '已接管时隐藏 DSH 输入框的访问模式控件，改用协调面板的权限下拉；未接管时保留 DSH 自带控件。',
-      onLine: '已接管：输入框中的权限下拉已被隐藏，替换为协调面板的权限下拉。',
-      offLine: '未接管：输入框保留宿主自带的权限下拉。',
-    },
-    workflow: {
-      label: '工作流',
-      hint: '显示或隐藏输入框中的职能 / 交互 / 情景 / 验证四个下拉框；关闭后该位置不贡献任何控件。',
-      onLine: '工作流开启：输入框显示职能 / 交互 / 情景 / 验证四个下拉框。',
-      offLine: '工作流关闭：输入框隐藏职能 / 交互 / 情景 / 验证四个下拉框。',
-    },
-    professionGroup: {
-      title: '职能 Profession',
-      lock: {
-        label: '职能锁定',
-        hint: '强制开关：每个任务只能有一个职能，Turn 内不可切换。关闭它等于放弃问责链，因此不提供关闭入口。',
-      },
-      defaultProfession: {
-        label: '默认职能',
-        hint: '配置项 profession.default；本页不读取配置值，只标注跟随配置。agent 在任务开始时可以改选，但本 Turn 开始后即锁定。',
-      },
-      defaultProfessionValue: '{profession}（配置默认）',
-      rebuildReselect: {
-        label: '重建时可重选',
-        hint: '重建任务（rebuild）结束旧任务并创建新任务，新任务可以重新选择职能。',
-      },
-      abandonReselect: {
-        label: '丢弃时可重选',
-        hint: '丢弃任务（abandon）不创建新任务；下一个任务可以重新选择职能。',
-      },
-      audit: {
-        label: '职能审计',
-        hint: '每次锁定、重建、丢弃写入 OrchestrationTrace，形成不可篡改的哈希链。',
-      },
-      lockErrorHint: {
-        label: '锁定错误提示',
-        hint: '拒绝修改已锁定职能时，错误会带上重建（rebuild）或丢弃（abandon）的提示。',
-      },
-      displayOnly: '默认开启，可在配置中关闭。',
-    },
-    footer: '下拉框的选项提示来自 v23 §15.1；权限预设目录由 DSH 提供，本插件只读展示并写回所选预设。',
+    intro: '为下一个任务设默认值；界面开关立即生效。',
+    applyNote: '开关立即生效，没有保存按钮。',
+    whyLock: '一个任务只有一个职能，出事时才能找到唯一责任人：干活的不能自己验收，验收的不能自己改口。锁定只在任务内有效，换任务随时可以换。',
+    footer: '只读项来自主机配置；本页不写入主机。下拉框提示与设置说明使用同一份文案。',
+    groups: ZH_GROUPS,
+    fields: ZH_FIELDS,
+    values: ZH_VALUES,
+    states: ZH_STATES,
   },
   errors: {
-    PROFESSION_LOCKED: '职能已锁定：本 Turn 内不能切换。请重建（rebuild）或丢弃（abandon）任务后重试。',
-    PROFESSION_REQUIRED: '尚未选择职能：请先选择职能再执行任务。',
-    NOT_FOUND: '目标记录不存在或已被删除。',
-    INVALID_STATE: '当前状态不允许该操作。',
-    INVALID_ARGUMENT: '参数无效，请检查后重试。',
-    ORCHESTRATION: '统筹编排失败，请检查子任务与依赖。',
-    VERIFICATION: '独立验收未通过，任务不能标记为完成。',
-    TAKEOVER: '接管处理失败。',
-    PERMISSION: '权限不足或权限档位不可用。',
-    DATABASE: '数据库操作失败。',
-    CONFIG: '插件配置无效。',
-    UPSTREAM: '上游模型或服务返回错误。',
-    NOT_IMPLEMENTED: '当前组合未提供该功能。',
+    PROFESSION_LOCKED: '任务已开始，职能不能改；请完成它，或重建/丢弃后再选。',
+    PROFESSION_REQUIRED: '还没选职能；先选一个再开始任务。',
+    NOT_FOUND: '没找到这条记录，可能已被删除。',
+    INVALID_STATE: '当前状态不允许这么做。',
+    INVALID_ARGUMENT: '这次填写的内容无效，请检查后重试。',
+    ORCHESTRATION: '子任务没走通；检查任务拆分和前后依赖。',
+    VERIFICATION: '独立验收没通过，任务不能算完成。',
+    TAKEOVER: '接管窗口处理失败，请重试。',
+    PERMISSION: '权限不够，或这个权限档位不可用。',
+    DATABASE: '读写本地记录失败。',
+    CONFIG: '插件配置有问题，请检查配置项。',
+    UPSTREAM: '模型服务返回了错误，请稍后重试。',
+    NOT_IMPLEMENTED: '当前部署没有提供这个功能。',
   },
   tools: ZH_TOOLS,
 }
 
 /* ------------------------------------------------------------------------- *
- * English — a faithful per-key translation
+ * English — a faithful per-key translation (v24 §5)
  * ------------------------------------------------------------------------- */
 
-function enValidations(): Readonly<Record<Validation, ValidationCopy>> {
-  const hint: Readonly<Record<Validation, string>> = {
-    low: 'Light web search (1×3), updating priors/posteriors from the current turn only; no cross-session history.',
-    medium: 'Web search (2×5), performing a full prior/posterior update over the whole current session; no cross-session history.',
-    high: 'Web search (4×8) over the current session, all local session history, and workspace files, with a full prior/posterior update across all interactions and global weighted fusion.',
-  }
-  const scope: Readonly<Record<Validation, string>> = {
-    low: 'current turn',
-    medium: 'current session',
-    high: 'local all content',
-  }
-  return recordOf(ValidationValues, (level) => ({
-    label: level === 'low' ? 'Low' : level === 'medium' ? 'Medium' : 'High',
-    hint: hint[level],
-    budget: VALIDATION_BUDGET[level],
-    scope: scope[level],
-    tooltip: `Level ${level}: ${hint[level]}`,
-  }))
+const EN_CONTROL_LABELS: Readonly<Record<ControlName, string>> = {
+  profession: 'Profession',
+  interaction: 'Interaction',
+  scene: 'Scene',
+  validation: 'Validation',
+  permission: 'Permission',
+}
+
+const EN_PROFESSION_LABELS: Readonly<Record<Profession, string>> = {
+  decision: 'Decision',
+  outcome: 'Outcome',
+  resource: 'Resource',
+  personnel: 'Personnel',
+  qualification: 'Qualification',
+  execution: 'Execution',
+}
+
+const EN_INTERACTION_LABELS: Readonly<Record<Interaction, string>> = {
+  emotion: 'Emotion',
+  think: 'Think',
+  heuristic: 'Heuristic',
+  converge: 'Converge',
+  orchestrate: 'Orchestrate',
+}
+
+const EN_SCENE_LABELS: Readonly<Record<Scene, string>> = {
+  dialogue: 'Dialogue',
+  writing: 'Writing',
+  office: 'Office',
+  research: 'Research',
+  engineering: 'Engineering',
+  iterate: 'Iterate',
+}
+
+const EN_VALIDATION_LABELS: Readonly<Record<Validation, string>> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+}
+
+const EN_PERMISSION_LABELS: Readonly<Record<SandboxMode, string>> = {
+  'read-only': 'Read-only',
+  'workspace-write': 'Workspace write',
+  'danger-full-access': 'Full access',
+}
+
+const EN_CONTROL_HINTS: Readonly<Record<ControlName, string>> = {
+  profession: 'Sets which single duty this task is accountable for. It cannot change mid-task; rebuild or abandon to choose again.',
+  interaction: 'Sets how it responds: listen, reason deeply, find what works, rule out what fails, or split work across agents.',
+  scene: 'Sets the working mode; it changes the process, how evidence is gathered, and whether files can be changed.',
+  validation: 'Sets how much evidence is gathered and how far back it looks; all three levels search the web, and only the volume and scope differ.',
+  permission: 'Sets what this session may change; the switch applies immediately and can affect a running task.',
+}
+
+const EN_PROFESSION_HINTS: Readonly<Record<Profession, string>> = {
+  decision: 'Decides whether to proceed and whether the plan passes; can stop or approve. Locked for the task.',
+  outcome: 'Owns the final deliverable and signs off on whether it meets the goal. Locked for the task.',
+  resource: 'Owns budget and cost: how much model, search, and cache the task uses. Locked for the task.',
+  personnel: 'Owns staffing: who does the work, how many, and whether that is allowed. Locked for the task.',
+  qualification: 'Checks whether a model is qualified, without doing the work. Locked for the task.',
+  execution: 'Completes the work under the given conditions and does not verify itself. Locked for the task.',
+}
+
+const EN_INTERACTION_HINTS: Readonly<Record<Interaction, string>> = {
+  emotion: 'Listens first: acknowledges feelings before offering solutions.',
+  think: 'Lays out the reasoning and gives a deep analysis and answer.',
+  heuristic: 'Finds routes that work, ranked by past successes, and names the best direction to try.',
+  converge: 'Rules out routes that fail, with the boundary, the cause, and the point to stop.',
+  orchestrate: 'Splits work into subtasks, verifies each independently, then synthesises. Slower and costlier; not for simple chat.',
+}
+
+const EN_SCENE_HINTS: Readonly<Record<Scene, string>> = {
+  dialogue: 'Small talk and quick Q&A; fast but shallow.',
+  writing: 'Articles, copy, reports, email; set audience, tone, and length, outline and revise, up to 3 rounds; no commands.',
+  office: 'Organises files and generates reports; limited to the workspace.',
+  research: 'Searches sources and cites evidence; slow, but conclusions are traceable.',
+  engineering: 'Writes code, builds, and debugs; can run commands, with changes confined to the workspace.',
+  iterate: 'Draft, critique, revise in a loop; high quality, more model calls.',
+}
+
+const EN_VALIDATION_HINTS: Readonly<Record<Validation, string>> = {
+  low: 'Also searches: 1 query × 3 results, this turn only; no older sessions.',
+  medium: 'Also searches: 2 queries × 5 results across this whole session; no older sessions.',
+  high: 'Also searches: 4 queries × 8 results plus all local sessions and workspace files; the most complete and slowest.',
+}
+
+const EN_VALIDATION_SCOPE: Readonly<Record<Validation, string>> = {
+  low: 'this turn',
+  medium: 'this session',
+  high: 'all local content',
+}
+
+const EN_PERMISSION_HINTS: Readonly<Record<SandboxMode, string>> = {
+  'read-only': 'View only: no file changes and no commands that change anything.',
+  'workspace-write': 'Can change files inside the workspace; writes outside it are refused.',
+  'danger-full-access': 'Can change any path, outside the workspace too; highest risk, use with care.',
+}
+
+const EN_GROUPS: Readonly<Record<SettingsGroupId, SettingsGroupCopy>> = {
+  permission: {
+    title: 'Permission & takeover',
+    desc: 'What this session may change, and who provides the permission control.',
+    helper: 'Permission options come from DSH; this plugin only displays and writes back the chosen one.',
+  },
+  composer: {
+    title: 'Workflow & selectors',
+    desc: 'Which selectors appear in the composer, and whether hints show.',
+    helper: 'Turning workflow off only hides the selectors; saved choices are unchanged.',
+  },
+  profession: {
+    title: 'Profession & audit',
+    desc: 'One duty per task: how it locks and how it is recorded.',
+    helper: 'The lock lasts only for the task; a new task can choose another profession.',
+  },
+  scene: {
+    title: 'Scene & validation defaults',
+    desc: 'How new tasks work and how much evidence they gather by default.',
+    helper: 'All validation levels search: low 1×3 this turn / medium 2×5 the session / high 4×8 all local content.',
+  },
+  language: {
+    title: 'Language & display',
+    desc: 'Interface language, refresh rate, and density.',
+    helper: 'Language follows DSH; there is no forced override here.',
+  },
+  compaction: {
+    title: 'Auto-compaction',
+    desc: 'Compacts a long context automatically, saving budget without losing what matters.',
+    helper: 'The switch and threshold are written back to the host; hard and reserve are read-only.',
+  },
+  advanced: {
+    title: 'Advanced',
+    desc: 'Host-level switches that affect every session; usually keep the defaults.',
+    helper: 'These values come from host config and are read-only here.',
+  },
+}
+
+const EN_FIELDS: Readonly<Record<SettingsFieldId, SettingsFieldCopy>> = {
+  takeoverPermission: {
+    label: 'Permission takeover',
+    hint: "Hides DSH's access-mode button and uses this plugin's permission dropdown instead.",
+  },
+  takeoverControl: {
+    label: 'Taken-over control',
+    hint: "Replaces only the composer's permission control; DSH dialogs are unaffected.",
+  },
+  takeoverDialogs: {
+    label: 'Host dialog takeover',
+    hint: "Lets this plugin take over DSH approval and permission dialogs; off keeps DSH's own.",
+  },
+  permissionCatalog: {
+    label: 'Permission preset source',
+    hint: 'Permission options and approval policy come from DSH; this plugin does not define or rewrite them.',
+  },
+  composerWorkflow: {
+    label: 'Composer selectors',
+    hint: 'Shows the profession, interaction, scene, and validation dropdowns; off only hides them.',
+  },
+  composerTooltips: {
+    label: 'Show hints',
+    hint: 'Shows explanations on hover or keyboard focus; turning it off changes nothing else.',
+  },
+  professionLock: {
+    label: 'Profession lock',
+    hint: 'Forced on: a task has exactly one profession and cannot switch mid-task.',
+  },
+  professionDefault: {
+    label: 'Default profession',
+    hint: 'Used when a new task has no choice; it still locks when the task starts.',
+  },
+  professionRebuild: {
+    label: 'Reselect after rebuild',
+    hint: 'A rebuild creates a new task, which may choose a new profession.',
+  },
+  professionAbandon: {
+    label: 'Reselect after abandon',
+    hint: 'Abandoning creates no new task; the next task may choose a new profession.',
+  },
+  professionAudit: {
+    label: 'Profession audit',
+    hint: 'Every lock, rebuild, and abandon leaves a record that cannot be altered.',
+  },
+  professionErrorHint: {
+    label: 'Lock error hint',
+    hint: 'When a change is refused, the message says how to rebuild or abandon.',
+  },
+  defaultScene: {
+    label: 'Default scene',
+    hint: 'The default working mode for new tasks; writing outlines first, then revises.',
+  },
+  defaultValidation: {
+    label: 'Default validation',
+    hint: 'How much evidence new tasks gather by default; all three levels search the web.',
+  },
+  defaultInteraction: {
+    label: 'Default interaction',
+    hint: 'How new tasks respond by default; orchestrate splits them into subtasks.',
+  },
+  writingFlow: {
+    label: 'Writing flow',
+    hint: 'Writing sets audience, tone, length, and format; outlines, drafts, revises (max 3 rounds); checks clarity and fit.',
+  },
+  defaultLocale: {
+    label: 'Default language',
+    hint: "The UI follows DSH's language; this only sets the fallback before DSH reports one.",
+  },
+  currentLocale: {
+    label: 'Current language',
+    hint: "The language actually shown; decided by DSH's own setting.",
+  },
+  compact: {
+    label: 'Compact mode',
+    hint: 'Narrower dropdowns and tighter spacing so more controls fit on small screens.',
+  },
+  refreshInterval: {
+    label: 'Auto-refresh interval',
+    hint: 'How often choices sync with the host; when paused, lock state can go stale.',
+  },
+  autoCompact: {
+    label: 'Auto-compaction',
+    hint: 'Compacts a long context at a safe boundary; keeps recent messages and pinned facts, never compacts instructions.',
+  },
+  compactionThreshold: {
+    label: 'Compaction trigger',
+    hint: 'Compaction starts once the context passes this share; higher means fewer compactions and a longer context.',
+  },
+  hardPrune: {
+    label: 'Hard prune threshold',
+    hint: 'At this share the context is pruned regardless; set by host config and read-only here.',
+  },
+  reserve: {
+    label: 'Reserved space',
+    hint: 'Space kept for recent content and pinned facts during compaction; set by host config, read-only.',
+  },
+  cacheEnabled: {
+    label: 'Cache optimization',
+    hint: 'Reuses results for identical requests to save time and budget; off can be slower.',
+  },
+  webSearch: {
+    label: 'Web search',
+    hint: 'Lets every level search the web; off leaves only the material at hand.',
+  },
+  groundTruth: {
+    label: 'Deterministic checks',
+    hint: "When a command or file can prove it, the model's own word does not count as done.",
+  },
+  modelRouting: {
+    label: 'Model routing',
+    hint: 'Lets subtasks switch models by difficulty; off keeps the current model throughout.',
+  },
+}
+
+const EN_VALUES: SettingsValuesCopy = {
+  followHost: 'Follow host',
+  followHostConfig: 'Follows host config',
+  chinese: '中文',
+  english: 'English',
+  on: 'On',
+  off: 'Off',
+  forced: 'Forced',
+  readOnly: 'Read-only',
+  readOnlyHost: 'Read-only (host)',
+  readOnlyPolicy: 'Read-only (policy)',
+  hostConfig: 'Host config',
+  localOnly: 'On this device',
+  local: 'This device',
+  host: 'Host',
+  session: 'Current session',
+  help: 'Show help',
+  loading: 'Loading…',
+  unavailable: 'Shown when connected',
+  default: 'Default',
+  connected: 'Host connected',
+  disconnected: 'Host unreachable',
+  hostAccessMode: 'DSH access-mode',
+  pluginPermission: 'Plugin permission',
+  dshCatalog: 'DSH catalog',
+  writingFlow: 'Outline → draft → revise (max 3 rounds)',
+  refresh2: '2 s',
+  refresh5: '5 s',
+  refresh10: '10 s',
+  refreshPaused: 'Paused',
+}
+
+const EN_STATES: SettingsStatesCopy = {
+  offline: 'Host unreachable; the settings below are local.',
+  loading: 'Reading host settings…',
+  empty: 'No task yet; the values below are defaults.',
+  hostRejected: 'The host rejected the change; the previous value was kept.',
+  noCatalog: 'DSH exposes no permission presets; descriptions only.',
+  unknownLocale: 'The host language is not recognised; Chinese is used for now.',
+  readOnlyHost: 'Host config, read-only here; a deployment admin can change it.',
+  settingsLocked: 'A task is running in this session, so the profession is locked.',
+  storageBlocked: 'The browser blocked local storage, so this change lasts only on this page.',
+  configUnsupported: 'This host cannot change it online; set it in the configuration file.',
+  saved: 'Saved.',
 }
 
 const EN_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
@@ -463,204 +1128,109 @@ const EN_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
   },
 }
 
+const EN_TAKEOVER: TakeoverCopy = {
+  title: 'Needs your decision',
+  approvalTitle: 'Approve this action',
+  questionTitle: 'Answer a question',
+  allowOnce: 'Allow once',
+  reject: 'Reject',
+  cancel: 'Cancel',
+  submit: 'Submit',
+  customPlaceholder: 'Or write your own answer',
+  expired: 'This request is no longer valid and was not submitted.',
+  hostError: 'Could not submit; try again in a moment.',
+  queueLabel: '{index} of {total}',
+}
+
 const EN: Copy = {
-  controls: {
-    profession: {
-      label: 'Profession',
-      hint: 'The single accountable duty within a task. Once chosen it cannot be switched for this turn; only rebuilding or abandoning the task allows a new choice.',
-    },
-    interaction: {
-      label: 'Interaction',
-      hint: 'Determines how the agent responds: emotion / think / heuristic / converge / orchestrate.',
-    },
-    scene: {
-      label: 'Scene',
-      hint: 'Determines the working scene: dialogue / writing / office / research / engineering / iterate.',
-    },
-    validation: {
-      label: 'Validation',
-      hint: 'Determines the retrieval budget and evidence scope: low current turn / medium current session / high all local content. All three levels search the web and run Bayesian updates.',
-    },
-    permission: {
-      label: 'Permission',
-      hint: 'Determines this session\'s sandbox and approval tier: read-only / workspace-write / full access.',
-    },
-  },
-  professions: {
-    decision: {
-      label: 'Decision',
-      hint: 'Holds final approval or veto over whether to execute and whether the plan passes. Locked within a task; cannot be switched.',
-    },
-    outcome: {
-      label: 'Outcome',
-      hint: 'Bears final responsibility for the deliverable and for reaching the goal. Locked within a task; cannot be switched.',
-    },
-    resource: {
-      label: 'Resource',
-      hint: 'Responsible for the supply and cost of tokens, providers, cache, and search. Locked within a task; cannot be switched.',
-    },
-    personnel: {
-      label: 'Personnel',
-      hint: 'Responsible for allocating and governing sessions, threads, and agents. Locked within a task; cannot be switched.',
-    },
-    qualification: {
-      label: 'Qualification',
-      hint: 'Independently gates provider/model capability qualification. Locked within a task; cannot be switched.',
-    },
-    execution: {
-      label: 'Execution',
-      hint: 'Responsible for completing the work under the given conditions. Locked within a task; cannot be switched.',
-    },
-  },
-  interactions: {
-    emotion: {
-      label: 'Emotion',
-      hint: 'Empathy and listening: recognise feelings, calibrate empathy, and accompany the user.',
-    },
-    think: {
-      label: 'Think',
-      hint: 'Explicit reasoning chain: deep analysis and answers.',
-    },
-    heuristic: {
-      label: 'Heuristic',
-      hint: 'Bayesian inference + success-case retrieval: rank successful routes and pick the best direction.',
-    },
-    converge: {
-      label: 'Converge',
-      hint: 'Bayesian inference + failure-case retrieval: rank failure routes and define their boundaries and causes.',
-    },
-    orchestrate: {
-      label: 'Orchestrate',
-      hint: 'Task decomposition, dispatch, independent verification, and synthesis: a set of independently verified subtasks.',
-    },
-  },
-  scenes: {
-    dialogue: {
-      label: 'Dialogue',
-      hint: 'Fast, natural interaction; good for small talk and simple Q&A. Weakness: shallow.',
-    },
-    writing: {
-      label: 'Writing',
-      hint: 'Content creation and text refinement; good for articles, copy, reports, email, and technical docs. Strengths: structured output and multiple revision rounds. Weakness: needs back-and-forth, so it is not for instant Q&A.',
-    },
-    office: {
-      label: 'Office',
-      hint: 'File management and task automation; good for organising and generating. Weakness: sandbox-only.',
-    },
-    research: {
-      label: 'Research',
-      hint: 'Multi-step retrieval and evidence synthesis; good for literature reviews. Strength: citations. Weakness: slow.',
-    },
-    engineering: {
-      label: 'Engineering',
-      hint: 'Code generation and debugging; good for software development. Strength: bash is available. Weakness: needs a sandbox.',
-    },
-    iterate: {
-      label: 'Iterate',
-      hint: 'generate → critique → revise loop; good for polishing. Strength: high quality. Weakness: multiple calls.',
-    },
-  },
-  validations: enValidations(),
-  permissions: {
-    'read-only': {
-      label: 'Read-only',
-      hint: 'Can only read the workspace; writes and changes are refused.',
-    },
-    'workspace-write': {
-      label: 'Workspace write',
-      hint: 'Can read and write files inside the workspace; writes outside it are refused.',
-    },
-    'danger-full-access': {
-      label: 'Full access',
-      hint: 'Not restricted to the workspace; can write any path. Highest risk.',
-    },
-  },
+  controls: recordOf(CONTROL_NAMES, (name) => ({
+    label: EN_CONTROL_LABELS[name],
+    hint: EN_CONTROL_HINTS[name],
+  })),
+  professions: recordOf(ProfessionValues, (value) => ({
+    label: EN_PROFESSION_LABELS[value],
+    hint: EN_PROFESSION_HINTS[value],
+  })),
+  interactions: recordOf(InteractionValues, (value) => ({
+    label: EN_INTERACTION_LABELS[value],
+    hint: EN_INTERACTION_HINTS[value],
+  })),
+  scenes: recordOf(SceneValues, (value) => ({
+    label: EN_SCENE_LABELS[value],
+    hint: EN_SCENE_HINTS[value],
+  })),
+  validations: recordOf(ValidationValues, (level) => ({
+    label: EN_VALIDATION_LABELS[level],
+    hint: EN_VALIDATION_HINTS[level],
+    budget: VALIDATION_BUDGET[level],
+    scope: EN_VALIDATION_SCOPE[level],
+  })),
+  permissions: recordOf(SandboxModeValues, (mode) => ({
+    label: EN_PERMISSION_LABELS[mode],
+    hint: EN_PERMISSION_HINTS[mode],
+  })),
   composer: {
     currentLabel: 'Current',
     controlTitle: '{control} · {currentLabel}: {current}',
     controlAria: '{control}, {currentLabel}: {current}',
     lockedAria: '{control} · {currentLabel}: {current}. {explanation}',
     optionAria: '{label}. {hint}',
-    lockedLine: 'This turn\'s profession is locked to "{profession}". Rebuild or abandon the task to choose again.',
-    unlockedLine: 'The choice locks when this turn starts and cannot be switched until the turn ends.',
-    offlineLine: 'Host unreachable: {localOnly}.',
-    localOnly: 'choices are saved locally only',
-    permissionCatalogMissing: 'DSH exposes no permission preset catalog; only read-only descriptions are shown.',
-    permissionApplyFailed: 'DSH exposes no permission preset catalog; the permission cannot be switched.',
-    permissionOffline: 'Host unreachable; the permission preset cannot be switched.',
-    permissionWriteNow: 'Switching applies the DSH permission preset to this session immediately.',
+    lockedLine: 'Task started: profession locked. Finish it or start a new task to change it.',
+    unlockedLine: 'You can choose now; it locks when the task starts.',
+    offlineLine: 'Host unreachable; choices here are saved on this device only and do not affect the task.',
+    localOnly: 'saved on this device only',
+    permissionCatalogMissing: 'DSH exposes no permission presets; this is informational and cannot be switched.',
+    permissionApplyFailed: 'DSH exposes no permission preset catalog, so the permission was not switched.',
+    permissionOffline: 'Host unreachable; the permission cannot be switched.',
+    permissionWriteNow: 'Switching applies the DSH permission to this session immediately.',
     permissionPresetDefault: 'The permission tier is defined by DSH permission presets.',
-    customPreset: 'The current session preset is not in the catalog (custom preset).',
+    customPreset: "A custom permission preset not in DSH's catalog; check the impact before switching.",
     followDsh: 'Follow DSH',
     followDshMode: 'Follow DSH (default: {mode})',
-    permissionFollowHint: 'No DSH permission preset is applied; the DSH default tier is in force.',
+    permissionFollowHint: 'No permission preset is applied; the DSH default tier is in force.',
     loadingSelection: 'Loading the host selection…',
-    approvalPolicy: 'Approval policy: {approval}',
-    validationNote: 'All three levels search the web and run Bayesian updates: low 1×3 current turn / medium 2×5 current session / high 4×8 local all content.',
-    professionLocked: 'Profession locked: it cannot be switched within this turn.',
-    professionLockedRebuild: 'Profession locked: it cannot be switched within this turn. Rebuild or abandon the task to choose again.',
-    invalidSelection: 'Invalid selection: {message}',
-    requestFailed: 'The host rejected this change.',
+    approvalPolicy: 'Approval: {approval}',
+    validationNote: 'All three levels search: low 1×3 this turn / medium 2×5 this session / high 4×8 all local content.',
+    professionLocked: 'Profession is locked, so the change was not applied.',
+    professionLockedRebuild: 'Profession is locked, so the change was not applied. Rebuild or abandon the task to choose again.',
+    invalidSelection: 'That option is not valid; the previous choice was restored.',
+    requestFailed: 'The host rejected the change; the previous choice was restored.',
+    permissionConfirmTitle: 'Confirm full access',
+    permissionConfirmBody: 'Full access can change any path, outside the workspace too; it applies as soon as you confirm.',
+    permissionConfirmAccept: 'Switch to full access',
+    permissionConfirmCancel: 'Cancel',
+    escalationCurrent: 'Current profession: {profession}',
+    escalationRequested: 'Requested profession: {profession}',
+    escalationRebuild: 'Rebuild task',
+    escalationAbandon: 'Abandon task',
+    escalationUnsupported: 'The host does not support rebuild; upgrade the plugin.',
   },
+  takeover: EN_TAKEOVER,
   settings: {
     title: 'Coordination',
-    takeover: {
-      label: 'Permission takeover',
-      hint: 'When on, the DSH access-mode control in the composer is hidden and replaced by this panel\'s permission dropdown; when off, DSH\'s own control stays.',
-      onLine: 'Taken over: the composer\'s access-mode control is hidden and replaced by this panel\'s permission dropdown.',
-      offLine: 'Not taken over: the composer keeps DSH\'s own permission dropdown.',
-    },
-    workflow: {
-      label: 'Workflow',
-      hint: 'Shows or hides the profession / interaction / scene / validation dropdowns in the composer; off, the slot contributes nothing.',
-      onLine: 'Workflow on: the composer shows the profession / interaction / scene / validation dropdowns.',
-      offLine: 'Workflow off: the composer hides the profession / interaction / scene / validation dropdowns.',
-    },
-    professionGroup: {
-      title: 'Profession',
-      lock: {
-        label: 'Profession lock',
-        hint: 'Forced switch: a task has exactly one profession and it cannot be switched within a turn. Turning it off would break the accountability chain, so no off switch exists.',
-      },
-      defaultProfession: {
-        label: 'Default profession',
-        hint: 'Config key profession.default; this page does not read the configured value and only marks that it follows configuration. The agent may choose another profession when the task starts, but it locks once this turn starts.',
-      },
-      defaultProfessionValue: '{profession} (config default)',
-      rebuildReselect: {
-        label: 'Reselect on rebuild',
-        hint: 'Rebuilding ends the old task and creates a new one; the new task can choose a new profession.',
-      },
-      abandonReselect: {
-        label: 'Reselect on abandon',
-        hint: 'Abandoning creates no new task; the next task can choose a new profession.',
-      },
-      audit: {
-        label: 'Profession audit',
-        hint: 'Every lock, rebuild, and abandon is written to OrchestrationTrace as a tamper-evident hash chain.',
-      },
-      lockErrorHint: {
-        label: 'Lock error hint',
-        hint: 'Rejecting a change to a locked profession carries the rebuild or abandon escape hatch in the error.',
-      },
-      displayOnly: 'On by default; it can be switched off in the configuration.',
-    },
-    footer: 'Option tooltips follow v23 §15.1; the permission preset catalog comes from DSH, and this plugin only displays it and writes back the chosen preset.',
+    intro: 'Defaults for the next task; display switches apply immediately.',
+    applyNote: 'Switches apply immediately; there is no save button.',
+    whyLock: 'One duty per task means one accountable owner: whoever does the work cannot sign it off, and whoever signs off cannot quietly change it. The lock lasts only for the task; a new task can choose another duty.',
+    footer: 'Read-only items come from host config; this page never writes to the host. Tooltips and hints share one source.',
+    groups: EN_GROUPS,
+    fields: EN_FIELDS,
+    values: EN_VALUES,
+    states: EN_STATES,
   },
   errors: {
-    PROFESSION_LOCKED: 'Profession locked: it cannot be switched within this turn. Rebuild or abandon the task and retry.',
-    PROFESSION_REQUIRED: 'No profession selected: choose one before the task executes.',
-    NOT_FOUND: 'The target record does not exist or has been deleted.',
-    INVALID_STATE: 'The current state does not allow this operation.',
-    INVALID_ARGUMENT: 'Invalid argument; check the input and retry.',
-    ORCHESTRATION: 'Orchestration failed; check the subtasks and their dependencies.',
-    VERIFICATION: 'Independent verification failed; the task cannot be marked complete.',
-    TAKEOVER: 'Handling the takeover failed.',
-    PERMISSION: 'Insufficient permission, or the permission tier is unavailable.',
-    DATABASE: 'The database operation failed.',
-    CONFIG: 'The plugin configuration is invalid.',
-    UPSTREAM: 'The upstream model or service returned an error.',
-    NOT_IMPLEMENTED: 'This feature is not available in this composition.',
+    PROFESSION_LOCKED: 'The task has started, so the profession cannot change. Finish it, or rebuild/abandon it to choose again.',
+    PROFESSION_REQUIRED: 'No profession yet; choose one before the task starts.',
+    NOT_FOUND: 'That record was not found; it may have been deleted.',
+    INVALID_STATE: 'The current state does not allow this.',
+    INVALID_ARGUMENT: 'The submitted value is not valid; check it and try again.',
+    ORCHESTRATION: 'The subtasks did not go through; check the split and the dependencies.',
+    VERIFICATION: 'Independent verification failed, so the task cannot count as done.',
+    TAKEOVER: 'Handling the takeover window failed; try again.',
+    PERMISSION: 'Permission is insufficient, or this tier is unavailable.',
+    DATABASE: 'Reading or writing the local records failed.',
+    CONFIG: 'The plugin configuration has a problem; check its settings.',
+    UPSTREAM: 'The model service returned an error; try again later.',
+    NOT_IMPLEMENTED: 'This deployment does not provide that feature.',
   },
   tools: EN_TOOLS,
 }

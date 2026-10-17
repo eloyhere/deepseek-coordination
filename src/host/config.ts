@@ -11,13 +11,27 @@ import type { CommandType, Interaction, Profession, Scene, SceneProfile, Validat
 import { SceneProfiles } from '../shared/enum.js'
 
 export interface ProfessionConfig {
+  /** Forced true by the resolver; kept for schema compatibility. */
   enabled: boolean
   /** Forced true by the resolver: the lock is a core safety constraint. */
   lock: boolean
+  /**
+   * Documented alias of `defaults.profession`. `resolveConfig()` mirrors the
+   * effective default here so neither key is dead; new deployments should set
+   * `defaults.profession`.
+   */
   default: Profession
+  /** Forced true by the resolver: a rebuild always creates a new task. */
   rebuildCanReselect: boolean
+  /** Forced true by the resolver: the next task may choose a new profession. */
   abandonCanReselect: boolean
+  /**
+   * Reserved: the profession module always appends its lock/rebuild/abandon
+   * events to `orchestration_trace`, so this flag does not gate anything yet.
+   * Kept for schema compatibility until a trace-audit policy actually exists.
+   */
   audit: boolean
+  /** Whether lock rejections carry the rebuild/abandon escape hatch. */
   errorHint: boolean
 }
 
@@ -66,6 +80,27 @@ export interface CacheConfig {
   effortWarning: boolean
 }
 
+/**
+ * Automatic token-governor policy (v24 §5/§9.3, `src/host/token.ts`).
+ *
+ * This group is deliberately distinct from the `compact` table and the
+ * `compact` command: those record an explicit, user-requested compaction,
+ * while these thresholds tune when the governor *proposes* one. `auto: false`
+ * disables only the automatic proposal; an explicit compact command still
+ * runs. `soft`/`hard` are utilisation ratios against the effective window
+ * (`contextWindow - reserve`), `cooldown` and `maxPerSession` bound how often
+ * the host adapter may act on a proposal.
+ */
+export interface CompactionPolicyConfig {
+  auto: boolean
+  soft: number
+  hard: number
+  reserve: number
+  recentTurns: number
+  cooldown: number
+  maxPerSession: number
+}
+
 export interface BayesianConfig {
   prior: number
   stopEntropy: number
@@ -82,6 +117,11 @@ export interface ComprehensionConfig {
 }
 
 export interface UiConfig {
+  /**
+   * @deprecated Legacy alias of the composer workflow flag. It is projected as
+   * `SelectionStateConfig.workflow` and kept so the schema stays compatible;
+   * new deployments should not build a setting around it.
+   */
   toolbar: boolean
   showTooltip: boolean
   takeover: boolean
@@ -101,6 +141,8 @@ export interface CoordinationConfig {
   plan: PlanConfig
   orchestration: OrchestrationConfig
   cache: CacheConfig
+  /** Automatic token-governor thresholds; distinct from the `compact` tables. */
+  compaction: CompactionPolicyConfig
   bayesian: BayesianConfig
   comprehension: ComprehensionConfig
   ui: UiConfig
@@ -227,6 +269,23 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
     fingerprintWindow: Schema.number().min(1).default(50),
     effortWarning: Schema.boolean().default(true),
   }).default({ enabled: true, ttl: 60000, fingerprintWindow: 50, effortWarning: true }),
+  compaction: Schema.object({
+    auto: Schema.boolean().default(true),
+    soft: Schema.number().min(0.3).max(0.9).default(0.7),
+    hard: Schema.number().min(0.3).max(0.98).default(0.88),
+    reserve: Schema.number().min(512).default(2048),
+    recentTurns: Schema.number().min(2).max(20).default(6),
+    cooldown: Schema.number().min(5000).max(600000).default(30000),
+    maxPerSession: Schema.number().min(1).default(20),
+  }).default({
+    auto: true,
+    soft: 0.7,
+    hard: 0.88,
+    reserve: 2048,
+    recentTurns: 6,
+    cooldown: 30000,
+    maxPerSession: 20,
+  }),
   bayesian: Schema.object({
     prior: Schema.number().min(0).max(1).default(0.5),
     stopEntropy: Schema.number().min(0).default(0.05),
@@ -299,14 +358,58 @@ function sceneSchema(profile: SceneProfile): SchemaDefinition<SceneProfile> {
   }).default(profile) as SchemaDefinition<SceneProfile>
 }
 
-/** Materialise every nested default and force the non-negotiable lock. */
+/**
+ * Materialise every nested default and force the non-negotiable switches.
+ *
+ * v23 §15.2 marks the profession lock and both reselect flags as forced:
+ * - `profession.lock` / `profession.enabled` are safety constraints;
+ * - `profession.rebuildCanReselect` / `profession.abandonCanReselect` are what
+ *   makes the settings page's "forced" claim true, so the resolver pins them;
+ * - `profession.default` is the documented alias of `defaults.profession`; it
+ *   mirrors the effective default so neither key is dead.
+ */
 export function resolveConfig(input: Partial<CoordinationConfig> | undefined): CoordinationConfig {
   const base = (Config({}) ?? {}) as CoordinationConfig
   const merged = deepMerge(base, input ?? {}) as CoordinationConfig
   merged.profession.lock = true
   merged.profession.enabled = true
+  merged.profession.rebuildCanReselect = true
+  merged.profession.abandonCanReselect = true
+  merged.profession.default = merged.defaults.profession
   merged.plan.weights = normaliseWeights(merged.plan.weights)
+  merged.compaction = resolveCompaction(merged.compaction)
   return merged
+}
+
+/**
+ * Clamp the automatic compaction policy (v24 §5, token-governor contract).
+ *
+ * The governor trusts the resolver, so every invariant is enforced here:
+ * `soft` stays in [0.3, 0.9], `hard` stays strictly above `soft` and at most
+ * 0.98, `reserve` is at least 512 tokens (the governor additionally caps it at
+ * 25% of the model window, which the resolver cannot know), `recentTurns` in
+ * [2, 20], `cooldown` in [5 s, 10 min] and `maxPerSession` at least 1. An
+ * absent or non-finite value falls back to the schema default; `auto` is on
+ * unless it is explicitly `false`.
+ */
+export function resolveCompaction(input: CompactionPolicyConfig | undefined): CompactionPolicyConfig {
+  const source: Partial<CompactionPolicyConfig> = isRecord(input) ? input : {}
+  const soft = clampNumber(source.soft, 0.3, 0.9, 0.7)
+  return {
+    auto: source.auto !== false,
+    soft,
+    hard: clampNumber(source.hard, soft + 0.01, 0.98, 0.88),
+    reserve: Math.round(clampNumber(source.reserve, 512, Number.MAX_SAFE_INTEGER, 2048)),
+    recentTurns: Math.round(clampNumber(source.recentTurns, 2, 20, 6)),
+    cooldown: Math.round(clampNumber(source.cooldown, 5000, 600000, 30000)),
+    maxPerSession: Math.floor(clampNumber(source.maxPerSession, 1, Number.MAX_SAFE_INTEGER, 20)),
+  }
+}
+
+/** Clamp a numeric option, falling back to `fallback` for absent/non-finite input. */
+function clampNumber(value: unknown, minimum: number, maximum: number, fallback: number): number {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : fallback
+  return Math.min(maximum, Math.max(minimum, numeric))
 }
 
 /** Normalise the eight weights so their sum is exactly one. */

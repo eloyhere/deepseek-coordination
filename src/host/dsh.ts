@@ -318,12 +318,31 @@ function makeCompactionPort(context: unknown, rawAgent: (id: string) => unknown)
   const compaction = serviceOf(context, 'compaction')
   if (compaction === undefined) return undefined
   const compactNow = asFunction(compaction.compactNow)
+  const compactIfNeeded = asFunction(compaction.compactIfNeeded)
   if (compactNow === undefined) return undefined
   return {
     compactNow: async (agent: AgentView, signal: AbortSignal) => {
       const live = rawAgent(agent.id) ?? agent
       return await compactNow.call(compaction, live, signal)
     },
+    ...(compactIfNeeded === undefined
+      ? {}
+      : {
+          compactIfNeeded: async (
+            agent: AgentView,
+            trigger: 'pressure' | 'context-overflow',
+            signal: AbortSignal,
+          ) => {
+            const live = asRecord(rawAgent(agent.id)) ?? {}
+            // DSH owns the safe range; we only hand it the session and routing
+            // options. A missing session means "not compactable here" and the
+            // governor treats the null/throw as a no-op.
+            const session = live.session
+            if (session === undefined) return null
+            const options = isRecord(live.options) ? live.options : {}
+            return await compactIfNeeded.call(compaction, { session, options }, trigger, signal)
+          },
+        }),
   }
 }
 

@@ -12,6 +12,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.8.0] — 2026-10-18
+
+Token pressure and human-in-the-loop decisions become first-class: the plugin now
+asks DSH to compact when the context crosses a threshold, and intercepts approval
+and question waterfalls with a React + Material UI takeover dialog.
+
+### Added
+
+- `TokenGovernor` ([src/host/token.ts](src/host/token.ts)): CJK-aware O(n) token
+  estimation (bounded 256-entry memo), budget/threshold planning, O(n log k)
+  value-per-token context selection with hash dedupe (no O(n²) MMR), EIG-gated
+  retrieval, and a compaction policy. Auto-compaction calls DSH
+  `compactIfNeeded('pressure' | 'context-overflow')` at `agent/pre-step` with a
+  cooldown, per-session cap, timeout, and fail-safe delegation.
+- `compaction` config + settings group: auto switch, 60/70/80/88% soft threshold,
+  read-only hard threshold and reserve; `POST /config/compaction` hot-updates the
+  live policy.
+- Service-level takeover ([src/host/takeover-gate.ts](src/host/takeover-gate.ts)):
+  `approval/request` and `user-questions/request` answerers, pending queue,
+  `GET /takeover/pending`, `POST /takeover/answer`, `POST /takeover/cancel`.
+  Timeout/abort/cancel delegates to `next()`; nothing is auto-approved.
+- React + Material UI takeover dialog ([src/client/takeover.ts](src/client/takeover.ts)):
+  approval (仅本次允许/拒绝/取消) and question (radio/checkbox/custom) forms,
+  queue badge, focus-trapped, visibility-gated polling.
+- Settings page rewritten into 7 groups / 28 rows with honest chips
+  (本机/主机/强制/只读) and always-visible explanations; full-access permission
+  now needs a second confirmation; `PROFESSION_LOCKED` opens a rebuild/abandon
+  dialog backed by `POST /profession/rebuild` and `/profession/abandon`.
+- v24 file-processing spec ([docs/file-processing-v24.md](docs/file-processing-v24.md)):
+  JS/TS + CSS/HTML/Markdown parsers, dependency/import graph, size and time caps.
+- New `coordination_profession`, `coordination_professionlock` and
+  `coordination_selection` tools, localized and re-registered on locale change.
+
+### Verified
+
+- `tsc -p tsconfig.json --noEmit`: clean.
+- `npm test`: **263 / 263** passing.
+- `tsdown`: host + client artifacts built.
+
 ## [0.7.0] — 2026-10-17
 
 The coordination surface becomes a working host+client pipeline: the five composer

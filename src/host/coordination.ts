@@ -16,10 +16,17 @@ import type { CoordinationConfig } from './config.js'
 import type { DshRuntime } from './dsh.js'
 import { CoordinationDatabase, resolveDatabasePath } from './database.js'
 import { HandleGenerator, SystemClock } from './handle.js'
-import { createModuleHost, type ModuleHost } from './module.js'
+import { createModuleHost, type AgentView, type ModuleHost } from './module.js'
+import { TokenGovernor, normaliseCompactionPatch } from './token.js'
+import type { TokenPlan } from './token.js'
+import type { CompactionPolicyConfig } from './config.js'
 import { TraceModule } from './trace.js'
 import { SessionModule } from './session.js'
-import { SelectionModule } from './selection.js'
+import {
+  SelectionModule,
+  abandonProfession as abandonProfessionTurn,
+  rebuildProfession as rebuildProfessionTurn,
+} from './selection.js'
 import { TurnModule } from './turn.js'
 import { ProfessionModule } from './profession.js'
 import { CommandModule } from './command.js'
@@ -29,6 +36,8 @@ import { DirectiveModule } from './directive.js'
 import { PlanModule } from './plan.js'
 import { PermissionModule } from './permission.js'
 import { TakeoverModule } from './takeover.js'
+import { TakeoverGate } from './takeover-gate.js'
+import type { PendingTakeoverView, TakeoverGateAnswer } from './takeover-gate.js'
 import { ProviderModule } from './provider.js'
 import { CacheModule } from './cache.js'
 import type { CommandHandlers } from './command.js'
@@ -56,15 +65,24 @@ export class CoordinationService extends Service {
   readonly command: CommandModule
   readonly permission: PermissionModule
   readonly takeover: TakeoverModule
+  /** Intercepts DSH approval/question waterfalls while `ui.takeover` is on. */
+  readonly takeoverGate: TakeoverGate
   readonly provider: ProviderModule
   readonly cache: CacheModule
 
   private readonly dshTurns = new Map<string, TurnSlot>()
+  private readonly runtime: DshRuntime
+  private governor: TokenGovernor
+  private readonly compactionState = new Map<string, { lastAt: number; count: number }>()
+  private compactionPolicy: CompactionPolicyConfig
   private localeValue: string
 
   constructor(context: Context, config: CoordinationConfig, runtime: DshRuntime) {
     super(context, 'coordination')
     this.config = config
+    this.runtime = runtime
+    this.compactionPolicy = { ...config.compaction }
+    this.governor = new TokenGovernor({ config, contextWindow: 128_000 })
     this.localeValue = config.ui.locale === 'auto' ? 'zh-CN' : config.ui.locale
     this.db = new CoordinationDatabase(resolveDatabasePath(config.databasePath, config.database))
     const handles = new HandleGenerator()
@@ -97,6 +115,13 @@ export class CoordinationService extends Service {
     this.directive = new DirectiveModule(this.host)
     this.permission = new PermissionModule(this.host)
     this.takeover = new TakeoverModule(this.host)
+    this.takeoverGate = new TakeoverGate({
+      takeover: this.takeover,
+      sessions: this.session,
+      config: this.config,
+      events: this.host.events,
+      clock: this.host.clock,
+    })
     this.provider = new ProviderModule(this.host)
     this.cache = new CacheModule(this.host)
     this.command = new CommandModule(this.host, this.handlers())
@@ -128,6 +153,29 @@ export class CoordinationService extends Service {
 
   activeTurn(session: string): ReturnType<SelectionModule['activeTurn']> {
     return this.selection.activeTurn(session)
+  }
+
+  /** The turn with this ordinal in the session, when it exists (lock tool). */
+  turnByOrdinal(session: string, ordinal: number): Turn | undefined {
+    return this.selection.turnByOrdinal(session, ordinal)
+  }
+
+  /**
+   * `POST /profession/rebuild`: end the active task and create its replacement
+   * with a new profession. Exposed here so the HTTP layer and the tools share
+   * one implementation of the lock rules.
+   */
+  rebuildProfession(session: string, profession: Profession): SelectionState {
+    return rebuildProfessionTurn(
+      { selection: this.selection, profession: this.profession },
+      session,
+      profession,
+    )
+  }
+
+  /** `POST /profession/abandon`: close the active task without a replacement. */
+  abandonProfession(session: string): SelectionState {
+    return abandonProfessionTurn({ selection: this.selection, profession: this.profession }, session)
   }
 
   getTurn(identity: number): Turn {
@@ -208,6 +256,30 @@ export class CoordinationService extends Service {
     return this.permission.execute(turn, content)
   }
 
+  /* --------------------------------------------------------------------- *
+   * Takeover gate (DSH approval / question waterfalls)
+   * --------------------------------------------------------------------- */
+
+  /**
+   * Pending takeover windows for one DSH session id. The Client knows the DSH
+   * id, not the coordination identity, so the lookup happens here; a session
+   * that coordination has never seen has nothing pending.
+   */
+  listPendingTakeover(sessionId: string): PendingTakeoverView[] {
+    const record = this.session.byHandle(sessionId)
+    return record === undefined ? [] : this.takeoverGate.list(record.identity)
+  }
+
+  /** Deliver a human answer to a pending window; `false` leaves it open. */
+  answerPendingTakeover(handle: string, answer: TakeoverGateAnswer): boolean {
+    return this.takeoverGate.answer(handle, answer)
+  }
+
+  /** Cancel a pending window and delegate to the host default. */
+  cancelPendingTakeover(handle: string): boolean {
+    return this.takeoverGate.cancel(handle)
+  }
+
   get locale(): string {
     return this.localeValue
   }
@@ -238,7 +310,83 @@ export class CoordinationService extends Service {
     }
   }
 
+  /* --------------------------------------------------------------------- *
+   * Automatic compaction (token governor)
+   * --------------------------------------------------------------------- */
+
+  compaction(): CompactionPolicyConfig {
+    return { ...this.compactionPolicy }
+  }
+
+  /** Settings-page patch: live policy, validated and re-applied to the governor. */
+  applyCompactionPolicy(patch: unknown): { auto: boolean; soft: number; hard: number } {
+    const next = normaliseCompactionPatch(patch, this.compactionPolicy)
+    this.compactionPolicy = { ...this.compactionPolicy, ...next }
+    this.config.compaction = this.compactionPolicy
+    this.governor = new TokenGovernor({ config: this.config, contextWindow: 128_000 })
+    this.compactionState.clear()
+    return next
+  }
+
+  /**
+   * Ask DSH to compact when the governor crosses a threshold. Safe by design:
+   * O(1) early exits, a cooldown and a per-session cap, a timeout, and a
+   * no-op when DSH exposes no pressure policy. Never blocks the agent step on
+   * failure; the caller always proceeds to `next()`.
+   */
+  async maybeCompact(
+    sessionId: string,
+    messages: ReadonlyArray<{ role: string; content: unknown }>,
+    signal?: AbortSignal,
+  ): Promise<{ action: 'none' | 'compacted' | 'skipped'; plan?: TokenPlan }> {
+    if (!this.compactionPolicy.auto) return { action: 'none' }
+    if (signal?.aborted === true) return { action: 'none' }
+    if (!Array.isArray(messages) || messages.length === 0) return { action: 'none' }
+    const port = this.host.compaction
+    if (port?.compactIfNeeded === undefined) return { action: 'none' }
+
+    const now = Date.now()
+    const state = this.compactionState.get(sessionId)
+    if (state !== undefined) {
+      if (state.count >= this.compactionPolicy.maxPerSession) return { action: 'none' }
+      if (now - state.lastAt < this.compactionPolicy.cooldown) return { action: 'none' }
+    }
+
+    let plan: TokenPlan
+    try {
+      plan = this.governor.plan(messages)
+    } catch {
+      return { action: 'none' }
+    }
+    if (plan.decision === 'none') return { action: 'none', plan }
+
+    const controller = new AbortController()
+    const timeout = Math.min(this.config.clarifyTimeout, 30000)
+    const timer = setTimeout(() => controller.abort(), timeout)
+    const onAbort = (): void => controller.abort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      const result = await port.compactIfNeeded(
+        { id: sessionId } satisfies AgentView,
+        plan.decision === 'hard-prune' ? 'context-overflow' : 'pressure',
+        controller.signal,
+      )
+      if (result === null || result === undefined) return { action: 'none', plan }
+      this.governor.recordCompaction()
+      this.compactionState.set(sessionId, { lastAt: now, count: (state?.count ?? 0) + 1 })
+      this.host.events.emit('compaction/auto', { session: sessionId, plan })
+      return { action: 'compacted', plan }
+    } catch {
+      return { action: 'skipped', plan }
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
   dispose(): void {
+    this.compactionState.clear()
+    this.dshTurns.clear()
     try {
       this.db.close()
     } catch {

@@ -90,6 +90,17 @@ const DEFAULT_CONFIG: CoordinationConfig = {
     modelRouting: true,
   },
   cache: { enabled: true, ttl: 60000, fingerprintWindow: 50, effortWarning: true },
+  // Token-governor policy (v24 §5): distinct from the compact tables; the
+  // settings page renders it and the host token module reads it.
+  compaction: {
+    auto: true,
+    soft: 0.7,
+    hard: 0.88,
+    reserve: 2048,
+    recentTurns: 6,
+    cooldown: 30000,
+    maxPerSession: 20,
+  },
   bayesian: { prior: 0.5, stopEntropy: 0.05, infoGain: 0.01, maxRoutes: 12, calibrationFloor: 0.1 },
   comprehension: { stageTimeout: 30000, searchEnabled: true, maxEvidence: 8, highHistoryWindow: 50 },
   ui: { toolbar: true, showTooltip: true, takeover: false, refreshInterval: 5000, compact: true, locale: 'auto' },

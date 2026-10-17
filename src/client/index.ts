@@ -1,11 +1,14 @@
 /**
  * deepseek-coordination — Client half (browser side)
  *
- * Mounts two pieces of UI into the DSH Web host:
- *  1. a `协调` page in Settings (switches + the forced profession-lock group);
+ * Mounts three pieces of UI into the DSH Web host:
+ *  1. a `协调` page in Settings (six groups of switches, selects and read-only
+ *     host values);
  *  2. the five coordination selectors inside the composer tool row
  *     (`conversation.input.left` — the free space right of the access-mode
- *     control).
+ *     control);
+ *  3. the service-level takeover dialog (approval / question windows), rendered
+ *     as a sibling of the selectors in the same composer slot.
  *
  * The widgets are Material UI React components. React itself comes from the
  * host's module table; @mui/material and emotion are bundled into this file by
@@ -13,9 +16,10 @@
  * `@deepseek-ai/dsh-client-*`).
  *
  * The selectors and their option tooltips are owned by `./controls.ts`; the
- * settings page by `./settings.ts`; the injected takeover rule by `./store.ts`;
- * the host-following language store by `./i18n.ts`. The host half exposes the
- * selection route the controls read and write, and receives the locale report.
+ * settings page by `./settings.ts`; the takeover dialog by `./takeover.ts`; the
+ * injected access-mode rule by `./store.ts`; the host-following language store
+ * by `./i18n.ts`. The host half exposes the selection and takeover routes the
+ * client reads and writes, and receives the locale report.
  *
  * Contract notes:
  *  - `inject` lists the client services used; package.json's `dsh.client.inject`
@@ -23,7 +27,7 @@
  *  - The locale store is installed before any slot registration, so the first
  *    render already resolves the host's language.
  *  - Every registration is disposed with the plugin, including the injected
- *    takeover rule, through ctx.effect disposers.
+ *    access-mode rule, through ctx.effect disposers.
  */
 import * as React from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -32,6 +36,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { ComposerControls } from './controls.js'
 import { CoordinationSettings } from './settings.js'
+import { TakeoverDialog } from './takeover.js'
 import { currentCopy, installLocale } from './i18n.js'
 import { disposeTakeoverStyle, installTakeoverStyle } from './store.js'
 
@@ -53,7 +58,15 @@ interface MemoControlsProps {
  */
 const MemoControls = React.memo(
   function MemoControlsInner(props: MemoControlsProps): React.ReactElement {
-    return React.createElement(ComposerControls, { sessionId: props.sessionId })
+    // The takeover dialog is a sibling, not a child of the composer row: its
+    // 1 s poll owns its own state, so opening or updating a dialog never
+    // re-renders (and never re-styles) the composer itself.
+    return React.createElement(
+      React.Fragment,
+      null,
+      React.createElement(ComposerControls, { sessionId: props.sessionId }),
+      React.createElement(TakeoverDialog, { sessionId: props.sessionId }),
+    )
   },
   (previous: MemoControlsProps, next: MemoControlsProps): boolean => previous.sessionId === next.sessionId,
 )
