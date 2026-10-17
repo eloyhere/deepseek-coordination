@@ -34,6 +34,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 const PLUGIN_ID = 'deepseek-coordination'
 const TAKEOVER_ID = 'dsh-coordination-takeover'
 const STORAGE_KEY = 'deepseek-coordination:takeover'
+const WORKFLOW_KEY = 'deepseek-coordination:workflow'
 
 /** 职能 — the duty dimension of the role framework. */
 const DUTY_OPTIONS = ['决策', '成果', '资源', '人员', '任职', '执行'] as const
@@ -114,10 +115,42 @@ function Dropdown(props: {
 /** The three selectors, plus the replacement permission dropdown when takeover is on. */
 function CoordinationControls(): React.ReactElement {
   const isOn = React.useSyncExternalStore(subscribeTakeover, takeoverSnapshot, takeoverSnapshot)
+  const workflowOn = React.useSyncExternalStore(subscribeWorkflow, workflowSnapshot, workflowSnapshot)
   const [duty, setDuty] = React.useState<string>(DUTY_OPTIONS[0])
   const [interaction, setInteraction] = React.useState<string>(INTERACTION_OPTIONS[0])
   const [scenario, setScenario] = React.useState<string>(SCENARIO_OPTIONS[0])
   const [permission, setPermission] = React.useState<string>(PERMISSION_FALLBACK[0])
+
+  const children: React.ReactNode[] = []
+  if (isOn) {
+    children.push(React.createElement(Dropdown, {
+      key: 'permission',
+      label: '权限接管',
+      options: PERMISSION_FALLBACK,
+      value: permission,
+      onChange: setPermission,
+    }))
+  }
+  if (workflowOn) {
+    children.push(
+      React.createElement(Dropdown, { key: 'duty', label: '职能', options: DUTY_OPTIONS, value: duty, onChange: setDuty }),
+      React.createElement(Dropdown, {
+        key: 'interaction',
+        label: '交互',
+        options: INTERACTION_OPTIONS,
+        value: interaction,
+        onChange: setInteraction,
+      }),
+      React.createElement(Dropdown, {
+        key: 'scenario',
+        label: '情景',
+        options: SCENARIO_OPTIONS,
+        value: scenario,
+        onChange: setScenario,
+      }),
+    )
+  }
+  if (children.length === 0) return React.createElement(React.Fragment, null)
 
   return React.createElement(
     ThemeProvider,
@@ -125,27 +158,7 @@ function CoordinationControls(): React.ReactElement {
     React.createElement(
       'div',
       { style: { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 } },
-      isOn
-        ? React.createElement(Dropdown, {
-            label: '权限接管',
-            options: PERMISSION_FALLBACK,
-            value: permission,
-            onChange: setPermission,
-          })
-        : null,
-      React.createElement(Dropdown, { label: '职能', options: DUTY_OPTIONS, value: duty, onChange: setDuty }),
-      React.createElement(Dropdown, {
-        label: '交互',
-        options: INTERACTION_OPTIONS,
-        value: interaction,
-        onChange: setInteraction,
-      }),
-      React.createElement(Dropdown, {
-        label: '情景',
-        options: SCENARIO_OPTIONS,
-        value: scenario,
-        onChange: setScenario,
-      }),
+      ...children,
     ),
   )
 }
@@ -190,6 +203,37 @@ function setTakeover(next: boolean, style: HTMLStyleElement): void {
   for (const listener of listeners) listener()
 }
 
+/** Whether the coordination selectors are shown in the composer (default on). */
+function readWorkflow(): boolean {
+  try {
+    return window.localStorage.getItem(WORKFLOW_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+let workflow = readWorkflow()
+const workflowListeners = new Set<() => void>()
+
+function subscribeWorkflow(listener: () => void): () => void {
+  workflowListeners.add(listener)
+  return () => { workflowListeners.delete(listener) }
+}
+
+function workflowSnapshot(): boolean {
+  return workflow
+}
+
+function setWorkflow(next: boolean): void {
+  workflow = next
+  try {
+    window.localStorage.setItem(WORKFLOW_KEY, next ? '1' : '0')
+  } catch {
+    // A blocked storage must not break the switch; the choice stays in memory.
+  }
+  for (const listener of workflowListeners) listener()
+}
+
 /* ------------------------------------------------------------------------- *
  * Settings section
  * ------------------------------------------------------------------------- */
@@ -197,6 +241,21 @@ function setTakeover(next: boolean, style: HTMLStyleElement): void {
 /** The `协调` settings page: the takeover switch and nothing else. */
 function CoordinationSettings(props: { style: HTMLStyleElement }): React.ReactElement {
   const isOn = React.useSyncExternalStore(subscribeTakeover, takeoverSnapshot, takeoverSnapshot)
+  const workflowOn = React.useSyncExternalStore(subscribeWorkflow, workflowSnapshot, workflowSnapshot)
+
+  const hint = { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary, #666)' }
+  const row = (label: string, checked: boolean, onChange: (value: boolean) => void): React.ReactElement =>
+    React.createElement(
+      'label',
+      { style: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' } },
+      React.createElement(MuiSwitch, {
+        size: 'small',
+        checked,
+        inputProps: { 'aria-label': label },
+        onChange: (event: { target: { checked: boolean } }) => { onChange(event.target.checked) },
+      }),
+      React.createElement('span', null, label),
+    )
 
   return React.createElement(
     ThemeProvider,
@@ -205,26 +264,16 @@ function CoordinationSettings(props: { style: HTMLStyleElement }): React.ReactEl
       'section',
       { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
       React.createElement('h2', { style: { margin: 0, fontSize: 15 } }, '协调'),
-      React.createElement(
-        'label',
-        { style: { display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' } },
-        React.createElement(MuiSwitch, {
-          size: 'small',
-          checked: isOn,
-          inputProps: { 'aria-label': '权限接管' },
-          onChange: (event: { target: { checked: boolean } }) => {
-            setTakeover(event.target.checked, props.style)
-          },
-        }),
-        React.createElement('span', null, '权限接管'),
-      ),
-      React.createElement(
-        'p',
-        { style: { margin: 0, fontSize: 12, color: 'var(--dsw-alias-label-secondary, #666)' } },
+      row('权限接管', isOn, (value) => { setTakeover(value, props.style) }),
+      React.createElement('p', { style: hint },
         isOn
           ? '已接管：输入框中的权限下拉已被隐藏，替换为协调面板的下拉。'
-          : '未接管：输入框保留宿主自带的权限下拉。',
-      ),
+          : '未接管：输入框保留宿主自带的权限下拉。'),
+      row('工作流', workflowOn, setWorkflow),
+      React.createElement('p', { style: hint },
+        workflowOn
+          ? '工作流开启：输入框显示职能 / 交互 / 情景三个下拉框。'
+          : '工作流关闭：输入框隐藏职能 / 交互 / 情景三个下拉框。'),
     ),
   )
 }

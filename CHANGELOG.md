@@ -12,6 +12,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.6.4] — 2026-10-17
+
+### Added
+
+- A `工作流` switch in the `协调` settings page. It shows or hides the three coordination
+  selectors (职能 / 交互 / 情景) in the composer tool row; off, that slot contributes nothing.
+  The 权限接管 switch is independent: it still governs hiding the host's access-mode control and
+  rendering the replacement dropdown. Both choices persist in `localStorage`; 工作流 defaults on.
+
 ## [0.6.3] — 2026-10-17
 
 ### Fixed
