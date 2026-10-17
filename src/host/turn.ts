@@ -201,6 +201,7 @@ export class TurnModule {
 
   /** Every turn of one session, in ordinal order. */
   list(sessionIdentity: number): Turn[] {
+    assertSessionIdentity(sessionIdentity)
     return this.host.db
       .all<Row>('SELECT * FROM turn WHERE session = ? ORDER BY ordinal ASC, identity ASC', sessionIdentity)
       .map(mapTurn)
@@ -211,6 +212,7 @@ export class TurnModule {
    * predicate: an active turn is what keeps the profession dropdown read-only.
    */
   active(sessionIdentity: number): Turn | undefined {
+    assertSessionIdentity(sessionIdentity)
     const row = this.host.db.get<Row>(
       `SELECT * FROM turn WHERE session = ? AND ${ACTIVE_TURN} ORDER BY identity DESC LIMIT 1`,
       sessionIdentity,
