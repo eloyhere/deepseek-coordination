@@ -12,10 +12,6 @@ dist
 dist-ssr
 *.local
 
-# Scratch tree. The dsh-os contract requires temporary work to live under .temporary/, and the
-# reverse-engineering extracts and golden-test fixtures in there are never published.
-.temporary/
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -26,8 +22,3 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-# Local authorization state. The canonical empty file IS committed (it is the documented initial
-# state); only the runtime side effects of an authorization are ignored.
-permission.json.bak
-.temporary/acl-state.json
