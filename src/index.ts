@@ -26,8 +26,8 @@ export const inject = ['webServer']
 /** Route prefix owned by this plugin. Mirrors src/client/index.ts. */
 const ROUTE_PREFIX = '/deepseek-coordination'
 
-/** Where the Angular build lands, relative to this module (bundled into lib/index.mjs). */
-const ELEMENTS_DIR = new URL('./elements/browser/', import.meta.url)
+/** Where the static assets land, relative to this module (bundled into lib/index.mjs). */
+const STATIC_DIR = new URL('./static/', import.meta.url)
 
 /** Content types for the few file kinds tsdown/Angular emit here. */
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -77,14 +77,14 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
  * envelope rather than a stack trace.
  */
 async function serveElement(pathname: string, res: ServerResponse): Promise<void> {
-  const relative = pathname.slice(`${ROUTE_PREFIX}/elements/`.length)
+  const relative = pathname.slice(`${ROUTE_PREFIX}/static/`.length)
   if (relative === '' || relative.includes('..') || relative.includes('\\')) {
     json(res, { ok: false, error: 'not found' }, 404)
     return
   }
   const extension = relative.slice(relative.lastIndexOf('.'))
   try {
-    const body = await readFile(new URL(relative, ELEMENTS_DIR))
+    const body = await readFile(new URL(relative, STATIC_DIR))
     res.writeHead(200, { 'content-type': CONTENT_TYPES[extension] ?? 'application/octet-stream' })
     res.end(body)
   } catch {
@@ -101,7 +101,7 @@ export function apply(ctx: Context): void {
         const pathname = new URL(req.url ?? '/', 'http://x').pathname
 
         // Static bundle: the browser fetches it as a module, so it must not be POST-only.
-        if (req.method === 'GET' && pathname.startsWith(`${ROUTE_PREFIX}/elements/`)) {
+        if (req.method === 'GET' && pathname.startsWith(`${ROUTE_PREFIX}/static/`)) {
           await serveElement(pathname, res)
           return
         }
