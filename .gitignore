@@ -1,7 +1,7 @@
-# Dependencies
+﻿# Dependencies
 node_modules/
 
-# Build output — produced by tsdown from src/, never edited or committed
+# Build output 鈥?produced by tsdown from src/, never edited or committed
 lib/
 
 # IDE
@@ -28,3 +28,6 @@ pnpm-debug.log*
 
 # TypeScript cache
 *.tsbuildinfo
+
+# Angular build cache
+.angular/
