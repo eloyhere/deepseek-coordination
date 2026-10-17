@@ -46,6 +46,7 @@ import * as React from 'react'
 import Select, { type SelectChangeEvent } from '@mui/material/Select'
 import MenuItem from '@mui/material/MenuItem'
 import Tooltip from '@mui/material/Tooltip'
+import { TooltipHost, tooltipController } from './tooltip-controller.js'
 import Dialog from '@mui/material/Dialog'
 import DialogTitle from '@mui/material/DialogTitle'
 import DialogContent from '@mui/material/DialogContent'
@@ -92,6 +93,17 @@ import type {
   SelectionState,
   SelectionStateConfig,
 } from '../shared/selection.js'
+import {
+  SelectionStateCache,
+  clearSelectStyles,
+  selectStyle,
+  selectionConfig,
+  selectionStateSignature,
+} from './selection-cache.js'
+
+/** The host config projection, re-exported so the settings page keeps one path. */
+export { selectionConfig } from './selection-cache.js'
+export type { SelectionConfigView } from './selection-cache.js'
 
 /** MUI's generics describe every overload; the plugin passes one narrow shape. */
 const MuiSelect: React.ComponentType<Record<string, unknown>> =
@@ -128,27 +140,6 @@ const FOLLOW_DSH = ''
  * settings import local while the shared type stays the single source of truth.
  */
 export type CompactionConfigView = SelectionCompactionView
-
-/** The host config projection (compaction included when the host sends it). */
-export type SelectionConfigView = Partial<SelectionStateConfig>
-
-const EMPTY_CONFIG: SelectionConfigView = {}
-
-/**
- * Read the host config projection (v24 §15.2).
- *
- * `SelectionState.config` stays optional on the wire so a client built against
- * an older host typechecks and renders. An absent or non-object projection is
- * "unknown", never "all defaults off": the settings page then says
- * "跟随主机配置" instead of inventing a value.
- */
-export function selectionConfig(state: SelectionState | null): SelectionConfigView {
-  if (state === null) return EMPTY_CONFIG
-  const config: unknown = state.config
-  return typeof config === 'object' && config !== null
-    ? (config as SelectionConfigView)
-    : EMPTY_CONFIG
-}
 
 /**
  * Merge a host-confirmed compaction change into the shared selection feed.
@@ -352,7 +343,7 @@ function publishSelectionFeed(state: SelectionState, offline: boolean, session: 
     previous.state !== null &&
     previous.offline === offline &&
     previous.session === session &&
-    stateSignature(previous.state) === stateSignature(state)
+    selectionStateSignature(previous.state) === selectionStateSignature(state)
   ) {
     return
   }
@@ -501,23 +492,6 @@ const ACTION_BUTTON_STYLE: React.CSSProperties = {
 const MENU_ITEM_COMPACT_SX = { fontSize: 12, minHeight: 28 }
 const MENU_ITEM_ROOMY_SX = { fontSize: 13, minHeight: 34 }
 
-const widthCache = new Map<number, Record<string, unknown>>()
-
-function selectSx(width: number, compact: boolean): Record<string, unknown> {
-  const key = width * 2 + (compact ? 1 : 0)
-  let sx = widthCache.get(key)
-  if (sx === undefined) {
-    sx = {
-      width,
-      fontSize: compact ? 12 : 13,
-      height: compact ? 28 : 32,
-      backgroundColor: 'transparent',
-    }
-    widthCache.set(key, sx)
-  }
-  return sx
-}
-
 /* ------------------------------------------------------------------------- *
  * Small helpers
  * ------------------------------------------------------------------------- */
@@ -598,25 +572,6 @@ function permissionOptions(copy: Copy, presets: PermissionPresetView[], preset: 
   return options
 }
 
-function stateSignature(state: SelectionState): string {
-  return JSON.stringify([
-    state.locked,
-    state.preset ?? '',
-    state.selection.profession,
-    state.selection.interaction,
-    state.selection.scene,
-    state.selection.validation,
-    state.selection.command,
-    state.turn?.identity ?? 0,
-    state.turn?.profession ?? '',
-    state.presets.map((preset) => [preset.value, preset.name, preset.description ?? '', preset.sandbox ?? '']),
-    state.tooltip,
-    // The optional config projection travels with the host answer; a change in
-    // it must reach the settings page even when the selection itself is equal.
-    selectionConfig(state),
-  ])
-}
-
 function applyPatch(state: SelectionState, patch: SelectionPatch): SelectionState {
   const selection = { ...state.selection }
   if (patch.profession !== undefined) selection.profession = patch.profession
@@ -686,7 +641,14 @@ interface SelectionHook {
   warn: (message: string) => void
 }
 
-const stateCache = new Map<string, SelectionState>()
+/** Last known host selection per session, bounded so session history cannot grow the page. */
+const stateCache = new SelectionStateCache()
+
+/** Drop the composer's bounded caches; called when the plugin unmounts. */
+export function clearComposerCaches(): void {
+  stateCache.clear()
+  clearSelectStyles()
+}
 
 function useSelection(sessionId: string, copy: Copy): SelectionHook {
   const [state, setState] = React.useState<SelectionState | null>(() => stateCache.get(sessionId) ?? null)
@@ -726,7 +688,7 @@ function useSelection(sessionId: string, copy: Copy): SelectionHook {
     }
     publishSelectionFeed(next, local, sessionId)
     const previous = stateRef.current
-    if (previous !== null && stateSignature(previous) === stateSignature(next)) return
+    if (previous !== null && selectionStateSignature(previous) === selectionStateSignature(next)) return
     stateRef.current = next
     stateCache.set(sessionId, next)
     setState(next)
@@ -1069,6 +1031,16 @@ function Dropdown(props: {
   const current = props.options.find((option) => option.value === props.value)
   const label = current?.label ?? props.value
   const ariaLabel = controlAria(props.copy, props.control, label)
+  // The trigger tooltip lives in one global host. The control only publishes an
+  // anchor/title request; click, selection, open, mouseout and mouseleave all
+  // collapse to one hide() call, so the tooltip can never sit over the menu.
+  const tooltipId = React.useId()
+  const [menuOpen, setMenuOpen] = React.useState(false)
+  const showTooltip = (element: HTMLElement): void => {
+    if (!props.tooltips || menuOpen) return
+    tooltipController.show({ id: tooltipId, title: props.title, anchor: element })
+  }
+  const hideTooltip = (): void => { tooltipController.hide(tooltipId) }
   const optionAria = (option: OptionView): string => fillTemplate(props.copy.composer.optionAria, {
     label: option.label,
     hint: option.hint,
@@ -1077,14 +1049,24 @@ function Dropdown(props: {
     MuiSelect,
     {
       value: props.value,
-      onChange: (event: SelectChangeEvent<unknown>) => { props.onChange(String(event.target.value)) },
+      onChange: (event: SelectChangeEvent<unknown>) => {
+        // A selection closes the menu; close the global tooltip too.
+        setMenuOpen(false)
+        hideTooltip()
+        props.onChange(String(event.target.value))
+      },
       disabled: props.disabled === true,
       renderValue: () => label,
       // MUI only calls renderValue for a filled value unless displayEmpty is
       // set; the permission trigger uses the empty sentinel for "follow DSH".
       displayEmpty: true,
       inputProps: { 'aria-label': ariaLabel },
-      sx: selectSx(props.width, props.compact),
+      onOpen: () => {
+        setMenuOpen(true)
+        hideTooltip()
+      },
+      onClose: () => { setMenuOpen(false) },
+      sx: selectStyle(props.width, props.compact),
     },
     props.options.map((option) => {
       const labelSpan = React.createElement(
@@ -1122,15 +1104,21 @@ function Dropdown(props: {
       style: WRAPPER_STYLE,
       tabIndex: props.disabled === true ? 0 : -1,
       ...(props.triggerLabel === undefined ? {} : { 'aria-label': props.triggerLabel }),
+      onMouseEnter: (event: React.MouseEvent<HTMLSpanElement>) => { showTooltip(event.currentTarget) },
+      onMouseLeave: () => { hideTooltip() },
+      onMouseOut: (event: React.MouseEvent<HTMLSpanElement>) => {
+        const related = event.relatedTarget as Node | null
+        // Moving from the wrapper into the Select button is not a leave; only
+        // leaving the whole control closes the tooltip.
+        if (related === null || !event.currentTarget.contains(related)) hideTooltip()
+      },
+      onClick: () => { hideTooltip() },
+      onFocus: (event: React.FocusEvent<HTMLSpanElement>) => { showTooltip(event.currentTarget) },
+      onBlur: () => { hideTooltip() },
     },
     select,
   )
-  if (!props.tooltips) return trigger
-  return React.createElement(
-    MuiTooltip,
-    { title: props.title, placement: 'top', describeChild: true },
-    trigger,
-  )
+  return trigger
 }
 
 export interface ComposerControlsProps {
@@ -1383,6 +1371,7 @@ export const ComposerControls = React.memo(function ComposerControlsInner(
             rowStatus,
           ),
       ),
+      React.createElement(TooltipHost, { key: 'tooltip-host' }),
       escalationDialog,
     ),
   )

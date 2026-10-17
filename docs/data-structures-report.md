@@ -9,7 +9,7 @@ order and complexity below as the contract; `npm test` and `tsc -p tsconfig.json
 
 | File | Exports |
 |---|---|
-| `src/shared/hash.ts` | `hashString`, `hashNumber`, `hashCombine`, `stableHash`, `normaliseCapacity`, `HashLruList`, `HashWeakLruList` |
+| `src/shared/hash.ts` | `hashString`, `hashNumber`, `hashCombine`, `stableHash`, `normaliseCapacity` |
 | `src/shared/node.ts` | `LinearNode`, `BinaryNode`, `SkipNode` |
 | `src/shared/tree.ts` | `Comparator`, `defaultComparator`, `compareValues`, `BinaryTree`, `BPlusTree` |
 | `src/shared/redblack.ts` | `RedBlackTree`, `RedBlackSet` |
@@ -31,6 +31,66 @@ Capacity is an integer clamped to 1..100000 (`normaliseCapacity`); non-integers 
 Every collection has `size`, `clear`, `toArray`, and `[Symbol.iterator]`; iteration order is
 documented below. Mutating during iteration is unspecified everywhere.
 
+### Internal implementation rules
+
+- **The hash memo is internal.** `hash.ts` is a leaf of pure functions plus
+  `normaliseCapacity`; it exports no cache and no LRU class. The former
+  `HashLruList` / `HashWeakLruList` memo is now private storage inside `lru.ts`, and
+  those names are gone from the public surface. Any future memoisation used by the
+  hash functions must stay a non-exported detail of `hash.ts`.
+- **`lru.ts` is the single canonical LRU.** `LruList` owns the one Map + slot-array
+  core; `WeakLruList` composes `LruList<WeakRef<K>, V>`; the LRU sets delegate
+  eviction to `LruList`; `OrderedLruList` composes `Deque`; `UnorderedLruList`
+  composes `OrderedMap` plus a sequence key. `lru.ts` imports only the
+  `normaliseCapacity` leaf helper from `hash.ts`, never an LRU class.
+- **No duplicated nodes or linked lists.** `map.ts` composes `LinearNode`,
+  `tree.ts` composes `BinaryNode`, `list.ts` composes `SkipNode` plus the comparator
+  from `tree.ts`, and `set.ts` composes `OrderedMap` and the skip lists. A source
+  file that redeclares one of those node types is an architecture-test failure.
+
+### Composition graph
+
+Arrow `A -> B` means "A imports B from the shared layer". Type-only imports are
+included and marked `(type)`; the graph is acyclic with them included, as asserted by
+`test/shared-architecture.test.ts`.
+
+```text
+error      -> enum (type)
+enum       -> (none)
+entity     -> enum (type)
+hash       -> error                                  # hashing + normaliseCapacity leaf
+node       -> error
+tree       -> error, node
+map        -> node
+list       -> error, hash (stableHash), node, tree
+set        -> list, map, tree
+stack      -> error
+lru        -> error, hash (normaliseCapacity only), map (OrderedMap), stack (Deque)
+ast        -> error, map (AstIndex)
+heap       -> error, tree
+redblack   -> tree
+i18n       -> enum, error (type)
+selection  -> entity (type), enum (type)
+service    -> entity (type), enum (type)
+grid       -> error
+trie       -> error
+graph      -> (none)
+```
+
+Conceptual primitive composition (enforced rows import the primitive; the remaining
+rows still use native `Map`/`Set`/array stacks and are phase-2 adoption work, not part
+of this refactor):
+
+| Consumer | Lower-level primitive |
+|---|---|
+| `map`, `set`, `list`, `tree` | `node.ts` (`LinearNode` / `BinaryNode` / `SkipNode`) |
+| `set` | `map.ts` (`OrderedMap`) + `list.ts` (ordered/unordered skip lists) |
+| `lru` | `map.ts` (`OrderedMap`), `stack.ts` (`Deque`), canonical `LruList` core |
+| `ast` | `map.ts` (`AstIndex` buckets) + stack-style native LIFO arrays for walks (target: `Deque` / `Stack`) |
+| `graph` | native `Map`/`Set` adjacency (target: shared map/set wrappers) |
+| `trie` | native `Map` children (target: `OrderedMap`) |
+| `grid` | native `Map`/`Set` row and column indexes (target: shared map/set wrappers) |
+
 ## 2. Structure reference
 
 ### Hash functions — `hash.ts`
@@ -40,24 +100,14 @@ documented below. Mutating during iteration is unspecified everywhere.
 structural hash of primitives/arrays/plain objects (sorted keys)/Date/Map/Set, depth cap 6,
 cycle-safe via seen set, O(size); symbols hash by description, functions by name, prototypes
 and non-enumerables ignored. `normaliseCapacity(number): number` clamps 1..100000, throws on
-non-integer. Example: `const bucket = hashString(key) % 64; const id = stableHash({ kind, text })`.
+non-integer. `hash.ts` exports no cache or LRU class; the canonical `LruList` lives in
+`lru.ts`. Example: `const bucket = hashString(key) % 64; const id = stableHash({ kind, text })`.
 
-### HashLruList<K, V> — `hash.ts`
-`constructor(capacity = 64)`. `size: number`, `capacity: number`, `tombstoneCount: number`,
-`get(K): V | undefined` (promotes), `peek(K): V | undefined` (does not), `touch(K): boolean`,
-`set(K, V): this` (promotes; evicts LRU over capacity), `delete(K): boolean`, `has(K): boolean`,
-`resize(number): void`, `clear(): void`, `keys()/values()/entries()`, `toArray(): [K,V][]`,
-iterator. Order: most-recent → least-recent. Duplicate keys update in place and promote.
-O(1) amortized per operation, O(capacity) space; compaction rebuilds the array when tombstones
-exceed half, amortized constant. Failures: non-integer capacity. Example:
-`const cache = new HashLruList<string, number>(128); cache.set('a', 1); cache.get('a')`.
-
-### HashWeakLruList<K extends object, V> — `hash.ts`
-Same methods as `HashLruList`, plus GC awareness. Keys via `WeakRef`, values strong;
-`FinalizationRegistry` registered when available. `size` is O(n) because it sweeps dead refs;
-keyed ops O(1) amortized; iteration skips dead keys. GC timing is not deterministic, so a dead
-entry may occupy capacity until the next sweep/finalizer; strings/numbers are rejected by the
-`K extends object` type. Example: `const weak = new HashWeakLruList<object, string>(8); weak.set(node, 'x')`.
+### LRU hash memo — internal, no export
+The hash module exports no cache. The Map + slot-array memo (tombstones, compaction when
+tombstones exceed half, most-recent-first iteration) is the private core of `LruList` in
+`lru.ts`; the weak-key reference logic is the private core of `WeakLruList`. Nothing in
+`hash.ts` exposes an LRU, and `lru.ts` does not import one from `hash.ts`.
 
 ### LinearNode<T> / BinaryNode<T> / SkipNode<K, V> — `node.ts`
 `LinearNode(value, previous?, next?)` with mutable `value/previous/next`. `BinaryNode(value, parent?)`
@@ -184,21 +234,36 @@ hash-ordered `add/delete/has`, no ordering promise; O(1) average has. All reject
 Example: `const set = new OrderedSet<string>(); set.add('x'); set.add('x') === false`.
 
 ### LruList / WeakLruList — `lru.ts`
-`LruList<K,V>(capacity = 64)`: `get` promotes, `peek`/`has` do not, `touch(K): boolean`,
-`set: this`, `delete`, `size`, `capacity`, `resize`, `clear`, `keys/values/entries`
-(most-recent first), `toArray`, iterator. `WeakLruList<K extends object,V>` mirrors it with
-WeakRef semantics and O(n) `size` sweep. Delegates to the hash LRUs (one implementation).
-Example: `const lru = new LruList<string, number>(50); lru.set('a', 1); lru.touch('a')`.
+`LruList<K,V>(capacity = 64)` is the single canonical array-LRU implementation:
+`get` promotes, `peek`/`has` do not, `touch(K): boolean`, `set: this`, `delete`, `size`,
+`capacity`, `resize`, `clear`, `keys/values/entries` (most-recent first), `toArray`,
+iterator. Internals: `Map` from key to array slot plus a slot array; delete/promote
+tombstones a slot and the array compacts when tombstones exceed half, so every keyed
+operation is O(1) amortized and space is O(capacity). The former public
+`tombstoneCount` diagnostic is no longer part of the API (it was an implementation
+detail of the old hash memo); behavioural churn tests cover compaction indirectly.
+`WeakLruList<K extends object,V>` composes `LruList<WeakRef<K>, V>` and a
+`WeakMap` from key to reference; values stay strong, iteration skips collected keys,
+and `size` is O(n) because it sweeps dead references. A `FinalizationRegistry`
+(when available) is best-effort; GC timing is never deterministic, so a dead entry
+may occupy capacity until the next sweep/finalizer callback. Example:
+`const lru = new LruList<string, number>(50); lru.set('a', 1); lru.touch('a')`.
 
 ### LRU sets and lists — `lru.ts`
-`OrderedLruSet<T>(capacity)`: `add(T): boolean`, `has`, `touch`, `delete`, `size`, `capacity`,
-`resize`, `clear`, `toArray`, iterator; iteration LRU→MRU; add/touch refresh; O(1) average.
-`UnorderedLruSet<T>`: same API/semantics, no order promise.
-`OrderedLruList<T>(capacity)`: `push: this`, `get(index): T|undefined`, `peek(index)`,
-`touch(index): void`, `shift(): T|undefined`, `size/capacity/resize/clear`, `toArray`/iterator
-oldest→newest; duplicates allowed; invalid index throws. `UnorderedLruList<T>`:
-`push`, `peek(): T|undefined` (next eviction candidate), `touch(value): boolean` (O(n)),
-`size/capacity/resize/clear`, `toArray`/iterator, no index access, no order promise.
+`OrderedLruSet<T>(capacity)` composes `LruList<T, true>`: `add(T): boolean`, `has`,
+`touch`, `delete`, `size`, `capacity`, `resize`, `clear`, `toArray`, iterator;
+iteration is least-recently-used → most-recently-used (the canonical MRU-first pass is
+reversed, O(n) time and O(n) snapshot space); add/touch refresh recency; O(1) average
+keyed operations. `UnorderedLruSet<T>` composes the same `LruList` core but makes no
+order promise (its concrete order happens to be least-recently-used first, matching the
+former native-Map implementation, but callers must not rely on it).
+`OrderedLruList<T>(capacity)` composes `Deque<T>`: `push: this`, `get(index): T|undefined`,
+`peek(index)`, `touch(index): void` (O(n) time and O(n) temporary space because the deque
+is rebuilt), `shift(): T|undefined`, `size/capacity/resize/clear`, `toArray`/iterator
+oldest→newest; duplicates allowed; invalid index throws. `UnorderedLruList<T>` composes
+`OrderedMap<sequence, value>` plus a monotone sequence counter: `push`, `peek(): T|undefined`
+(next eviction candidate), `touch(value): boolean` (O(n)), `size/capacity/resize/clear`,
+`toArray`/iterator in current serial order (no promise); eviction uses `deleteFirst`.
 All evict exactly to capacity (1..100000). Example:
 `const list = new OrderedLruList<string>(3); list.push('a'); list.touch(0)`.
 
@@ -222,11 +287,11 @@ inverted/out-of-sheet bounds. Example:
 | Hotspot | Current shape | Adopt |
 |---|---|---|
 | `src/host/coordination.ts:73` `dshTurns` | unbounded `Map<string, TurnSlot>` | `LruList<string, TurnSlot>` (cap active sessions) |
-| `src/host/coordination.ts:76` `compactionState` | `Map<string, {lastAt,count}>` | `HashLruList` or `LruList` |
+| `src/host/coordination.ts:76` `compactionState` | `Map<string, {lastAt,count}>` | `LruList` (the canonical cache) |
 | `src/host/takeover-gate.ts:91` `pending` | `Map<string, PendingEntry>` with manual delete | `OrderedMap` (oldest-first cleanup) or `LruList` |
 | `src/host/provider.ts:139` catalog `cache` | TTL `Map<string, ModelCacheEntry>` | `LruList` + TTL check in `cached()` |
-| `src/host/cache.ts:88` `efforts` | `Map<number, string>` | `HashLruList<number, string>` |
-| `src/host/token.ts:1014` module `memo` | `Map<string, MemoEntry>` capped manually at 256 | `HashLruList` (same cap, documented eviction) |
+| `src/host/cache.ts:88` `efforts` | `Map<number, string>` | `LruList<number, string>` |
+| `src/host/token.ts:1014` module `memo` | `Map<string, MemoEntry>` capped manually at 256 | `LruList` (same cap, documented eviction) |
 | `src/host/resource.ts:238` `baseEdges` | `Map<number, number>` | `OrderedMap` if order matters, else keep native |
 | `src/client/controls.ts:689` `stateCache` | unbounded `Map<string, SelectionState>` | `LruList` (cap sessions) |
 | `src/client/controls.ts:504` `widthCache` | unbounded `Map<number, ...>` | `LruList` (cap widths) |
@@ -241,7 +306,7 @@ inverted/out-of-sheet bounds. Example:
 
 - `BinaryTree` for large sorted indexes or deletion-heavy data: O(n) degenerate. Use `RedBlackTree` or `BPlusTree`.
 - `UnorderedSkipList` / `UnorderedSkipSet` when order matters; hash order is deterministic but not sorted.
-- `WeakLruList` / `HashWeakLruList` with strings, numbers or frozen primitives (`K extends object` only).
+- `WeakLruList` with strings, numbers or frozen primitives (`K extends object` only).
 - Weak LRUs where capacity must be exact at a given instant: GC timing is not deterministic; `size` sweeps.
 - `BPlusTree.delete` where strict O(log n) worst-case comparisons are required: separator refresh costs O(log² n) (no rebuild).
 - `BinaryHeap.toArray()` / iteration as sorted output: it is heap order; pop repeatedly instead.
@@ -253,12 +318,17 @@ inverted/out-of-sheet bounds. Example:
 
 ## 5. Verified complexity/perf and tests
 
+`test/shared-architecture.test.ts` reads the shared source text and asserts the export
+allowlist, the absence of the old hash-resident LRU names, the acyclic import graph
+(type-only edges included) and the composition imports listed above.
+
 Measured on the local Node 24 run (`npm test`, `.tmp/test-build`):
 
 | Check | Result |
 |---|---|
-| full suite | 324 tests, 323 pass, 1 skipped (`--expose-gc` GC assertion), 0 fail, ~1.6 s |
-| `data-structures.test.ts` | 52 tests: 51 pass + 1 GC skip; 52/52 pass with `node --expose-gc` |
+| full suite | 347 tests, 346 pass, 1 skipped (`--expose-gc` GC assertion), 0 fail, ~1.8 s |
+| `data-structures.test.ts` | 56 tests: 55 pass + 1 GC skip; 56/56 pass with `node --expose-gc` |
+| `shared-architecture.test.ts` | 5 tests, 5 pass (export allowlist, internal memo, acyclic graph, composition) |
 | `data-structures-ast.test.ts` | 9 tests, 9 pass |
 | B+ tree, 10k sequential inserts (order 8) | 8.3 ms (guard 2 s) |
 | B+ tree, 10k random inserts (order 4) | 9.8 ms |
@@ -268,6 +338,8 @@ Measured on the local Node 24 run (`npm test`, `.tmp/test-build`):
 | `hashString`, 100k calls | 4.3 ms (guard 2 s) |
 
 Intentional tradeoffs already encoded in code comments: B+ delete borrow/merge plus exact
-separator refresh (no full rebuild); array-LRU tombstones compacted at >50%; weak LRU finalizer
-is best-effort; skip levels use a per-instance seeded xorshift; `AstIndex` start-offset search
-is O(log n) typical / O(n) worst; `SparseGrid` has no sorted row tree.
+separator refresh (no full rebuild); array-LRU tombstones compacted at >50% in the single
+canonical `LruList`; `OrderedLruList.touch` rebuilds its `Deque` (O(n) temporary space)
+rather than adding an index-removal primitive; weak LRU finalizer is best-effort; skip
+levels use a per-instance seeded xorshift; `AstIndex` start-offset search is O(log n)
+typical / O(n) worst; `SparseGrid` has no sorted row tree.

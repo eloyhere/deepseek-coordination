@@ -12,6 +12,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.9.0] — 2026-10-18
+
+The plugin gains a shared algorithm library, a blueprint-only document model, and a
+P0 text/dependency/import parser layer. The composer tooltips also stop overlapping
+the open dropdown and now dismiss with a short fade.
+
+### Added
+
+- Shared data-structure library under `src/shared/`: hash/LRU, nodes, binary/B+/
+  red-black trees, heaps, stack/deque/queue, ordered maps/sets/skip lists,
+  AST/token stream, directed graph, trie, sparse grid. Every export documents
+  time/space complexity; `docs/data-structures-report.md` is the adoption contract.
+- P0 parser under `src/host/text/`: JS/TS/JSX imports/exports/require/symbols,
+  CSS/HTML/Markdown references, TeX theorem/proof/label/math, generic formula
+  extraction, dependency graph with topological order/cycle paths, bounded parse
+  cache. Blueprint only: no body/content stored; flat `path/byteStart/byteEnd/
+  lineStart/lineEnd/fingerprint/charset` metadata.
+- `docs/domain-model-v24.md`: 39 concepts, 38 relations, Book/Article, Sheet/
+  Formula, Statement/Condition/Require/Meet, Sign, Chain projection (host-only,
+  depth ≤ 8, 50 links, ~1,500 tokens), versioned sources.
+- `docs/complexity-audit-v24.md`: measured adoptions (indexed ordinal, grouped
+  posterior query, batched blockedBy, bounded caches, line scanner memo).
+- Tooltip UX: placement left/right, close on click/selection/mouseout/mouseleave,
+  no first-click swallowing, fade-out transition, pointer-transparent popper.
+
+### Changed
+
+- `HashLruList`/`HashWeakLruList` are no longer exported; `lru.ts` owns the single
+  canonical LRU and composes its variants. Architecture tests enforce the export
+  surface, acyclic imports, and no duplicate LRU core.
+- Complexity: unbounded provider/effort/compaction/selection caches are bounded;
+  SQL uses indexed `MAX(ordinal)` and additive indexes; route ranking avoids N+1.
+- 389 tests (388 pass, 1 GC-skip); `tsc` clean; host + client bundles build.
+
 ## [0.8.0] — 2026-10-18
 
 Token pressure and human-in-the-loop decisions become first-class: the plugin now

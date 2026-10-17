@@ -11,11 +11,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { InvalidArgumentError } from '../src/shared/error.js'
 import {
-  HashLruList,
-  HashWeakLruList,
   hashCombine,
   hashNumber,
   hashString,
+  normaliseCapacity,
   stableHash,
 } from '../src/shared/hash.js'
 import { BinaryNode, LinearNode, SkipNode } from '../src/shared/node.js'
@@ -523,6 +522,11 @@ test('OrderedSkipSet is sorted and UnorderedSkipSet is hash ordered', () => {
 
 /* ------------------------------------------------------------------------- *
  * Key/value and weak LRUs
+ *
+ * The array-backed LRU and its weak-key variant used to live in hash.ts and are
+ * now internal to lru.ts. These tests target the canonical public LruList and
+ * WeakLruList; the removed tombstone counter was an implementation detail, so
+ * compaction is covered by the insert/delete churn assertions below.
  * ------------------------------------------------------------------------- */
 
 test('LruList promotes on get and set, not on peek or has', () => {
@@ -564,25 +568,27 @@ test('LruList enforces capacity one and validates capacity input', () => {
   assert.throws(() => new LruList(1.5), InvalidArgumentError)
   assert.throws(() => new LruList(Number.NaN), InvalidArgumentError)
   assert.throws(() => list.resize(2.5), InvalidArgumentError)
+  assert.equal(normaliseCapacity(0), 1)
+  assert.equal(normaliseCapacity(1_000_000), 100_000)
+  assert.throws(() => normaliseCapacity(1.5), InvalidArgumentError)
 })
 
-test('HashLruList compacts tombstones and keeps most-recent-first order', () => {
-  const list = new HashLruList<string, number>(5)
+test('LruList survives insert/delete churn and keeps most-recent-first order', () => {
+  const list = new LruList<string, number>(5)
   for (let index = 0; index < 4; index += 1) list.set(`k${index}`, index)
   for (let round = 0; round < 20; round += 1) {
     list.set('temp', round)
     list.delete('temp')
   }
   assert.equal(list.size, 4)
-  assert.ok(list.tombstoneCount <= 6, `tombstones grew to ${list.tombstoneCount}`)
   assert.deepEqual([...list.keys()], ['k3', 'k2', 'k1', 'k0'])
   assert.equal(list.touch('missing'), false)
   assert.equal(list.peek('k0'), 0)
   assert.equal(list.get('missing'), undefined)
 })
 
-test('HashWeakLruList keeps live keys and evicts by recency', () => {
-  const cache = new HashWeakLruList<object, string>(2)
+test('WeakLruList keeps live keys and evicts by recency', () => {
+  const cache = new WeakLruList<object, string>(2)
   const first = { id: 1 }
   const second = { id: 2 }
   const third = { id: 3 }
@@ -605,14 +611,14 @@ test('HashWeakLruList keeps live keys and evicts by recency', () => {
   assert.equal(cache.size, 0)
 })
 
-test('HashWeakLruList drops collected keys after a forced GC', async (context) => {
+test('WeakLruList drops collected keys after a forced GC', async (context) => {
   const globalWithCollector = globalThis as typeof globalThis & { gc?: () => void }
   const collect = globalWithCollector.gc
   if (collect === undefined) {
     context.skip('run node with --expose-gc to assert collected keys')
     return
   }
-  const cache = new HashWeakLruList<object, number>(32)
+  const cache = new WeakLruList<object, number>(32)
   let keys: Array<object> | undefined = Array.from({ length: 10 }, () => ({}))
   for (let index = 0; index < keys.length; index += 1) cache.set(keys[index], index)
   assert.equal(cache.size, 10)
@@ -730,6 +736,176 @@ test('UnorderedLruList evicts oldest insertion and supports touch', () => {
   single.push(1)
   single.push(2)
   assert.deepEqual(single.toArray(), [2])
+})
+
+test('LruList matches a reference recency model', () => {
+  const random = createRandom(0x51ed)
+  const capacity = 5
+  const lru = new LruList<string, number>(capacity)
+  const model: string[] = []
+  const values = new Map<string, number>()
+  for (let step = 0; step < 600; step += 1) {
+    const key = `k${Math.floor(random() * 8)}`
+    switch (Math.floor(random() * 5)) {
+      case 0: {
+        const value = step
+        lru.set(key, value)
+        const existing = model.indexOf(key)
+        if (existing >= 0) model.splice(existing, 1)
+        model.unshift(key)
+        values.set(key, value)
+        while (model.length > capacity) {
+          const evicted = model.pop()
+          if (evicted !== undefined) values.delete(evicted)
+        }
+        break
+      }
+      case 1: {
+        assert.equal(lru.get(key), values.get(key))
+        if (values.has(key)) {
+          model.splice(model.indexOf(key), 1)
+          model.unshift(key)
+        }
+        break
+      }
+      case 2:
+        assert.equal(lru.peek(key), values.get(key))
+        break
+      case 3: {
+        const exists = values.has(key)
+        assert.equal(lru.touch(key), exists)
+        if (exists) {
+          model.splice(model.indexOf(key), 1)
+          model.unshift(key)
+        }
+        break
+      }
+      default: {
+        assert.equal(lru.delete(key), values.has(key))
+        if (values.delete(key)) model.splice(model.indexOf(key), 1)
+        break
+      }
+    }
+    assert.equal(lru.size, model.length)
+    assert.deepEqual([...lru.keys()], model)
+  }
+})
+
+test('OrderedLruList matches a reference deque model with duplicates', () => {
+  const random = createRandom(0x0d3a)
+  const maximum = 6
+  let capacity = maximum
+  const list = new OrderedLruList<string>(maximum)
+  const model: string[] = []
+  for (let step = 0; step < 500; step += 1) {
+    const value = `v${Math.floor(random() * 5)}`
+    switch (Math.floor(random() * 5)) {
+      case 0:
+        list.push(value)
+        model.push(value)
+        while (model.length > capacity) model.shift()
+        break
+      case 1:
+        assert.equal(list.shift(), model.shift())
+        break
+      case 2: {
+        if (model.length === 0) {
+          assert.throws(() => list.get(0), InvalidArgumentError)
+          break
+        }
+        const index = Math.floor(random() * model.length)
+        assert.equal(list.get(index), model[index])
+        assert.equal(list.peek(index), model[index])
+        break
+      }
+      case 3: {
+        if (model.length === 0) {
+          assert.throws(() => list.touch(0), InvalidArgumentError)
+          break
+        }
+        const index = Math.floor(random() * model.length)
+        list.touch(index)
+        const [moved] = model.splice(index, 1)
+        model.push(moved)
+        break
+      }
+      default: {
+        capacity = 1 + Math.floor(random() * maximum)
+        list.resize(capacity)
+        while (model.length > capacity) model.shift()
+        break
+      }
+    }
+    assert.equal(list.size, model.length)
+    assert.equal(list.capacity, capacity)
+    assert.deepEqual(list.toArray(), model)
+  }
+})
+
+test('UnorderedLruList matches a reference insertion-order queue', () => {
+  const random = createRandom(0x0bad)
+  const maximum = 4
+  let capacity = maximum
+  const list = new UnorderedLruList<string>(maximum)
+  const model: string[] = []
+  for (let step = 0; step < 500; step += 1) {
+    const value = `v${Math.floor(random() * 4)}`
+    switch (Math.floor(random() * 4)) {
+      case 0:
+        list.push(value)
+        model.push(value)
+        while (model.length > capacity) model.shift()
+        break
+      case 1:
+        assert.equal(list.peek(), model[0])
+        break
+      case 2: {
+        const index = model.indexOf(value)
+        assert.equal(list.touch(value), index >= 0)
+        if (index >= 0) {
+          const [moved] = model.splice(index, 1)
+          model.push(moved)
+        }
+        break
+      }
+      default: {
+        capacity = 1 + Math.floor(random() * maximum)
+        list.resize(capacity)
+        while (model.length > capacity) model.shift()
+        break
+      }
+    }
+    assert.equal(list.size, model.length)
+    assert.equal(list.capacity, capacity)
+    assert.deepEqual(list.toArray(), model)
+  }
+})
+
+test('LRU sets delegate eviction and recency to the canonical LruList', () => {
+  const capacity = 4
+  const ordered = new OrderedLruSet<string>(capacity)
+  const unordered = new UnorderedLruSet<string>(capacity)
+  const reference = new LruList<string, true>(capacity)
+  for (const value of ['a', 'b', 'c', 'a', 'd', 'b', 'e', 'c', 'f']) {
+    const grew = !reference.has(value)
+    assert.equal(ordered.add(value), grew)
+    assert.equal(unordered.add(value), grew)
+    reference.set(value, true)
+    assert.deepEqual(ordered.toArray(), [...reference.keys()].reverse())
+    assert.deepEqual([...unordered.toArray()].sort(), [...reference.keys()].sort())
+  }
+  for (const value of ['b', 'e', 'a']) {
+    const present = reference.has(value)
+    assert.equal(ordered.touch(value), present)
+    assert.equal(unordered.touch(value), present)
+    reference.touch(value)
+    assert.deepEqual(ordered.toArray(), [...reference.keys()].reverse())
+  }
+  ordered.resize(2)
+  unordered.resize(2)
+  reference.resize(2)
+  assert.deepEqual(ordered.toArray(), [...reference.keys()].reverse())
+  assert.deepEqual([...unordered.toArray()].sort(), [...reference.keys()].sort())
 })
 
 /* ------------------------------------------------------------------------- *

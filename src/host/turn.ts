@@ -120,7 +120,18 @@ export class TurnModule {
       typeof request.effort === 'string' && request.effort.trim().length > 0 ? request.effort : 'medium'
 
     const identity = this.host.db.transaction(() => {
-      const existing = this.host.db.count('turn', 'session = ?', sessionIdentity)
+      /*
+       * `ordinal` is assigned from the highest existing ordinal rather than from
+       * a row count. Turn rows are append-only (no module deletes one), so the
+       * two are equal; the difference is the cost: `COUNT(*)` walks every turn
+       * of the session (O(n) per creation, O(n^2) over a session), while
+       * `MAX(ordinal)` is one seek on the `UNIQUE(session, ordinal)` index.
+       */
+      const highest = this.host.db.get<{ ordinal: number }>(
+        'SELECT COALESCE(MAX(ordinal), 0) AS ordinal FROM turn WHERE session = ?',
+        sessionIdentity,
+      )
+      const existing = Number(highest?.ordinal ?? 0)
       if (existing >= this.host.config.maxTurnPerSession) {
         throw new InvalidStateError(
           `session ${String(session.handle)} reached maxTurnPerSession`,

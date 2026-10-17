@@ -565,6 +565,10 @@ export class BayesianModule {
    * Recalculate every route probability by softmaxing the log-odds of the
    * matching posterior (0.5 when a route has no posterior yet), sort
    * descending, persist the new `rank`, and return the ranked routes.
+   *
+   * The latest posterior of every hypothesis is read in one grouped query
+   * instead of one query per route: a ranking pass is one read, not one round
+   * trip per route.
    */
   rankRoute(turn: number): Route[] {
     const turnIdentity = requireIdentity(turn, 'turn')
@@ -573,7 +577,8 @@ export class BayesianModule {
       .all<Row>('SELECT * FROM route WHERE turn = ? ORDER BY identity ASC', turnIdentity)
       .map(mapRoute)
     if (routes.length === 0) return []
-    const posteriorProbabilities = routes.map(route => this.latestPosterior(turnIdentity, route.name)?.probability ?? DefaultPrior)
+    const posteriors = this.latestPosteriors(turnIdentity)
+    const posteriorProbabilities = routes.map(route => posteriors.get(route.name) ?? DefaultPrior)
     const probabilities = softmaxLogOdds(posteriorProbabilities).map(storedProbability)
     const ranked = routes.map((route, index) => ({ route, probability: probabilities[index] ?? 0 }))
     ranked.sort((left, right) => right.probability - left.probability || left.route.identity - right.route.identity)
@@ -634,8 +639,9 @@ export class BayesianModule {
       .all<Row>('SELECT * FROM failure_route WHERE turn = ? ORDER BY identity ASC', turnIdentity)
       .map(mapFailureRoute)
     if (routes.length === 0) return []
+    const posteriors = this.latestPosteriors(turnIdentity)
     const risks = routes.map(route => {
-      const posterior = this.latestPosterior(turnIdentity, route.name)?.probability ?? DefaultPrior
+      const posterior = posteriors.get(route.name) ?? DefaultPrior
       return clampProbability(1 - clampProbability(posterior))
     })
     const probabilities = softmaxLogOdds(risks).map(storedProbability)
@@ -981,6 +987,25 @@ export class BayesianModule {
       hypothesis,
     )
     return row === undefined ? undefined : mapPosterior(row)
+  }
+
+  /**
+   * Latest posterior probability of every hypothesis of one turn, in one read.
+   *
+   * The bare-column `MAX(identity)` form is SQLite's documented way to read
+   * columns from the group's maximum row; `identity` is the primary key, so the
+   * maximum is unique and the picked row is exactly what `latestPosterior`
+   * returns one hypothesis at a time. The map holds probabilities, which is all
+   * the ranking passes consume.
+   */
+  private latestPosteriors(turn: number): Map<string, number> {
+    const rows = this.host.db.all<Row>(
+      'SELECT hypothesis, probability, MAX(identity) AS identity FROM posterior WHERE turn = ? GROUP BY hypothesis',
+      turn,
+    )
+    const latest = new Map<string, number>()
+    for (const row of rows) latest.set(text(row, 'hypothesis'), number(row, 'probability'))
+    return latest
   }
 
   private latestLikelihood(evidence: number, hypothesis: string): Likelihood | undefined {

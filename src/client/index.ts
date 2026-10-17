@@ -34,7 +34,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import { ComposerControls } from './controls.js'
+import { ComposerControls, clearComposerCaches } from './controls.js'
 import { CoordinationSettings } from './settings.js'
 import { TakeoverDialog } from './takeover.js'
 import { currentCopy, installLocale } from './i18n.js'
@@ -83,7 +83,10 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => installLocale(ctx), `${PLUGIN_ID}: locale store`)
 
   installTakeoverStyle()
-  ctx.effect(() => () => { disposeTakeoverStyle() }, `${PLUGIN_ID}: takeover rule`)
+  ctx.effect(() => () => {
+    disposeTakeoverStyle()
+    clearComposerCaches()
+  }, `${PLUGIN_ID}: takeover rule`)
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',

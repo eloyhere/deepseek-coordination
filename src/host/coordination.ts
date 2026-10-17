@@ -40,6 +40,7 @@ import { TakeoverGate } from './takeover-gate.js'
 import type { PendingTakeoverView, TakeoverGateAnswer } from './takeover-gate.js'
 import { ProviderModule } from './provider.js'
 import { CacheModule } from './cache.js'
+import { CompactionStateStore } from './compaction-state.js'
 import type { CommandHandlers } from './command.js'
 import type { PermissionResult, Selection, Turn, CoordinationMetrics } from '../shared/entity.js'
 import type { Profession } from '../shared/enum.js'
@@ -73,7 +74,7 @@ export class CoordinationService extends Service {
   private readonly dshTurns = new Map<string, TurnSlot>()
   private readonly runtime: DshRuntime
   private governor: TokenGovernor
-  private readonly compactionState = new Map<string, { lastAt: number; count: number }>()
+  private readonly compactionState = new CompactionStateStore()
   private compactionPolicy: CompactionPolicyConfig
   private localeValue: string
 

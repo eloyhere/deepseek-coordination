@@ -419,6 +419,7 @@ CREATE TABLE IF NOT EXISTS takeover (
   finished INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_takeover_status ON takeover(status, created);
+CREATE INDEX IF NOT EXISTS idx_takeover_session ON takeover(session, identity);
 
 CREATE TABLE IF NOT EXISTS permission (
   identity INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -707,6 +708,7 @@ CREATE TABLE IF NOT EXISTS evidence (
   created INTEGER NOT NULL,
   FOREIGN KEY (turn) REFERENCES turn(identity)
 );
+CREATE INDEX IF NOT EXISTS idx_evidence_turn ON evidence(turn, created);
 
 CREATE TABLE IF NOT EXISTS restriction (
   identity INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -793,6 +795,7 @@ CREATE TABLE IF NOT EXISTS likelihood (
   created INTEGER NOT NULL,
   FOREIGN KEY (evidence) REFERENCES evidence(identity)
 );
+CREATE INDEX IF NOT EXISTS idx_likelihood_evidence ON likelihood(evidence, hypothesis);
 
 CREATE TABLE IF NOT EXISTS fusion (
   identity INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -38,6 +38,7 @@ import type {
 } from './module.js'
 import type { CacheStrategy, ModelCapability, ProviderView } from '../shared/entity.js'
 import { NotFoundError, NotImplementedError, UpstreamError } from '../shared/error.js'
+import { LruList } from '../shared/lru.js'
 
 /**
  * The provider cache policy supplement (v23 §5.1).
@@ -117,6 +118,16 @@ interface ModelCacheEntry {
 }
 
 /**
+ * Maximum model catalogs held at once.
+ *
+ * A catalog is a pure cache: evicting one only means the next `models(route)`
+ * asks DSH again, so the bound cannot change an answer. DSH's route directory
+ * is far smaller than this in every supported deployment; the cap exists so a
+ * pathological route list cannot grow the plugin's heap without limit.
+ */
+export const ProviderCatalogCacheCapacity = 256
+
+/**
  * Read-only provider view (v23 §4) and provider policy supplement (v23 §5.1).
  *
  * `title` is the configurable display name, then the live provider name, then
@@ -136,7 +147,12 @@ interface ModelCacheEntry {
  */
 export class ProviderModule {
   private readonly host: ModuleHost
-  private readonly cache = new Map<string, ModelCacheEntry>()
+  /**
+   * Bounded catalog cache. `expires` is checked on every read, so a stale entry
+   * is re-read from DSH even before the LRU would evict it; eviction itself is
+   * invisible to callers (a miss re-enumerates).
+   */
+  private readonly cache = new LruList<string, ModelCacheEntry>(ProviderCatalogCacheCapacity)
 
   constructor(host: ModuleHost) {
     this.host = host

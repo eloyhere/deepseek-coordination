@@ -19,6 +19,7 @@ import type { ModuleHost } from './module.js'
 import type { CacheStrategy } from '../shared/entity.js'
 import type { CacheStats, GenerateOptionsLike, MessageLike } from '../shared/service.js'
 import { DefaultCacheStrategy } from './provider.js'
+import { LruList } from '../shared/lru.js'
 
 /**
  * Volatile fragments that move a 64-token block boundary between two
@@ -58,6 +59,17 @@ const TimePlaceholder = 'current time is <time>'
 const EffortWarning =
   'reasoningEffort changes invalidate this provider\'s prompt cache; keep the effort stable across a session'
 
+/**
+ * Maximum sessions whose last effort is remembered.
+ *
+ * The map is a detector, not an authority: an evicted session is observed as
+ * "first effort" on its next request, which reports no break for that one call.
+ * Capacity is far above the number of sessions a host process talks to, so the
+ * bound costs nothing in practice while keeping the map from growing with
+ * session history.
+ */
+export const EffortCacheCapacity = 4096
+
 interface CacheStatRow {
   requests?: unknown
   hits?: unknown
@@ -84,8 +96,8 @@ export interface UsageRecord {
  */
 export class CacheModule {
   private readonly host: ModuleHost
-  /** Last effort observed per coordination session identity. */
-  private readonly efforts = new Map<number, string>()
+  /** Last effort observed per coordination session identity (bounded LRU). */
+  private readonly efforts = new LruList<number, string>(EffortCacheCapacity)
 
   constructor(host: ModuleHost) {
     this.host = host

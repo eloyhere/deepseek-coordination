@@ -359,16 +359,45 @@ function splitSentences(source: string): string[] {
     .filter((part) => part.length > 0)
 }
 
-/** Count how many distinct markers occur in `source`. */
-function markerHits(source: string, markers: readonly string[]): number {
-  const lower = source.toLowerCase()
-  const asciiTokens = new Set(lower.match(/[a-z0-9]+/g) ?? [])
-  let hits = 0
-  for (const marker of markers) {
-    const present = /^[a-z0-9]+$/.test(marker) ? asciiTokens.has(marker) : lower.includes(marker)
-    if (present) hits += 1
+/**
+ * Per-call memo for the repeated scans of one measurement.
+ *
+ * `computePlanDimensions` reads the same plan text through several lenses: the
+ * term set of the whole text, the term set of goal+step, the marker count of
+ * clarity text, of the whole text (vague, verb, destructive, uncertain markers).
+ * Each lens used to lower-case and tokenise the source again, so one scoring
+ * pass tokenised the five-field text twice and scanned it for markers four
+ * times. The memo belongs to one call only: it is not shared between plans, so
+ * it cannot grow across turns and cannot return a stale value.
+ */
+class PlanTextScanner {
+  private readonly termsBySource = new Map<string, string[]>()
+  private readonly markerScanBySource = new Map<string, { lower: string; words: Set<string> }>()
+
+  /** `planTokens(source)`, tokenised at most once per call. */
+  terms(source: string): string[] {
+    const cached = this.termsBySource.get(source)
+    if (cached !== undefined) return cached
+    const terms = planTokens(source)
+    this.termsBySource.set(source, terms)
+    return terms
   }
-  return hits
+
+  /** How many distinct markers occur in `source`, scanned at most once per call. */
+  markerHits(source: string, markers: readonly string[]): number {
+    let scan = this.markerScanBySource.get(source)
+    if (scan === undefined) {
+      const lower = source.toLowerCase()
+      scan = { lower, words: new Set(lower.match(/[a-z0-9]+/g) ?? []) }
+      this.markerScanBySource.set(source, scan)
+    }
+    let hits = 0
+    for (const marker of markers) {
+      const present = /^[a-z0-9]+$/.test(marker) ? scan.words.has(marker) : scan.lower.includes(marker)
+      if (present) hits += 1
+    }
+    return hits
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -451,6 +480,7 @@ export function computePlanDimensions(
   plan: PlanMeasureInput,
   comprehension: ComprehensionMeasureInput | undefined,
 ): PlanDimensions {
+  const scanner = new PlanTextScanner()
   const parsed = decodePlanStep(plan.step)
   const goal = plan.goal.trim()
   const approach = plan.approach.trim()
@@ -464,12 +494,12 @@ export function computePlanDimensions(
 
   const feasibility =
     0.5 * clamp(stepCount / 3, 0, 1) +
-    0.2 * (planTokens(approach).length >= 3 ? 1 : 0) +
+    0.2 * (scanner.terms(approach).length >= 3 ? 1 : 0) +
     0.15 * (constraint === '' ? 0 : 1) +
     0.15 * (assumption === '' ? 0 : 1)
 
-  const intentTerms = new Set(planTokens(comprehension?.intent ?? ''))
-  const coveredTerms = new Set(planTokens(`${goal} ${plan.step}`))
+  const intentTerms = new Set(scanner.terms(comprehension?.intent ?? ''))
+  const coveredTerms = new Set(scanner.terms(`${goal} ${plan.step}`))
   let coverage = 0.5
   if (intentTerms.size > 0) {
     let covered = 0
@@ -489,30 +519,30 @@ export function computePlanDimensions(
           ? clamp(120 / averageSentenceLength, 0, 1)
           : 1
   const structureFit = sentences.length >= 2 ? 1 : sentences.length === 1 ? 0.6 : 0
-  const vagueFit = clamp(1 - markerHits(clarityText, VagueMarkers) / Math.max(1, sentences.length), 0, 1)
+  const vagueFit = clamp(1 - scanner.markerHits(clarityText, VagueMarkers) / Math.max(1, sentences.length), 0, 1)
   const clarity = 0.4 * lengthFit + 0.3 * structureFit + 0.3 * vagueFit
 
-  const verbFit = clamp(markerHits(text, ConcreteVerbs) / 2, 0, 1)
+  const verbFit = clamp(scanner.markerHits(text, ConcreteVerbs) / 2, 0, 1)
   const acceptanceFit = clamp(acceptanceCount / 3, 0, 1)
   const numberFit = NumberPattern.test(text) ? 1 : 0
   const pathOrToolFit = PathOrToolPattern.test(text) ? 1 : 0
   const specificity = 0.3 * verbFit + 0.3 * acceptanceFit + 0.2 * numberFit + 0.2 * pathOrToolFit
 
   const referenceTerms = new Set(
-    planTokens(
+    scanner.terms(
       `${comprehension?.intent ?? ''} ${comprehension?.requirement ?? ''} ${comprehension?.constraint ?? ''}`,
     ),
   )
   let alignment = 0.5
   if (referenceTerms.size > 0) {
-    const planTerms = new Set(planTokens(text))
+    const planTerms = new Set(scanner.terms(text))
     let overlap = 0
     for (const term of referenceTerms) if (planTerms.has(term)) overlap += 1
     alignment = overlap / referenceTerms.size
   }
 
   const hazard = clamp(
-    markerHits(text, DestructiveMarkers) * 0.18 + markerHits(text, UncertainMarkers) * 0.08,
+    scanner.markerHits(text, DestructiveMarkers) * 0.18 + scanner.markerHits(text, UncertainMarkers) * 0.08,
     0,
     1,
   )

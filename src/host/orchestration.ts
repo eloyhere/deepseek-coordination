@@ -189,7 +189,8 @@ export class OrchestrationModule {
 
     const parentModel = this.parentModel(turn)
     const normalised = drafts.map((draft, index) => this.normaliseDraft(draft, index, turn, parentModel))
-    for (const draft of normalised) this.assertDependencies(draft.blockedBy, turn.identity)
+    const dependencyRows = this.dependencyRows(normalised.flatMap((draft) => draft.blockedBy))
+    for (const draft of normalised) this.assertDependencies(draft.blockedBy, turn.identity, dependencyRows)
 
     return this.host.db.transaction(() => normalised.map((draft) => this.insertSubTask(planRecord, turn, draft)))
   }
@@ -223,22 +224,25 @@ export class OrchestrationModule {
         { subtask, turn: current.parent, effort: current.effort, inherited: turn.effort },
       )
     }
+    // One read for the whole blockedBy list: the dependency count is a Plan
+    // property, not a reason to make a round trip per parent row.
+    const dependencyRows = this.dependencyRows(current.blockedBy)
     for (const dependency of current.blockedBy) {
-      const row = this.host.db.get<Row>('SELECT parent, status FROM subtask WHERE identity = ?', dependency)
+      const row = dependencyRows.get(dependency)
       if (row === undefined) {
         throw new InvalidStateError(`subtask ${subtask} is blocked by missing subtask ${dependency}`, {
           subtask,
           blockedBy: dependency,
         })
       }
-      if (number(row, 'parent') !== current.parent) {
+      if (row.parent !== current.parent) {
         throw new InvalidStateError(`subtask ${subtask} is blocked by subtask ${dependency} of another turn`, {
           subtask,
           blockedBy: dependency,
           turn: current.parent,
         })
       }
-      const status = text(row, 'status') as SubTaskStatus
+      const status = row.status as SubTaskStatus
       if (status !== 'verified') {
         throw new InvalidStateError(
           `subtask ${subtask} is blocked by subtask ${dependency} (status: ${status}); dependencies must be verified`,
@@ -825,14 +829,50 @@ export class OrchestrationModule {
     }
   }
 
+  /**
+   * Parent and status of every referenced subtask identity, in one indexed
+   * read per 400 identities. Missing identities are simply absent from the map;
+   * callers keep the exact error wording and order of a point lookup per
+   * dependency.
+   *
+   * `blockedBy` stays a JSON column (the schema has no edge table), so this is
+   * the only way to resolve a dependency list without a query per entry. A
+   * future read-only chain projection must build its graph from the same
+   * `subtask(parent)` rows, never by scanning `blockedBy` per model request.
+   */
+  private dependencyRows(identities: readonly number[]): Map<number, { parent: number; status: string }> {
+    const unique = [...new Set(identities)]
+    const rowsByIdentity = new Map<number, { parent: number; status: string }>()
+    const Chunk = 400
+    for (let start = 0; start < unique.length; start += Chunk) {
+      const chunk = unique.slice(start, start + Chunk)
+      if (chunk.length === 0) continue
+      const rows = this.host.db.all<Row>(
+        `SELECT identity, parent, status FROM subtask WHERE identity IN (${chunk.map(() => '?').join(', ')})`,
+        ...chunk,
+      )
+      for (const row of rows) {
+        rowsByIdentity.set(number(row, 'identity'), {
+          parent: number(row, 'parent'),
+          status: text(row, 'status'),
+        })
+      }
+    }
+    return rowsByIdentity
+  }
+
   /** Every dependency must already exist for the same parent turn. */
-  private assertDependencies(blockedBy: number[], turn: number): void {
+  private assertDependencies(
+    blockedBy: number[],
+    turn: number,
+    dependencyRows: Map<number, { parent: number; status: string }>,
+  ): void {
     for (const dependency of blockedBy) {
-      const row = this.host.db.get<Row>('SELECT parent FROM subtask WHERE identity = ?', dependency)
+      const row = dependencyRows.get(dependency)
       if (row === undefined) {
         throw new InvalidArgumentError(`blockedBy ${dependency} does not exist`, { turn, blockedBy: dependency })
       }
-      if (number(row, 'parent') !== turn) {
+      if (row.parent !== turn) {
         throw new InvalidArgumentError(`blockedBy ${dependency} belongs to another turn`, {
           turn,
           blockedBy: dependency,

@@ -1,10 +1,16 @@
 /**
- * Capacity-bounded caches: key/value LRUs, LRU sets and recency-ordered lists.
+ * Capacity-bounded caches: the single canonical key/value LRU, its weak-key
+ * variant, LRU sets and recency-ordered lists.
  *
- * The two key/value caches are thin public facades over `HashLruList` and
- * `HashWeakLruList` in `./hash.js`, so there is exactly one array-LRU
- * implementation in the library and no second copy of its tombstone/compaction
- * logic to drift out of sync.
+ * `LruList` is the only array-backed LRU implementation in the library. It
+ * keeps a `Map` from key to array slot plus an array of entries; deleting or
+ * promoting an entry only tombstones its slot, so every operation is O(1)
+ * amortized, and the array is compacted when tombstones outnumber live entries.
+ * `WeakLruList` composes `LruList<WeakRef<K>, V>` instead of duplicating that
+ * storage. The set and list variants likewise compose lower-level primitives:
+ * both LRU sets delegate eviction to `LruList`, `OrderedLruList` is a `Deque`
+ * with a capacity, and `UnorderedLruList` is an `OrderedMap<sequence, value>`
+ * plus a monotone sequence counter.
  *
  * Set and list variants share the same capacity contract: a capacity is an
  * integer clamped to 1..100000, every structure evicts down to exactly its
@@ -14,33 +20,310 @@
  * recency and exposes `touch(index)` for an explicit promotion (plain reads
  * never reorder a list, so an index stays valid until a mutation).
  *
+ * `normaliseCapacity` is imported from `./hash.js` only as a pure leaf helper;
+ * this module imports no LRU class from another file.
+ *
  * No Node, DOM, React or external dependency is used.
  */
 import { InvalidArgumentError } from './error.js'
-import { HashLruList, HashWeakLruList, normaliseCapacity } from './hash.js'
+import { normaliseCapacity } from './hash.js'
 import { OrderedMap } from './map.js'
+import { Deque } from './stack.js'
+
+interface LruEntry<K, V> {
+  readonly key: K
+  value: V
+}
 
 /**
- * General-purpose key/value LRU cache.
+ * General-purpose key/value LRU cache, the canonical implementation.
  *
  * `get` and `touch` promote the key to most-recently used, `peek` and `has` do
  * not, and `set` always promotes. Time O(1) amortized per operation, space
  * O(capacity). Iteration and `toArray` run most-recent first. Missing keys read
  * as `undefined`; use `has` when `undefined` is a legal value.
+ *
+ * The backing store is a `Map` from key to array slot plus an array of entries.
+ * Deleting or promoting an entry tombstones its slot rather than shifting the
+ * array, so every keyed operation stays O(1) amortized. The array is compacted
+ * when tombstones exceed half of its slots; that compaction is O(n) but can run
+ * only after at least n/2 operations created tombstones, so the amortized cost
+ * remains constant. Space is O(capacity).
+ *
+ * Iteration is live: mutating during iteration is not supported and can skip or
+ * repeat entries.
  */
 export class LruList<K, V> implements Iterable<[K, V]> {
-  private readonly store: HashLruList<K, V>
+  private readonly slotByKey = new Map<K, number>()
+  private slots: Array<LruEntry<K, V> | undefined> = []
+  /** First slot that may still hold a live entry; everything before is a tombstone. */
+  private oldest = 0
+  private tombstones = 0
+  private limit: number
 
   /**
    * @param capacity Maximum live entries; clamped to 1..100000.
    * Time O(1), space O(1).
    */
   constructor(capacity = 64) {
-    this.store = new HashLruList<K, V>(capacity)
+    this.limit = normaliseCapacity(capacity)
   }
 
   /** Number of live entries. Time O(1). */
   get size(): number {
+    return this.slotByKey.size
+  }
+
+  /** Configured maximum number of live entries. Time O(1). */
+  get capacity(): number {
+    return this.limit
+  }
+
+  /**
+   * Read a value and promote its key to most-recently used.
+   * Time O(1) amortized, space O(1). Returns `undefined` for a missing key; use
+   * `has` when `undefined` is a legal stored value.
+   */
+  get(key: K): V | undefined {
+    const index = this.slotByKey.get(key)
+    if (index === undefined) return undefined
+    const entry = this.slots[index]
+    if (entry === undefined) {
+      this.slotByKey.delete(key)
+      return undefined
+    }
+    this.promote(key, index)
+    return entry.value
+  }
+
+  /**
+   * Read a value without changing recency. Time O(1), space O(1).
+   */
+  peek(key: K): V | undefined {
+    const index = this.slotByKey.get(key)
+    if (index === undefined) return undefined
+    const entry = this.slots[index]
+    if (entry === undefined) {
+      this.slotByKey.delete(key)
+      return undefined
+    }
+    return entry.value
+  }
+
+  /**
+   * Promote a key to most-recently used without reading its value.
+   * Time O(1) amortized, space O(1). Returns false when the key is absent.
+   */
+  touch(key: K): boolean {
+    const index = this.slotByKey.get(key)
+    if (index === undefined) return false
+    if (this.slots[index] === undefined) {
+      this.slotByKey.delete(key)
+      return false
+    }
+    this.promote(key, index)
+    return true
+  }
+
+  /**
+   * Insert or update a key, moving it to most-recently used and evicting the
+   * least-recently used entry if the capacity is exceeded.
+   * Time O(1) amortized (eviction and compaction included), space O(1).
+   */
+  set(key: K, value: V): this {
+    const index = this.slotByKey.get(key)
+    if (index !== undefined) {
+      const entry = this.slots[index]
+      if (entry !== undefined) {
+        entry.value = value
+        this.promote(key, index)
+        return this
+      }
+      this.slotByKey.delete(key)
+    }
+    const entry: LruEntry<K, V> = { key, value }
+    this.slots.push(entry)
+    this.slotByKey.set(key, this.slots.length - 1)
+    while (this.slotByKey.size > this.limit) this.evictOldest()
+    this.compactIfNeeded()
+    return this
+  }
+
+  /**
+   * Remove a key. Time O(1) amortized, space O(1). Returns false when absent.
+   */
+  delete(key: K): boolean {
+    const index = this.slotByKey.get(key)
+    if (index === undefined) return false
+    this.slotByKey.delete(key)
+    if (this.slots[index] !== undefined) {
+      this.slots[index] = undefined
+      this.tombstones += 1
+      if (index === this.oldest) this.advanceOldest()
+      this.compactIfNeeded()
+    }
+    return true
+  }
+
+  /** Membership test that never changes recency. Time O(1), space O(1). */
+  has(key: K): boolean {
+    return this.slotByKey.has(key)
+  }
+
+  /**
+   * Change the capacity, evicting least-recently used entries when it shrinks.
+   * Time O(1) amortized when growing, O(k) when shrinking past k entries (each
+   * evicted entry is O(1)), space O(1).
+   */
+  resize(capacity: number): void {
+    this.limit = normaliseCapacity(capacity)
+    while (this.slotByKey.size > this.limit) this.evictOldest()
+    this.compactIfNeeded()
+  }
+
+  /** Remove every entry. Time O(1) for the maps, O(n) for the dropped array. */
+  clear(): void {
+    this.slotByKey.clear()
+    this.slots = []
+    this.oldest = 0
+    this.tombstones = 0
+  }
+
+  /**
+   * Keys from most-recently used to least-recently used.
+   * Time O(n) for a full pass, space O(1) per step.
+   */
+  *keys(): IterableIterator<K> {
+    for (const [key] of this.entries()) yield key
+  }
+
+  /**
+   * Values from most-recently used to least-recently used.
+   * Time O(n) for a full pass, space O(1) per step.
+   */
+  *values(): IterableIterator<V> {
+    for (const [, value] of this.entries()) yield value
+  }
+
+  /**
+   * `[key, value]` pairs from most-recently used to least-recently used.
+   * Time O(n) for a full pass, space O(1) per step.
+   */
+  *entries(): IterableIterator<[K, V]> {
+    for (let index = this.slots.length - 1; index >= this.oldest; index -= 1) {
+      const entry = this.slots[index]
+      if (entry !== undefined) yield [entry.key, entry.value]
+    }
+  }
+
+  /**
+   * Snapshot of the entries in most-recent-first order. Time O(n), space O(n).
+   */
+  toArray(): Array<[K, V]> {
+    return [...this.entries()]
+  }
+
+  /** Alias of `entries`, so the cache is directly iterable. Time O(n). */
+  [Symbol.iterator](): IterableIterator<[K, V]> {
+    return this.entries()
+  }
+
+  /** Move a live key to the end of the slot array. Time O(1) amortized. */
+  private promote(key: K, index: number): void {
+    if (index === this.slots.length - 1) return
+    const entry = this.slots[index]
+    if (entry === undefined) return
+    const moved: LruEntry<K, V> = { key: entry.key, value: entry.value }
+    this.slots.push(moved)
+    this.slotByKey.set(key, this.slots.length - 1)
+    this.slots[index] = undefined
+    this.tombstones += 1
+    this.compactIfNeeded()
+  }
+
+  /** Advance the oldest cursor past leading tombstones. Time O(1) amortized. */
+  private advanceOldest(): void {
+    while (this.oldest < this.slots.length && this.slots[this.oldest] === undefined) {
+      this.oldest += 1
+    }
+  }
+
+  /** Evict the least-recently used live entry. Time O(1) amortized. */
+  private evictOldest(): void {
+    this.advanceOldest()
+    if (this.oldest >= this.slots.length) return
+    const entry = this.slots[this.oldest]
+    if (entry === undefined) return
+    this.slots[this.oldest] = undefined
+    this.tombstones += 1
+    this.oldest += 1
+    this.slotByKey.delete(entry.key)
+  }
+
+  /**
+   * Rebuild the slot array when tombstones exceed half of it.
+   * Time O(n) in the live entries plus tombstones; amortized O(1) per mutation
+   * because a compaction is only reachable after at least n/2 tombstones.
+   */
+  private compactIfNeeded(): void {
+    if (this.tombstones === 0) return
+    if (this.tombstones * 2 <= this.slots.length) return
+    const live: Array<LruEntry<K, V>> = []
+    for (let index = this.oldest; index < this.slots.length; index += 1) {
+      const entry = this.slots[index]
+      if (entry !== undefined) live.push(entry)
+    }
+    this.slots = live
+    for (let index = 0; index < live.length; index += 1) {
+      this.slotByKey.set(live[index].key, index)
+    }
+    this.oldest = 0
+    this.tombstones = 0
+  }
+}
+
+/**
+ * Weak-key variant of `LruList`.
+ *
+ * Composes `LruList<WeakRef<K>, V>` and keeps a `WeakMap` from each key to its
+ * reference; keys are held weakly, values strongly. `get`/`touch` promote,
+ * `peek`/`has` do not, iteration skips collected keys. Time O(1) amortized per
+ * keyed operation; `size` is O(n) because it sweeps collected references, and
+ * `clear` is O(1) plus reclamation. A `FinalizationRegistry` (when the runtime
+ * provides one) drops entries as keys are collected, but garbage-collection
+ * timing is not deterministic, so a collected entry may occupy capacity until
+ * the next sweep or finalizer callback. Space O(capacity).
+ *
+ * Caveat: the finalizer callback closes over this instance, so the runtime
+ * keeps the cache alive until every registered key has been collected.
+ */
+export class WeakLruList<K extends object, V> implements Iterable<[K, V]> {
+  private readonly store: LruList<WeakRef<K>, V>
+  private references = new WeakMap<K, WeakRef<K>>()
+  private readonly registry: FinalizationRegistry<WeakRef<K>> | undefined
+
+  /**
+   * @param capacity Maximum live entries; clamped to 1..100000.
+   * Time O(1), space O(1).
+   */
+  constructor(capacity = 64) {
+    this.store = new LruList<WeakRef<K>, V>(capacity)
+    if (typeof FinalizationRegistry !== 'undefined') {
+      this.registry = new FinalizationRegistry<WeakRef<K>>((reference) => {
+        this.store.delete(reference)
+      })
+    } else {
+      this.registry = undefined
+    }
+  }
+
+  /**
+   * Number of entries that are still reachable. Sweeps dead entries first, so
+   * time O(n) worst case and space O(1); an empty or fully live cache is O(n)
+   * only because the sweep cannot know that without dereferencing.
+   */
+  get size(): number {
+    this.sweep()
     return this.store.size
   }
 
@@ -50,42 +333,75 @@ export class LruList<K, V> implements Iterable<[K, V]> {
   }
 
   /**
-   * Read a value and promote its key. Time O(1) amortized, space O(1).
+   * Read a live value and promote it to most-recently used.
+   * Time O(1) amortized, space O(1). Returns `undefined` when the key was
+   * collected or is absent; use `has` when `undefined` is a legal value.
    */
   get(key: K): V | undefined {
-    return this.store.get(key)
+    const reference = this.references.get(key)
+    if (reference === undefined) return undefined
+    const value = this.store.get(reference)
+    if (value === undefined && !this.store.has(reference)) {
+      this.references.delete(key)
+      return undefined
+    }
+    return value
   }
 
-  /** Read a value without promoting it. Time O(1), space O(1). */
+  /** Read a live value without changing recency. Time O(1), space O(1). */
   peek(key: K): V | undefined {
-    return this.store.peek(key)
+    const reference = this.references.get(key)
+    if (reference === undefined) return undefined
+    const value = this.store.peek(reference)
+    if (value === undefined && !this.store.has(reference)) {
+      this.references.delete(key)
+      return undefined
+    }
+    return value
   }
 
   /**
-   * Promote a key without reading its value. Time O(1) amortized.
-   * Returns false when the key is absent.
+   * Promote a live key to most-recently used. Time O(1) amortized. Returns false
+   * when the key is absent or already collected.
    */
   touch(key: K): boolean {
-    return this.store.touch(key)
+    const reference = this.references.get(key)
+    if (reference === undefined) return false
+    return this.store.touch(reference)
   }
 
   /**
    * Insert or update a key, promote it, and evict the least-recently used entry
-   * when over capacity. Time O(1) amortized, space O(1).
+   * when the capacity is exceeded. Time O(1) amortized, space O(1). The key is
+   * registered with the finalization registry only once per live entry.
    */
   set(key: K, value: V): this {
-    this.store.set(key, value)
+    let reference = this.references.get(key)
+    if (reference === undefined || !this.store.has(reference)) {
+      reference = new WeakRef(key)
+      this.references.set(key, reference)
+      this.registry?.register(key, reference, reference)
+    }
+    this.store.set(reference, value)
     return this
   }
 
-  /** Remove a key. Time O(1) amortized. Returns false when absent. */
+  /**
+   * Remove a key. Time O(1) amortized, space O(1). Returns false when absent.
+   */
   delete(key: K): boolean {
-    return this.store.delete(key)
+    const reference = this.references.get(key)
+    if (reference === undefined) return false
+    this.references.delete(key)
+    this.registry?.unregister(reference)
+    return this.store.delete(reference)
   }
 
-  /** Membership test that never promotes. Time O(1), space O(1). */
+  /** Membership test that never changes recency. Time O(1), space O(1). */
   has(key: K): boolean {
-    return this.store.has(key)
+    const reference = this.references.get(key)
+    if (reference === undefined) return false
+    return this.store.has(reference)
   }
 
   /**
@@ -96,155 +412,79 @@ export class LruList<K, V> implements Iterable<[K, V]> {
     this.store.resize(capacity)
   }
 
-  /** Remove every entry. Time O(n) for reclamation. */
+  /**
+   * Remove every entry and forget every key reference. Time O(1) plus the work
+   * the runtime spends dropping the old WeakMap and array.
+   */
   clear(): void {
     this.store.clear()
+    this.references = new WeakMap<K, WeakRef<K>>()
   }
 
-  /** Keys from most-recently used to least-recently used. Time O(n). */
-  keys(): IterableIterator<K> {
-    return this.store.keys()
+  /** Live keys from most-recently used to least-recently used. Time O(n). */
+  *keys(): IterableIterator<K> {
+    for (const [key] of this.entries()) yield key
   }
 
-  /** Values from most-recently used to least-recently used. Time O(n). */
-  values(): IterableIterator<V> {
-    return this.store.values()
+  /** Live values from most-recently used to least-recently used. Time O(n). */
+  *values(): IterableIterator<V> {
+    for (const [, value] of this.entries()) yield value
   }
-
-  /** Pairs from most-recently used to least-recently used. Time O(n). */
-  entries(): IterableIterator<[K, V]> {
-    return this.store.entries()
-  }
-
-  /** Snapshot in most-recent-first order. Time O(n), space O(n). */
-  toArray(): Array<[K, V]> {
-    return this.store.toArray()
-  }
-
-  /** Alias of `entries`. Time O(n). */
-  [Symbol.iterator](): IterableIterator<[K, V]> {
-    return this.store.entries()
-  }
-}
-
-/**
- * Weak-key variant of `LruList`.
- *
- * Keys are held through `WeakRef`; values are strong. `get`/`touch` promote,
- * `peek`/`has` do not, iteration skips collected keys. Time O(1) amortized per
- * keyed operation; `size` is O(n) because it sweeps collected references, and
- * `clear` is O(1) plus reclamation. Garbage-collection timing is not
- * deterministic, so a collected entry may occupy capacity until the next sweep
- * or finalizer callback. Space O(capacity).
- */
-export class WeakLruList<K extends object, V> implements Iterable<[K, V]> {
-  private readonly store: HashWeakLruList<K, V>
 
   /**
-   * @param capacity Maximum live entries; clamped to 1..100000.
-   * Time O(1), space O(1).
+   * Live `[key, value]` pairs from most-recently used to least-recently used.
+   * Time O(n), space O(1) per step; collected references are skipped.
    */
-  constructor(capacity = 64) {
-    this.store = new HashWeakLruList<K, V>(capacity)
-  }
-
-  /** Number of reachable entries; sweeps collected keys first. Time O(n). */
-  get size(): number {
-    return this.store.size
-  }
-
-  /** Configured maximum number of live entries. Time O(1). */
-  get capacity(): number {
-    return this.store.capacity
-  }
-
-  /** Read and promote a live value. Time O(1) amortized. */
-  get(key: K): V | undefined {
-    return this.store.get(key)
-  }
-
-  /** Read a live value without promoting it. Time O(1). */
-  peek(key: K): V | undefined {
-    return this.store.peek(key)
-  }
-
-  /** Promote a live key. Time O(1) amortized. */
-  touch(key: K): boolean {
-    return this.store.touch(key)
-  }
-
-  /** Insert or update a key and evict the least-recently used entry. */
-  set(key: K, value: V): this {
-    this.store.set(key, value)
-    return this
-  }
-
-  /** Remove a key. Time O(1) amortized. */
-  delete(key: K): boolean {
-    return this.store.delete(key)
-  }
-
-  /** Membership test that never promotes. Time O(1). */
-  has(key: K): boolean {
-    return this.store.has(key)
-  }
-
-  /** Change the capacity, evicting least-recently used entries when it shrinks. */
-  resize(capacity: number): void {
-    this.store.resize(capacity)
-  }
-
-  /** Remove every entry and forget every key reference. */
-  clear(): void {
-    this.store.clear()
-  }
-
-  /** Live keys, most-recently used first. Time O(n). */
-  keys(): IterableIterator<K> {
-    return this.store.keys()
-  }
-
-  /** Live values, most-recently used first. Time O(n). */
-  values(): IterableIterator<V> {
-    return this.store.values()
-  }
-
-  /** Live pairs, most-recently used first. Time O(n). */
-  entries(): IterableIterator<[K, V]> {
-    return this.store.entries()
+  *entries(): IterableIterator<[K, V]> {
+    for (const [reference, value] of this.store.entries()) {
+      const key = reference.deref()
+      if (key !== undefined) yield [key, value]
+    }
   }
 
   /** Snapshot of live entries, most-recent first. Time O(n), space O(n). */
   toArray(): Array<[K, V]> {
-    return this.store.toArray()
+    return [...this.entries()]
   }
 
   /** Alias of `entries`. Time O(n). */
   [Symbol.iterator](): IterableIterator<[K, V]> {
-    return this.store.entries()
+    return this.entries()
+  }
+
+  /**
+   * Drop entries whose weak reference no longer dereferences.
+   * Time O(n) in the backing entry count, space O(number of dead entries).
+   */
+  private sweep(): void {
+    const collected: Array<WeakRef<K>> = []
+    for (const [reference] of this.store.entries()) {
+      if (reference.deref() === undefined) collected.push(reference)
+    }
+    for (const reference of collected) this.store.delete(reference)
   }
 }
 
 /**
  * A capacity-bounded set with a defined recency order.
  *
- * `add` inserts a new value or refreshes an existing one and returns true only
- * when the set grew; `touch` refreshes without inserting; `has` and `delete`
- * never refresh. Eviction removes the least-recently used value, exactly down to
- * capacity. Time O(1) average per operation, O(k) for shrinking `resize`, O(n)
- * for iteration and `toArray`; space O(capacity). Iteration and `toArray` run
- * least-recently used first, so `toArray()[0]` is the next value to be evicted.
+ * Composes `LruList<T, true>`: `add` inserts a new value or refreshes an
+ * existing one and returns true only when the set grew; `touch` refreshes
+ * without inserting; `has` and `delete` never refresh. Eviction removes the
+ * least-recently used value, exactly down to capacity. Time O(1) average per
+ * operation, O(k) for shrinking `resize`, O(n) for iteration and `toArray`;
+ * space O(capacity). Iteration and `toArray` run least-recently used first, so
+ * `toArray()[0]` is the next value to be evicted.
  */
 export class OrderedLruSet<T> implements Iterable<T> {
-  private readonly store = new OrderedMap<T, true>()
-  private limit: number
+  private readonly store: LruList<T, true>
 
   /**
    * @param capacity Maximum live values; clamped to 1..100000.
    * Time O(1), space O(1).
    */
   constructor(capacity = 64) {
-    this.limit = normaliseCapacity(capacity)
+    this.store = new LruList<T, true>(capacity)
   }
 
   /** Number of values. Time O(1). */
@@ -254,7 +494,7 @@ export class OrderedLruSet<T> implements Iterable<T> {
 
   /** Configured maximum number of values. Time O(1). */
   get capacity(): number {
-    return this.limit
+    return this.store.capacity
   }
 
   /**
@@ -262,9 +502,8 @@ export class OrderedLruSet<T> implements Iterable<T> {
    * Time O(1) average, space O(1).
    */
   add(value: T): boolean {
-    const existed = this.store.delete(value)
+    const existed = this.store.has(value)
     this.store.set(value, true)
-    if (!existed) this.evictOverflow()
     return !existed
   }
 
@@ -278,10 +517,7 @@ export class OrderedLruSet<T> implements Iterable<T> {
    * Time O(1) average. Returns false when the value is absent.
    */
   touch(value: T): boolean {
-    if (!this.store.has(value)) return false
-    this.store.delete(value)
-    this.store.set(value, true)
-    return true
+    return this.store.touch(value)
   }
 
   /** Remove a value. Time O(1) average. */
@@ -294,8 +530,7 @@ export class OrderedLruSet<T> implements Iterable<T> {
    * Time O(1) amortized to grow, O(k) to shrink past k values.
    */
   resize(capacity: number): void {
-    this.limit = normaliseCapacity(capacity)
-    this.evictOverflow()
+    this.store.resize(capacity)
   }
 
   /** Remove every value. Time O(n) for reclamation. */
@@ -305,43 +540,43 @@ export class OrderedLruSet<T> implements Iterable<T> {
 
   /**
    * Snapshot from least-recently used to most-recently used.
-   * Time O(n), space O(n).
+   * Time O(n), space O(n) for the snapshot.
    */
   toArray(): T[] {
-    return [...this.store.keys()]
+    return [...this]
   }
 
-  /** Iterate from least-recently used to most-recently used. Time O(n). */
-  [Symbol.iterator](): IterableIterator<T> {
-    return this.store.keys()
-  }
-
-  /** Remove least-recently used values until the capacity is respected. */
-  private evictOverflow(): void {
-    while (this.store.size > this.limit) this.store.deleteFirst()
+  /**
+   * Iterate from least-recently used to most-recently used.
+   * Time O(n), space O(n) because the underlying LRU iterates most-recent
+   * first and the snapshot is walked backwards (the order promise is exact).
+   */
+  *[Symbol.iterator](): IterableIterator<T> {
+    const keys = [...this.store.keys()]
+    for (let index = keys.length - 1; index >= 0; index -= 1) yield keys[index]
   }
 }
 
 /**
  * A capacity-bounded set with no iteration order promise.
  *
- * `add` and `touch` refresh recency, `has` never does, and eviction removes the
- * value whose recency is oldest. Time O(1) average per keyed operation, O(k) for
- * shrinking `resize`, O(n) for iteration and `toArray`; space O(capacity). The
- * implementation uses a native `Map` whose insertion order is refreshed on
- * `add`/`touch`; that order is an implementation detail, not a contract — callers
- * that need a defined order must use `OrderedLruSet`.
+ * Composes `LruList<T, true>`: `add` and `touch` refresh recency, `has` never
+ * does, and eviction removes the value whose recency is oldest. Time O(1)
+ * average per keyed operation, O(k) for shrinking `resize`, O(n) for iteration
+ * and `toArray`; space O(capacity). The concrete iteration order is
+ * least-recently used to most-recently used (the same order the previous
+ * native-Map implementation exposed), but that is an implementation detail, not
+ * a contract: callers that need a defined order must use `OrderedLruSet`.
  */
 export class UnorderedLruSet<T> implements Iterable<T> {
-  private readonly store = new Map<T, true>()
-  private limit: number
+  private readonly store: LruList<T, true>
 
   /**
    * @param capacity Maximum live values; clamped to 1..100000.
    * Time O(1), space O(1).
    */
   constructor(capacity = 64) {
-    this.limit = normaliseCapacity(capacity)
+    this.store = new LruList<T, true>(capacity)
   }
 
   /** Number of values. Time O(1). */
@@ -351,7 +586,7 @@ export class UnorderedLruSet<T> implements Iterable<T> {
 
   /** Configured maximum number of values. Time O(1). */
   get capacity(): number {
-    return this.limit
+    return this.store.capacity
   }
 
   /**
@@ -359,9 +594,8 @@ export class UnorderedLruSet<T> implements Iterable<T> {
    * Time O(1) average, space O(1).
    */
   add(value: T): boolean {
-    const existed = this.store.delete(value)
+    const existed = this.store.has(value)
     this.store.set(value, true)
-    if (!existed) this.evictOverflow()
     return !existed
   }
 
@@ -375,9 +609,7 @@ export class UnorderedLruSet<T> implements Iterable<T> {
    * Time O(1) average. Returns false when the value is absent.
    */
   touch(value: T): boolean {
-    if (!this.store.delete(value)) return false
-    this.store.set(value, true)
-    return true
+    return this.store.touch(value)
   }
 
   /** Remove a value. Time O(1) average. */
@@ -390,8 +622,7 @@ export class UnorderedLruSet<T> implements Iterable<T> {
    * Time O(1) amortized to grow, O(k) to shrink past k values.
    */
   resize(capacity: number): void {
-    this.limit = normaliseCapacity(capacity)
-    this.evictOverflow()
+    this.store.resize(capacity)
   }
 
   /** Remove every value. Time O(n) for reclamation. */
@@ -399,43 +630,40 @@ export class UnorderedLruSet<T> implements Iterable<T> {
     this.store.clear()
   }
 
-  /** Snapshot; no order promise. Time O(n), space O(n). */
+  /** Snapshot; no order promise. Time O(n), space O(n) for the snapshot. */
   toArray(): T[] {
-    return [...this.store.keys()]
+    return [...this]
   }
 
-  /** Iterate; no order promise. Time O(n). */
-  [Symbol.iterator](): IterableIterator<T> {
-    return this.store.keys()
-  }
-
-  /** Remove oldest-recency values until the capacity is respected. */
-  private evictOverflow(): void {
-    while (this.store.size > this.limit) {
-      const oldest = this.store.keys().next()
-      if (oldest.done === true) return
-      this.store.delete(oldest.value)
-    }
+  /**
+   * Iterate; no order promise. The concrete order happens to be
+   * least-recently used first, matching the former native-Map implementation,
+   * but callers must not depend on it. Time O(n), space O(n) for the snapshot.
+   */
+  *[Symbol.iterator](): IterableIterator<T> {
+    const keys = [...this.store.keys()]
+    for (let index = keys.length - 1; index >= 0; index -= 1) yield keys[index]
   }
 }
 
 /**
  * A capacity-bounded list that allows duplicates, ordered from oldest to newest.
  *
- * `push` appends at the most-recent end and evicts from the oldest end, `shift`
- * removes and returns the oldest value, `get`/`peek` read by index without
- * changing recency, and `touch(index)` explicitly moves one occurrence to the
- * most-recent end. `push`/`shift` are O(1) amortized, `get`/`peek` are O(1),
- * `touch` is O(n) because it shifts the tail of the array, and iteration /
- * `toArray` are O(n) from oldest to newest. Space O(capacity) plus at most a
- * small amortized slack from the head cursor.
+ * Composes `Deque<T>` (the shared ring-buffer primitive) for storage, so this
+ * class no longer keeps a parallel array/head cursor. `push` appends at the
+ * most-recent end and evicts from the oldest end, `shift` removes and returns
+ * the oldest value, `get`/`peek` read by index without changing recency, and
+ * `touch(index)` explicitly moves one occurrence to the most-recent end.
+ * `push`/`shift` are O(1) amortized, `get`/`peek` are O(1), `touch` is O(n)
+ * because it rebuilds the deque without the moved occurrence (O(n) temporary
+ * space), and iteration / `toArray` are O(n) from oldest to newest. Space
+ * O(capacity).
  *
  * Duplicates are ordinary independent entries; touching one occurrence does not
  * move its twin.
  */
 export class OrderedLruList<T> implements Iterable<T> {
-  private slots: Array<T | undefined> = []
-  private start = 0
+  private readonly store = new Deque<T>()
   private limit: number
 
   /**
@@ -448,7 +676,7 @@ export class OrderedLruList<T> implements Iterable<T> {
 
   /** Number of values, duplicates included. Time O(1). */
   get size(): number {
-    return this.slots.length - this.start
+    return this.store.size
   }
 
   /** Configured maximum number of values. Time O(1). */
@@ -461,8 +689,8 @@ export class OrderedLruList<T> implements Iterable<T> {
    * capacity. Time O(1) amortized, space O(1).
    */
   push(value: T): this {
-    this.slots.push(value)
-    while (this.size > this.limit) this.shift()
+    this.store.push(value)
+    while (this.store.size > this.limit) this.store.shift()
     return this
   }
 
@@ -473,7 +701,7 @@ export class OrderedLruList<T> implements Iterable<T> {
    */
   get(index: number): T | undefined {
     this.assertIndex(index)
-    return this.slots[this.start + index] as T
+    return this.store.at(index)
   }
 
   /**
@@ -486,14 +714,20 @@ export class OrderedLruList<T> implements Iterable<T> {
 
   /**
    * Move the occurrence at `index` to the most-recent end.
-   * Time O(n) because the array tail shifts, space O(1). Throws
-   * `InvalidArgumentError` for a non-integer or out-of-range index.
+   * Time O(n) and O(n) temporary space because the deque is rebuilt without the
+   * moved occurrence. Throws `InvalidArgumentError` for a non-integer or
+   * out-of-range index.
    */
   touch(index: number): void {
     this.assertIndex(index)
     if (index === this.size - 1) return
-    const value = this.slots.splice(this.start + index, 1)[0] as T
-    this.slots.push(value)
+    const values = this.store.toArray()
+    const value = values[index]
+    this.store.clear()
+    for (let cursor = 0; cursor < values.length; cursor += 1) {
+      if (cursor !== index) this.store.push(values[cursor])
+    }
+    this.store.push(value)
   }
 
   /**
@@ -501,12 +735,7 @@ export class OrderedLruList<T> implements Iterable<T> {
    * Time O(1) amortized, space O(1).
    */
   shift(): T | undefined {
-    if (this.size === 0) return undefined
-    const value = this.slots[this.start]
-    this.slots[this.start] = undefined
-    this.start += 1
-    this.compactIfNeeded()
-    return value
+    return this.store.shift()
   }
 
   /**
@@ -515,46 +744,32 @@ export class OrderedLruList<T> implements Iterable<T> {
    */
   resize(capacity: number): void {
     this.limit = normaliseCapacity(capacity)
-    while (this.size > this.limit) this.shift()
+    while (this.store.size > this.limit) this.store.shift()
   }
 
-  /** Remove every value. Time O(1) plus reclamation of the old array. */
+  /** Remove every value. Time O(1) plus reclamation of the old buffer. */
   clear(): void {
-    this.slots = []
-    this.start = 0
+    this.store.clear()
   }
 
   /** Snapshot from oldest to newest. Time O(n), space O(n). */
   toArray(): T[] {
-    return Array.from(this)
+    return this.store.toArray()
   }
 
-  /** Iterate from oldest to newest. Time O(n). */
-  *[Symbol.iterator](): IterableIterator<T> {
-    for (let index = this.start; index < this.slots.length; index += 1) {
-      yield this.slots[index] as T
-    }
+  /** Iterate from oldest to newest. Time O(n), space O(1) per step. */
+  [Symbol.iterator](): IterableIterator<T> {
+    return this.store[Symbol.iterator]()
   }
 
   /** Throw unless `index` addresses a live slot. */
   private assertIndex(index: number): void {
-    if (!Number.isInteger(index) || index < 0 || index >= this.size) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.store.size) {
       throw new InvalidArgumentError('list index must be an integer within [0, size)', {
         index,
-        size: this.size,
+        size: this.store.size,
       })
     }
-  }
-
-  /**
-   * Drop the consumed array prefix once it dominates the array, keeping the
-   * O(1) shift cost amortized. Time O(n) per compaction, amortized O(1).
-   */
-  private compactIfNeeded(): void {
-    if (this.start < 1024 && this.start * 2 < this.slots.length) return
-    if (this.start === 0) return
-    this.slots = this.slots.slice(this.start)
-    this.start = 0
   }
 }
 
@@ -562,17 +777,17 @@ export class OrderedLruList<T> implements Iterable<T> {
  * A capacity-bounded list that allows duplicates, with no iteration order
  * promise.
  *
- * Entries are stored in a `Map<sequence, value>` keyed by a monotonically
- * increasing insertion serial. `push` inserts at the newest serial and evicts
- * the oldest surviving serial, so eviction is insertion-recency FIFO unless
- * `touch(value)` moves one matching occurrence to a fresh serial. `peek` returns
- * the next eviction candidate without removing it. `push` is O(1) amortized,
- * `peek` O(1), `touch` O(n) because duplicates make the value ambiguous, and
- * iteration / `toArray` are O(n) in the current serial order (an implementation
- * detail, not a contract). Space O(capacity).
+ * Composes `OrderedMap<number, T>` keyed by a monotonically increasing insertion
+ * serial, plus the serial counter. `push` inserts at the newest serial and
+ * `deleteFirst` evicts the oldest surviving serial, so eviction is
+ * insertion-recency FIFO unless `touch(value)` moves one matching occurrence to
+ * a fresh serial. `peek` returns the next eviction candidate without removing
+ * it. `push` is O(1) amortized, `peek` O(1), `touch` O(n) because duplicates
+ * make the value ambiguous, and iteration / `toArray` are O(n) in the current
+ * serial order (an implementation detail, not a contract). Space O(capacity).
  */
 export class UnorderedLruList<T> implements Iterable<T> {
-  private readonly store = new Map<number, T>()
+  private readonly store = new OrderedMap<number, T>()
   private nextSequence = 0
   private limit: number
 
@@ -607,11 +822,10 @@ export class UnorderedLruList<T> implements Iterable<T> {
 
   /**
    * The next eviction candidate: the oldest surviving value, without removing
-   * it. Time O(1) average, space O(1).
+   * it. Time O(1), space O(1).
    */
   peek(): T | undefined {
-    const oldest = this.store.values().next()
-    return oldest.done === true ? undefined : oldest.value
+    return this.store.first()
   }
 
   /**
@@ -657,11 +871,7 @@ export class UnorderedLruList<T> implements Iterable<T> {
 
   /** Remove oldest values until the capacity is respected. */
   private evictOverflow(): void {
-    while (this.store.size > this.limit) {
-      const oldest = this.store.keys().next()
-      if (oldest.done === true) return
-      this.store.delete(oldest.value)
-    }
+    while (this.store.size > this.limit) this.store.deleteFirst()
   }
 }
 

@@ -45,14 +45,27 @@ and `src/host/handle.ts`.
 | 23 | `Comment` | annotation | yes | Extracted comment/doc-comment attached to one target by a stated rule. Not documentation prose. |
 | 24 | `Code` | annotation/span | yes | A code span/block inside a `Document`. A symbol body is its span, never a `Code` duplicate. |
 | 25 | `Sign` | lexical metadata | yes only when promoted | A keyword/operator/sigil/directive/annotation marker with structural meaning. Not a `Token`; not a code symbol. |
+| 26 | `Book` | long-form container | yes, one `Document` row (`form='book'`) | A long-form work: front matter/preface/part/chapter/article/appendix/index, ordered. Not a `Document` file. |
+| 27 | `Part` | long-form container | yes | A division of a `Book`; contains Chapter/Article. Never outside a Book. |
+| 28 | `Section` | structured prose | yes | A heading/division inside an Article/Chapter/Section. Chapter is **not** a generic heading; Section is. |
+| 29 | `Person` | authority | yes | An author/editor identity with a stable handle. `authored_by` targets a Person; author name strings are display metadata. |
+| 30 | `Venue` | publication container | yes | Journal/proceedings/conference/preprint where an Article is published. Not a `Book`; a proceedings Book may link a Venue. |
 
-**Count: 34 concepts = 30 `NodeKind` values + 1 Document form (`workbook`) + 3 derived views (`Dependency`, `ChainLink`, `Chain`).**
+**Count: 39 concepts = 35 `NodeKind` values + 1 Document form (`workbook`) + 3 derived views (`Dependency`, `ChainLink`, `Chain`).**
 The `Statement` family contributes ten `NodeKind` values (definition, lemma, proof, property,
 axiom, theorem, corollary, claim, example, remark); old `Definition.form` is gone — the kind
 itself carries theorem/lemma/corollary/axiom/property/claim/example/remark. `Condition` adds
 one more kind; `Require`/`Meet` add relations, not kinds; `Chain`/`ChainLink` are projections,
-not kinds.
-`DocumentSurface = Chapter | Article | Paragraph | Sheet | Slide`. `Deck` is
+not kinds. `Book`/`Article` are both a `Document.form` (`book`/`article`) and exactly one
+authored-work node; the Document row is the file/invalidation anchor, never duplicated.
+`DocumentSurface = Book | Part | Chapter | Article | Section | Paragraph | Sheet | Slide`.
+Allowed hierarchy: `Document(form='book')` contains exactly one `Book`; `Book` contains
+`Part`/`Chapter`/`Article`; `Part` contains `Chapter`/`Article`; `Book` may directly contain
+`Chapter`/`Article`; `Article`/`Chapter`/`Section` contain `Section`/`Paragraph`/`Formula`/
+`Statement`/`Comment`/`Code`; `Paragraph` is the leaf prose unit. `Chapter` exists only inside a
+`Book`/`Part`; `Section` is the generic heading inside Article/Chapter. A standalone Article is
+`Document(form='article')` containing exactly one `Article`; a collected Article is the same
+`Article` node with a `part_of` Book edge and an optional `published_in` Venue edge. `Deck` is
 `Document.form='deck'` plus `DeckView`; `Page` is a derived print/PDF view, not persisted;
 `Canvas` is excluded. `Row`/`Column` are derived views. `Workbook` contains `Sheet` through
 the `Document` row; `WorkbookView.sheets` is derived.
@@ -68,15 +81,56 @@ export type ConditionStatus = 'satisfied' | 'violated' | 'unknown' | 'unverifiab
 export type StatementKind = 'definition' | 'lemma' | 'proof' | 'property' | 'axiom' | 'theorem' | 'corollary' | 'claim' | 'example' | 'remark'
 export type ConditionForm = 'precondition' | 'postcondition' | 'invariant' | 'guard' | 'assumption' | 'hypothesis' | 'constraint' | 'goal' | 'unknown'
 export type Language = 'javascript' | 'typescript' | 'jsx' | 'tsx' | 'css' | 'html' | 'markdown' | 'latex' | 'lean' | 'coq' | 'isabelle' | 'xlsx' | 'csv' | 'docx' | 'pptx' | 'unknown'
-export type NodeKind = 'project' | 'module' | 'document' | 'chapter' | 'article' | 'paragraph' | 'sheet' | 'slide' | 'cell' | 'range' | 'formula' | 'class' | 'function' | 'method' | 'definition' | 'lemma' | 'proof' | 'property' | 'axiom' | 'theorem' | 'corollary' | 'claim' | 'example' | 'remark' | 'condition' | 'comment' | 'code' | 'importation' | 'exportation' | 'sign'
+export type NodeKind = 'project' | 'module' | 'document' | 'book' | 'part' | 'chapter' | 'article' | 'section' | 'paragraph' | 'sheet' | 'slide' | 'cell' | 'range' | 'formula' | 'class' | 'function' | 'method' | 'definition' | 'lemma' | 'proof' | 'property' | 'axiom' | 'theorem' | 'corollary' | 'claim' | 'example' | 'remark' | 'condition' | 'comment' | 'code' | 'importation' | 'exportation' | 'sign' | 'person' | 'venue'
+export type DocumentForm = 'article' | 'book' | 'note' | 'workbook' | 'deck' | 'unknown'
 export interface NodeCore {
   identity: Identity; handle: Handle; kind: NodeKind; locator: string
   project?: Identity; owner?: Identity; parent?: Identity
+  metadata: ConceptMetadata
   span?: SourceSpan                 // absent on Project; whole-file span on Module/Document
   hash?: string                     // content hash; containers use a Merkle hash
   created: Timestamp; changed: Timestamp
 }
 export interface NodeBase extends NodeCore { status: NodeStatus }
+export type ReferenceScheme = 'file' | 'symbol' | 'module' | 'formula' | 'sheet-cell' | 'url' | 'handle'
+export type Charset =
+  | 'utf-8' | 'utf-8-bom' | 'utf-16le' | 'utf-16be' | 'utf-16le-bom' | 'utf-16be-bom'
+  | 'utf-32le' | 'utf-32be' | 'utf-32le-bom' | 'utf-32be-bom'
+  | 'ascii' | 'latin1' | 'windows-1252' | 'gb18030' | 'gbk' | 'big5' | 'shift-jis' | 'euc-kr'
+  | 'binary' | 'unknown'
+export type CharsetSource = 'bom' | 'declared' | 'heuristic' | 'fallback'
+export interface ByteRange { start: number; end: number }   // charset bytes, start inclusive, end EXCLUSIVE
+export interface LineRange { start: number; end: number }   // 1-based decoded lines, start inclusive, end INCLUSIVE
+export interface ColumnRange { start: number; end: number } // 1-based code points, start inclusive, end INCLUSIVE
+export interface FileReference {
+  scheme: 'file'; path: string                              // workspace-relative, normalized, no traversal
+  bytes: ByteRange; lines?: LineRange; columns?: ColumnRange
+  charset: Charset; charsetConfidence?: number; charsetSource?: CharsetSource
+  bom: boolean; bomBytes: number
+  hash?: string; fileBytes?: number; mtime?: number; mediaType?: string
+}
+export interface SymbolReference { scheme: 'symbol'; module: string; symbol: Handle; span?: SourceSpan; hash?: string; version?: string }
+export interface ModuleReference { scheme: 'module'; path: string; version?: string }
+export interface FormulaLocation { scheme: 'formula'; sheet?: string; cell?: string; label?: string; span?: SourceSpan; hash?: string }
+export interface SheetCellReference { scheme: 'sheet-cell'; workbook: string; sheet: string; cell: string; bytes?: ByteRange; lines?: LineRange; columns?: ColumnRange; charset?: Charset; hash?: string; mtime?: number }
+export interface UrlReference { scheme: 'url'; target: string; external: true; mediaType?: string }
+export interface HandleReference { scheme: 'handle'; target: Handle }
+export type Reference = FileReference | SymbolReference | ModuleReference | FormulaLocation | SheetCellReference | UrlReference | HandleReference
+export interface ConceptMetadata {
+  identity: Handle                 // PUBLIC handle; numeric identity never leaves the host
+  name: string; kind: NodeKind
+  summary: string                  // <= 200 chars, what the node is
+  brief: string                    // <= 300 chars, what the content says; explicit only
+  description: string              // <= 500 chars, behaviour
+  usage: string                    // <= 300 chars; empty when unknown, never invented
+  purpose: string                  // <= 200 chars
+  reference: Reference             // locator only; no body bytes
+  path?: string; byteStart?: number; byteEnd?: number; lineStart?: number; lineEnd?: number; fingerprint?: string
+  charset?: Charset; charsetConfidence?: number; charsetSource?: CharsetSource; bom?: boolean; bomBytes?: number
+  tags?: string[]; status?: string; language?: Language; owner?: Handle
+  version?: string; source?: string; created?: Timestamp; changed?: Timestamp
+}
+export interface NodeCard { identity: Handle; name: string; kind: NodeKind; summary: string; brief: string; reference: Reference; path?: string; byteStart?: number; byteEnd?: number; lineStart?: number; lineEnd?: number; fingerprint?: string; charset?: Charset; charsetConfidence?: number; charsetSource?: CharsetSource; bom?: boolean; bomBytes?: number; status?: string; usage?: string; purpose?: string }
 ```
 
 ### 2.1 Entity interfaces
@@ -84,22 +138,27 @@ export interface NodeBase extends NodeCore { status: NodeStatus }
 ```ts
 export interface Project extends NodeBase { kind: 'project'; root: string; manifest: 'package' | 'pyproject' | 'tsconfig' | 'lake' | 'sphinx' | 'unknown'; manifestPath?: string; name: string; moduleCount: number; documentCount: number; truncated: boolean }
 export interface Module extends NodeBase { kind: 'module'; path: string; language: Language; media: string; bytes: number; parser: string; symbolCount: number; importCount: number; exportCount: number }
-export interface Document extends NodeBase { kind: 'document'; path: string; form: 'article' | 'book' | 'note' | 'workbook' | 'deck' | 'unknown'; media: string; parser: string; bytes: number; title?: string; surfaceCount: number }
+export interface Document extends NodeBase { kind: 'document'; path: string; form: DocumentForm; media: string; parser: string; bytes: number; title?: string; surfaceCount: number }
 export interface Workbook extends Document { form: 'workbook'; sheetCount: number; namedRangeCount: number; formulaCount: number }
 
-export interface Chapter extends NodeBase { kind: 'chapter'; title: string; level: number; ordinal: number }
-export interface Article extends NodeBase { kind: 'article'; title?: string; ordinal: number; explicit: boolean }
-export interface Paragraph extends NodeBase { kind: 'paragraph'; ordinal: number; preview: string } // <= 512 chars
+export interface Book extends NodeBase { kind: 'book'; title: string; authors: string[]; edition?: string; isbn?: string; language: Language; publisher?: string; year?: number; metadata?: string }
+export interface Part extends NodeBase { kind: 'part'; title: string; ordinal: number }
+export interface Chapter extends NodeBase { kind: 'chapter'; title: string; ordinal: number; form?: 'chapter' | 'preface' | 'appendix' | 'index' | 'frontmatter' }
+export interface Article extends NodeBase { kind: 'article'; title: string; authors: string[]; keywords: string[]; venue?: string; doi?: string; year?: number; standalone: boolean; explicit: boolean; ordinal: number }
+export interface Section extends NodeBase { kind: 'section'; title?: string; level: number; ordinal: number }
+export interface Person extends NodeBase { kind: 'person'; name: string; orcid?: string; affiliation?: string; email?: string }
+export interface Venue extends NodeBase { kind: 'venue'; form: 'journal' | 'proceedings' | 'conference' | 'preprint' | 'unknown'; name: string; publisher?: string; issn?: string; year?: number }
+export interface Paragraph extends NodeBase { kind: 'paragraph'; ordinal: number }
 export interface Slide extends NodeBase { kind: 'slide'; ordinal: number; title?: string; shapeCount: number; hidden: boolean }
 export interface Sheet extends NodeBase { kind: 'sheet'; ordinal: number; name: string; rowCount: number; columnCount: number; cellCount: number; formulaCount: number; truncated: boolean }
-export interface Cell extends NodeBase { kind: 'cell'; sheet: Identity; rowIndex: number; columnIndex: number; address: string; valueType: 'text' | 'number' | 'boolean' | 'error' | 'date' | 'empty' | 'unknown'; value?: string; cached: boolean; injectionRisk: boolean }
+export interface Cell extends NodeBase { kind: 'cell'; sheet: Identity; rowIndex: number; columnIndex: number; address: string; valueType: 'text' | 'number' | 'boolean' | 'error' | 'date' | 'empty' | 'unknown'; cached: boolean; injectionRisk: boolean }
 export interface Range extends NodeBase { kind: 'range'; sheet?: Identity; form: 'cell' | 'row' | 'column' | 'named'; name?: string; start: string; end?: string; cellCount: number; truncated: boolean }
 export interface RowView { sheet: Identity; rowIndex: number; cell: Handle[] }
 export interface ColumnView { sheet: Identity; columnIndex: number; cell: Handle[] }
-export type DocumentSurface = Chapter | Article | Paragraph | Sheet | Slide
+export type DocumentSurface = Book | Part | Chapter | Article | Section | Paragraph | Sheet | Slide
 
 export interface Statement extends NodeCore {
-  kind: StatementKind; label?: string; title?: string; text?: string       // text <= 64 KiB
+  kind: StatementKind; label?: string; title?: string
   container: 'document' | 'section' | 'paragraph' | 'sheet' | 'html-section' | 'lean-module'
   formal: boolean; formalSystem?: 'lean' | 'coq' | 'isabelle' | 'agda' | 'other'
   status: StatementStatus; evidence?: Identity                              // Proof identity
@@ -117,21 +176,22 @@ export interface Remark extends Statement { kind: 'remark' }
 export interface Proof extends Statement { kind: 'proof'; form: 'tactic' | 'term' | 'environment' | 'informal' | 'unknown'; proofStatus?: 'complete' | 'incomplete' | 'admitted' | 'sorry' | 'unverifiable'; target?: Identity }
 export interface SymbolView { kind: 'class' | 'function' | 'method' | 'definition'; handle: Handle; name: string; owner?: Handle }
 export interface Condition extends NodeCore {
-  kind: 'condition'; form: ConditionForm; expression: string; formula?: Identity
-  container: 'statement' | 'plan-step' | 'function' | 'module' | 'document' | 'sheet' | 'html-section' | 'condition'
+  kind: 'condition'; form: ConditionForm; formula?: Identity
+  container: 'statement' | 'plan-step' | 'function' | 'module' | 'document' | 'section' | 'sheet' | 'html-section' | 'condition'
   status: ConditionStatus; evidence?: Identity; author?: string; source?: string
   negated: boolean; appliesTo?: Handle
 }
 export interface RequireView { target: Handle; condition: Handle }  // necessary, "only if"
 export interface MeetView { target: Handle; condition: Handle }     // sufficient, "if"
 
-export type ChainRelation = 'depends' | 'satisfies' | 'baseline' | 'prerequisite' | 'requires' | 'meets' | 'proves' | 'defines' | 'imports' | 'exports' | 'annotates' | 'labels' | 'property_of'
+export type ChainRelation = 'depends' | 'satisfies' | 'baseline' | 'prerequisite' | 'requires' | 'meets' | 'proves' | 'defines' | 'imports' | 'exports' | 'annotates' | 'labels' | 'property_of' | 'part_of' | 'published_in' | 'cites' | 'edition_of' | 'authored_by'
 export type ChainStatus = 'satisfied' | 'unmet' | 'unknown' | 'stale' | 'unverifiable'
 export interface ChainLink {
   handle: Handle; from: Handle; to: Handle; relation: ChainRelation; direction: 'forward' | 'reverse'
   status: ChainStatus; depth: number; evidenceHandle?: Handle; baselineVersion?: string
-  kind?: NodeKind; label?: string; title?: string; span?: SourceSpan
-  created: Timestamp; changed: Timestamp
+  kind?: NodeKind; name?: string; label?: string; title?: string; brief?: string
+  path?: string; byteStart?: number; byteEnd?: number; lineStart?: number; lineEnd?: number; fingerprint?: string; charset?: Charset
+  span?: SourceSpan; created: Timestamp; changed: Timestamp
 }
 export interface Chain {
   root: Handle; link: ChainLink[]; depth: number; truncated: boolean
@@ -146,9 +206,8 @@ export interface Formula extends NodeBase {
   kind: 'formula'; dialect: FormulaDialect; delimiter: FormulaDelimiter; container: FormulaContainer; semantics: FormulaSemantics
   form?: 'arithmetic' | 'comparison' | 'function' | 'reference' | 'mixed'
   sheet?: Identity; anchor?: Identity                                        // spreadsheet only
-  text: string; ast?: FormulaNode; referenceCount: number
+  ast?: FormulaNode; referenceCount: number
   cachedValue?: string; cachedType?: 'number' | 'text' | 'boolean' | 'error' | 'unknown'; cachedAt?: Timestamp
-  rendered?: string                                                          // external renderer only
   truncated: boolean
 }
 export type FormulaReferenceKind = 'cell' | 'range' | 'name' | 'symbol' | 'label' | 'equation' | 'bibliography'
@@ -172,11 +231,11 @@ export type FormulaNode =
 export interface ClassSymbol extends NodeBase { kind: 'class'; name: string; signature?: string; abstract: boolean; exported: boolean }
 export interface FunctionSymbol extends NodeBase { kind: 'function'; name: string; signature?: string; async: boolean; generator: boolean; exported: boolean }
 export interface MethodSymbol extends NodeBase { kind: 'method'; name: string; signature?: string; form: 'method' | 'constructor' | 'getter' | 'setter'; ownerClass: Identity; exported: boolean }
-export interface Comment extends NodeBase { kind: 'comment'; style: 'line' | 'block' | 'doc' | 'html'; content: string; attachment: 'leading' | 'trailing' | 'inner' | 'orphan'; target?: Identity }
-export interface Code extends NodeBase { kind: 'code'; form: 'span' | 'block'; language?: string; content?: string; digest: string; executable: false }
+export interface Comment extends NodeBase { kind: 'comment'; style: 'line' | 'block' | 'doc' | 'html'; attachment: 'leading' | 'trailing' | 'inner' | 'orphan'; target?: Identity }
+export interface Code extends NodeBase { kind: 'code'; form: 'span' | 'block'; language?: string; digest: string; executable: false }
 export interface Importation extends NodeBase { kind: 'importation'; specifier?: string; resolution: 'resolved' | 'external' | 'unresolved' | 'unverifiable'; typeOnly: boolean; names?: string[]; target?: Identity }
 export interface Exportation extends NodeBase { kind: 'exportation'; name: string; names?: string[]; source?: Identity; wildcard: boolean; typeOnly: boolean }
-export interface Sign extends NodeBase { kind: 'sign'; text: string; form: 'keyword' | 'operator' | 'sigil' | 'directive' | 'annotation'; role?: 'label' | 'reference' | 'cite' | 'decorator' | 'at-rule' | 'heading' | 'fence' | 'directive'; language: Language; meaning?: string; target?: Identity }
+export interface Sign extends NodeBase { kind: 'sign'; form: 'keyword' | 'operator' | 'sigil' | 'directive' | 'annotation'; role?: 'label' | 'reference' | 'cite' | 'decorator' | 'at-rule' | 'heading' | 'fence' | 'directive'; language: Language; meaning?: string; target?: Identity }
 export interface DependencyView { source: Handle; target?: Handle; kind: 'import' | 'include' | 'stylesheet' | 'asset' | 'manifest' | 'formula'; specifier: string; external: boolean; typeOnly: boolean; origin: 'import' | 'manifest' | 'formula' }
 ```
 
@@ -230,38 +289,176 @@ heuristic. A violated `Require` makes a `Statement` target at most `unproved` an
 `rejected`/`failed`; a `Meet` may raise a target to `proved` only with explicit evidence.
 `unknown` never auto-passes. `Require + Meet` yields the derived `equivalent` view; no third
 truth value is stored. `Condition.form` maps the requested `kind` (`precondition`/…); the node
-`kind` is `condition`. `Condition.expression` is the normalized text; `formula` optionally
-references a `Formula` node whose AST is derived, never serialized to the agent.
+`kind` is `condition`. A `Condition` has no stored expression text; `metadata.brief` gives the
+gist and `metadata.reference` locates the source span; the `formula` link optionally points to
+a derived `Formula` AST, never serialized to the agent.
 
-### 2.4 SQLite (schema version 24, new tables only)
+### 2.4 Concept metadata and agent cards
+
+Every persisted node carries `ConceptMetadata`; `Dependency`, `ChainLink` and `Chain` are
+projected as metadata but never persisted. **Blueprint invariant:** the node row stores
+identity/name/kind/summary/brief/description/usage/purpose/reference/tags/status/language/
+version/source and **no** file body, raw source text, attachment bytes, or full AST. Derived
+ASTs, patch data and formula ASTs are at most bounded in-memory caches keyed by
+`reference.hash + mtime`, never persisted as content. `identity` is the public `handle`; the
+internal numeric `identity` never leaves the host and is not a second ID scheme.
+
+| Kind group | `name` | `summary` (what it is) | `brief` (what content says) | `description` | `usage`/`purpose` |
+|---|---|---|---|---|---|
+| class/function/method | symbol name | first doc-comment line | first doc sentence | ≤ 500-char doc excerpt | explicit `@usage`/`Purpose:` only |
+| module/project | path/manifest name | README/package description if explicit | package purpose sentence | exports/imports or manifest scope | explicit docs only |
+| book/article/chapter/section/paragraph | title/heading | structural role | abstract/front-matter sentence | structure/ordering | never inferred from prose |
+| formula | optional label | dialect + form | what the formula means | computes/typesets semantics | explicit label/target only |
+| definition/lemma/proof/property/axiom | kind + label | formal statement kind | statement gist | formal system/status context | explicit `\uses`/contract tag only |
+| condition | kind | condition form | logic gist (necessary/sufficient) | target/scope | explicit target |
+| comment/code/sign/importation/exportation | explicit text/path/specifier | one-line role | explicit first line/specifier | attachment/role | explicit source only |
+| sheet/cell/range | sheet/cell/range label | data role | formula/meaning if explicit | bounds/type | explicit sheet context |
+| person/venue/part | name/title | authority/publication role | role/venue context | authority/publication scope | explicit metadata only |
+
+`NodeCard` is identity, name, kind, summary, brief, reference (locator only), the six flat
+fields (`path`, `byteStart`, `byteEnd`, `lineStart`, `lineEnd`, `fingerprint`) plus optional
+status/usage/purpose, capped at ~300 tokens / 1 KiB. `ChainLink` carries identity, name,
+relation, status, depth, evidenceHandle, `brief` ≤ 120 chars and, only when budget allows,
+`path` + one range + `fingerprint`; it carries no reference body, description, usage or purpose.
+`coordination_describe` (read-only) accepts
+`{handle, fields?: ['summary','description','usage','purpose']}` and always returns `brief`,
+`reference` and the six flat fields; the body is never returned. `coordination_read` is the only
+content path (§2.5). Caps: `name` non-empty for persisted nodes; `summary` ≤ 200, `brief` ≤ 300,
+`description` ≤ 500, `usage` ≤ 300, `purpose` ≤ 200; total metadata ≤ 4 KiB; strip HTML/secrets;
+language-aware; missing fields are empty plus `unverifiable`, never fabricated.
+`describe(handle)` / `nodeCard(handle)` are O(log n); `findByName` O(log n + k);
+`searchSummary` is bounded by `LIMIT` with explicit `truncated`; `listChildren` returns cards,
+never bodies.
+
+### 2.5 File references, coordinate semantics, and reads
+
+`FileReference` is the only way a file-backed node points at content: a workspace-relative
+`path` plus **both** a byte range and a line range, never the bytes. `bytes` are byte offsets in
+the file's `charset` (UTF-8 in P0), `start` inclusive and `end` **exclusive**; CRLF is two bytes
+in UTF-8 (four in UTF-16LE) and a BOM is part of the file but **not** part of any fragment range
+(`byteStart >= bomBytes`). `lines` are 1-based decoded line numbers, `start` inclusive and
+`end` **inclusive**; LF, CRLF and CR each count as one decoded break and a final line without a
+newline still counts. `columns` are optional 1-based Unicode code points. The asymmetry is
+deliberate: byte ranges are half-open for slicing; line ranges are inclusive for readers. LSP
+positions are 0-based UTF-16 line/character; this model is charset bytes + 1-based inclusive
+lines, so convert through the line index and a decode step — never mix LSP offsets with bytes.
+Both ranges are required for text files and must be produced by the same scan; if they cannot
+agree (binary/unknown charset), the reference is bytes-only with `lines` absent and the node
+is `unverifiable`. `hash` covers the referenced range (not the whole file); `fileBytes` and
+`mtime` support bounds and staleness. `path` is normalized, workspace-relative, and rejects
+traversal, absolute paths outside the workspace, credentials and `data:` bodies. The six flat
+fields on the node (`path`, `byteStart`, `byteEnd`, `lineStart`, `lineEnd`, `fingerprint`) are
+authoritative; the nested `reference` is a convenience locator. `fingerprint` is
+`sha256:<hex>` over the exact fragment bytes only (path/range not mixed in), host-computed and
+never agent-supplied; identical text at another location has the same fingerprint, while
+position + fingerprint detects both content and layout changes.
+
+`coordination_read` (host-authorized): args
+`{handle? | path, mode: 'bytes'|'lines', start: number, end: number, maxBytes?: number, maxLines?: number, charset?: Charset}`.
+Bytes mode uses charset byte offsets with `end` exclusive; lines mode uses 1-based decoded lines
+with `end` inclusive and maps through a host-only line index. A node read defaults to its recorded
+range and stored charset; a `charset` override is diagnostics-only. An explicit override must
+stay inside `fileBytes`/line count. Response:
+`{path, mode, requested, returned, content, truncated, hash, charset, nextStart?, lineRange?, byteRange?}`;
+`content` is the only place real text is returned, subject to 256 KiB/2,000 lines/16k tokens
+per read, redaction and token budget. NUL/`binary`/`unknown` or undecodable sequences refuse text
+reading (metadata only); invalid sequences are never silently replaced/corrupted.
+`resolveReference(handle)` validates and returns a locator; `readReference(handle, mode, start,
+end)` reads; `lineToByte`/`byteToLine` are O(log n) via a per-file line-start index in a bounded
+LRU (BPlusTree/OrderedSkipList or sorted-array binary search); read is O(k). Cache invalidation
+uses `fingerprint` + `charset` + `mtime`; NodeCard/Chain/list never include content.
+
+### 2.6 Charset detection and support
+
+`Charset` is closed: `'utf-8' | 'utf-8-bom' | 'utf-16le' | 'utf-16be' | 'utf-16le-bom' |
+'utf-16be-bom' | 'utf-32le' | 'utf-32be' | 'utf-32le-bom' | 'utf-32be-bom' | 'ascii' | 'latin1' |
+'windows-1252' | 'gb18030' | 'gbk' | 'big5' | 'shift-jis' | 'euc-kr' | 'binary' | 'unknown'`.
+Unknown values are rejected, never guessed. `utf-8-bom` means `EF BB BF`; `utf-16*-bom`/`utf-32*-bom`
+mean the BOM is present; `binary` is non-text/undecodable; `unknown` is detection failure. `ascii`
+only when every byte is `< 0x80`; otherwise valid UTF-8 is `utf-8`. Detection order: UTF-32 BOM
+(`FF FE 00 00` / `00 00 FE FF`) before UTF-16 (`FF FE` / `FE FF`) before UTF-8 (`EF BB BF`), so
+UTF-32 is never misread as UTF-16. Without a BOM: valid UTF-8 ⇒ `utf-8`; all bytes `< 0x80` ⇒
+`ascii`; UTF-16/32 only with high-confidence NUL patterns; legacy candidates (gb18030/gbk/big5/
+shift-jis/euc-kr/latin1/windows-1252) only when declared or detected above a documented confidence
+threshold, else `unknown`/`binary`. No silent transcoding. `charsetConfidence` (0..1) and
+`charsetSource` (`bom`/`declared`/`heuristic`/`fallback`) are recorded.
+
+| Scope | Supported | Behaviour |
+|---|---|---|
+| P0 | `utf-8`, `utf-8-bom`, `ascii` | full parse with bytes + lines + fingerprint |
+| P1 | `utf-16le/be` (+BOM), `gb18030`, `big5`, `shift-jis`, `euc-kr` | detect/declared, lossless transcode for parsing; original byte offsets and raw-byte fingerprint; lossy/exact-map failure ⇒ `unverifiable`, bytes only |
+| P2 | `utf-32*`, `latin1`, `windows-1252`, other legacy | best effort; `binary`/`unknown` never parsed as text, bytes only + diagnostic |
+
+BOM bytes count in `fileBytes` but are outside all fragment ranges (`bom: true`, `bomBytes`);
+line numbers are decoded lines. `fingerprint` is sha256 over the original fragment bytes before
+any decoding/transcoding, so charset and content changes both invalidate. Unknown/low-confidence
+charset produces no line range, only bytes + fingerprint. Host APIs: `nodesByCharset(charset)`
+O(log n + k), `detectCharset(pathBytes)` host-only (not agent), `validateCharsetDeclared(path,
+declared)` rejects a declared charset that contradicts the BOM.
+
+### 2.7 Post-edit refresh contract
+
+The agent may modify a file only through an authorized write/edit command. The host then
+re-reads/reparses the affected file (or the affected span plus a bounded reparse window),
+recomputes `byteStart`/`byteEnd`/`lineStart`/`lineEnd` and `fingerprint` for every affected
+fragment, and returns the updated fragment metadata. The agent **must not** compute or write
+`fingerprint`, `byteEnd`, `lineEnd` or `path`; it uses the returned values. An insert/delete
+before a fragment shifts all downstream ranges even when text is unchanged; the fingerprint
+stays stable, so the pair (position, fingerprint) detects both content and layout changes.
+A cached handle whose fingerprint no longer matches is `stale` and must be refreshed via
+`coordination_describe`/`coordination_refresh` before reuse. If the host cannot reparse safely
+(binary, too large, timeout), it marks `unverifiable`/`stale` and never guesses ranges.
+
+`coordination_write` args
+`{path, byteStart?, byteEnd?, lineStart?, lineEnd?, content, expectedFingerprint?, charset?: Charset, bom?: boolean}`;
+omitted `charset`/`bom` preserve the file's current charset/BOM; changing either invalidates every
+fragment and must be explicit. An `expectedFingerprint` mismatch (or an implicit charset change)
+returns `CONFLICT` and writes nothing. Response:
+`{path, fileBytes, mtime, charset, charsetConfidence, charsetSource, bom, bomBytes, fragments:[{handle,path,byteStart,byteEnd,lineStart,lineEnd,fingerprint,charset,bom}], truncated}`.
+`coordination_refresh` args `{path}` or `{handles[]}` returns updated fragment metadata only,
+never content. Reads remain byte/line based; `path+byteStart/byteEnd` and
+`path+lineStart/lineEnd` must resolve to the same span, otherwise `stale`/`unverifiable`.
+Storage indexes `(path,byteStart)` and `(path,lineStart)`; cache key is
+`path + fingerprint + charset`; `fingerprint` is never accepted from the agent.
+
+### 2.8 SQLite (schema version 24, new tables only)
 
 Existing tables are untouched; `restriction` remains the table for `Constraint`.
-`SCHEMA_VERSION` becomes 24. Interface `content` maps to `node.content`, `Cell.value` to
-`node.value`, `Range.start/end` to `node.rangeStart/rangeEnd`, `Formula.text`/`Sign.text`/
-`Statement.text` to `node.content`.
+`SCHEMA_VERSION` becomes 24. The node row stores metadata and locators only; no file body,
+raw source text, attachment bytes, `content`, `value` or full AST.
 
 ```sql
 CREATE TABLE IF NOT EXISTS node (
   identity INTEGER PRIMARY KEY AUTOINCREMENT, handle TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, locator TEXT NOT NULL,
-  project INTEGER, owner INTEGER, parent INTEGER, path TEXT, name TEXT, title TEXT, label TEXT, ordinal INTEGER NOT NULL DEFAULT 0,
-  level INTEGER, spanStart INTEGER, spanEnd INTEGER, spanLine INTEGER, spanColumn INTEGER, hash TEXT, status TEXT NOT NULL DEFAULT 'parsed',
-  language TEXT, form TEXT, sourceForm TEXT, content TEXT, signature TEXT, specifier TEXT, resolution TEXT, external INTEGER, typeOnly INTEGER,
-  target INTEGER, sheet INTEGER, anchor INTEGER, formula INTEGER, rowIndex INTEGER, columnIndex INTEGER, address TEXT, valueType TEXT, value TEXT, rangeForm TEXT,
+  project INTEGER, owner INTEGER, parent INTEGER, path TEXT, name TEXT, title TEXT, label TEXT, ordinal INTEGER NOT NULL DEFAULT 0, level INTEGER,
+  byteStart INTEGER, byteEnd INTEGER, lineStart INTEGER, lineEnd INTEGER, fingerprint TEXT,
+  charset TEXT, charsetConfidence REAL, charsetSource TEXT, bom INTEGER, bomBytes INTEGER, hash TEXT, status TEXT NOT NULL DEFAULT 'parsed',
+  language TEXT, form TEXT, sourceForm TEXT, signature TEXT, specifier TEXT, resolution TEXT, external INTEGER, typeOnly INTEGER,
+  target INTEGER, sheet INTEGER, anchor INTEGER, formula INTEGER, rowIndex INTEGER, columnIndex INTEGER, address TEXT, valueType TEXT, rangeForm TEXT,
   rangeStart TEXT, rangeEnd TEXT, cellCount INTEGER, rowCount INTEGER, columnCount INTEGER, dialect TEXT, delimiter TEXT, container TEXT,
   semantics TEXT, formal INTEGER, formalSystem TEXT, evidence INTEGER, proofStatus TEXT, role TEXT, meaning TEXT,
+  summary TEXT, brief TEXT, description TEXT, usage TEXT, purpose TEXT, reference TEXT, tags TEXT, version TEXT,
   appliesTo TEXT, author TEXT, source TEXT, negated INTEGER,
   truncated INTEGER NOT NULL DEFAULT 0, complete INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL, changed INTEGER NOT NULL, detail TEXT,
+  CHECK (byteStart IS NULL OR byteEnd IS NULL OR byteStart <= byteEnd),
+  CHECK (lineStart IS NULL OR lineEnd IS NULL OR lineStart <= lineEnd),
+  CHECK (kind = 'project' OR project IS NOT NULL),
   FOREIGN KEY (project) REFERENCES node(identity), FOREIGN KEY (owner) REFERENCES node(identity), FOREIGN KEY (parent) REFERENCES node(identity),
   FOREIGN KEY (target) REFERENCES node(identity), FOREIGN KEY (sheet) REFERENCES node(identity), FOREIGN KEY (anchor) REFERENCES node(identity),
-  FOREIGN KEY (formula) REFERENCES node(identity), FOREIGN KEY (evidence) REFERENCES node(identity), CHECK (kind = 'project' OR project IS NOT NULL)
+  FOREIGN KEY (formula) REFERENCES node(identity), FOREIGN KEY (evidence) REFERENCES node(identity)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_node_locator ON node(kind, locator);
 CREATE INDEX IF NOT EXISTS idx_node_project ON node(project, kind);
 CREATE INDEX IF NOT EXISTS idx_node_owner ON node(owner, kind, ordinal);
 CREATE INDEX IF NOT EXISTS idx_node_parent ON node(parent, ordinal);
 CREATE INDEX IF NOT EXISTS idx_node_name ON node(kind, name);
+CREATE INDEX IF NOT EXISTS idx_node_meta ON node(kind, status, name);
+CREATE INDEX IF NOT EXISTS idx_node_summary ON node(kind, summary);
 CREATE INDEX IF NOT EXISTS idx_node_path ON node(kind, path);
-CREATE INDEX IF NOT EXISTS idx_node_span ON node(owner, spanStart, spanEnd);
+CREATE INDEX IF NOT EXISTS idx_node_position ON node(path, byteStart);
+CREATE INDEX IF NOT EXISTS idx_node_line ON node(path, lineStart);
+CREATE INDEX IF NOT EXISTS idx_node_fingerprint ON node(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_node_charset ON node(charset);
 CREATE INDEX IF NOT EXISTS idx_node_sheet ON node(sheet, rowIndex, columnIndex);
 CREATE INDEX IF NOT EXISTS idx_node_label ON node(owner, kind, role);
 CREATE INDEX IF NOT EXISTS idx_node_statement ON node(project, kind, status);
@@ -289,10 +486,11 @@ CREATE TABLE IF NOT EXISTS snapshot (
 CREATE INDEX IF NOT EXISTS idx_snapshot_path ON snapshot(path, modified, size, parser);
 ```
 
-`node.content` is capped text for `Sign`/`Formula`/`Statement`/`Condition`/`Comment`/`Code`;
-`node.value` is a `Cell` value. `Condition.expression` maps to `node.content`; `appliesTo` is an
+`node.reference` is the JSON locator; `brief` is the explicit synopsis; the six flat fields
+(`path`, `byteStart`, `byteEnd`, `lineStart`, `lineEnd`, `fingerprint`) and `charset`/`bom`
+are authoritative. There is no `node.content`, `node.value` or content blob. `appliesTo` is an
 opaque handle for Plan/SubTask targets that are not domain nodes. `edge.baselineVersion` is the
-pinned version/hash of a `baseline` link. `detail` holds rare fields (`rendered`, `cached*`).
+pinned version/hash of a `baseline` link. `detail` holds rare non-body metadata (`cached*`).
 `locator` examples:
 `project:<root>`, `module:<path>`, `document:<path>/lemma:2`,
 `module:<path>/function:foo#1`, `document:<path>/sheet:1/cell:B3`,
@@ -315,13 +513,18 @@ receives only a `Chain` (or a digest). It cannot read DB rows, ASTs, graphs, adj
 | `requires` | Necessary **condition** on a target ("only if"), condition-level; violated ⇒ target invalid. | `requires` edge |
 | `meets` | Sufficient **condition** ("if"), condition-level; met alone never proves without evidence. | `meets` edge |
 | `proves` / `defines` / `imports` / `exports` / `annotates` / `labels` / `property_of` | Existing semantics from §4; projected unchanged. | corresponding edge |
+| `part_of` | Article/Chapter → Book; baseline edition is carried by `edition_of`/`baselineVersion`. | `part_of` edge |
+| `published_in` | Article → Venue (journal/proceedings/conference/preprint). | `published_in` edge |
+| `cites` | Article/Book → Article/Book/Statement; citation cycles are legal and reported; external URLs have no target. | `cites` edge |
+| `edition_of` / `authored_by` | Book → Book baseline / Book/Article → Person; stale edition invalidates dependents. | `edition_of`/`authored_by` edge |
 
 `prerequisite` is task/step-level necessary input; `requires` is a logical necessary condition;
 `baseline` is a version/decision reference; `depends` is existence/validity. They are not
 interchangeable. `coordination_chain` (read-only): args
 `{handle?: string, action: 'dependencies'|'dependents'|'satisfies'|'satisfied_by'|'baseline'|'prerequisites'|'unmet'|'path', depth?: 1..8, relation?: ChainRelation, limit?: 1..50}`;
-returns `{root, links[], depth, truncated, cycle?, version}` with only handle, kind, relation,
-status, depth, evidenceHandle, label/title and an optional bounded span. Budget: depth ≤ 8,
+returns `{root, links[], depth, truncated, cycle?, version}` with only handle, name, kind,
+relation, status, depth, evidenceHandle, brief ≤ 120 and, when budget allows, a compact locator
+(path + one range + fingerprint); never the body. Budget: depth ≤ 8,
 links ≤ 50, ~1,500 tokens; truncation is explicit (`truncated: true`), never silent. No AST, no
 adjacency map, no raw text, no full object graph. Writes (`satisfy`/`verify`/`baseline`) are
 host/service operations with authorization; the agent may request them, never assert them.
@@ -329,7 +532,7 @@ host/service operations with authorization; the agent may request them, never as
 ## 4. Relations, direction, cardinality, indexing
 
 ```ts
-export type EdgeKind = 'contains' | 'imports' | 'exports' | 'declares' | 'references' | 'defines' | 'proves' | 'disproves' | 'assumes' | 'supports' | 'property_of' | 'formalizes' | 'comments' | 'annotates' | 'marks' | 'computes' | 'typesets' | 'labels' | 'uses' | 'depends' | 'requires' | 'meets' | 'satisfies' | 'violates' | 'entails' | 'precondition_of' | 'postcondition_of' | 'invariant_of' | 'guard_of' | 'baseline' | 'prerequisite'
+export type EdgeKind = 'contains' | 'imports' | 'exports' | 'declares' | 'references' | 'defines' | 'proves' | 'disproves' | 'assumes' | 'supports' | 'property_of' | 'formalizes' | 'comments' | 'annotates' | 'marks' | 'computes' | 'typesets' | 'labels' | 'uses' | 'depends' | 'requires' | 'meets' | 'satisfies' | 'violates' | 'entails' | 'precondition_of' | 'postcondition_of' | 'invariant_of' | 'guard_of' | 'baseline' | 'prerequisite' | 'part_of' | 'published_in' | 'cites' | 'edition_of' | 'translates' | 'compiles' | 'authored_by'
 ```
 
 Requested `depends_on` is `depends` for cells and `uses` for statements (no underscores).
@@ -341,7 +544,7 @@ is derived by `contains` (equal `sheet`). `statementGraph` uses
 
 | Edge | From → To | Cardinality | Transitive | Persisted/indexed by |
 |---|---|---|---|---|
-| `contains` | Project/Module/Document/Workbook/Sheet/Chapter/Article/Paragraph/Class/Function → child | 1→n | yes | `node.parent`, `idx_node_parent`, `AstTree`/`AstIndex`, `OrderedMap` outline |
+| `contains` | Project → Module/Document/Workbook; Document(book/article) → Book/Article; Book → Part/Chapter/Article; Part → Chapter/Article; Article/Chapter/Section → Section/Paragraph/Formula/Statement/Comment/Code; Module/Class/Function → child | 1→n | yes | `node.parent`, `idx_node_parent`, `AstTree`/`AstIndex`, `OrderedMap` outline |
 | `imports` | Module → Module | n→m | no (closure query) | `edge(source,kind)`, `DirectedGraph` |
 | `exports` | Module → Exportation | 1→n | no | `edge`, `OrderedMap` declaration order |
 | `declares` | Module/Class/Function → Class/Function/Method | 1→n | no | `edge`, `RedBlackTree<name,Handle>`, `Trie` |
@@ -368,6 +571,13 @@ is derived by `contains` (equal `sheet`). `statementGraph` uses
 | `precondition_of` / `postcondition_of` / `invariant_of` / `guard_of` | Condition → Function/Statement/Module/Document/Class | n→1 | no | `edge(target,kind)`, `OrderedMap` |
 | `baseline` | A → B (B is A's reference version/decision) | n→1 | no | `edge` + `baselineVersion`, `OrderedMap`/`Trie` |
 | `prerequisite` | A → B (B is A's necessary task/step input) | n→1 | no | `edge`, `DirectedGraph` |
+| `part_of` | Article/Chapter → Book | n→1 | no | `edge(target,kind)`, `idx_edge_target` |
+| `published_in` | Article → Venue | n→1 | no | `edge(target,kind)` |
+| `cites` | Article/Book → Article/Book/Statement (external URL: target NULL + label) | n→m | no | `edge`, `DirectedGraph` |
+| `edition_of` | Book → Book baseline | n→1 | no | `edge` + `baselineVersion` |
+| `translates` | Book/Article → Book/Article | n→1 | no | `edge` |
+| `compiles` | Book → Article ordering | 1→n | no | `edge(ordinal)`, `OrderedMap` |
+| `authored_by` | Book/Article → Person | n→m | no | `edge`, `OrderedMap` |
 
 `contains` must be acyclic; insertion checks would-be ancestors. `imports`, `references`,
 `uses`, `depends`, `statementGraph`, `conditionGraph` and `entails` may cycle.
@@ -384,16 +594,17 @@ is not. Markdown `#` is a Sign; paragraph text is not. Only promoted signs are p
 |---|---|---|---|
 | JS/TS/JSX | Module, Importation, Exportation, Class/Function/Method, Comment, Code, Sign | static `import`, `import type`, `export … from`, `export *`, `export =`, literal `import()`, literal `require()`; decorators `@` | non-literal specifiers; computed properties; JSX tags; decorator semantics; TS type-only symbols |
 | CSS | Module, Importation, Comment, Sign | `@import`, `url(...)`, `@media`/`@supports`/`@font-face` | CSS class selectors are **not** `Class`; no cascade/value evaluation |
-| HTML | Document, Article, Chapter, Paragraph, Code, Comment, Sign, Importation, Statement | `<article>`, `<h1>`–`<h6>`, `<p>`, `<pre><code>`, `<!-- -->`, `<script src>`, `<link href>`, `<img src>`, `<dfn>`, `<section data-kind>`, `<aside class="proof">`, ARIA roles | inline `<script>` bodies; class-name guesses without a documented allowlist; DOM runtime state |
-| Markdown | Document, Article, Chapter, Paragraph, Code, Comment, Importation, Formula, Sign, Statement | headings + labels, fenced code, inline code, links/images, `$...$`/`$$...$$`, Pandoc fenced divs `::: definition`, admonitions, front-matter statement lists | heading-text heuristics alone; raw HTML blocks; footnote expansion; unknown math macros |
-| LaTeX | Document, Article, Chapter, Paragraph, Code, Comment, Formula, Statement, Importation, Sign | `\newtheorem` (allowlist), `definition`/`lemma`/`theorem`/`proposition`/`corollary`/`axiom`/`remark`/`example`, `\begin{proof}` with QED, `\label`/`\ref`/`\cite`, `\input`/`\include` | macro expansion; `\write18`; unknown environment names; custom theorem names not in the allowlist; `\bibliography` targets |
+| HTML | Document, Book/Article, Chapter, Section, Paragraph, Code, Comment, Sign, Importation, Statement | `<article>`, `<main>`, `<section>`, `<h1>`–`<h6>`, `<p>`, `<pre><code>`, `<!-- -->`, `<script src>`, `<link href>`, `<img src>`, `<dfn>`, `<section data-kind>`, `<aside class="proof">`, `rel=prev/next`, ARIA roles | inline `<script>` bodies; class-name guesses without a documented allowlist; DOM runtime state |
+| Markdown | Document, Book/Article, Chapter, Section, Paragraph, Code, Comment, Importation, Formula, Sign, Statement | headings + labels, fenced code, inline code, links/images, `$...$`/`$$...$$`, front-matter `title/author/book/article/venue/doi`, `SUMMARY.md` chapter list, Pandoc fenced divs `::: book|article|chapter|definition`, admonitions | heading-text heuristics alone; raw HTML blocks; footnote expansion; unknown math macros |
+| LaTeX | Document, Book/Article, Part/Chapter/Section, Paragraph, Code, Comment, Formula, Statement, Importation, Sign | `\documentclass{book|article}`, `\part`/`\chapter`/`\section`, `\title`/`\author`/`\date`, `\begin{abstract}`, `\newtheorem` allowlist, statement/proof environments, `\label`/`\ref`/`\cite`, `\input`/`\include` | macro expansion; `\write18`; unknown environment names; custom theorem names not in the allowlist; `\bibliography` targets |
 | Lean 4 | Module, Importation, Statement, Proof, Comment, Sign | `import`, `def`, `theorem`, `lemma`, `axiom`, `structure`, `example`, `by`, `sorry` | typeclass/term elaboration; metaprogramming; kernel checking; no prover execution |
 | Coq | Module, Importation, Statement, Proof, Comment, Sign | `Require Import`, `Definition`, `Lemma`, `Theorem`, `Axiom`, `Property`, `Proof … Qed/Defined/Admitted` | tactics semantics; sections/variables; `Admitted` is incomplete |
 | Isabelle | Module, Importation, Statement, Proof, Comment, Sign | `definition`, `lemma`, `theorem`, `axiomatization`, `proof`/`qed` | Isar semantics; proof checking; locale/typeclass resolution |
 | xlsx | Document (workbook), Sheet, Cell, Range, Formula, Sign | sheet XML, shared strings, `<f>`, `<v>`, `<dimension>`, `<definedNames>`, `$` anchors, `Sheet1!A1` | macros, external links, DDE/OLE, array/spill semantics, evaluation |
-| docx/pptx | Document, Paragraph, Statement, Formula (`omml`), Slide (P2) | Word paragraph styles/outline levels named Definition/Lemma/Theorem/Proof, docx custom XML, `m:oMath`, comments | style-name guesses outside an allowlist; tracked changes; layout/geometry; rendering |
+| docx/pptx | Document, Book/Article (explicit metadata only), Paragraph, Statement, Formula (`omml`), Slide (P2) | Word headings/outline, paragraph styles named Definition/Lemma/Theorem/Proof, core properties, docx custom XML, `m:oMath`, comments | style-name guesses outside an allowlist; tracked changes; layout/geometry; rendering |
+| EPUB/JATS/DocBook | Document, Book/Article, Part/Chapter/Section, Paragraph, Formula, Statement, Person, Venue (P1–P2) | OPF spine/manifest/metadata, EPUB `nav`, JATS `<book-meta>`/`<article-meta>`/`<sec>`, DocBook `book`/`article`/`chapter`/`section` | malformed OPF; missing metadata; full-text extraction; rendering |
 | Conditions | Condition | `@requires`/`@ensures`/`@pre`/`@post`/`@invariant`; `::: condition`/`::: require`/`::: meet`; `\begin{condition}`; `\Require`/`\Ensure`; front-matter `requires:`/`meets:`; `data-kind="condition"`; Word style names | prose wording alone ("necessary", "sufficient", 前提, 条件); `assert`/`throw`; Coq `Require Import` (import graph) |
-| CSV/TSV | Document (workbook), Sheet, Cell, Range | RFC 4180 quoting, header row, delimiter `,`/`\t` | **no formulas**; a leading `=` is text + `injectionRisk`; encoding guessing |
+| CSV/TSV | Document (workbook), Sheet, Cell, Range | RFC 4180 quoting, header row, delimiter `,`/`\t` | **no formulas**; a leading `=` is text + `injectionRisk`; charset guessing |
 | MathML | Formula (`mathml`) | `<math>`, `mi`, `mn`, `mo`, `mfrac`, `msqrt`, `msup`, `msub`, `mtable`, `apply` | external refs, annotation semantics, rendering |
 | Typst/AsciiMath | Formula (`typst`/`asciimath`), P2 | `$...$`, `frac`, `mat`, `vec`, `sqrt` | evaluation, package imports, rendering; unknown commands |
 
@@ -432,7 +643,8 @@ types; all inside the existing `ModuleHost`; no new DSH port in P0/P1.
 |---|---|---|---|---|
 | Project | yes | `node`; `idx_node_path` | none | manifest fingerprint |
 | Module / Document / Workbook | yes | `node` + `snapshot` | parse LRU 256 | `path+modified+size+parser` |
-| Chapter / Article / Paragraph | yes | `node`; `idx_node_owner` | outline `OrderedMap` | file hash change |
+| Book / Part / Chapter / Article / Section / Paragraph | yes | `node`; `contains`/`part_of`; ordinal | outline `OrderedMap` | file/edition hash change |
+| Person / Venue | yes | `node`; `authored_by`/`published_in` | `OrderedMap`/`Trie` | owner/metadata change |
 | Sheet / Cell / Range | yes | `node`; `idx_node_sheet`; sparse rows | `SparseGrid<Cell>` LRU 4 | workbook hash change |
 | Formula | yes (node); AST derived | `node`; `edge`; partial anchor index | AST LRU 2,000 / 32 MiB | owner change; formula hash |
 | Statement / Proof | yes | `node`; `idx_node_statement`; statement edges | `OrderedMap`/`DirectedGraph` | owner change |
@@ -444,8 +656,8 @@ types; all inside the existing `ModuleHost`; no new DSH port in P0/P1.
 | Sign | promoted only | `node`; `idx_node_owner` + span | `Trie` text + span map | owner change |
 | Dependency | **derived** | none | `DirectedGraph` per project | graph cache eviction |
 
-Formula ASTs are **not** persisted: text + spans + edges are enough. Document formulas persist
-the node and `labels`/`references`/`uses` edges, but not `computes`/`depends`; spreadsheet
+Formula ASTs are **not** persisted: reference + fingerprint + edges are enough. Document formulas
+persist the node and `labels`/`references`/`uses` edges, but not `computes`/`depends`; spreadsheet
 formulas persist references and cell-level `depends`. `snapshot` is the invalidation authority;
 delete edges before nodes in one transaction, reparse, then re-resolve only reverse
 importers/formulas (`O(indeg)`).
@@ -454,6 +666,13 @@ importers/formulas (`O(indeg)`).
 |---|---|---|
 | `projectGraph(project)` | `edge WHERE project=?` + `contains`/`imports` | O(V+E) first; O(1) cached |
 | `outline(document)` | `idx_node_owner` ordered by `ordinal` | O(log n + k) |
+| `bookOutline(book)` | `contains` ordered by `ordinal` | O(log n + k) |
+| `articlesIn(book/venue)` | `contains`/`part_of`/`published_in` | O(log E + degree) |
+| `bookOf(article/chapter)` | `idx_edge_target(target,'part_of')` | O(log E + indegree) |
+| `articleSections(article)` | `contains` ordered | O(log E + degree) |
+| `paragraphsOf(article/chapter)` | bounded subtree traversal | O(V+E) bounded |
+| `citationGraph(project)` | `cites` edges | O(V+E); cycles legal/reported |
+| `editionsOf(book)` | `idx_edge_target(target,'edition_of')` | O(log E + indegree) |
 | `findSymbol(name, project)` | `idx_node_name`; `Trie` prefix | O(log n + k); O(k+m) prefix |
 | `importsOf(module)` / `exportsOf(module)` | `idx_edge_source` | O(log E + degree) |
 | `dependentsOf(module)` | `idx_edge_target` | O(log E + indegree) |
@@ -473,8 +692,8 @@ importers/formulas (`O(indeg)`).
 | `satisfiersOf` / `satisfiedBy` / `baselineOf` / `baselinesUsing` / `prerequisitesOf` / `unmetChain` / `staleDependents` | edge indexes + projection cache | O(log E + degree) or O(V+E) bounded |
 | `chainProjection(root, relationSet, depth)` | cache hit O(1); miss O(V+E) bounded | O(1) / O(V+E) |
 | `commentsOf(symbol)` | `idx_edge_target(target,'comments')` | O(log E + indegree) |
-| `signsOf(owner)` / `signAt(owner,span)` | `idx_node_owner` / `idx_node_span` | O(log n + k) |
-| `formulasIn(container)` / `formulaAt(owner,span)` | `idx_node_owner` / `idx_node_span` | O(log n + k) |
+| `signsOf(owner)` / `signAt(owner,span)` | `idx_node_owner` / `idx_node_position` | O(log n + k) |
+| `formulasIn(container)` / `formulaAt(owner,span)` | `idx_node_owner` / `idx_node_position` | O(log n + k) |
 | `formulaOf(cell)` | `idx_node_formula_anchor` | O(log n) |
 | `referencesOf(formula)` / `symbolsOf(formula)` | `idx_edge_source` | O(log E + degree) |
 | `labelsOf(document)` | `idx_node_label(owner,'sign','label')` | O(log n + k) |
@@ -485,6 +704,11 @@ importers/formulas (`O(indeg)`).
 | `namedRanges(sheet)` | `node kind='range' form='named'` | O(log n + k) |
 | `sheetGrid(sheet)` | load `Cell` rows into `SparseGrid` | O(n log n) load; O(1) cached |
 | `rowAt` / `columnAt` | `idx_node_sheet` | O(log n + k log k) |
+| `resolveReference(handle)` | node row + reference validation | O(log n) |
+| `readReference(handle,mode,start,end)` | line-index LRU + read caps | O(log n + k) |
+| `lineToByte` / `byteToLine` | per-file line-start index | O(log n) |
+| `coordination_write` / `coordination_refresh` | host tx + reparse window | O(affected + k); conflict/stale fail-closed |
+| `nodesByCharset(charset)` | `idx_node_charset` | O(log n + k) |
 
 `SparseGrid` is 0-based; `Cell.rowIndex`/`columnIndex` are 0-based, while `Cell.address` and
 `Range.start`/`end` are A1/1-based. `Row`/`Column` are never persisted.
@@ -496,17 +720,19 @@ importers/formulas (`O(indeg)`).
 | File read / tokens / AST depth / parse time | 1 MiB / 200,000 / 256 / 2 s | `truncated=true`; parsed prefix only |
 | Graph vertices / edges | 20,000 / 100,000 (import); 50,000 / 200,000 (statement) | stop; `truncated`; no transitive answer |
 | Nodes / project; nodes / file | 200,000; 20,000 | stop file parse; `status='truncated'` |
+| Articles / book; sections / article; paragraphs / section; citations | 512; 256; 2,000; 10,000 | `truncated`; no partial ordering/citation edge |
 | Signs / module, / document, / project | 1,000; 500; 100,000 | keep first by span; `truncated` |
-| Statements / document, / project; statement text | 5,000; 50,000; 64 KiB | `truncated`; no proof/status inference |
-| Conditions / target; expression nodes; condition graph | 256; 2,000; 50,000 / 200,000 | `truncated`; no solver/evaluator |
-| Proof content / nested proof depth | 64 KiB; 32 | `truncated`; `proofStatus='unverifiable'` |
+| Statements / document, / project; statement metadata | 5,000; 50,000; brief ≤ 300, reference target ≤ 1,024 | `truncated`; no proof/status inference |
+| Conditions / target; condition AST nodes; condition graph | 256; 2,000; 50,000 / 200,000 | `truncated`; no solver/evaluator |
+| Proof fragment / nested proof depth | metadata only; 32 | `truncated`; `proofStatus='unverifiable'` |
 | Formulas / document, / workbook, / project | 5,000; 20,000; 50,000 | stop; `truncated`; no formula graph for overflow |
-| Formula text / AST depth / AST nodes / refs | 8,192 chars (markup 32,768); 64; 2,000; 512 | `truncated`; no AST and **no dependency edges** |
+| Formula AST depth / nodes / refs | 64; 2,000; 512 | `truncated`; no AST and **no dependency edges** |
 | TeX macros / expansion depth / expanded bytes | 256; 8; 2× source | `unverifiable`; no expansion |
 | Sheets / workbook; rows / sheet; columns / sheet | 256; 100,000; 1,024 | `truncated`; no calculation order |
 | Cells / workbook; formulas / workbook; named ranges | 200,000; 20,000; 1,000 | `truncated`; keep sparse prefix |
 | Range expansion for cell edges | 1,024 cells | keep `Range` reference; `depends` incomplete; `truncated` |
-| Cell value / cell text / workbook text | 32 KiB; 32 KiB; 64 MiB | truncate value, `truncated` |
+| Metadata / NodeCard / brief / reference target | 4 KiB / 1 KiB / 300 chars / 1,024 chars | truncate, `truncated`; never fabricate |
+| Read caps | 256 KiB / 2,000 lines / 16k tokens per read | `truncated`; explicit `nextStart` |
 | xlsx zip: uncompressed / entries / ratio / XML depth | 64 MiB / 10,000 / 100:1 / 64 | reject workbook; `unverifiable` |
 | Caches: parse / graph / formula AST / sheet grid | 256 files / 2 projects / 2,000 ASTs / 4 sheets | LRU eviction; 64 + 64 + 32 + 64 MiB |
 | Chain projection | depth ≤ 8; links ≤ 50; ~1,500 tokens | `truncated=true`; `cycle` path; no AST/adjacency/raw text |
@@ -516,10 +742,13 @@ importers/formulas (`O(indeg)`).
 are not executed (input is only a file dependency); macros are not expanded; MathML/OMML
 external refs, DTD/entities are ignored; xlsx macros, external links, DDE/OLE are never loaded;
 zip-bomb caps apply; CSV/TSV leading `=`, `+`, `-`, `@`, tab or CR is text with
-`injectionRisk=true`. A truncated statement/formula/sheet/file/graph never yields a partial
-edge that could be mistaken for complete evidence; callers check `truncated`/`status`. Cycles
-are reported with a cycle path; `calculationOrder`/`topologicalSort` return `null` and the Plan
-must not invent an order.
+`injectionRisk=true`. References validate scheme/target: reject traversal, absolute paths outside
+the workspace, `file:` credentials and `data:` bodies; target ≤ 1,024 chars; `binary`/`unknown`
+never get a line range; `fingerprint`/ranges are host-computed only, and an
+`expectedFingerprint` mismatch is `CONFLICT`/`stale`. A truncated statement/formula/sheet/file/
+graph never yields a partial edge that could be mistaken for complete evidence; callers check
+`truncated`/`status`. Cycles are reported with a cycle path; `calculationOrder`/`topologicalSort`
+return `null` and the Plan must not invent an order.
 
 ## 8. Coordination integration
 
@@ -529,7 +758,7 @@ must not invent an order.
 | `ModuleDigest` | 80 | handle, path, language, symbol/import/export counts, status |
 | `SymbolDigest` | 60 | handle, kind, name, signature ≤ 120 chars, line |
 | `StatementDigest` / `ProofDigest` | 120 | handle, kind, label, status, formal, line |
-| `FormulaDigest` | 100 | handle, dialect, delimiter, text ≤ 160 chars, reference count, truncated |
+| `FormulaDigest` | 100 | handle, dialect, delimiter, brief ≤ 160 chars, reference, reference count, truncated |
 | `ChainDigest` | 200 | root, ≤ 8 links, depth, truncated, cycle, version |
 | `SubgraphView` | 1,000 | ≤ 64 entity handles, ≤ 128 edges, `omitted`, `truncated` |
 
@@ -582,7 +811,10 @@ Class/Function/Method; comments; code spans; promoted Sign; TeX theorem-like env
 explicit Markdown fenced divs and front-matter statement lists; labels/refs/proofs;
 Markdown/TeX formula detection; code contract tags (`@requires`/`@ensures`/`@pre`/`@post`/
 `@invariant`), `::: require`/`::: meet`, `\Require`/`\Ensure`; Require/Meet semantics and
-host-only `Chain` projection. Acceptance: fixture repo parses all four families; static/`import
+host-only `Chain` projection. Also detect explicit Markdown front-matter
+`book/article/chapter/title/author/venue/doi` and LaTeX `\documentclass{book|article}`,
+`\part`/`\chapter`, `\title`/`\author`, `\begin{abstract}`; never infer Book/Article from prose.
+Acceptance: fixture repo parses all four families; static/`import
 type`/re-export/literal `import()`/literal `require()` produce `Importation` + `imports`;
 non-literal and unresolved produce `resolution='unverifiable'` and no edge;
 `outline`/`findSymbol`/`commentsOf` match counts; Markdown `$x^2$` and `$$\frac{a}{b}$$`
@@ -590,31 +822,39 @@ produce `Formula`; `\label`/`\ref` produce `labels`/`references`; explicit proof
 `proved`; proof without target → `unverifiable`; `axiom` → `axiomatic`; require-only,
 meet-only and iff fixtures distinguish `requires`/`meets`/`equivalent`; violated Require
 invalidates its target; met Meet raises status only with explicit evidence; Coq `Require
-Import` is an `Importation`, never a `Condition`; `Chain` projection is ≤ 8 deep/≤ 50 links/
-≤ 1,500 tokens, truncation explicit, cycle path reported, and contains no AST/adjacency/raw
-text; reparse idempotent by `locator`; 1 MiB/200k/depth 256/2 s/20k-node caps tested.
+Import` is an `Importation`, never a `Condition`; Book→Chapter/Article, standalone Article,
+collected Article `part_of` Book and LaTeX book-vs-article fixtures pass; `Chain` projection is
+≤ 8 deep/≤ 50 links/≤ 1,500 tokens, truncation explicit, cycle path reported, and contains no
+AST/adjacency/raw text; reparse idempotent by `locator`; 1 MiB/200k/depth 256/2 s/20k-node caps
+tested. Metadata tests: every NodeKind has metadata; no body bytes; brief missing ⇒ empty +
+`unverifiable`; six flat fields agree with bytes/lines; UTF-8/UTF-8-BOM/ASCII, CRLF/LF, BOM
+excluded from fragment range; insert before shifts ranges while fingerprint stable; edit inside
+changes fingerprint; stale refresh; `expectedFingerprint` mismatch ⇒ `CONFLICT`; traversal
+rejected; NodeCard/Chain/describe never include content.
 
-**P1 — office, HTML and proof-assistant statements; sheets and cross-format formulas.** LaTeX/
-Lean 4/Coq/Isabelle statement/proof/import parsing; xlsx structural parse + CSV/TSV sheets;
-Sheet/Cell/Range; spreadsheet Formula AST, `computes`/`references`/`depends`, named ranges,
-cycle detection; OMML/MathML extraction; Office paragraph styles and HTML semantics for
-statements; `baseline` metadata and `prerequisite`/`blockedBy` chain links. Acceptance:
-`proofsOf(statement)` returns proofs and incomplete marks; `calculationOrder` stable and `null`
-+ cycle path on A1↔B1; range refs expand only under 1,024; sheet-qualified refs resolve,
-external links fail closed; OMML/MathML fixtures extract fraction/script/matrix nodes; formula
-caps produce `truncated` and no edges; CSV `=cmd` is text with `injectionRisk=true`; docx
-style/HTML `data-kind` fixtures map only explicit markers; baseline change marks dependents
-`stale`; unmet prerequisite is `blocked`, not satisfied.
+**P1 — office, HTML/EPUB/JATS/DocBook and proof-assistant statements; sheets and cross-format
+formulas.** LaTeX/Lean 4/Coq/Isabelle statement/proof/import parsing; xlsx structural parse +
+CSV/TSV sheets; Sheet/Cell/Range; spreadsheet Formula AST, `computes`/`references`/`depends`,
+named ranges, cycle detection; OMML/MathML extraction; Office styles/HTML semantics; EPUB
+spine/OPF metadata, JATS/DocBook `book-meta`/`article-meta`/`sec`; venue/DOI/citation graph;
+UTF-16/legacy charsets. Acceptance: `proofsOf(statement)` returns proofs and incomplete marks;
+`calculationOrder` stable and `null` + cycle path on A1↔B1; range refs expand only under 1,024;
+sheet-qualified refs resolve, external links fail closed; OMML/MathML fixtures extract
+fraction/script/matrix nodes; formula caps produce `truncated` and no edges; CSV `=cmd` is text
+with `injectionRisk=true`; docx style/HTML `data-kind` fixtures map only explicit markers;
+EPUB spine order and citation cycle fixtures pass; `bookOf`/`articlesIn`/`citationGraph`
+return deterministic results; baseline/prerequisite stale/unmet fail closed; sheet cell
+byte/line ranges validated; lossy charset ⇒ bytes only + `unverifiable`.
 
-**P2 — workspace and cross-project statement/condition/chain graph, formal↔informal linking,
-office surfaces.** Cross-project/workspace graph; incremental updates by fingerprint;
-`formalizes` linking of formal and informal statements and conditions; Slide/Deck minimal
-(PPTX slide list/titles); Typst/AsciiMath; formula AST cache; optional external renderer;
-optional SCIP/LSP `IndexPort`; cross-project `staleDependents`. Acceptance: two-project
-workspace links only through declared dependencies/path aliases; a changed file invalidates
-only its owner subtree plus reverse importers; 20k nodes/100k edges build under 5 s;
-`formalizes` requires an explicit link; cross-project chain truncates explicitly; Slide
-count/title parse is deterministic; renderer absence leaves `rendered` absent, never guessed.
+**P2 — workspace and cross-project book/article/statement/condition/chain graph,
+formal↔informal linking, editions/translations, office surfaces.** Cross-project/workspace
+graph; incremental updates by fingerprint; `formalizes` linking; `edition_of`/`translates`
+anthology graph; Slide/Deck minimal; Typst/AsciiMath; formula AST cache; optional external
+renderer; optional SCIP/LSP `IndexPort`; cross-project `staleDependents`. Acceptance:
+two-project workspace links only through declared dependencies/path aliases; a changed file
+invalidates only its owner subtree plus reverse importers; `edition_of` preserves version and
+marks stale; `translates` requires explicit link; citation cycles reported; 20k nodes/100k edges
+build under 5 s; Slide count/title deterministic; renderer absence leaves `rendered` absent.
 
 Non-goals: typechecking/inference, macro expansion, formula evaluation, spreadsheet
 recalculation, proof checking, rendering, PDF pagination, shape/geometry extraction, code
@@ -627,7 +867,7 @@ files, CSS cascade, LaTeX package loading, cross-language FFI, UI rendering.
 |---|---|---|
 | 1 | Is `Workbook` a node kind or a `Document` form? | `Document.form='workbook'` + `WorkbookView`; no new kind. |
 | 2 | How to represent `proposition` environments? | `kind='theorem'`, `sourceForm='proposition'`; no new NodeKind. |
-| 3 | Persist paragraphs or derive them? | Persist with `preview ≤ 512` and a 20k/file cap. |
+| 3 | Persist paragraphs or derive them? | Persist with `brief ≤ 300` and a 20k/file cap. |
 | 4 | Persist Formula ASTs? | No; text + edges persisted, AST derived and LRU-cached. |
 | 5 | Persist document (TeX/Markdown) formula edges? | `labels`/`references`/`uses` only; no cell `depends` outside `spreadsheet`. |
 | 6 | Expand TeX macros? | No expansion in P1; bounded local macros only in P2 if ever. |
@@ -640,6 +880,10 @@ files, CSS cascade, LaTeX package loading, cross-language FFI, UI rendering.
 | 13 | Are `Chain`/`ChainLink` persisted? | No; projections only, LRU-cached and invalidated on parse/baseline/status change. |
 | 14 | Who may write `satisfies`/`baseline`? | Host/verifier only; agent requests, never asserts. |
 | 15 | Default projection budget? | depth 8, 50 links, ~1,500 tokens; explicit `truncated` beyond that. |
+| 16 | How is a standalone Article represented? | `Document(form='article')` with exactly one `Article` node; no duplicate. |
+| 17 | What is the Book hierarchy? | Book → Part/Chapter/Article; Part → Chapter/Article; Section is generic inside Article/Chapter. |
+| 18 | Who owns byte/line/fingerprint truth? | Host only; flat fields + raw-byte SHA-256 are authoritative; agent never supplies them. |
+| 19 | Which charsets in P0? | UTF-8, UTF-8-BOM, ASCII only; legacy/UTF-16/32 later with explicit confidence. |
 
 ## Sources
 
@@ -681,3 +925,13 @@ files, CSS cascade, LaTeX package loading, cross-language FFI, UI rendering.
 | S34 | Design by Contract (Meyer) | paper | https://se.inf.ethz.ch/~meyer/publications/computer/contract.pdf | require/ensure/invariant semantics |
 | S35 | JML, Dafny, Why3, ACSL | vendor docs | https://www.openjml.org/ · https://dafny.org/ · https://www.why3.org/ · https://frama-c.com/acsl.html | contract tag conventions |
 | S36 | Coq `Require` reference | vendor doc | https://docs.rocq-prover.org/V8.20/refman/language/core/modules.html | `Require Import` disambiguation |
+| S37 | EPUB 3.3 | specification | https://www.w3.org/TR/epub-33/ | OPF spine/manifest, EPUB metadata |
+| S38 | JATS | specification | https://jats.nlm.nih.gov/ | `book-meta`/`article-meta`/`sec` |
+| S39 | LaTeX document structure | community wiki | https://en.wikibooks.org/wiki/LaTeX/Document_Structure | `book`/`article`, `\part`/`\chapter` |
+| S40 | Pandoc metadata blocks | vendor doc | https://pandoc.org/MANUAL.html#metadata-blocks | front-matter book/article/venue/doi |
+| S41 | WHATWG Encoding Standard | specification | https://encoding.spec.whatwg.org/ | charset labels/decoding |
+| S42 | Unicode BOM FAQ | vendor doc | https://www.unicode.org/faq/utf_bom.html | BOM detection/precedence |
+| S43 | RFC 3629 (UTF-8) | specification | https://www.rfc-editor.org/rfc/rfc3629 | UTF-8 validity/byte semantics |
+| S44 | RFC 3986 / RFC 6901 | specification | https://www.rfc-editor.org/rfc/rfc3986 · https://www.rfc-editor.org/rfc/rfc6901 | URI/IRI and JSON Pointer locators |
+| S45 | OWASP path traversal | security guidance | https://owasp.org/www-community/attacks/Path_Traversal | reference path validation |
+| S46 | OpenAPI / schema.org metadata | specification | https://spec.openapis.org/oas/latest.html · https://schema.org/name | summary/description/name conventions |
