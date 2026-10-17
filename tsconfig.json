@@ -22,6 +22,9 @@
     "paths": {
       "deepseek-coordination/client": [
         "./src/client/index.ts"
+      ],
+      "@deepseek-ai/schemastery": [
+        "./src/types/schemastery.d.ts"
       ]
     }
   },
