@@ -32,9 +32,10 @@
  *    `not`, `never`, ...).
  * 3. The sentence must not be a discussion of the topic (`预防`, `研究`,
  *    `论文`, `报道`, `电影`, `prevention`, `research`, ...).
- * 4. A self-harm statement must be first-person or a very short clause
- *    (`我想死`, `不想活了`) and must not name another person; a harm-to-others
- *    statement must name a target (`杀了他`, `harm someone`).
+ * 4. A self-harm statement must be first-person and must not name another
+ *    person in its clause (`我想死` fires; `想死你了`, `他说我想死` and a bare
+ *    `自杀` do not). A harm-to-others statement must name a target
+ *    (`杀了他`, `harm someone`).
  * 5. A measurement noun directly after the marker (`自杀率`) is not an intent.
  *
  * Severity is `high` for a surviving explicit statement and `critical` when the

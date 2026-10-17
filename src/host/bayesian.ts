@@ -886,16 +886,6 @@ export class BayesianModule {
     return clampProbability(Number.isFinite(configured) ? configured : DefaultPrior)
   }
 
-  private stopEntropyThreshold(): number {
-    const configured = this.host.config.bayesian.stopEntropy
-    return Number.isFinite(configured) && configured >= 0 ? configured : DefaultStopEntropy
-  }
-
-  private infoGainThreshold(): number {
-    const configured = this.host.config.bayesian.infoGain
-    return Number.isFinite(configured) && configured >= 0 ? configured : DefaultInfoGain
-  }
-
   private maxRouteCount(): number {
     const configured = this.host.config.bayesian.maxRoutes
     return Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : DefaultMaxRoutes
