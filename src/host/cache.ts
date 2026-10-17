@@ -18,7 +18,7 @@ import { clamp, round } from './module.js'
 import type { ModuleHost } from './module.js'
 import type { CacheStrategy } from '../shared/entity.js'
 import type { CacheStats, GenerateOptionsLike, MessageLike } from '../shared/service.js'
-import { DEFAULT_CACHE_STRATEGY } from './provider.js'
+import { DefaultCacheStrategy } from './provider.js'
 
 /**
  * Volatile fragments that move a 64-token block boundary between two
@@ -38,15 +38,15 @@ import { DEFAULT_CACHE_STRATEGY } from './provider.js'
  * A timestamp a user typed is normalised too; that is intentional: a request
  * that echoes the clock must not move the cache prefix.
  */
-const ISO_TIMESTAMP = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g
-const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
-const LONG_HEX = /\b[0-9a-f]{32,}\b/gi
-const CURRENT_TIME = /\bcurrent time is[ \t]+[^.;\n]*/gi
+const IsoTimestamp = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g
+const Uuid = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
+const LongHex = /\b[0-9a-f]{32,}\b/gi
+const CurrentTime = /\bcurrent time is[ \t]+[^.;\n]*/gi
 
-const TIMESTAMP_PLACEHOLDER = '<timestamp>'
-const UUID_PLACEHOLDER = '<uuid>'
-const HEX_PLACEHOLDER = '<hex>'
-const TIME_PLACEHOLDER = 'current time is <time>'
+const TimestampPlaceholder = '<timestamp>'
+const UuidPlaceholder = '<uuid>'
+const HexPlaceholder = '<hex>'
+const TimePlaceholder = 'current time is <time>'
 
 /**
  * Added to a decorated request when the provider breaks its cache on an effort
@@ -55,7 +55,7 @@ const TIME_PLACEHOLDER = 'current time is <time>'
  * policy. `checkEffortCacheBreak(session, …)` is the authoritative detector for
  * a per-session change.
  */
-const EFFORT_WARNING =
+const EffortWarning =
   'reasoningEffort changes invalidate this provider\'s prompt cache; keep the effort stable across a session'
 
 interface CacheStatRow {
@@ -97,7 +97,8 @@ export class CacheModule {
    * the input array is not mutated. The rule is provider-independent, so
    * `strategy` is intentionally not used here.
    */
-  reorderMessages(messages: MessageLike[], _strategy: CacheStrategy): MessageLike[] {
+  reorderMessages(messages: MessageLike[], strategy: CacheStrategy): MessageLike[] {
+    void strategy // accepted for contract symmetry; the fixed-prefix rule is provider-independent (v23 §5.3)
     const rank = (message: MessageLike): number => {
       const role = typeof message.role === 'string' ? message.role.toLowerCase() : ''
       if (role === 'system') return 0
@@ -113,10 +114,10 @@ export class CacheModule {
   /** Replace the volatile fragments documented above with stable placeholders. */
   stripDynamicContent(text: string): string {
     return text
-      .replace(ISO_TIMESTAMP, TIMESTAMP_PLACEHOLDER)
-      .replace(UUID, UUID_PLACEHOLDER)
-      .replace(LONG_HEX, HEX_PLACEHOLDER)
-      .replace(CURRENT_TIME, TIME_PLACEHOLDER)
+      .replace(IsoTimestamp, TimestampPlaceholder)
+      .replace(Uuid, UuidPlaceholder)
+      .replace(LongHex, HexPlaceholder)
+      .replace(CurrentTime, TimePlaceholder)
   }
 
   /**
@@ -141,10 +142,10 @@ export class CacheModule {
    * recorded even when it does not break the cache, and a break is counted in
    * `cache_stat.effortBreaks` (upserted per session) only when the strategy says
    * the provider's cache key includes effort. An omitted strategy uses the
-   * conservative `DEFAULT_CACHE_STRATEGY`.
+   * conservative `DefaultCacheStrategy`.
    */
   checkEffortCacheBreak(session: number, newEffort: string, strategy?: CacheStrategy): boolean {
-    const effective = strategy ?? DEFAULT_CACHE_STRATEGY
+    const effective = strategy ?? DefaultCacheStrategy
     const previous = this.efforts.get(session)
     const now = this.host.clock.now()
     this.efforts.set(session, newEffort)
@@ -243,7 +244,7 @@ export class CacheModule {
       typeof effort === 'string' &&
       effort.length > 0
     ) {
-      decorated.cacheWarning = EFFORT_WARNING
+      decorated.cacheWarning = EffortWarning
     }
     return decorated
   }

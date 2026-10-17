@@ -783,6 +783,9 @@ export class OrchestrationModule {
       )
     }
 
+    // The Organization module always names a profession for every draft; this
+    // fallback only serves direct API callers and keeps a single well-defined
+    // default (the profession pool is still one-per-task, never simultaneous).
     const profession = candidate.profession ?? 'execution'
     assertProfession(profession)
 

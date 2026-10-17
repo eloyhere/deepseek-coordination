@@ -1,12 +1,20 @@
 /**
- * Organization process (v23 §9.6): the deterministic bridge from a
- * Comprehension to a Plan.
+ * Organization process (v23 §9.6 + v24 writing scene): the deterministic
+ * bridge from a Comprehension to a Plan.
  *
  * The pipeline calls `organize` exactly once per turn, after comprehension
  * finished. Every plan field is composed from the comprehension text, so the
  * same comprehension always yields the same plan; no model call is made,
  * because a model-composed plan would be non-deterministic and would leave no
  * auditable trail inside the trace.
+ *
+ * v24 delta: the `writing` scene (between `dialogue` and `office`) always
+ * composes the 大纲 → 草稿 → 修订 sequence — an outline step, a draft step, then
+ * a revision step — for both the flat step array and the orchestration drafts.
+ * The shared `Scene` union and configuration schema do not carry `writing`
+ * yet, so `organize` reads the persisted scene string from the turn row and
+ * narrows it through `readOrganizationScene`; the plan scorer applies the
+ * scene's 0.6 pass threshold from `plan.ts`.
  *
  * `plan.step` is always a JSON string (v23 §9.2). The accepted shapes are:
  *
@@ -27,7 +35,7 @@
  */
 import type { ModuleHost } from './module.js'
 import type { Comprehension, Organization, Plan } from '../shared/entity.js'
-import type { Interaction } from '../shared/enum.js'
+import type { Interaction, Scene } from '../shared/enum.js'
 import { InvalidStateError } from '../shared/error.js'
 import { mapComprehension, mapPlan, mapTurn } from './row.js'
 import type { Row } from './row.js'
@@ -63,9 +71,33 @@ export interface PlanSubtaskDraft {
 /** Every shape `plan.step` may carry; the column stores it as a JSON string. */
 export type PlanStepShape = PlanStepDraft[] | { steps: PlanStepDraft[] }
 
+/**
+ * v24 delta: `writing` joins the shared scene union between `dialogue` and
+ * `office`. Until `src/shared/enum.ts` learns the value, this local union keeps
+ * the module honest; it collapses to `Scene` once the shared type is updated.
+ */
+export type OrganizationScene = Scene | 'writing'
+
+/** The three writing stages, in their mandated order: 大纲 → 草稿 → 修订. */
+export const WritingStages = ['outline', 'draft', 'revision'] as const
+
+export type WritingStage = (typeof WritingStages)[number]
+
+/**
+ * The literal marker each writing stage step or subtask draft starts with, so
+ * the pipeline, the UI and the tests can recognise the stage without parsing
+ * prose. The Chinese term is the design-document name of the stage.
+ */
+export const WritingStageMarkers: Readonly<Record<WritingStage, string>> = {
+  outline: 'Outline (大纲)',
+  draft: 'Draft (草稿)',
+  revision: 'Revision (修订)',
+}
+
 /** The knobs composition needs from configuration; keeps the function pure. */
 export interface OrganizationOptions {
   interaction: Interaction
+  scene: OrganizationScene
   maxSubtask: number
   groundTruth: boolean
 }
@@ -119,6 +151,16 @@ export function mapOrganization(row: Row): Organization {
 }
 
 /**
+ * Read the persisted scene from a turn row. The v24 `writing` value is
+ * recognised before the shared `Scene` union carries it, so the module reads
+ * the raw column instead of comparing the narrowed `Turn.scene` field.
+ */
+export function readOrganizationScene(row: Row): OrganizationScene {
+  const raw = text(row, 'scene', 'dialogue')
+  return raw === 'writing' ? 'writing' : (raw as Scene)
+}
+
+/**
  * Compose the goal, approach, constraint, assumption and step of one plan from
  * the comprehension. Pure: no host, no clock, no database.
  */
@@ -132,21 +174,34 @@ export function composeOrganization(
   const constraint = comprehension.constraint.trim() || DefaultConstraint
   const assumption = comprehension.assumption.trim() || DefaultAssumption
   const orchestration = options.interaction === 'orchestrate'
+  const writing = options.scene === 'writing'
 
   const goal = composeGoal(intent, requirement)
-  const approach = composeApproach(options.interaction)
-  const step = orchestration
+  const approach = writing ? composeWritingApproach() : composeApproach(options.interaction)
+  const step = writing
     ? JSON.stringify(
-        composeSubtaskDrafts({
-          intent,
-          requirement,
-          ambiguity,
-          constraint,
-          maxSubtask: options.maxSubtask,
-          groundTruth: options.groundTruth,
-        }),
+        orchestration
+          ? composeWritingSubtaskDrafts({
+              intent,
+              requirement,
+              ambiguity,
+              maxSubtask: options.maxSubtask,
+              groundTruth: options.groundTruth,
+            })
+          : composeWritingSteps({ intent, requirement, ambiguity }),
       )
-    : JSON.stringify(composeSteps({ intent, requirement, ambiguity }))
+    : JSON.stringify(
+        orchestration
+          ? composeSubtaskDrafts({
+              intent,
+              requirement,
+              ambiguity,
+              constraint,
+              maxSubtask: options.maxSubtask,
+              groundTruth: options.groundTruth,
+            })
+          : composeSteps({ intent, requirement, ambiguity }),
+      )
 
   return { goal, approach, step, constraint, assumption, orchestration }
 }
@@ -163,6 +218,14 @@ function composeGoal(intent: string, requirement: string): string {
 function composeApproach(interaction: Interaction): string {
   const base = ApproachByInteraction[interaction]
   return `${base} Every step stays inside the stated constraints, and every stated assumption is checked before execution.`
+}
+
+/**
+ * v24: the writing scene always outlines, drafts, then revises. The scene picks
+ * this working form; the interaction still shapes the rest of the pipeline.
+ */
+function composeWritingApproach(): string {
+  return `Outline the structure first (大纲), write a complete draft from the outline (草稿), then revise the draft against every acceptance criterion (修订). Every step stays inside the stated constraints, and every stated assumption is checked before execution.`
 }
 
 interface StepDraftInput {
@@ -203,6 +266,47 @@ function composeSteps(input: StepDraftInput): PlanStepDraft[] {
   steps.push({
     step: 'Report the result, the evidence, and the residual risk',
     acceptance: 'the report lists the evidence and the residual risk',
+  })
+  return steps
+}
+
+/**
+ * v24: the writing step array always carries outline → draft → revision, in
+ * that order, each with an acceptance statement. Ambiguity resolution (when
+ * the comprehension flagged one) leads the array; proofreading and delivery
+ * follow the mandated trio.
+ */
+function composeWritingSteps(input: StepDraftInput): PlanStepDraft[] {
+  const goalText = input.intent === '' ? 'the stated request' : input.intent
+  const deliverable = input.requirement === '' ? goalText : input.requirement
+  const steps: PlanStepDraft[] = []
+  if (input.ambiguity !== '') {
+    steps.push({
+      step: `Resolve the open ambiguity before outlining: ${input.ambiguity}`,
+      acceptance: 'every ambiguity item is answered or explicitly accepted',
+    })
+  }
+  steps.push(
+    {
+      step: `${WritingStageMarkers.outline}: list the sections of "${goalText}" and the acceptance of each section`,
+      acceptance: 'the outline lists every section in order with its purpose',
+    },
+    {
+      step: `${WritingStageMarkers.draft}: write the draft from the outline for "${deliverable}"`,
+      acceptance: 'the draft covers every outline section',
+    },
+    {
+      step: `${WritingStageMarkers.revision}: revise the draft against the stated constraints and the acceptance criteria`,
+      acceptance: 'every review note and any violated constraint is resolved in the revision',
+    },
+  )
+  steps.push({
+    step: 'Proofread the revised draft against every acceptance criterion',
+    acceptance: 'every acceptance criterion passes on the revised draft',
+  })
+  steps.push({
+    step: 'Deliver the revised draft together with the revision notes and the residual risk',
+    acceptance: 'the delivery contains the revised draft and its revision notes',
   })
   return steps
 }
@@ -258,6 +362,58 @@ function composeSubtaskDrafts(input: SubtaskDraftInput): PlanSubtaskDraft[] {
   return drafts
 }
 
+interface WritingSubtaskDraftInput {
+  intent: string
+  requirement: string
+  ambiguity: string
+  maxSubtask: number
+  groundTruth: boolean
+}
+
+/**
+ * v24: the writing scene's orchestration drafts follow the same mandated
+ * sequence — outline (大纲), draft (草稿), revision (修订) — with the
+ * independent verification draft kept last so array order stays dispatch
+ * order.
+ */
+function composeWritingSubtaskDrafts(input: WritingSubtaskDraftInput): PlanSubtaskDraft[] {
+  const goalText = input.intent === '' ? 'the stated request' : input.intent
+  const deliverable = input.requirement === '' ? goalText : input.requirement
+  const drafts: PlanSubtaskDraft[] = []
+  if (input.ambiguity !== '') {
+    drafts.push({
+      task: `Resolve the open ambiguity before outlining: ${input.ambiguity}`,
+      acceptance: 'every ambiguity item is answered or explicitly accepted',
+      profession: 'decision',
+    })
+  }
+  drafts.push(
+    {
+      task: `${WritingStageMarkers.outline}: list the sections of "${goalText}" and each section's acceptance`,
+      acceptance: 'the outline lists every section in order with its purpose',
+      profession: 'decision',
+    },
+    {
+      task: `${WritingStageMarkers.draft}: write the draft from the outline for "${deliverable}"`,
+      acceptance: 'the draft covers every outline section',
+      profession: 'outcome',
+    },
+    {
+      task: `${WritingStageMarkers.revision}: revise the draft against the stated constraints and the acceptance criteria`,
+      acceptance: 'every review note and any violated constraint is resolved in the revision',
+      profession: 'execution',
+    },
+  )
+  drafts.push({
+    task: `Independently verify the revised draft against its acceptance: ${deliverable}`,
+    acceptance: 'every outline and revision acceptance is recorded as passed',
+    profession: 'decision',
+    ...(input.groundTruth ? { groundTruth: 'a pass verdict is recorded for the revised draft' } : {}),
+  })
+  if (drafts.length > input.maxSubtask) drafts.length = input.maxSubtask
+  return drafts
+}
+
 /**
  * Compose and persist one Organization plus its initial Plan.
  *
@@ -277,7 +433,8 @@ export class OrganizationModule {
     const comprehension = mapComprehension(
       this.host.db.require<Row>('comprehension', comprehensionIdentity, 'comprehension'),
     )
-    const turn = mapTurn(this.host.db.require<Row>('turn', comprehension.turn, 'turn'))
+    const turnRow = this.host.db.require<Row>('turn', comprehension.turn, 'turn')
+    const turn = mapTurn(turnRow)
     const existing = this.host.db.get<Row>(
       'SELECT identity FROM plan WHERE turn = ? ORDER BY identity ASC LIMIT 1',
       turn.identity,
@@ -291,6 +448,7 @@ export class OrganizationModule {
 
     const composed = composeOrganization(comprehension, {
       interaction: turn.interaction,
+      scene: readOrganizationScene(turnRow),
       maxSubtask: this.host.config.orchestration.maxSubTask,
       groundTruth: this.host.config.orchestration.groundTruth,
     })

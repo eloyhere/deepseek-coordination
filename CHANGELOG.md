@@ -12,6 +12,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > git history and tagged `v0.1.5` … `v0.1.9`; see
 > [Repository history](README.md#repository-history).
 
+## [0.7.0] — 2026-10-17
+
+The coordination surface becomes a working host+client pipeline: the five composer
+dropdowns persist through the host, a tooltip explains every control and option, and
+the profession locks for the duration of a task.
+
+### Added
+
+- Host composition: `CoordinationService` on `ctx.coordination`, a coordination
+  SQLite database, module wiring, a 60s cleanup effect, and an agent-turn lifecycle
+  (`agent/pre-step` opens one locked Turn; `agent/turn-stopping` / `agent/error`
+  close it).
+- HTTP routes `/deepseek-coordination/{selection,presets,permission,locale,state,ping,echo}`.
+  `GET/POST /selection` is the contract the composer actually uses.
+- Per-scene execution policy and the v24 **写作 (writing)** scene between 对话 and
+  办公: outline → draft → revision, quality score, no bash, optional web.
+- All three validation levels search the web and run Bayesian prior/posterior
+  updates: low 1×3 current turn, medium 2×5 current session, high 4×8 all local
+  content, with high-scope global fusion.
+- English/Chinese dictionaries following the DSH locale (`ctx.locale`), including
+  tooltips, settings, errors and model-facing tool descriptions.
+- 203 host tests (`npm test`), a shared in-memory fixture, and a `test:tsc` gate.
+
+### Changed
+
+- The fifth dropdown is 验证 (low / medium / high), not an ad-hoc 强度 selector.
+- 情景 now has six options; the default stays 对话.
+- Tooltips are on the trigger and on every option, from one shared copy source.
+- The spec lives at `docs/deepseek-coordination-v24.md` (v23 + v24 revision).
+
 ## [0.6.5] — 2026-10-17
 
 ### Added

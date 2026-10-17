@@ -18,8 +18,8 @@ export type Profession =
 /** How the agent organises its response. */
 export type Interaction = 'emotion' | 'think' | 'heuristic' | 'converge' | 'orchestrate'
 
-/** The working scenario. */
-export type Scene = 'dialogue' | 'office' | 'research' | 'engineering' | 'iterate'
+/** The working scenario (v24: writing sits between dialogue and office). */
+export type Scene = 'dialogue' | 'writing' | 'office' | 'research' | 'engineering' | 'iterate'
 
 /** Evidence and inference depth. */
 export type Validation = 'low' | 'medium' | 'high'
@@ -149,18 +149,135 @@ export const InteractionHint: Readonly<Record<Interaction, string>> = {
 
 export const SceneLabel: Readonly<Record<Scene, string>> = {
   dialogue: '对话',
+  writing: '写作',
   office: '办公',
   research: '研究',
   engineering: '工程',
   iterate: '迭代',
 }
 
+/** Tooltip copy mandated by the v24 §15.1 scene table. */
 export const SceneHint: Readonly<Record<Scene, string>> = {
-  dialogue: '快速自然交互：闲聊、简单问答。',
-  office: '文件管理、任务自动化：整理文件、生成报告。',
-  research: '多步检索、证据综合：文献综述、市场调研。',
-  engineering: '代码生成、构建、调试：软件开发、重构。',
-  iterate: 'generate → critique → revise：代码优化、文档打磨。',
+  dialogue: '快速自然交互，适合闲聊和简单问答。缺点：不深入。',
+  writing: '内容创作与文本打磨，适合文章、文案、报告、邮件、技术文档。优点：结构化产出、多轮打磨。缺点：需要多轮交互，不适合即时问答。',
+  office: '文件管理和任务自动化，适合整理、生成。缺点：限于沙箱内。',
+  research: '多步检索和证据综合，适合文献综述。优点：带引用。缺点：耗时。',
+  engineering: '代码生成和调试，适合软件开发。优点：支持 bash。缺点：需要沙箱。',
+  iterate: 'generate → critique → revise 闭环，适合打磨。优点：质量高。缺点：多轮调用。',
+}
+
+/**
+ * Per-scene execution policy (v24 §19). One table shared by the config
+ * defaults, the plan pipeline, and the UI copy, so a scene is never described
+ * in one place and enforced in another.
+ */
+export interface SceneProfile {
+  thinking: 'enabled' | 'disabled'
+  reasoningEffort: string
+  requirePlan: boolean
+  requireScore: boolean
+  requireOutline: boolean
+  requireRevision: boolean
+  requirePredict: boolean
+  requireCitation: boolean
+  allowBash: boolean
+  allowWeb: boolean
+  sandboxOnly: boolean
+  maxIteration: number
+  scoreThreshold: number
+}
+
+export const SceneProfiles: Readonly<Record<Scene, SceneProfile>> = {
+  dialogue: {
+    thinking: 'disabled',
+    reasoningEffort: 'medium',
+    requirePlan: false,
+    requireScore: false,
+    requireOutline: false,
+    requireRevision: false,
+    requirePredict: false,
+    requireCitation: false,
+    allowBash: false,
+    allowWeb: true,
+    sandboxOnly: false,
+    maxIteration: 1,
+    scoreThreshold: 0.6,
+  },
+  writing: {
+    thinking: 'enabled',
+    reasoningEffort: 'high',
+    requirePlan: true,
+    requireScore: true,
+    requireOutline: true,
+    requireRevision: true,
+    requirePredict: false,
+    requireCitation: false,
+    allowBash: false,
+    allowWeb: true,
+    sandboxOnly: false,
+    maxIteration: 3,
+    scoreThreshold: 0.6,
+  },
+  office: {
+    thinking: 'disabled',
+    reasoningEffort: 'medium',
+    requirePlan: true,
+    requireScore: false,
+    requireOutline: false,
+    requireRevision: false,
+    requirePredict: false,
+    requireCitation: false,
+    allowBash: false,
+    allowWeb: true,
+    sandboxOnly: true,
+    maxIteration: 1,
+    scoreThreshold: 0.6,
+  },
+  research: {
+    thinking: 'enabled',
+    reasoningEffort: 'high',
+    requirePlan: true,
+    requireScore: false,
+    requireOutline: false,
+    requireRevision: false,
+    requirePredict: true,
+    requireCitation: true,
+    allowBash: false,
+    allowWeb: true,
+    sandboxOnly: false,
+    maxIteration: 3,
+    scoreThreshold: 0.6,
+  },
+  engineering: {
+    thinking: 'enabled',
+    reasoningEffort: 'high',
+    requirePlan: true,
+    requireScore: false,
+    requireOutline: false,
+    requireRevision: false,
+    requirePredict: true,
+    requireCitation: false,
+    allowBash: true,
+    allowWeb: true,
+    sandboxOnly: true,
+    maxIteration: 3,
+    scoreThreshold: 0.6,
+  },
+  iterate: {
+    thinking: 'enabled',
+    reasoningEffort: 'high',
+    requirePlan: false,
+    requireScore: true,
+    requireOutline: false,
+    requireRevision: false,
+    requirePredict: false,
+    requireCitation: false,
+    allowBash: false,
+    allowWeb: true,
+    sandboxOnly: false,
+    maxIteration: 3,
+    scoreThreshold: 0.6,
+  },
 }
 
 export const ValidationLabel: Readonly<Record<Validation, string>> = {
@@ -208,7 +325,7 @@ export const ControlLabel: Readonly<Record<ControlName, string>> = {
 export const ControlHint: Readonly<Record<ControlName, string>> = {
   profession: '任务内唯一且锁定的问责维度。选择后本 Turn 不可切换，只能重建或丢弃任务。',
   interaction: '决定 Agent 如何回应：感情 / 思维 / 启发 / 收束 / 统筹。',
-  scene: '决定工作情景：对话 / 办公 / 研究 / 工程 / 迭代。',
+  scene: '决定工作情景：对话 / 写作 / 办公 / 研究 / 工程 / 迭代。',
   validation: '决定检索预算与证据范围：low 当轮 / medium 当前会话 / high 本地全部内容。三档都联网并做贝叶斯更新。',
   permission: '决定本会话的沙箱与审批档位：仅可查看 / 工作区内修改 / 完全权限。',
 }
@@ -277,7 +394,7 @@ export const TurnStatusLabel: Readonly<Record<TurnStatus, string>> = {
 }
 
 export const InteractionValues: readonly Interaction[] = ['emotion', 'think', 'heuristic', 'converge', 'orchestrate']
-export const SceneValues: readonly Scene[] = ['dialogue', 'office', 'research', 'engineering', 'iterate']
+export const SceneValues: readonly Scene[] = ['dialogue', 'writing', 'office', 'research', 'engineering', 'iterate']
 export const ValidationValues: readonly Validation[] = ['low', 'medium', 'high']
 export const ProfessionValues: readonly Profession[] = [
   'decision',
@@ -294,6 +411,7 @@ export type MatrixMark = 'yes' | 'limited' | 'no'
 
 export const InteractionSceneMatrix: Readonly<Record<Scene, Readonly<Record<Interaction, MatrixMark>>>> = {
   dialogue: { emotion: 'yes', think: 'yes', heuristic: 'yes', converge: 'yes', orchestrate: 'limited' },
+  writing: { emotion: 'limited', think: 'yes', heuristic: 'yes', converge: 'yes', orchestrate: 'yes' },
   office: { emotion: 'limited', think: 'yes', heuristic: 'yes', converge: 'yes', orchestrate: 'yes' },
   research: { emotion: 'no', think: 'yes', heuristic: 'yes', converge: 'yes', orchestrate: 'yes' },
   engineering: { emotion: 'no', think: 'yes', heuristic: 'limited', converge: 'yes', orchestrate: 'yes' },

@@ -73,7 +73,7 @@ interface ProviderPolicyRow {
   readonly strategy: Readonly<CacheStrategy>
 }
 
-const CACHE_POLICY: readonly ProviderPolicyRow[] = [
+const CachePolicy: readonly ProviderPolicyRow[] = [
   { route: /deepseek/, strategy: { effortCacheBreak: true, reasoningPreserve: false } },
   { route: /anthropic/, strategy: { effortCacheBreak: true, reasoningPreserve: false } },
   { route: /kimi|moonshot/, strategy: { effortCacheBreak: true, reasoningPreserve: true } },
@@ -85,7 +85,7 @@ const CACHE_POLICY: readonly ProviderPolicyRow[] = [
 ]
 
 /** The conservative policy for a provider family this table does not describe. */
-export const DEFAULT_CACHE_STRATEGY: Readonly<CacheStrategy> = {
+export const DefaultCacheStrategy: Readonly<CacheStrategy> = {
   effortCacheBreak: true,
   reasoningPreserve: false,
 }
@@ -168,8 +168,8 @@ export class ProviderModule {
     if (cached !== undefined) return cloneModels(cached)
     const llm = this.port()
     const catalog = await this.enumerate(llm, route)
-    const ttl = this.host.config.cache.ttl
-    const lifetime = Number.isFinite(ttl) && ttl > 0 ? ttl : 0
+    const configuredLifetime = this.host.config.cache.ttl
+    const lifetime = Number.isFinite(configuredLifetime) && configuredLifetime > 0 ? configuredLifetime : 0
     this.cache.set(route, { models: catalog, expires: this.host.clock.now() + lifetime })
     return cloneModels(catalog)
   }
@@ -178,15 +178,15 @@ export class ProviderModule {
    * The documented provider cache policy for one route (`undefined` never).
    *
    * Pure policy: it does not consult DSH, so it works even without the port,
-   * and an unknown route gets `DEFAULT_CACHE_STRATEGY`. It is a supplement to
+   * and an unknown route gets `DefaultCacheStrategy`. It is a supplement to
    * DSH's own request building, never a request adapter (v23 §4.4, §5.4).
    */
   cacheStrategy(route: string): CacheStrategy {
     const id = route.toLowerCase()
-    for (const row of CACHE_POLICY) {
+    for (const row of CachePolicy) {
       if (row.route.test(id)) return { ...row.strategy }
     }
-    return { ...DEFAULT_CACHE_STRATEGY }
+    return { ...DefaultCacheStrategy }
   }
 
   /**

@@ -550,14 +550,14 @@ const RouteCatalogue: readonly RouteDefinition[] = [
     name: 'answer',
     description: '直接给出解释或答案，适用于信息性问题',
     markers: ['是什么', '为什么', '怎么', '如何', '解释', '说明', '区别', '意思', 'what', 'why', 'how', 'explain', 'meaning', 'difference'],
-    scenes: ['dialogue', 'research', 'office'],
+    scenes: ['dialogue', 'writing', 'research', 'office'],
     interactions: ['think'],
   },
   {
     name: 'clarify',
     description: '先澄清目标、范围与验收标准，再决定动作',
     markers: ['确认', '到底', '究竟', '不清楚', '不确定', '再改', '优化一下', '看看', '随便', 'unclear', 'confirm', 'not sure', 'maybe'],
-    scenes: ['dialogue', 'office', 'iterate'],
+    scenes: ['dialogue', 'writing', 'office', 'iterate'],
     interactions: ['emotion', 'converge', 'think'],
   },
   {
@@ -571,7 +571,7 @@ const RouteCatalogue: readonly RouteDefinition[] = [
     name: 'verify',
     description: '先测试、检查或审查，确认事实再推进',
     markers: ['检查', '测试', '验证', '审查', '复核', '跑一遍', '确认无误', 'review', 'test', 'verify', 'check', 'audit', 'validate'],
-    scenes: ['engineering', 'research', 'iterate'],
+    scenes: ['engineering', 'writing', 'research', 'iterate'],
     interactions: ['converge', 'think'],
   },
   {
@@ -585,14 +585,14 @@ const RouteCatalogue: readonly RouteDefinition[] = [
     name: 'plan',
     description: '先规划步骤、依赖与边界，再逐项执行',
     markers: ['计划', '规划', '方案', '步骤', '拆分', '里程碑', '流程', 'plan', 'design', 'strategy', 'roadmap', 'steps', 'decompose'],
-    scenes: ['office', 'engineering', 'research'],
+    scenes: ['office', 'writing', 'engineering', 'research'],
     interactions: ['orchestrate', 'think'],
   },
   {
     name: 'iterate',
     description: '在现有结果上迭代打磨，小步改进并复验',
     markers: ['优化', '改进', '打磨', '迭代', '更好', '提升', '完善', 'improve', 'optimize', 'polish', 'iterate', 'refine', 'better'],
-    scenes: ['iterate', 'engineering'],
+    scenes: ['iterate', 'writing', 'engineering'],
     interactions: ['think', 'orchestrate'],
   },
   {

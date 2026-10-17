@@ -1,5 +1,5 @@
 /**
- * Plugin configuration (v23 §19) and its resolved defaults.
+ * Plugin configuration (v23 §19, v24 scene policy) and its resolved defaults.
  *
  * The schema is the only place a deployment can tune behaviour: anything two
  * deployments could reasonably disagree about is a field here, not a constant
@@ -7,7 +7,8 @@
  * the service never branches on `undefined`.
  */
 import Schema, { type Schema as SchemaDefinition } from '@deepseek-ai/schemastery'
-import type { CommandType, Interaction, Profession, Scene, Validation } from '../shared/enum.js'
+import type { CommandType, Interaction, Profession, Scene, SceneProfile, Validation } from '../shared/enum.js'
+import { SceneProfiles } from '../shared/enum.js'
 
 export interface ProfessionConfig {
   enabled: boolean
@@ -86,6 +87,8 @@ export interface UiConfig {
   takeover: boolean
   refreshInterval: number
   compact: boolean
+  /** 'auto' follows the DSH locale; zh-CN/en-US force the host-side copy. */
+  locale: string
 }
 
 export interface CoordinationConfig {
@@ -101,6 +104,8 @@ export interface CoordinationConfig {
   bayesian: BayesianConfig
   comprehension: ComprehensionConfig
   ui: UiConfig
+  /** v24 §19: per-scene execution policy. */
+  scenes: Record<Scene, SceneProfile>
   /** Defaults used when the composer sends no explicit selection. */
   defaults: {
     profession: Profession
@@ -241,13 +246,29 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
     takeover: Schema.boolean().default(false),
     refreshInterval: Schema.number().min(500).default(5000),
     compact: Schema.boolean().default(true),
-  }).default({ toolbar: true, showTooltip: true, takeover: false, refreshInterval: 5000, compact: true }),
+    locale: Schema.union(['auto', 'zh-CN', 'en-US']).default('auto'),
+  }).default({
+    toolbar: true,
+    showTooltip: true,
+    takeover: false,
+    refreshInterval: 5000,
+    compact: true,
+    locale: 'auto',
+  }),
+  scenes: Schema.object({
+    dialogue: sceneSchema(SceneProfiles.dialogue),
+    writing: sceneSchema(SceneProfiles.writing),
+    office: sceneSchema(SceneProfiles.office),
+    research: sceneSchema(SceneProfiles.research),
+    engineering: sceneSchema(SceneProfiles.engineering),
+    iterate: sceneSchema(SceneProfiles.iterate),
+  }).default(SceneProfiles),
   defaults: Schema.object({
     profession: Schema.union(['decision', 'outcome', 'resource', 'personnel', 'qualification', 'execution']).default(
       'execution',
     ),
     interaction: Schema.union(['emotion', 'think', 'heuristic', 'converge', 'orchestrate']).default('think'),
-    scene: Schema.union(['dialogue', 'office', 'research', 'engineering', 'iterate']).default('dialogue'),
+    scene: Schema.union(['dialogue', 'writing', 'office', 'research', 'engineering', 'iterate']).default('dialogue'),
     validation: Schema.union(['low', 'medium', 'high']).default('medium'),
     command: Schema.union(['none', 'goal', 'plan', 'feedback', 'compact', 'permission']).default('none'),
   }).default({
@@ -258,6 +279,25 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
     command: 'none',
   }),
 }) as SchemaDefinition<CoordinationConfig>
+
+/** One scene's schema, generated from the shared profile so defaults cannot drift. */
+function sceneSchema(profile: SceneProfile): SchemaDefinition<SceneProfile> {
+  return Schema.object({
+    thinking: Schema.union(['enabled', 'disabled']).default(profile.thinking),
+    reasoningEffort: Schema.string().default(profile.reasoningEffort),
+    requirePlan: Schema.boolean().default(profile.requirePlan),
+    requireScore: Schema.boolean().default(profile.requireScore),
+    requireOutline: Schema.boolean().default(profile.requireOutline),
+    requireRevision: Schema.boolean().default(profile.requireRevision),
+    requirePredict: Schema.boolean().default(profile.requirePredict),
+    requireCitation: Schema.boolean().default(profile.requireCitation),
+    allowBash: Schema.boolean().default(profile.allowBash),
+    allowWeb: Schema.boolean().default(profile.allowWeb),
+    sandboxOnly: Schema.boolean().default(profile.sandboxOnly),
+    maxIteration: Schema.number().min(1).default(profile.maxIteration),
+    scoreThreshold: Schema.number().min(0).max(1).default(profile.scoreThreshold),
+  }).default(profile) as SchemaDefinition<SceneProfile>
+}
 
 /** Materialise every nested default and force the non-negotiable lock. */
 export function resolveConfig(input: Partial<CoordinationConfig> | undefined): CoordinationConfig {

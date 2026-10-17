@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.6.5",
+  "version": "0.7.0",
   "description": "DeepSeek Harness plugin bundle: a dual-face Cordis plugin with a host route surface and a web settings page.",
   "keywords": [
     "deepseek-harness",
@@ -56,6 +56,7 @@
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:tsc": "tsc -p tsconfig.test.json --noEmit",
     "test:build": "tsdown --config tsdown.test.config.ts",
     "test": "npm run test:build && node --test .tmp/test-build",
     "pack:check": "npm pack --dry-run"

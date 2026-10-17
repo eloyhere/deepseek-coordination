@@ -6,12 +6,18 @@
  * the new 职能 group. The 职能锁定 switch is forced on and cannot be turned
  * off: it is the plugin's core safety constraint, so the page states that fact
  * rather than offering a control that would lie.
+ *
+ * All copy comes from the locale store; a language change re-renders the page
+ * without touching the two switch values. Rows whose switch mirrors a config
+ * default that *can* be turned off in configuration (audit, lock error hint)
+ * say so in their tooltip instead of pretending the value is immutable.
  */
 import * as React from 'react'
 import Switch from '@mui/material/Switch'
 import Tooltip from '@mui/material/Tooltip'
 import { ThemeProvider } from '@mui/material/styles'
 import { theme } from './theme.js'
+import { useCopy } from './i18n.js'
 import { setTakeover, setWorkflow, takeoverStore, workflowStore } from './store.js'
 
 const MuiSwitch: React.ComponentType<Record<string, unknown>> =
@@ -90,8 +96,15 @@ function ValueRow(props: { label: string; value: string; hint: string }): React.
 }
 
 export function CoordinationSettings(): React.ReactElement {
+  const copy = useCopy()
   const takeoverOn = React.useSyncExternalStore(takeoverStore.subscribe, takeoverStore.snapshot, takeoverStore.snapshot)
   const workflowOn = React.useSyncExternalStore(workflowStore.subscribe, workflowStore.snapshot, workflowStore.snapshot)
+
+  const settings = copy.settings
+  const group = settings.professionGroup
+  // Disabled rows that mirror a config default must say the default is switchable
+  // in configuration, so the disabled control never implies a hard rule.
+  const displayOnlyHint = (hint: string): string => `${hint} ${group.displayOnly}`
 
   return React.createElement(
     ThemeProvider,
@@ -99,69 +112,67 @@ export function CoordinationSettings(): React.ReactElement {
     React.createElement(
       'section',
       { style: SECTION_STYLE },
-      React.createElement('h2', { style: HEADING_STYLE }, '协调'),
+      React.createElement('h2', { style: HEADING_STYLE }, settings.title),
       React.createElement(SwitchRow, {
-        label: '权限接管',
+        label: settings.takeover.label,
         checked: takeoverOn,
-        hint: '已接管时隐藏 DSH 输入框的访问模式控件，改用协调面板的权限下拉；未接管时保留 DSH 自带控件。',
+        hint: settings.takeover.hint,
         onChange: (value: boolean) => { setTakeover(value) },
       }),
-      React.createElement('p', { style: HINT_STYLE }, takeoverOn
-        ? '已接管：输入框中的权限下拉已被隐藏，替换为协调面板的权限下拉。'
-        : '未接管：输入框保留宿主自带的权限下拉。'),
+      React.createElement('p', { style: HINT_STYLE }, takeoverOn ? settings.takeover.onLine : settings.takeover.offLine),
       React.createElement(SwitchRow, {
-        label: '工作流',
+        label: settings.workflow.label,
         checked: workflowOn,
-        hint: '显示或隐藏输入框中的职能 / 交互 / 情景 / 验证四个下拉框；关闭后该位置不贡献任何控件。',
+        hint: settings.workflow.hint,
         onChange: (value: boolean) => { setWorkflow(value) },
       }),
-      React.createElement('p', { style: HINT_STYLE }, workflowOn
-        ? '工作流开启：输入框显示职能 / 交互 / 情景 / 验证四个下拉框。'
-        : '工作流关闭：输入框隐藏职能 / 交互 / 情景 / 验证四个下拉框。'),
+      React.createElement('p', { style: HINT_STYLE }, workflowOn ? settings.workflow.onLine : settings.workflow.offLine),
 
       React.createElement(
         'div',
         { style: GROUP_STYLE },
-        React.createElement('h3', { style: GROUP_TITLE_STYLE }, '职能 Profession'),
+        React.createElement('h3', { style: GROUP_TITLE_STYLE }, group.title),
         React.createElement(SwitchRow, {
-          label: '职能锁定',
+          label: group.lock.label,
           checked: true,
           disabled: true,
-          hint: '强制开关：每个任务只能有一个职能，Turn 内不可切换。关闭它等于放弃问责链，因此不提供关闭入口。',
+          hint: group.lock.hint,
         }),
         React.createElement(ValueRow, {
-          label: '默认职能',
-          value: '执行',
-          hint: '配置项 profession.default；agent 在任务开始时可以改选，但本 Turn 开始后即锁定。',
+          label: group.defaultProfession.label,
+          // The host exposes no config route to the client, so the page states
+          // the truth — it follows profession.default — instead of hardcoding a
+          // value that configuration may have changed.
+          value: group.defaultProfessionValue,
+          hint: group.defaultProfession.hint,
         }),
         React.createElement(SwitchRow, {
-          label: '重建时可重选',
+          label: group.rebuildReselect.label,
           checked: true,
           disabled: true,
-          hint: '重建任务（rebuild）结束旧任务并创建新任务，新任务可以重新选择职能。',
+          hint: group.rebuildReselect.hint,
         }),
         React.createElement(SwitchRow, {
-          label: '丢弃时可重选',
+          label: group.abandonReselect.label,
           checked: true,
           disabled: true,
-          hint: '丢弃任务（abandon）不创建新任务；下一个任务可以重新选择职能。',
+          hint: group.abandonReselect.hint,
         }),
         React.createElement(SwitchRow, {
-          label: '职能审计',
+          label: group.audit.label,
           checked: true,
           disabled: true,
-          hint: '每次锁定、重建、丢弃写入 OrchestrationTrace，形成不可篡改的哈希链。',
+          hint: displayOnlyHint(group.audit.hint),
         }),
         React.createElement(SwitchRow, {
-          label: '锁定错误提示',
+          label: group.lockErrorHint.label,
           checked: true,
           disabled: true,
-          hint: '拒绝修改已锁定职能时，错误会带上重建（rebuild）或丢弃（abandon）的提示。',
+          hint: displayOnlyHint(group.lockErrorHint.hint),
         }),
       ),
 
-      React.createElement('p', { style: FOOTER_STYLE },
-        '下拉框的选项提示来自 v23 §15.1；权限预设目录由 DSH 提供，本插件只读展示并写回所选预设。'),
+      React.createElement('p', { style: FOOTER_STYLE }, settings.footer),
     ),
   )
 }

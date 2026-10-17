@@ -268,6 +268,12 @@ export class ProfessionModule {
   abandonSubTask(subtask: number): SubTask {
     const current = this.requireSubTask(subtask)
     if (current.status === 'abandoned') return current
+    if (current.status === 'verified' || current.status === 'rejected' || current.status === 'partial') {
+      throw new InvalidStateError(
+        `subtask ${subtask} is already ${current.status}; terminal states are irreversible (v23 §8.5)`,
+        { subtask, status: current.status },
+      )
+    }
     const now = this.host.clock.now()
     this.host.db.transaction(() => {
       this.host.db.update(

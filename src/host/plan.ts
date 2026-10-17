@@ -39,9 +39,17 @@
  * Thresholds: feasibility >= 0.5, coverage >= 0.6, clarity >= 0.5,
  * specificity >= 0.5, alignment >= 0.7, risk <= 0.7, cost <= 0.8,
  * efficiency >= 0.5. A plan passes only when every dimension is inside its
- * threshold AND the weighted total reaches `config.plan.threshold`; alignment
+ * threshold AND the weighted total reaches the scene's threshold; alignment
  * and risk are part of "every dimension", so the two extra §9.4 conditions are
  * covered without a second check.
+ *
+ * v24 delta: a plan whose turn scene is `writing` (between `dialogue` and
+ * `office`) must reach `WritingScoreThreshold` (0.6) instead of
+ * `config.plan.threshold`. The scene is read from the turn row; a deployment
+ * that later exposes `config.scenes.writing.scoreThreshold` overrides the
+ * local constant. The quality score recorded on the answer afterwards is the
+ * service layer's job; it should reuse `PlanScenePolicies` rather than
+ * hard-coding 0.6 again.
  */
 import type { PlanDimensionThreshold, PlanWeights } from './config.js'
 import type { ModuleHost } from './module.js'
@@ -94,6 +102,55 @@ export const PlanStatusValues: readonly PlanStatus[] = [
   'rebuilt',
 ]
 
+/* ------------------------------------------------------------------------- *
+ * Scene policy (v24)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * v24 delta: the writing scene raises the plan pass threshold to 0.6 — prose
+ * must clear a higher bar than an ordinary plan. This local constant is the
+ * fallback while `config.scenes` is not part of the configuration schema.
+ */
+export const WritingScoreThreshold = 0.6
+
+/** One scene's plan policy; the shape `config.scenes.<scene>` may expose. */
+export interface PlanScenePolicy {
+  scoreThreshold: number
+}
+
+/** Scene overrides of the plan defaults, keyed by persisted scene name. */
+export const PlanScenePolicies: Readonly<Record<'writing', PlanScenePolicy>> = {
+  writing: { scoreThreshold: WritingScoreThreshold },
+}
+
+/**
+ * The pass threshold of one scene: the configured plan threshold by default,
+ * the writing policy (0.6) for the writing scene. Pure, so the service layer
+ * can reuse it when it scores the answer quality later.
+ */
+export function planScoreThreshold(
+  scene: string,
+  baseThreshold: number,
+  writingThreshold: number = WritingScoreThreshold,
+): number {
+  if (scene !== 'writing') return baseThreshold
+  return Number.isFinite(writingThreshold) ? clamp(writingThreshold, 0, 1) : WritingScoreThreshold
+}
+
+/** The shape a future `config.scenes.writing` entry would carry. */
+interface ScenesConfig {
+  writing?: { scoreThreshold?: number }
+}
+
+/** Read the configured writing threshold when the schema exposes it. */
+function configuredWritingThreshold(host: ModuleHost): number {
+  const scenes = (host.config as unknown as { scenes?: ScenesConfig }).scenes
+  const value = scenes?.writing?.scoreThreshold
+  return typeof value === 'number' && Number.isFinite(value)
+    ? clamp(value, 0, 1)
+    : WritingScoreThreshold
+}
+
 /** The result of scoring one plan. */
 export interface PlanScore {
   scores: Score[]
@@ -131,6 +188,8 @@ interface PlanMeasurement {
   plan: Plan
   comprehension: Comprehension | undefined
   dimensions: PlanDimensions
+  /** The scene's pass threshold: `config.plan.threshold` or 0.6 for writing. */
+  threshold: number
 }
 
 /* ------------------------------------------------------------------------- *
@@ -200,6 +259,10 @@ const ConcreteVerbs: readonly string[] = [
   'write',
   'edit',
   'create',
+  'outline',
+  'draft',
+  'revise',
+  'proofread',
   'build',
   'run',
   'execute',
@@ -234,6 +297,9 @@ const ConcreteVerbs: readonly string[] = [
   '写入',
   '修改',
   '创建',
+  '大纲',
+  '草稿',
+  '修订',
   '运行',
   '执行',
   '测试',
@@ -720,6 +786,11 @@ export class PlanModule {
     return computePlanTotal(measurement.dimensions, this.host.config.plan.weights)
   }
 
+  /** The scene's pass threshold for this plan; 0.6 for a writing scene. */
+  threshold(plan: number): number {
+    return this.measure(plan).threshold
+  }
+
   /**
    * Measure the plan, upsert its eight score rows (`category = 'plan'`,
    * `target = plan identity`, the eight dimension names) and move a
@@ -733,7 +804,7 @@ export class PlanModule {
       measurement.dimensions,
       this.host.config.plan.dimensions,
       total,
-      this.host.config.plan.threshold,
+      measurement.threshold,
     )
     const now = this.host.clock.now()
     const scores = this.host.db.transaction(() => {
@@ -767,7 +838,7 @@ export class PlanModule {
       measurement.dimensions,
       this.host.config.plan.dimensions,
       total,
-      this.host.config.plan.threshold,
+      measurement.threshold,
     )
     if (failing.length === 0) return false
     if (measurement.plan.rebuild >= this.host.config.plan.maxRebuild) {
@@ -815,7 +886,7 @@ export class PlanModule {
       measurement.dimensions,
       this.host.config.plan.dimensions,
       beforeTotal,
-      this.host.config.plan.threshold,
+      measurement.threshold,
     )
     const improved = this.improve(current, measurement.comprehension)
     const afterTotal = computePlanTotal(
@@ -942,7 +1013,21 @@ export class PlanModule {
       plan: current,
       comprehension,
       dimensions: computePlanDimensions(current, comprehension),
+      threshold: planScoreThreshold(
+        this.sceneOf(current.turn),
+        this.host.config.plan.threshold,
+        configuredWritingThreshold(this.host),
+      ),
     }
+  }
+
+  /**
+   * The persisted scene of a plan's turn. Read as a raw string because the v24
+   * `writing` value may run ahead of the shared `Scene` union.
+   */
+  private sceneOf(turn: number): string {
+    const row = this.host.db.get<Row>('SELECT scene FROM turn WHERE identity = ?', turn)
+    return row === undefined ? 'dialogue' : text(row, 'scene', 'dialogue')
   }
 
   /**

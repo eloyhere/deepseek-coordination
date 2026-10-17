@@ -9,20 +9,23 @@
  * resolves to `null`, and the caller falls back to a per-session localStorage
  * copy with an explicit "local only" tooltip. A host rejection keeps its typed
  * code so the caller can explain a locked profession.
+ *
+ * It also reports the active language:
+ *   POST /deepseek-coordination/locale { locale }                   -> ignored
+ *
+ * The report is fire-and-forget with a short timeout: a missing route (older
+ * host build) must not delay or break the composer. The host half rebuilds the
+ * `coordination_*` tool descriptions from the last report.
  */
 import type { Selection } from '../shared/entity.js'
-import {
-  toCommandType,
-  toInteraction,
-  toProfession,
-  toScene,
-  toValidation,
-} from '../shared/enum.js'
+import { toCommandType, toInteraction, toProfession, toScene, toValidation } from '../shared/enum.js'
 import type { SelectionPatch, SelectionState } from '../shared/selection.js'
+import type { Locale } from '../shared/i18n.js'
 
 const ROUTE_PREFIX = '/deepseek-coordination'
 const LOCAL_PREFIX = 'deepseek-coordination:selection:'
 const REQUEST_TIMEOUT = 3000
+const LOCALE_REPORT_TIMEOUT = 2000
 
 interface WireError {
   code?: string
@@ -92,6 +95,15 @@ export function writeLocal(sessionId: string, patch: LocalSelection): void {
   }
 }
 
+/** Drop the offline copy after it has been replayed to the host. */
+export function clearLocal(sessionId: string): void {
+  try {
+    window.localStorage.removeItem(localKey(sessionId))
+  } catch {
+    // A blocked storage has nothing to clear.
+  }
+}
+
 /** The offline projection of the five choices; no host, no permission catalog. */
 export function localState(sessionId: string): SelectionState {
   const stored = readLocal(sessionId)
@@ -128,15 +140,44 @@ export async function saveSelection(
     method: 'POST',
     body: JSON.stringify({ session: sessionId, patch }),
   })
-  if (wire === null) return { state: null, message: '主机未连接' }
+  // No fabricated prose here: user-facing fallback copy belongs to the locale
+  // dictionary, so the outcome carries only the host's own message (if any).
+  if (wire === null) return { state: null }
   if (!wire.ok) {
     return {
       state: null,
       code: wire.error?.code,
-      message: wire.error?.message ?? '主机拒绝了这次修改',
+      message: wire.error?.message,
     }
   }
   return { state: wire.value }
+}
+
+/**
+ * Tell the host half which language the client is showing (v23 §22).
+ *
+ * Fire-and-forget: the response carries nothing the UI needs, the timeout is
+ * short, and an unreachable host or a host build without the route keeps the
+ * previous language. Never throws.
+ *
+ * @param locale - normalised locale tag (`zh-CN` | `en-US`).
+ */
+export async function reportLocale(locale: Locale): Promise<void> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), LOCALE_REPORT_TIMEOUT)
+  try {
+    await fetch(`${ROUTE_PREFIX}/locale`, {
+      method: 'POST',
+      signal: controller.signal,
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ locale }),
+    })
+  } catch {
+    // The host keeps its last known language; the next change reports again.
+  } finally {
+    window.clearTimeout(timer)
+  }
 }
 
 /** True when a value is a non-empty, usable DSH session id. */

@@ -88,20 +88,25 @@ export type EvidenceScope = 'turn' | 'session' | 'local'
 /** Which interaction modes receive the Bayesian update at this level. */
 export type EvidenceInteractionScope = 'selected' | 'all'
 
+/** Whether per-interaction posteriors are fused into one global belief. */
+export type EvidenceFusion = 'none' | 'global'
+
 /**
  * One validation level's retrieval and inference policy.
  *
- * The user requirement that overrides v23 §6.3: every level searches and
- * updates priors/posteriors (`bayesian` is always true). Levels differ only in
- * how broadly evidence is retrieved:
+ * The user requirement that overrides v23 §6.3: every level searches the web
+ * and updates priors/posteriors (`bayesian` is always true). Levels differ
+ * only in how broadly evidence is retrieved and fused:
  *
  * - `queries`    independent search queries the level may issue;
  * - `maxResults` results requested per query;
- * - `scope`      `turn` = current turn only, `session` = current session
- *                history, `local` = session plus local cross-session history;
- * - `interactions` `selected` = only the chosen interaction, `all` = every
- *                interaction mode (the v23 §6.3 breadth distinction that
- *                survives the override).
+ * - `scope`      `turn` = current turn context plus that turn's web evidence;
+ *                `session` = current session history plus web;
+ *                `local` = all local session history + workspace files + web;
+ * - `interactions` `selected` = only the chosen interaction (the lightweight
+ *                low path), `all` = every interaction mode (high);
+ * - `fusion`     `none` = keep per-interaction posteriors, `global` = fuse
+ *                them into a global posterior (high).
  */
 export interface EvidencePolicy {
   queries: number
@@ -109,17 +114,40 @@ export interface EvidencePolicy {
   scope: EvidenceScope
   bayesian: true
   interactions: EvidenceInteractionScope
+  fusion: EvidenceFusion
 }
 
 /**
  * Proposed defaults for the three validation levels. `low` is intentionally
- * narrow (one turn-scoped query) but is still a full Bayesian step; `high` is
- * the broadest retrieval (local scope, all interactions).
+ * narrow (one turn-scoped query, selected interaction) but is still a full
+ * Bayesian step; `high` is the broadest retrieval (local scope, all
+ * interactions, global fusion).
  */
 export const EvidencePolicyDefaults: Readonly<Record<Validation, EvidencePolicy>> = Object.freeze({
-  low: { queries: 1, maxResults: 3, scope: 'turn', bayesian: true, interactions: 'selected' },
-  medium: { queries: 2, maxResults: 5, scope: 'session', bayesian: true, interactions: 'selected' },
-  high: { queries: 4, maxResults: 8, scope: 'local', bayesian: true, interactions: 'all' },
+  low: Object.freeze({
+    queries: 1,
+    maxResults: 3,
+    scope: 'turn',
+    bayesian: true,
+    interactions: 'selected',
+    fusion: 'none',
+  }),
+  medium: Object.freeze({
+    queries: 2,
+    maxResults: 5,
+    scope: 'session',
+    bayesian: true,
+    interactions: 'selected',
+    fusion: 'none',
+  }),
+  high: Object.freeze({
+    queries: 4,
+    maxResults: 8,
+    scope: 'local',
+    bayesian: true,
+    interactions: 'all',
+    fusion: 'global',
+  }),
 })
 
 /**
@@ -444,15 +472,26 @@ export class BayesianModule {
    * the evidence/hypothesis pair is the observation (when none exists, the
    * evidence row's own weight seeds one).
    *
+   * Level awareness: the turn's validation level (or the explicit `validation`
+   * override) selects the evidence policy. Every level performs the update,
+   * but the policy's `scope` gates which evidence rows are admissible:
+   * - `turn`    only evidence recorded for this turn;
+   * - `session` evidence from any turn of the same session;
+   * - `local`   any local evidence row (session history, workspace files and
+   *             web evidence all live in the local coordination database).
+   *
    * One `posterior` row is always appended, and one `likelihood` row records
    * exactly which observation was used, so the update can be reproduced from
    * the database alone.
    */
-  update(turn: number, hypothesis: string, evidence: number): Posterior {
+  update(turn: number, hypothesis: string, evidence: number, validation?: Validation): Posterior {
     const turnIdentity = requireIdentity(turn, 'turn')
-    this.requireTurn(turnIdentity)
+    const turnRow = this.requireTurn(turnIdentity)
+    const level = validation === undefined ? toValidation(text(turnRow, 'validation', 'medium')) : toValidation(validation)
+    const policy = evidencePolicy(level)
     const evidenceIdentity = requireIdentity(evidence, 'evidence')
     const evidenceRow = this.requireEvidence(evidenceIdentity)
+    this.assertEvidenceScope(turnRow, evidenceRow, policy, level)
     const hypothesisName = requireText(hypothesis, 'hypothesis')
     return this.host.db.transaction(() => {
       const prior = this.latestPrior(turnIdentity, hypothesisName)
@@ -879,6 +918,41 @@ export class BayesianModule {
 
   private requireEvidence(evidence: number): Row {
     return this.host.db.require<Row>('evidence', evidence, 'evidence')
+  }
+
+  /**
+   * Gate an evidence row by the active evidence policy. `turn` scope only
+   * admits evidence recorded for this turn; `session` scope admits any turn of
+   * the same session; `local` scope admits every local evidence row because
+   * session history, workspace files and web evidence all live in this
+   * database.
+   */
+  private assertEvidenceScope(
+    turnRow: Row,
+    evidenceRow: Row,
+    policy: EvidencePolicy,
+    validation: Validation,
+  ): void {
+    const turn = number(turnRow, 'identity')
+    const evidence = number(evidenceRow, 'identity')
+    const evidenceTurn = number(evidenceRow, 'turn')
+    if (policy.scope === 'turn' && evidenceTurn !== turn) {
+      throw new InvalidStateError(
+        `evidence ${evidence} belongs to turn ${evidenceTurn}, outside the turn-scoped evidence policy of validation ${validation}`,
+        { validation, turn, evidence, evidenceTurn },
+      )
+    }
+    if (policy.scope === 'session') {
+      const session = number(turnRow, 'session')
+      const evidenceTurnRow = this.host.db.get<Row>('SELECT session FROM turn WHERE identity = ?', evidenceTurn)
+      const evidenceSession = evidenceTurnRow === undefined ? 0 : number(evidenceTurnRow, 'session')
+      if (evidenceSession !== session) {
+        throw new InvalidStateError(
+          `evidence ${evidence} belongs to session ${evidenceSession}, outside the session-scoped evidence policy of validation ${validation}`,
+          { validation, turn, session, evidence, evidenceTurn },
+        )
+      }
+    }
   }
 
   private priorProbability(): number {
