@@ -1,0 +1,5 @@
+# deepseek-coordination bundle patch: inserts the dual-face plugin row into the profile roster.
+# Install with: dsh plugin --profile <name> add deepseek-coordination
+- insert:
+    - id: deepseek-coordination
+      name: 'deepseek-coordination'

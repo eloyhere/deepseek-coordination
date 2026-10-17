@@ -2,147 +2,146 @@
 
 [English](README.md) · **简体中文** · [更新日志](CHANGELOG.md)
 
-**deepseek-coordination** 的浏览器前端：一个用 [Vite](https://vite.dev) 与 TypeScript 构建的单页应用。
+一个 **DeepSeek Harness 插件 bundle**。它是"双面" Cordis 插件：**Host 半边**运行在 DSH 的 Node
+进程里，负责一组 HTTP 路由；**Client 半边**运行在 DSH Web GUI 里，负责一个设置页。
 
-> **状态：初始脚手架。** 仓库已于 2026-10-17 在提交 `87ddab9` 中重新搭建。`src/main.ts`
-> 目前仍是 Vite 模板页，产品界面尚未实现。重置前仓库里是什么、如何取回，见
-> [仓库历史](#仓库历史)。
+> **状态：脚手架。** Host 半边目前只回应存活探测与 echo，Client 半边注册的是一个占位设置页，
+> 用来显示 Host 半边是否在线。两半已经端到端接通，剩下的工作是填路由实现与界面，而不是接线。
 
-## 环境要求
+## 几个概念
 
-| 项目 | 要求 |
+| 概念 | 含义 |
 |---|---|
-| Node.js | `>= 18`（已在 24.21.0 上验证） |
-| 包管理器 | npm（随 Node 安装） |
-| 浏览器 | 任意当前主流浏览器 |
+| **插件（plugin）** | 导出 `apply(ctx)` 的模块，由某个配置层里的一行挂载 |
+| **bundle** | 在 `package.json` 里声明 `dsh.bundle.patch` 的 npm 包，即它贡献的那一层配置 |
+| **profile** | `$DSH_HOME/profiles/<name>` 下的可运行组合，按顺序列出要应用的 bundle |
+| **Host 半边** | `lib/index.mjs`，面向 Node 的 ESM，由 `src/index.ts` 构建 |
+| **Client 半边** | `lib/client.js`，面向浏览器的 CJS，由 `src/client/index.ts` 构建 |
 
-Vite 与 TypeScript 都是本地 `devDependencies`，无需全局安装任何工具；项目没有运行时依赖，
-`dist/` 可独立部署。
-
-## 快速开始
-
-```console
-$ npm install
-$ npm run dev
-```
-
-Vite 会打印本地地址（默认 <http://localhost:5173>）。修改 `src/` 下的文件会通过热模块替换
-直接生效，无需刷新浏览器。
-
-构建静态产物：
-
-```console
-$ npm run build
-$ npm run preview
-```
-
-`build` 会先执行 `tsc`，因此类型错误会在打包前就让构建失败。产物输出到 `dist/`，该目录已被
-git 忽略。
-
-## npm 脚本
-
-| 脚本 | 实际执行 | 作用 |
-|---|---|---|
-| `npm run dev` | `vite` | 启动带 HMR 的开发服务器 |
-| `npm run build` | `tsc && vite build` | 先做类型检查（不产出），再打包到 `dist/` |
-| `npm run preview` | `vite preview` | 本地预览生产构建 |
-
-`package.json` 里还保留着 18 个旧脚本（`os`、`test`、`test:*`、`measure:cache`、`test:all`、
-`selfcheck`）。它们属于上一个项目，目前执行会失败——详见[已知问题](#已知问题)。
+本仓库是其中的 **bundle**。用户启动的是 profile，二者不会合为一体。
 
 ## 目录结构
 
 ```text
 .
-├─ index.html          HTML 入口，也是唯一页面
-├─ package.json        ESM 包，Vite + TypeScript 开发依赖与 npm 脚本
-├─ package-lock.json   锁定本地工具链版本
-├─ tsconfig.json       仅做类型检查（noEmit）
-├─ public/             原样复制到站点根目录
-│  ├─ favicon.svg
-│  └─ icons.svg
 ├─ src/
-│  ├─ main.ts          应用入口：挂载并渲染到 #app
-│  ├─ counter.ts       计数器按钮的行为实现
-│  ├─ style.css        由 main.ts 导入，Vite 负责注入
-│  └─ assets/          以模块方式导入、参与 URL 解析与哈希的图片
-│     ├─ hero.png
-│     ├─ typescript.svg
-│     └─ vite.svg
-├─ README.md
-├─ README.zh-CN.md
+│  ├─ index.ts           Host 半边：Cordis 插件，注册 /deepseek-coordination/* 路由
+│  └─ client/
+│     └─ index.ts        Client 半边：语言字典 + settings.section 设置页
+├─ lib/                  tsdown 构建产物（已 git 忽略，不要手改）
+├─ cordis.patch.yml      bundle patch：把本插件那一行插入 profile 配置
+├─ package.json          dsh.bundle / dsh.client 声明与双入口 exports
+├─ pnpm-lock.yaml        锁定的开发工具链与 DSH client 包
+├─ tsconfig.json         只做类型检查（noEmit）
+├─ tsdown.config.ts      双目标构建：Host 走 ESM，Client 走 CJS 并加模块加载器包装
 ├─ CHANGELOG.md
 └─ LICENSE
 ```
 
-`public/` 中的文件以站点根路径提供，必须用 `/favicon.svg` 这样的绝对路径引用；`src/` 中的文件
-按模块导入，构建后会得到带内容哈希的文件名。
+## 环境要求
 
-## 页面是怎么组装出来的
+| 项目 | 要求 |
+|---|---|
+| Node.js | `>= 18` |
+| 包管理器 | pnpm（npm 亦可；下例用 pnpm） |
+| DSH | 装有 `dsh` CLI 的 DSH 安装，以及 `web` profile |
 
-1. `index.html` 提供 `<div id="app">`，并以模块方式加载 `/src/main.ts`。
-2. `src/main.ts` 导入 `./style.css`（由 Vite 注入文档）、以 URL 字符串形式导入三张图片，并从
-   `./counter.ts` 导入 `setupCounter`。
-3. 脚本向 `#app` 写入 `<section id="center">`：包含三张图片的 hero 区、标题 *Get started*、
-   HMR 提示，以及一个 `<button id="counter">`。
-4. 按钮交给 `setupCounter`，它渲染 `Count is N` 并在点击时自增。
-5. `vite build` 会把入口改写为 `dist/index.html`，并在 `dist/assets/` 下产出带内容哈希的资源。
+## 构建
 
-相对导入刻意保留 `.ts` 后缀：`allowImportingTsExtensions` 与 `moduleResolution: "bundler"`
-允许这样做，Vite 也能解析省略后缀的写法。
+```console
+$ pnpm install
+$ pnpm typecheck        # tsc -p tsconfig.json --noEmit
+$ pnpm build            # tsdown --config tsdown.config.ts
+```
 
-## 约定
+`build` 会产出清单指向的两个文件：
 
-- **只使用 ESM。** 包声明 `"type": "module"`，`src/` 中不使用 CommonJS。
-- **`tsc` 不产出文件。** 开启 `noEmit`，TypeScript 只负责类型检查、Vite 负责打包，两者不会争抢
-  输出目录。
-- **编译选项有意偏严。** `target: ES2023`、`lib: [ES2023, DOM]`、`types: ["vite/client"]`，并开启
-  `noUnusedLocals`、`noUnusedParameters`、`noFallthroughCasesInSwitch`、`erasableSyntaxOnly`、
-  `verbatimModuleSyntax`。
-- **资源只有一处归属。** 需要保持文件名的放到 `public/`；经由模块图导入的放到 `src/assets/`。
-- **忽略规则。** `.gitignore` 沿用 Vite 模板：`logs`、`*.log`、`node_modules`、`dist`、
-  `dist-ssr`、`*.local` 以及编辑器目录。
-
-## 已知问题
-
-重新搭建时删掉了旧源码，却没有清理引用它们的元数据，因此这个包目前自相矛盾。以下问题都不影响
-`dev`、`build`、`preview`。
-
-| `package.json` 中的位置 | 声明内容 | `87ddab9` 之后的状态 |
+| 产物 | 半边 | 格式 |
 |---|---|---|
-| `main` | `src/plugin/index.js` | 已删除 |
-| `exports`（5 个子路径） | `src/plugin/*.js`、`client.js`、`src/permission/index.js` | 已删除 |
-| `bin.dsh-os` | `src/host/bin/dsh-os.bat` | 已删除 |
-| `dsh.bundle.patch` | `./cordis.patch.yml` | 已删除 |
-| `files` | 20 条路径 | 19 条已删除，`README.md` 已重新生成 |
+| `lib/index.mjs` + `lib/index.d.mts` | Host | ESM，`platform: node` |
+| `lib/client.js` | Client | CJS，`platform: browser`，外层包 `__ModuleLoader__.load()` |
 
-其他遗留项：
+不要直接改 `lib/`，也不要手写 `__ModuleLoader__` 包装——那是由 `tsdown.config.ts` 的
+`banner` / `intro` / `footer` 生成的。永远改 `src/` 后重新构建。
 
-- `index.html` 的标题仍是脚手架占位符 `replace`（重置前是 `deepseek-coordination`）。
-- `.gitattributes` 已被删除，换行现在由 `core.autocrlf` 决定，不再遵循仓库原先的显式规则。
-- `npm pack` 能成功执行，但打出的包其入口文件并不存在。
+## 安装到 profile
+
+```console
+# 从当前检出安装
+$ dsh plugin --profile web add ./
+
+# 或者先打包成 tarball
+$ pnpm pack
+$ dsh plugin --profile web add ./deepseek-coordination-0.2.0.tgz
+```
+
+因为本包声明了 `dsh.bundle`，`dsh plugin add` 会把它同时写进 profile 的 `package.json`
+（作为依赖）和 `dsh.profile.bundles`。不启动也能校验这一层：
+
+```console
+$ dsh --profile web --dump-config     # 应出现 "# == deepseek-coordination" 层
+$ dsh --profile web
+```
+
+## 两半如何通信
+
+两个半边从不互相 import，一律走 HTTP：
+
+| 路由（`POST`） | 请求体 | 响应 |
+|---|---|---|
+| `/deepseek-coordination/ping` | `{}` | `{"ok":true,"value":{"plugin":"deepseek-coordination","pong":true}}` |
+| `/deepseek-coordination/echo` | 任意 JSON | `{"ok":true,"value":<原样 JSON>}` |
+
+所有响应统一用一个信封：`{ ok: true, value }` 或 `{ ok: false, error }`。Client 半边用
+`fetch()` 发送 JSON 并读取该信封，不依赖共享的模块实例。
+
+## 插件契约要点
+
+以下几条出错时不会报错，只会静默失效：
+
+- **硬依赖必须写进 `inject`。** `apply()` 只在所有被注入的服务就绪后运行。`ctx.get('x')` 是
+  *可选*读取，在服务就绪前返回 `undefined`，不能当作 `inject` 的替代。
+- **注册会被自动清理。** `ctx.on`、`ctx.tools.register`、`ctx.slots.inject` 等由插件的 fiber
+  持有。其他资源用 `ctx.effect(() => cleanup)` 返回清理函数——路由表面的注销就是这么做的。
+- **`inject` 与 `dsh.client.inject` 是两种声明。** 前者列 Client *服务*（`slots`、`locale`），
+  后者列模块表中的*包*（`react`、`@deepseek-ai/dsh-client-*`）。两者都需要。
+- **只有 `react` 与 `@deepseek-ai/dsh-client-*` 来自模块表。** Client 半边的其余依赖必须打进
+  产物——`tsdown.config.ts` 用 `neverBundle` / `alwaysBundle` 表达这一点，模块表缺行会在加载时抛错。
+- **`__ModuleLoader__` 的 `id` 必须等于包名。** 它就是解析用的键。
+- **使用主题变量。** 颜色一律取自 `var(--dsw-alias-*)`，写死颜色会在两套主题中的一套里失效。
+- **`files` 是白名单。** 只有列出的文件会随包发布；若清单指向 tarball 里不存在的路径，插件能装
+  上，却加载失败。
+
+## 发布
+
+- **npm registry 或 tarball** —— 发布前先构建 `lib/`（`pnpm publish` / `pnpm pack`），这样用户拿到
+  的是编译产物，也不需要任何安装期构建授权。
+- **直接从 git 安装** —— `dsh plugin add github:you/deepseek-coordination` 取的是*源码*而不是产物，
+  只有在包声明了自洽的 `prepare` 脚本时才可行，且用户要先在 profile 的 `pnpm-workspace.yaml`
+  里放行（`allowBuilds`）。本仓库没有 `prepare` 脚本，因此应发布编译后的产物。
 
 ## 仓库历史
 
-在提交 `3ba4a45`（标签 `v0.1.9`）之前，本仓库承载的是 **dsh-os**：面向 DeepSeek Harness 的
-跨平台原子级操作系统交互面。它用一套参数稳定的动词覆盖 file、environment、task、service、
-system、permission、execute、window、screenshot、clipboard、wait、mouse、keyboard、text 与
-structure，在 Windows（PowerShell 5.1 与 7.6）和 POSIX 上原生实现，每个动词返回单个 JSON
-信封，并对字符集、BOM 与换行做字节级精确处理。
+- `0.1.0`–`0.1.9` —— 本仓库承载的是 **dsh-os**：跨平台原子级操作系统交互面（PowerShell 5.1 /
+  7.6 与 POSIX 动词实现、插件行、50 个 golden 用例）。最后提交 `3ba4a45`，带标签 `v0.1.5` … `v0.1.9`。
+- `87ddab9` —— 上述代码被替换为一个独立的 Vite 单页脚手架。
+- `0.2.0` —— 当前这套插件 bundle 结构，取代以上两者。
 
-这棵树——`src/host`、`src/plugin`、`src/permission`、`tests`、`tools`、`client.js`、
-`cordis.patch.yml`——在 `87ddab9` 中从分支顶端删除，但在 git 历史中完整可达，并且仍带有
-`v0.1.5` … `v0.1.9` 标签：
+内容没有丢：之前每个状态都能从 git 历史取回。
 
 ```console
-# 不动当前工作区，另开一份旧项目的检出
+# 不动当前工作区，另开一份 dsh-os 的检出
 $ git worktree add ../dsh-os v0.1.9
 
 # 或者只把部分目录恢复到当前工作区
 $ git checkout 3ba4a45 -- src/host src/plugin src/permission tests tools
 ```
 
-两个阶段的逐版本变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+## 参考
+
+- DSH 插件教程：<https://github.com/deepseek-ai/deepseek-harness/tree/master/docs/user/develop>
+- [打包与安装插件](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)
+- [插件与生命周期](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/framework/index.md)
 
 ## 许可证
 

@@ -1,20 +1,15 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.1.9",
-  "private": false,
-  "type": "module",
-  "description": "Cross-platform atomic OS-interaction surface for the DeepSeek Harness: one argument-stable verb set implemented natively on each OS, with byte-exact charset, BOM and line-ending handling.",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness plugin bundle: a dual-face Cordis plugin with a host route surface and a web settings page.",
   "keywords": [
     "deepseek-harness",
     "dsh",
+    "dsh-plugin",
+    "cordis",
     "plugin",
-    "automation",
-    "windows",
-    "posix",
-    "utf-8",
-    "bom",
-    "atomic",
-    "cli"
+    "bundle",
+    "settings-ui"
   ],
   "license": "MIT",
   "author": "Eloy Kim <eloy.kim@outlook.com>",
@@ -26,89 +21,66 @@
     "url": "https://github.com/eloyhere/deepseek-coordination/issues"
   },
   "homepage": "https://github.com/eloyhere/deepseek-coordination#readme",
-  "engines": {
-    "node": ">=18"
-  },
-  "os": [
-    "win32",
-    "linux",
-    "darwin"
-  ],
-  "main": "src/plugin/index.js",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "types": "lib/index.d.mts",
   "exports": {
-    ".": "./src/plugin/index.js",
-    "./takeover": "./src/plugin/takeover.js",
-    "./settings": "./src/plugin/settings.js",
-    "./workflow": "./src/plugin/workflow.js",
-    "./client": "./client.js",
-    "./permission": "./src/permission/index.js",
+    ".": {
+      "types": "./lib/index.d.mts",
+      "default": "./lib/index.mjs"
+    },
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "meta": {
-    "title": "DSH OS",
-    "description": "Atomic cross-platform OS interaction surface: file, environment, task, service, system and permission verbs, each returning one agent-parseable JSON envelope."
-  },
-  "bin": {
-    "dsh-os": "src/host/bin/dsh-os.bat"
-  },
+  "files": [
+    "lib/index.mjs",
+    "lib/index.d.mts",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-ui-settings"
-      ]
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ],
+      "platform": "web",
+      "immediately": true
     }
   },
-  "files": [
-    "src/host/bin/dsh-os.ps1",
-    "src/host/bin/dsh-os7.ps1",
-    "src/host/bin/dsh-os.bat",
-    "src/host/bin/dsh-os.sh",
-    "src/host/command.txt",
-    "src/host/spec/verbs.tsv",
-    "src/host/spec/charsets.tsv",
-    "src/host/docs/os-spec.md",
-    "src/host/docs/permission-model.md",
-    "src/host/docs/command-original.txt",
-    "cordis.patch.yml",
-    "client.js",
-    "src/plugin/index.js",
-    "src/plugin/invoke.js",
-    "src/plugin/settings.js",
-    "src/plugin/takeover.js",
-    "src/plugin/workflow.js",
-    "src/permission/index.js",
-    "tools/measure-cache.mjs",
-    "README.md"
-  ],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "os": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1",
-    "test": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/golden.ps1",
-    "test:encoding": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/encoding.ps1",
-    "test:conformance": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/conformance.ps1",
-    "test:rules": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/rules.ps1",
-    "test:plugin": "node tests/plugin.test.mjs",
-    "test:activation": "node tests/activation.test.mjs",
-    "test:takeover": "node tests/takeover.test.mjs",
-    "test:permission": "node tests/permission.test.mjs",
-    "test:workflow": "node tests/workflow.test.mjs",
-    "test:bundle": "node tools/verify-bundle.mjs",
-    "test:package": "node tools/verify-package.mjs",
-    "test:desktop": "bash tests/smoke-desktop-sh.sh",
-    "test:load": "node tools/verify-plugin-load.mjs && node tools/verify-editions.mjs",
-    "test:pipeline": "node tools/probe-pipeline.mjs",
-    "measure:cache": "node tools/measure-cache.mjs",
-    "test:all": "npm run test:conformance && npm run test:encoding && npm run test && npm run test:rules && npm run test:plugin && npm run test:activation && npm run test:takeover && npm run test:permission && npm run test:workflow && npm run test:bundle && npm run test:package && npm run test:load && npm run test:desktop",
-    "selfcheck": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File src/host/bin/dsh-os.ps1 selfcheck"
+    "build": "tsdown --config tsdown.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.7",
+    "react": "^18.2.0"
   },
   "devDependencies": {
-    "typescript": "~6.0.2",
-    "vite": "^8.3.0"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.7",
+    "@types/node": "^26.2.0",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.6.0"
   }
 }

@@ -1,0 +1,55 @@
+import { defineConfig } from 'tsdown'
+
+// Must match package.json's name exactly: the client module system resolves the
+// browser half by package name + `/client`, and __ModuleLoader__'s id is this string.
+const PLUGIN_ID = 'deepseek-coordination'
+
+/**
+ * A dual-face plugin produces two artifacts:
+ *  - lib/index.mjs : Host half (ESM, node) — Cordis plugin registering /deepseek-coordination/* routes.
+ *  - lib/client.js : Browser half (CJS) — wrapped by banner/footer/intro into
+ *                    window.__ModuleLoader__.load({ id, factory }) format,
+ *                    loaded by dsh-client-modules at /plugins/<id>/client.js.
+ */
+export default defineConfig([
+  {
+    name: `${PLUGIN_ID}/host`,
+    entry: { index: 'src/index.ts' },
+    outDir: 'lib',
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2022',
+    dts: true,
+    clean: false,
+    deps: {
+      // Host side: cordis and dsh-host-* come from the host process; never bundle them
+      neverBundle: (id) =>
+        id === '@deepseek-ai/cordis' ||
+        id === '@deepseek-ai/dsh-host-webserver' ||
+        id.startsWith('@deepseek-ai/dsh-'),
+    },
+  },
+  {
+    name: `${PLUGIN_ID}/client`,
+    entry: { client: 'src/client/index.ts' },
+    outDir: 'lib',
+    format: 'cjs',
+    platform: 'browser',
+    target: 'es2022',
+    dts: true,
+    clean: false,
+    deps: {
+      // The module table only knows react and @deepseek-ai/dsh-client-*:
+      //  - neverBundle excludes them (they resolve via module-table require())
+      //  - alwaysBundle inlines every other dependency (a missing table row throws)
+      neverBundle: (id) => id === 'react' || id.startsWith('@deepseek-ai/dsh-'),
+      alwaysBundle: (id) => id !== 'react' && !id.startsWith('@deepseek-ai/dsh-'),
+    },
+    outputOptions: {
+      entryFileNames: 'client.js',
+      banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(PLUGIN_ID)}, factory: (require) => {`,
+      footer: 'return module.exports; } });',
+      intro: 'var module = { exports: {} }; var exports = module.exports;',
+    },
+  },
+])

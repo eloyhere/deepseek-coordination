@@ -5,50 +5,59 @@ All notable changes to this repository are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-> **Scope change.** The repository was re-scaffolded in `87ddab9` (2026-10-17). Entries from
-> `0.1.9` downwards describe the previous project, **dsh-os**, a cross-platform atomic
-> OS-interaction surface. That tree is no longer on the branch tip but remains reachable in
-> git history and tagged `v0.1.5` … `v0.1.9`; see [Repository history](README.md#repository-history).
+> **Scope note.** The repository was reshaped twice in October 2026: `87ddab9` replaced the
+> dsh-os tree with a standalone Vite application, and `0.2.0` replaced that with the current
+> DSH plugin bundle layout. Entries from `0.1.9` downwards describe **dsh-os**, a cross-platform
+> atomic OS-interaction surface, which is no longer on the branch tip but remains reachable in
+> git history and tagged `v0.1.5` … `v0.1.9`; see
+> [Repository history](README.md#repository-history).
 
-## [Unreleased] — 2026-10-17
+## [0.2.0] — 2026-10-17
 
-Branch tip `87ddab9`: the repository becomes a Vite + TypeScript web application.
+The repository becomes a DeepSeek Harness plugin **bundle**: a dual-face Cordis plugin with a
+host half (route surface) and a client half (settings page).
 
 ### Added
 
-- Vite `^8.3.0` and TypeScript `~6.0.2` single-page scaffold: `index.html`, `src/main.ts`,
-  `src/counter.ts`, `src/style.css`, and `src/assets/{hero.png,typescript.svg,vite.svg}`.
-- `tsconfig.json` for type checking only: `moduleResolution: "bundler"`, `noEmit`,
-  `verbatimModuleSyntax`, `erasableSyntaxOnly`, `noUnusedLocals`, `noUnusedParameters`,
-  `noFallthroughCasesInSwitch`.
-- `package-lock.json` pinning the local toolchain.
-- `README.md`, `README.zh-CN.md` and this changelog.
+- Bundle manifest: `dsh.bundle.patch` pointing at `cordis.patch.yml`, `dsh.client`
+  (`platform: web`, `immediately: true`, module-table `inject`), and a dual `exports` map
+  (`.`, `./client`, `./package.json`) with `main`/`types` on the built host artifact.
+- `cordis.patch.yml` — the layer that inserts the `deepseek-coordination` row into a profile's
+  bundle roster.
+- Dual-face source layout: `src/index.ts` (host half — a `webServer` prefix route at
+  `/deepseek-coordination` exposing `ping` and `echo`) and `src/client/index.ts` (client half —
+  `zh`/`en` locale dictionaries plus a `settings.section` page that probes the host route).
+- `tsdown.config.ts` — two build targets: host as ESM (`lib/index.mjs` + `.d.mts`) and client as
+  CJS (`lib/client.js`) wrapped in `window.__ModuleLoader__.load()`, with `neverBundle` rules for
+  the host process and the browser module table.
+- `tsconfig.json` for type checking only (`noEmit`), and the `build`, `typecheck` and
+  `pack:check` scripts.
 
 ### Changed
 
-- `npm run dev`, `npm run build` and `npm run preview` are the working scripts; `build`
-  type-checks with `tsc` before bundling with Vite.
-- `.gitignore` replaced with the Vite template (`logs`, `*.log`, `node_modules`, `dist`,
-  `dist-ssr`, `*.local`, editor directories).
+- Version `0.2.0`. The package shape is incompatible with `0.1.9` — entry points, `files` and the
+  delivered artifacts all differ, so a minor bump is the semver-correct signal for a `0.x` line.
+- Toolchain moved from Vite to `tsdown`, with the DSH client packages declared as both
+  `peerDependencies` and `devDependencies` so the plugin shares the host's instances.
+- `.gitignore` now ignores `lib/` (build output) instead of `dist/`.
 
 ### Removed
 
-- `src/host/**`: the PowerShell 5.1, PowerShell 7.6 and POSIX verb implementations, the
-  verb/charset specs, the design and permission-model docs, and the `dsh-os` launchers.
-- `src/plugin/**` (`index`, `invoke`, `settings`, `takeover`, `workflow`), `src/permission/**`,
-  and the `client.js` bundle.
-- `tests/**` and `tools/**`, `cordis.patch.yml`, `permission.json`, `notice.txt`,
-  `.gitattributes`.
-- The previous `README.md` and `README.zh-CN.md` (both rewritten here).
+- The standalone Vite SPA scaffold introduced in `87ddab9`: `index.html`, `src/main.ts`,
+  `src/counter.ts`, `src/style.css`, `src/assets/`, `public/`, the Vite dependency and its
+  lockfile.
+- The `os` and `bin` fields of the previous manifest, which described the removed `dsh-os`
+  launchers; the plugin is platform-agnostic.
 
 ### Known issues
 
-- `main`, all five `exports` subpaths, `bin.dsh-os`, `dsh.bundle.patch` and 19 of the 20
-  `files` entries still point at paths removed above.
-- 18 npm scripts (`os`, `test`, `test:*`, `measure:cache`, `test:all`, `selfcheck`) reference
-  the removed `tests/`, `tools/` and `src/host/bin/` trees and fail immediately.
-- `index.html` still carries the scaffold placeholder title `replace`.
-- Deleting `.gitattributes` hands line-ending policy back to `core.autocrlf`.
+- The halves are a scaffold: `ping` and `echo` are the entire host surface, and the settings page
+  only reports host liveness. No functional capability is implemented yet.
+- Dependency ranges mirror the DSH plugin starter template (`@deepseek-ai/cordis` `^4.0.1`, the
+  `@deepseek-ai/dsh-*` client packages `^0.1.0-rc.7`). Re-check them against the DSH release being
+  targeted before publishing.
+- `engines.dsh` is deliberately omitted, so installation validates the `@deepseek-ai/dsh*` peer
+  ranges instead of a declared DSH range.
 
 ## [0.1.9] — 2026-10-13
 
