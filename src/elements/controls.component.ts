@@ -1,33 +1,33 @@
-﻿/**
- * Coordination controls 鈥?the Angular custom element the DSH host mounts.
+/**
+ * Coordination controls — the Angular custom element the DSH host mounts.
  *
  * Two regions of the host composer are addressed, matching the annotated mock:
  *  - the blue region (the resident access-mode dropdown) is hidden by the host
  *    half's CSS takeover; when `takeover` is on, this element renders the
  *    replacement dropdown in its place;
  *  - the green region is the free space right of that control, where the three
- *    selectors render left to right: 鑱岃兘 鈫?浜や簰 鈫?鎯呮櫙.
+ *    selectors render left to right: 职能 → 交互 → 情景.
  *
  * Everything here is presentation: the element reports every change through the
  * `selectionchange` CustomEvent and never talks to the host itself.
  */
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core'
 
-/** 鑱岃兘 鈥?the duty dimension of the role framework. */
-export const DUTY_OPTIONS = ['鍐崇瓥', '鎴愭灉', '璧勬簮', '浜哄憳', '浠昏亴', '鎵ц'] as const
+/** 职能 — the duty dimension of the role framework. */
+export const DUTY_OPTIONS = ['决策', '成果', '资源', '人员', '任职', '执行'] as const
 
-/** 浜や簰 鈥?the interaction mode. */
-export const INTERACTION_OPTIONS = ['鎰熸儏', '鎬濈淮', '鍚彂', '鏀舵潫'] as const
+/** 交互 — the interaction mode. */
+export const INTERACTION_OPTIONS = ['感情', '思维', '启发', '收束'] as const
 
-/** 鎯呮櫙 鈥?the working scenario. */
-export const SCENARIO_OPTIONS = ['瀵硅瘽', '鍐欎綔', '鍔炲叕', '鐮旂┒', '宸ョ▼', '杩唬'] as const
+/** 情景 — the working scenario. */
+export const SCENARIO_OPTIONS = ['对话', '写作', '办公', '研究', '工程', '迭代'] as const
 
 /**
  * Fallback options for the replacement dropdown. The host owns the real preset
  * list; it is passed in through the `permissions` attribute as JSON when known,
  * and this list is only what the element can fall back to.
  */
-export const PERMISSION_FALLBACK = ['瀹屽叏鏉冮檺'] as const
+export const PERMISSION_FALLBACK = ['完全权限'] as const
 
 /** One option of the replacement dropdown. */
 export interface PermissionOption {
@@ -55,8 +55,9 @@ export interface CoordinationSelection {
                     <span class="material-symbols-outlined" aria-hidden="true">shield_person</span>
                     <select
                         class="select"
-                        aria-label="鏉冮檺鎺ョ"
-                        [value]="permission()" (change)="onPermission($any($event.target).value)"
+                        aria-label="权限接管"
+                        [value]="permission()"
+                        (change)="onPermission($any($event.target).value)"
                     >
                         @for (option of permissionOptions(); track option.value) {
                             <option [value]="option.value">{{ option.label }}</option>
@@ -67,7 +68,7 @@ export interface CoordinationSelection {
 
             <label class="field">
                 <span class="material-symbols-outlined" aria-hidden="true">account_tree</span>
-                <select class="select" aria-label="鑱岃兘" [value]="duty()" (change)="onDuty($any($event.target).value)">
+                <select class="select" aria-label="职能" [value]="duty()" (change)="onDuty($any($event.target).value)">
                     @for (option of duties; track option) {
                         <option [value]="option">{{ option }}</option>
                     }
@@ -78,8 +79,9 @@ export interface CoordinationSelection {
                 <span class="material-symbols-outlined" aria-hidden="true">forum</span>
                 <select
                     class="select"
-                    aria-label="浜や簰"
-                    [value]="interaction()" (change)="onInteraction($any($event.target).value)"
+                    aria-label="交互"
+                    [value]="interaction()"
+                    (change)="onInteraction($any($event.target).value)"
                 >
                     @for (option of interactions; track option) {
                         <option [value]="option">{{ option }}</option>
@@ -89,7 +91,12 @@ export interface CoordinationSelection {
 
             <label class="field">
                 <span class="material-symbols-outlined" aria-hidden="true">category</span>
-                <select class="select" aria-label="鎯呮櫙" [value]="scenario()" (change)="onScenario($any($event.target).value)">
+                <select
+                    class="select"
+                    aria-label="情景"
+                    [value]="scenario()"
+                    (change)="onScenario($any($event.target).value)"
+                >
                     @for (option of scenarios; track option) {
                         <option [value]="option">{{ option }}</option>
                     }
@@ -144,7 +151,7 @@ export class CoordinationControlsComponent {
     /** Whether the host access-mode control is hidden and the replacement is shown. */
     readonly takeover = input(false, { transform: (value: boolean | string) => value === true || value === 'on' })
 
-    /** Permission options as JSON, e.g. `[{"value":"danger-full-access","label":"瀹屽叏鏉冮檺"}]`. */
+    /** Permission options as JSON, e.g. `[{"value":"danger-full-access","label":"完全权限"}]`. */
     readonly permissions = input('')
 
     /** Emitted for every selection change. */
@@ -218,4 +225,3 @@ export class CoordinationControlsComponent {
         })
     }
 }
-
