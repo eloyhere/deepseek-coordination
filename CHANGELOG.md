@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.14.2 | 2026-10-18 | `—` | Client bundle no longer requires Node builtins |
+| 0.14.2 | 2026-10-18 | `5b5fdf8` | Client bundle no longer requires Node builtins |
 | 0.14.1 | 2026-10-18 | `c5f333b` | Panel error containment, lazy panel module, escape hatch |
 | 0.14.0 | 2026-10-18 | `429d05e` | Read-only workspace & relationship panels, canvas graphs, preview matrix, agent roster, cache-strategy wiring |
 | 0.13.0 | 2026-10-18 | `83d3601` | First-class `interface`/`type`/`enumeration`/`namespace` kinds across TS, Java, Rust and PHP |
