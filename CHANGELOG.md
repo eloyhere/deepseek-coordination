@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.0 | 2026-10-18 | `—` | Read-only workspace & relationship panels, canvas graphs, preview matrix, agent roster, cache-strategy wiring |
 | 0.13.0 | 2026-10-18 | `83d3601` | First-class `interface`/`type`/`enumeration`/`namespace` kinds across TS, Java, Rust and PHP |
 | 0.12.0 | 2026-10-18 | `84af8b8` | Domain ecosystems: tex, book, markdown, html, languages, office, package managers; kind filter and directory layer |
 | 0.11.0 | 2026-10-18 | `19bfedf` | Durable settings, DSH-owned reasoning, cache proxy and brand profiles, dialog and label fixes |
@@ -48,6 +49,73 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.0] — 2026-10-18
+
+### Added
+
+- **Two read-only workspace panels docked to the right.** A relationship panel
+  (files / agents / dependencies / imports / exports) and a workspace panel
+  (files / outline / dependencies / imports / preview) share one shell: a tab
+  bar with menu, search and minimize/restore, a card body routed by hash
+  (`#coordination/panel/right/<view>?path=…`), and flex-based stacking where
+  restoring one pushes the other. Both persist only
+  `{ openLeft, openRight, width }`; minimized panels keep a 48px title bar and
+  there is no floating button.
+- **Canvas relationship graphs.** Native 2D canvas with deterministic circular,
+  layered and star layouts, directional dash flow, cycle pulsing, hover
+  highlighting with a self-drawn tooltip, edge/node hit-testing, click selection,
+  wheel zoom, drag-pan, keyboard traversal, and a text alternative. Colours come
+  from the MUI theme; `prefers-reduced-motion` renders statically.
+- **Preview matrix.** Markdown/GFM with `remark-math` + `rehype-katex`, sanitized
+  HTML and `docx` HTML through DOMPurify, Prism-highlighted code (MUI-derived
+  theme), plain text, `xlsx` sheets as tables, `pptx` slides as cards. All
+  previews are read-only; 64 KiB / row / slide caps surface as `truncated`.
+- **Agent roster.** The relationship panel lists the main agent and its
+  subagents with objective, status, and an **estimated** progress ring
+  (`completed` / `turns` / `unknown`), plus an overall progress bar; clicking an
+  entry opens a read-only transcript page.
+- **Workspace graph routes.** `GET /graph/tree|outline|dependencies|imports|
+  search|preview|intra|agents` and `GET /graph/agents/messages`, plus
+  `POST /graph/rebuild`. Queries take an optional `path` scope and an optional
+  `kind` filter; dependencies report SCC-based cycles without dropping edges.
+  `preview` and `agents/messages` are the only body-bearing routes: bounded,
+  `no-store`, never logged or cached.
+- **Two-level cache and cycle detection.** L1 per request, L2 keyed by graph
+  version + scope + path (capacity 512, FIFO, bodies never cached); iterative
+  Kosaraju SCC keeps cycle detection stack-safe.
+- **Cache strategy table.** `src/host/cache-strategy.ts` ships 18 presets over 10
+  brand + 5 model + 3 agent rows with 18 cited sources; `presetFor()` is wired
+  into the proxy for normalize gating and exposed as `status.cacheStrategy`.
+- **Proxy service extraction and measurement.** `createProxyService()` owns
+  install/status/trace/adapter; `status` now reports `mode`, `upstreamProvider`,
+  `metrics { inputTokens, cachedInputTokens, hitRate, window }`, `prefix
+  { current, stable, changes }` and `cacheStrategy`. New trace events `compat`,
+  `prefix` and `prefix-churn` are structural only.
+
+### Changed
+
+- **Default proxy mode is `measure`.** Enabling the proxy no longer rewrites
+  requests; `normalize` requires `proxy.mode`, `proxy.rewrite` or
+  `DSH_COORDINATION_PROXY_REWRITE=1`. This makes the baseline observable first.
+- **`effortBreaksCache` is tri-state.** No fetched vendor source documents that
+  reasoning effort changes the cache key, so every profile reports `'unknown'`
+  with `effortEvidence: 'assumed'` instead of a guessed boolean; unknown is never
+  read as `false`.
+- **`<article>` is a sectioning container in HTML.** HTML/Markdown never emit the
+  literary `article`; only the book parser does.
+- **License is Apache-2.0** (was MIT).
+- **`react-rnd` was removed** after the docked-layout rework.
+
+### Fixed
+
+- **Web-search account fallback under a routed conversation** (host-side):
+  recorded route ids no longer defeat the account token; patched in the app asar
+  with backup and rollback scripts. Cache and proxy code untouched.
+- **`import`/`require` references were dropped** when a declaration skipped its
+  initializer, and `handleDeclaration` crashed on a raw token index.
+- **Stale parser assertions** now match the new kinds; the public export
+  allowlist pins every new module.
 
 ## [0.13.0] — 2026-10-18
 

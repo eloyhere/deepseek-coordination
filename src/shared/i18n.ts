@@ -221,6 +221,199 @@ export interface TakeoverCopy {
 }
 
 /* ------------------------------------------------------------------------- *
+ * Floating workspace panel copy (client half)
+ * ------------------------------------------------------------------------- */
+
+/** The four BottomNavigation tabs, in render order. */
+export const PANEL_TAB_IDS = ['files', 'outline', 'dependencies', 'imports'] as const
+
+export type PanelTab = (typeof PANEL_TAB_IDS)[number]
+
+/** Every routed panel view; `preview`/`exports` are not right-panel tabs. */
+export const PANEL_VIEW_IDS = [...PANEL_TAB_IDS, 'preview', 'exports', 'agents', 'agent'] as const
+
+export type PanelView = (typeof PANEL_VIEW_IDS)[number]
+
+/** The document families an outline groups its nodes by. */
+export const PANEL_FAMILIES = ['book', 'article', 'tex', 'project', 'document'] as const
+
+export type PanelFamily = (typeof PANEL_FAMILIES)[number]
+
+/** Menu behind the panel's AppBar menu button. */
+export interface PanelMenuCopy {
+  readonly button: string
+  readonly refresh: string
+  readonly reset: string
+  readonly collapse: string
+}
+
+/** Search field and its result list. */
+export interface PanelSearchCopy {
+  readonly label: string
+  readonly placeholder: string
+  /** Result-count header; `{count}` is resolved by {@link fillTemplate}. */
+  readonly results: string
+  readonly noResults: string
+  readonly error: string
+}
+
+/** Loading / empty / error copy shared by every panel list. */
+export interface PanelStatesCopy {
+  readonly loading: string
+  readonly empty: string
+  readonly error: string
+  readonly retry: string
+}
+
+/** 文件 view. */
+export interface PanelFilesCopy {
+  readonly empty: string
+}
+
+/** 大纲 view. */
+export interface PanelOutlineCopy {
+  readonly empty: string
+  readonly selectFile: string
+}
+
+/** 依赖 view. */
+export interface PanelDependenciesCopy {
+  readonly empty: string
+}
+
+/** 导入与导出 view. */
+export interface PanelImportsCopy {
+  readonly empty: string
+  readonly imported: string
+  readonly exported: string
+}
+
+/** One tooltip per interactive control; `scope` carries `{path}`. */
+export interface PanelTipCopy {
+  readonly menu: string
+  readonly search: string
+  readonly minimize: string
+  readonly close: string
+  readonly refresh: string
+  readonly rebuild: string
+  readonly reset: string
+  readonly collapse: string
+  readonly tabFiles: string
+  readonly tabOutline: string
+  readonly tabDependencies: string
+  readonly tabImports: string
+  readonly tabPreview: string
+  readonly tabExports: string
+  readonly previewFile: string
+  readonly scope: string
+  readonly scopeWorkspace: string
+  readonly clearScope: string
+  readonly zoomIn: string
+  readonly zoomOut: string
+  readonly fit: string
+  readonly resetLayout: string
+  readonly rebuilding: string
+  readonly agentStatus: string
+  readonly tabAgents: string
+  readonly agentExpand: string
+  readonly agentCollapse: string
+  readonly progressTotal: string
+}
+
+/**
+ * Copy of the floating workspace panel: AppBar, search, the four routed views
+ * and the cycle warnings the dependency/import views add.
+ */
+export interface PanelCopy {
+  readonly title: string
+  /** Accessible titles of the two independently open panels. */
+  readonly leftTitle: string
+  readonly rightTitle: string
+  readonly minimize: string
+  readonly restore: string
+  readonly expandTitle: string
+  readonly menu: PanelMenuCopy
+  readonly search: PanelSearchCopy
+  /** Menu actions; `rebuildDone` carries `{files}`/`{nodes}`/`{ms}` and
+   * `actionFailed` carries `{code}`. */
+  readonly refresh: string
+  readonly rebuild: string
+  readonly rebuildBusy: string
+  readonly rebuildDone: string
+  readonly rebuildPartial: string
+  readonly actionFailed: string
+  readonly tabs: Readonly<Record<PanelTab, string>>
+  readonly families: Readonly<Record<PanelFamily, string>>
+  readonly states: PanelStatesCopy
+  readonly files: PanelFilesCopy
+  readonly outline: PanelOutlineCopy
+  readonly dependencies: PanelDependenciesCopy
+  readonly imports: PanelImportsCopy
+  /** Preview view heading and the per-row preview affordance. */
+  readonly preview: string
+  readonly openPreview: string
+  /** Empty preview when no file is selected. */
+  readonly previewPickFile: string
+  /** Spreadsheet sheet tab: `{name}`. */
+  readonly sheetTab: string
+  /** Slide caption: `{n}`. */
+  readonly slideN: string
+  /** Info banner when the host truncated the previewed file. */
+  readonly previewTruncated: string
+  /** Info banner for a truncated Office preview. */
+  readonly previewOfficeTruncated: string
+  /** Code preview cap notice: `{lines}`. */
+  readonly codeTruncated: string
+  /** 415 from `/graph/preview`: this kind cannot be rendered. */
+  readonly previewUnsupported: string
+  /** 404 from `/graph/preview`: the file is gone. */
+  readonly previewNotFound: string
+  /** Scope bar: the selected file, the workspace-wide mode, and clearing. */
+  readonly scopeFile: string
+  readonly scopeWorkspace: string
+  readonly clearSelection: string
+  /** Read-only reassurance shown in the scope bar. */
+  readonly readOnly: string
+  /** Chip label on one cyclic dependency / import row. */
+  readonly cycle: string
+  /** Warning summary; `{count}` is resolved by {@link fillTemplate}. */
+  readonly cyclesFound: string
+  /** Overflow line after the first five cycle paths; `{count}`. */
+  readonly moreCycles: string
+  /** Left-panel tab label, canvas states and interaction hint. */
+  readonly exports: string
+  readonly graphEmpty: string
+  /** Canvas node cap; `{count}`. */
+  readonly graphTruncated: string
+  readonly zoomHint: string
+  /** Collapsible text alternative beside the canvas. */
+  readonly graphText: string
+  /** Relation labels used by the canvas tooltip/status bar. */
+  readonly relation: Readonly<Record<'depends' | 'imports' | 'exports', string>>
+  /** Short "cycle" tag on a canvas tooltip. */
+  readonly cyclic: string
+  /** Left-panel agent list and read-only message view. */
+  readonly agents: string
+  readonly agentRunning: string
+  readonly agentInactive: string
+  readonly agentObjectiveEmpty: string
+  readonly agentMessages: string
+  readonly agentBack: string
+  readonly agentTruncated: string
+  readonly agentEmpty: string
+  /** Estimated agent progress: `progress` carries `{value}`, `runningCount`
+   * carries `{running}`/`{total}`. */
+  readonly estimated: string
+  readonly progress: string
+  readonly progressBasisCompleted: string
+  readonly progressBasisTurns: string
+  readonly progressBasisUnknown: string
+  readonly runningCount: string
+  /** Tooltips for every interactive control. */
+  readonly tip: PanelTipCopy
+}
+
+/* ------------------------------------------------------------------------- *
  * Settings page copy (v24 §3, §5.9)
  * ------------------------------------------------------------------------- */
 
@@ -404,6 +597,42 @@ export interface SettingsCopy {
   readonly states: SettingsStatesCopy
 }
 
+/**
+ * Copy of the read-only `关于 / About` group: one label per metadata line and
+ * per dependency/tooling table column. Rows themselves are body-free data from
+ * `src/shared/about.ts`; this section never gains an input control.
+ */
+export interface AboutCopy {
+  readonly title: string
+  readonly version: string
+  readonly license: string
+  readonly runtime: string
+  readonly dependencies: string
+  readonly tooling: string
+  readonly package: string
+  readonly scope: string
+  readonly scopeRuntime: string
+  readonly scopeDevelopment: string
+  readonly scopePeer: string
+  readonly purpose: string
+  /** Template for one citation line; `{authors}`/`{year}`/`{title}`/`{venue}`. */
+  readonly referenceItem: string
+}
+
+/** Copy of the read-only `参考文献 / References` group. */
+export interface ReferencesCopy {
+  readonly title: string
+}
+
+/** Copy of the read-only `作者 / Author` group. */
+export interface AuthorCopy {
+  readonly title: string
+  readonly name: string
+  readonly email: string
+  readonly github: string
+  readonly npm: string
+}
+
 /** Copy of one model-facing tool: description plus per-parameter descriptions. */
 export interface ToolCopy {
   readonly description: string
@@ -436,7 +665,12 @@ export interface Copy {
   readonly permissions: Readonly<Record<SandboxMode, OptionCopy>>
   readonly composer: ComposerCopy
   readonly takeover: TakeoverCopy
+  readonly panel: PanelCopy
   readonly settings: SettingsCopy
+  /** The three read-only groups at the end of the settings page. */
+  readonly about: AboutCopy
+  readonly references: ReferencesCopy
+  readonly author: AuthorCopy
   readonly errors: Readonly<Record<CoordinationErrorCode, string>>
   readonly tools: Readonly<Record<ToolName, ToolCopy>>
   /** The file-layer tools; same model-facing shape as {@link tools}. */
@@ -833,6 +1067,140 @@ const ZH_TAKEOVER: TakeoverCopy = {
   queueLabel: '第 {index} / {total} 条',
 }
 
+const ZH_PANEL: PanelCopy = {
+  title: '协调工作区',
+  leftTitle: '关系面板',
+  rightTitle: '工作面板',
+  minimize: '最小化',
+  restore: '还原',
+  expandTitle: '切换「{title}」展开或最小化',
+  menu: {
+    button: '面板菜单',
+    refresh: '刷新数据',
+    reset: '重置面板',
+    collapse: '收起面板',
+  },
+  search: {
+    label: '搜索工作区',
+    placeholder: '搜索文件或节点，按 Enter',
+    results: '{count} 个结果',
+    noResults: '没有匹配的结果。',
+    error: '搜索失败，请稍后重试。',
+  },
+  refresh: '刷新',
+  rebuild: '重建',
+  rebuildBusy: '正在重建，请稍候',
+  rebuildDone: '重建完成：{files} 个文件，{nodes} 个节点，用时 {ms} 毫秒',
+  rebuildPartial: '已重建（部分）',
+  actionFailed: '操作失败（{code}）',
+  tabs: {
+    files: '文件',
+    outline: '大纲',
+    dependencies: '依赖',
+    imports: '导入与导出',
+  },
+  families: {
+    book: '书籍',
+    article: '文章',
+    tex: 'TeX 文档',
+    project: '项目',
+    document: '文档',
+  },
+  states: {
+    loading: '加载中…',
+    empty: '暂无数据。',
+    error: '加载失败，请稍后重试。',
+    retry: '重试',
+  },
+  files: {
+    empty: '尚无文件索引。',
+  },
+  outline: {
+    empty: '该文件没有大纲节点。',
+    selectFile: '从「文件」中选择一个文件查看大纲。',
+  },
+  dependencies: {
+    empty: '尚无依赖关系。',
+  },
+  imports: {
+    empty: '尚无导入与导出记录。',
+    imported: '导入',
+    exported: '导出',
+  },
+  preview: '预览',
+  openPreview: '预览文件',
+  previewPickFile: '选择文件以预览',
+  sheetTab: '工作表 {name}',
+  slideN: '第 {n} 页',
+  previewTruncated: '仅显示前 64 KiB',
+  previewOfficeTruncated: 'Office 文件内容较大，仅显示部分内容',
+  codeTruncated: '代码过长，已截断（显示前 {lines} 行）',
+  previewUnsupported: '该文件类型暂不支持预览。',
+  previewNotFound: '找不到该文件。',
+  scopeFile: '当前文件：{path}',
+  scopeWorkspace: '全工作区',
+  clearSelection: '清除所选文件',
+  readOnly: '只读预览，不会修改文件',
+  cycle: '循环依赖',
+  cyclesFound: '检测到 {count} 个循环依赖',
+  moreCycles: '还有 {count} 条',
+  exports: '导出',
+  graphEmpty: '暂无关系',
+  graphTruncated: '仅显示前 {count} 个节点',
+  zoomHint: '滚轮缩放，拖拽平移或节点',
+  graphText: '文本替代',
+  relation: {
+    depends: '依赖',
+    imports: '导入',
+    exports: '导出',
+  },
+  cyclic: '循环',
+  agents: '职能',
+  agentRunning: '运行中',
+  agentInactive: '未运行',
+  agentObjectiveEmpty: '暂无任务目标',
+  agentMessages: '消息',
+  agentBack: '返回代理列表',
+  agentTruncated: '仅显示最近 200 条 / 64 KiB',
+  agentEmpty: '本会话暂无代理',
+  estimated: '预计',
+  progress: '预计进度 {value}%',
+  progressBasisCompleted: '已完成',
+  progressBasisTurns: '轮数估算',
+  progressBasisUnknown: '未知',
+  runningCount: '{running}/{total} 运行中',
+  tip: {
+    menu: '面板菜单',
+    search: '搜索工作区',
+    minimize: '最小化面板',
+    close: '收起面板',
+    refresh: '重新加载当前视图',
+    rebuild: '重新解析工作区并刷新索引',
+    reset: '恢复默认宽度',
+    collapse: '最小化面板',
+    tabFiles: '浏览工作区文件',
+    tabOutline: '查看文档结构',
+    tabDependencies: '以关系图查看文件依赖',
+    tabImports: '查看导入与导出',
+    tabPreview: '只读预览文件内容',
+    tabExports: '以关系图查看导出关系',
+    previewFile: '预览此文件',
+    scope: '当前作用域：{path}，点击切换',
+    scopeWorkspace: '当前作用域：全工作区，点击切换',
+    clearScope: '回到整个工作区',
+    zoomIn: '放大',
+    zoomOut: '缩小',
+    fit: '适应画布',
+    resetLayout: '重置节点位置',
+    rebuilding: '正在重建…',
+    agentStatus: '代理状态',
+    tabAgents: '查看本会话代理',
+    agentExpand: '展开子代理',
+    agentCollapse: '收起子代理',
+    progressTotal: '总体预计进度',
+  },
+}
+
 /* ------------------------------------------------------------------------- *
  * Chinese — full settings catalog (v24 §19)
  * ------------------------------------------------------------------------- */
@@ -1226,6 +1594,7 @@ const ZH: Copy = {
     escalationUnsupported: '主机不支持重建，请升级插件。',
   },
   takeover: ZH_TAKEOVER,
+  panel: ZH_PANEL,
   settings: {
     title: '协调',
     intro: '为下一个任务设默认值；设置保存后生效，个别上限要等工具重新注册。',
@@ -1237,6 +1606,31 @@ const ZH: Copy = {
     catalog: { groups: ZH_CATALOG_GROUPS, fields: ZH_CATALOG_FIELDS, values: ZH_CATALOG_VALUES },
     values: ZH_VALUES,
     states: ZH_STATES,
+  },
+  about: {
+    title: '关于',
+    version: '版本',
+    license: '许可证',
+    runtime: '运行时',
+    dependencies: '依赖',
+    tooling: '工具链',
+    package: '包',
+    scope: '范围',
+    scopeRuntime: '运行时',
+    scopeDevelopment: '开发',
+    scopePeer: '对等',
+    purpose: '用途',
+    referenceItem: '{authors}（{year}）. {title}. {venue}.',
+  },
+  references: {
+    title: '参考文献',
+  },
+  author: {
+    title: '作者',
+    name: '姓名',
+    email: '邮箱',
+    github: 'GitHub 主页',
+    npm: 'npm 包',
   },
   errors: {
     PROFESSION_LOCKED: '任务已开始，职能不能改；请完成它，或重建/丢弃后再选。',
@@ -1646,6 +2040,140 @@ const EN_TAKEOVER: TakeoverCopy = {
   queueLabel: '{index} of {total}',
 }
 
+const EN_PANEL: PanelCopy = {
+  title: 'Coordination workspace',
+  leftTitle: 'Relationship panel',
+  rightTitle: 'Workspace panel',
+  minimize: 'Minimize',
+  restore: 'Restore',
+  expandTitle: 'Toggle {title} expanded or minimized',
+  menu: {
+    button: 'Panel menu',
+    refresh: 'Refresh data',
+    reset: 'Reset panel',
+    collapse: 'Collapse panel',
+  },
+  search: {
+    label: 'Search workspace',
+    placeholder: 'Search files or nodes, press Enter',
+    results: '{count} results',
+    noResults: 'No matching results.',
+    error: 'Search failed; try again in a moment.',
+  },
+  refresh: 'Refresh',
+  rebuild: 'Rebuild',
+  rebuildBusy: 'A rebuild is already running; please wait.',
+  rebuildDone: 'Rebuilt {files} files and {nodes} nodes in {ms} ms',
+  rebuildPartial: 'Rebuilt partially',
+  actionFailed: 'Action failed ({code})',
+  tabs: {
+    files: 'Files',
+    outline: 'Outline',
+    dependencies: 'Dependencies',
+    imports: 'Imports & exports',
+  },
+  families: {
+    book: 'Book',
+    article: 'Article',
+    tex: 'TeX document',
+    project: 'Project',
+    document: 'Document',
+  },
+  states: {
+    loading: 'Loading…',
+    empty: 'Nothing here yet.',
+    error: 'Could not load; try again in a moment.',
+    retry: 'Retry',
+  },
+  files: {
+    empty: 'No files indexed yet.',
+  },
+  outline: {
+    empty: 'This file has no outline nodes.',
+    selectFile: 'Pick a file under Files to see its outline.',
+  },
+  dependencies: {
+    empty: 'No dependencies yet.',
+  },
+  imports: {
+    empty: 'No import or export records yet.',
+    imported: 'Imported',
+    exported: 'Exported',
+  },
+  preview: 'Preview',
+  openPreview: 'Preview file',
+  previewPickFile: 'Pick a file to preview',
+  sheetTab: 'Sheet {name}',
+  slideN: 'Slide {n}',
+  previewTruncated: 'Only the first 64 KiB is shown',
+  previewOfficeTruncated: 'This Office file is large; only part of it is shown',
+  codeTruncated: 'Code is long; truncated to the first {lines} lines',
+  previewUnsupported: 'This file type cannot be previewed.',
+  previewNotFound: 'That file was not found.',
+  scopeFile: 'File: {path}',
+  scopeWorkspace: 'Whole workspace',
+  clearSelection: 'Clear selected file',
+  readOnly: 'Read-only preview; files are never modified',
+  cycle: 'Cyclic dependency',
+  cyclesFound: '{count} cyclic dependencies detected',
+  moreCycles: '{count} more',
+  exports: 'Exports',
+  graphEmpty: 'No relationships',
+  graphTruncated: 'Only the first {count} nodes are shown',
+  zoomHint: 'Scroll to zoom; drag to pan or move a node',
+  graphText: 'Text alternative',
+  relation: {
+    depends: 'Dependency',
+    imports: 'Import',
+    exports: 'Export',
+  },
+  cyclic: 'Cycle',
+  agents: 'Agents',
+  agentRunning: 'Running',
+  agentInactive: 'Inactive',
+  agentObjectiveEmpty: 'No objective recorded',
+  agentMessages: 'Messages',
+  agentBack: 'Back to agents',
+  agentTruncated: 'Only the latest 200 messages / 64 KiB are shown',
+  agentEmpty: 'No agents in this session',
+  estimated: 'Estimated',
+  progress: 'Estimated progress {value}%',
+  progressBasisCompleted: 'Completed work',
+  progressBasisTurns: 'Turn estimate',
+  progressBasisUnknown: 'Unknown',
+  runningCount: '{running}/{total} running',
+  tip: {
+    menu: 'Panel menu',
+    search: 'Search the workspace',
+    minimize: 'Minimize the panel',
+    close: 'Collapse the panel',
+    refresh: 'Reload the current view',
+    rebuild: 'Re-parse the workspace and refresh the index',
+    reset: 'Restore the default width',
+    collapse: 'Minimize the panel',
+    tabFiles: 'Browse workspace files',
+    tabOutline: 'View the document outline',
+    tabDependencies: 'View file dependencies as a graph',
+    tabImports: 'View imports and exports',
+    tabPreview: 'Preview file content (read-only)',
+    tabExports: 'View export relationships as a graph',
+    previewFile: 'Preview this file',
+    scope: 'Current scope: {path}; click to switch',
+    scopeWorkspace: 'Current scope: whole workspace; click to switch',
+    clearScope: 'Back to the whole workspace',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    fit: 'Fit to canvas',
+    resetLayout: 'Reset node positions',
+    rebuilding: 'Rebuilding…',
+    agentStatus: 'Agent status',
+    tabAgents: 'View this session’s agents',
+    agentExpand: 'Expand sub-agents',
+    agentCollapse: 'Collapse sub-agents',
+    progressTotal: 'Overall estimated progress',
+  },
+}
+
 /* ------------------------------------------------------------------------- *
  * English — full settings catalog (v24 §19)
  * ------------------------------------------------------------------------- */
@@ -2039,6 +2567,7 @@ const EN: Copy = {
     escalationUnsupported: 'The host does not support rebuild; upgrade the plugin.',
   },
   takeover: EN_TAKEOVER,
+  panel: EN_PANEL,
   settings: {
     title: 'Coordination',
     intro: 'Defaults for the next task; saved values apply on change, though a few caps wait for tool re-registration.',
@@ -2050,6 +2579,31 @@ const EN: Copy = {
     catalog: { groups: EN_CATALOG_GROUPS, fields: EN_CATALOG_FIELDS, values: EN_CATALOG_VALUES },
     values: EN_VALUES,
     states: EN_STATES,
+  },
+  about: {
+    title: 'About',
+    version: 'Version',
+    license: 'License',
+    runtime: 'Runtime',
+    dependencies: 'Dependencies',
+    tooling: 'Tooling',
+    package: 'Package',
+    scope: 'Scope',
+    scopeRuntime: 'Runtime',
+    scopeDevelopment: 'Development',
+    scopePeer: 'Peer',
+    purpose: 'Purpose',
+    referenceItem: '{authors} ({year}). {title}. {venue}.',
+  },
+  references: {
+    title: 'References',
+  },
+  author: {
+    title: 'Author',
+    name: 'Name',
+    email: 'Email',
+    github: 'GitHub profile',
+    npm: 'npm package',
   },
   errors: {
     PROFESSION_LOCKED: 'The task has started, so the profession cannot change. Finish it, or rebuild/abandon it to choose again.',

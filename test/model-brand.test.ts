@@ -9,6 +9,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { presetFor } from '../src/host/cache-strategy.js'
 import {
   BRAND_PROFILES,
   brandProfileOf,
@@ -16,6 +17,7 @@ import {
   hasLocalCacheLever,
   shouldDecorate,
 } from '../src/host/model-brand.js'
+import type { ModelBrand } from '../src/host/model-brand.js'
 
 test('the host identity fields classify onto the mainstream brands', () => {
   const cases: Array<[Record<string, string>, string]> = [
@@ -69,7 +71,7 @@ test('the conservative unknown row assumes automatic caching', () => {
   const profile = BRAND_PROFILES.unknown
   assert.equal(profile.automaticPrefixCache, true)
   assert.equal(profile.stripVolatileHelps, true)
-  assert.equal(profile.effortBreaksCache, true)
+  assert.equal(profile.effortBreaksCache, 'unknown', 'no fetched source documents unknown-family effort behaviour')
   assert.equal(hasLocalCacheLever(profile), true)
 })
 
@@ -91,12 +93,37 @@ test('automatic-cache families expose the levers the proxy can use', () => {
   }
 })
 
-test('effort sensitivity matches the documented family behaviour', () => {
-  // Reasoning effort participates in the cache key where the provider says so.
-  assert.equal(BRAND_PROFILES.deepseek.effortBreaksCache, true)
-  assert.equal(BRAND_PROFILES.anthropic.effortBreaksCache, true)
-  assert.equal(BRAND_PROFILES.openai.effortBreaksCache, false)
-  assert.equal(BRAND_PROFILES.google.effortBreaksCache, false)
+test('every brand maps to a cache-strategy preset', () => {
+  const brands = Object.keys(BRAND_PROFILES) as ModelBrand[]
+  assert.ok(brands.length > 0)
+  for (const brand of brands) {
+    const preset = presetFor({ brand })
+    assert.ok(preset.id.length > 0, `${brand} maps to a preset with an id`)
+    assert.ok(preset.sourceIds.length > 0, `${brand} maps to a preset with sources`)
+    assert.ok(preset.minPrefixTokens > 0, `${brand} maps to a preset with a minimum`)
+  }
+})
+
+test('effort sensitivity is tri-state and an assumption never becomes a fact', () => {
+  for (const [brand, profile] of Object.entries(BRAND_PROFILES)) {
+    const preset = presetFor({ brand })
+    if (preset.effortEvidence === 'assumed') {
+      // An assumption must not be promoted: both the table and the profile keep
+      // the evidence gap visible instead of reading it as a definite `false`.
+      assert.equal(preset.effortBreaksPrefix, 'unknown', `${brand}: assumed evidence must stay unknown`)
+      assert.equal(profile.effortBreaksCache, 'unknown', `${brand}: profile promoted an assumption to a fact`)
+    } else {
+      assert.equal(typeof preset.effortBreaksPrefix, 'boolean', `${brand}: documented evidence must be definite`)
+      assert.equal(profile.effortBreaksCache, preset.effortBreaksPrefix, `${brand}: profile follows the documented row`)
+    }
+  }
+
+  // No fetched page states that reasoning effort changes the cache key, so the
+  // families this module used to assert as `true` are honestly unknown — and so
+  // are the ones it used to assert as `false`, because that is a claim too.
+  for (const brand of Object.keys(BRAND_PROFILES) as ModelBrand[]) {
+    assert.equal(BRAND_PROFILES[brand].effortBreaksCache, 'unknown', `${brand}: effort behaviour is undocumented`)
+  }
 })
 
 test('the decorator is gated by the operator switch and the brand lever', () => {

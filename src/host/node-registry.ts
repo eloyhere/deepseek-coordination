@@ -47,6 +47,12 @@ import type { NodeStatus, ParsedFile } from './parse-service.js'
  * Node kinds a parsed file can carry (`heading`/`div` are P0 parser kinds;
  * `interface`/`type`/`enumeration`/`namespace`/`variable` are language-
  * declaration kinds emitted by the Python/Java/Rust/PHP/C-family parsers).
+ *
+ * Markup structural kinds (Markdown/HTML only, body-free): `blockquote`,
+ * `figure`, `footnote`, `image`, `list`, `list-item` and `table`. They carry an
+ * explicit name/label at most (heading text, figcaption text, image alt text,
+ * footnote id, `ordered`/`unordered`/`task`, header column count) plus the flat
+ * fragment; no text content is ever stored on them.
  */
 export type NodeKind =
   | 'project'
@@ -103,6 +109,20 @@ export type NodeKind =
   /** P0 structural nodes: a Markdown/HTML heading and a Pandoc fenced div. */
   | 'heading'
   | 'div'
+  /**
+   * Markup structural nodes, sorted. `blockquote` merges nested quotes into the
+   * outermost block; `list` labels the list (`ordered`/`unordered`/`task`) and
+   * `list-item` marks one item; `table` labels the explicit header column count;
+   * `figure` carries explicit figcaption text; `image` carries the Markdown image
+   * src (name) and alt text (label); `footnote` is a Markdown definition only.
+   */
+  | 'blockquote'
+  | 'figure'
+  | 'footnote'
+  | 'image'
+  | 'list'
+  | 'list-item'
+  | 'table'
 
 /** Default registry capacity (nodes). */
 export const DEFAULT_REGISTRY_CAPACITY = 10_000

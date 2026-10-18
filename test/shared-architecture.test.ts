@@ -186,6 +186,7 @@ function exportedNonClasses(text: string): string[] {
 
 /** Expected exported classes per shared file: the allowlist for the layer. */
 const expectedClasses: Record<string, string[]> = {
+  'about.ts': [],
   'hash.ts': [],
   'node.ts': ['LinearNode', 'BinaryNode', 'SkipNode'],
   'node-record.ts': [],

@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.13.0 (2026-10-18).** This release makes `interface`, `type`, `enumeration` and `namespace` first-class declaration kinds across TypeScript, Java, Rust and PHP. It adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.14.0 (2026-10-18).** This release makes `interface`, `type`, `enumeration` and `namespace` first-class declaration kinds across TypeScript, Java, Rust and PHP. It adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -60,7 +60,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.13.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.14.0.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -219,6 +219,10 @@ Rules that hold across every ecosystem:
 
 The graph answers "what is in this workspace" through `coordination_parse`, `coordination_describe` and `coordination_chain`. The chain query takes an optional `kind` (trimmed, case-insensitive) on every node-returning action, so "all lemmas" or "all chapters" is one call instead of a scan. Directory nodes are derived from unambiguous workspace paths and connected with `contains`/`part_of`; the invariant is **`part_of` (child→parent) exact, `contains` (parent→child) best-effort**.
 
+## Workspace panels
+
+Two read-only panels dock to the right edge and stack vertically: the relationship panel (files / agents / dependencies / imports / exports) and the workspace panel (files / outline / dependencies / imports / preview). Each keeps a 48px title bar with menu, search and minimize/restore; expanding one pushes the other. A relationship tab draws a native canvas graph with directional flow, cycle pulsing, hover tooltips and click selection; the agents tab lists the main agent and its subagents with an estimated progress ring and opens a read-only transcript. The preview tab renders Markdown/math, sanitized HTML, `docx` HTML, Prism-highlighted code, `xlsx` sheets and `pptx` slides — all read-only, bounded and `no-store`. State is `{ openLeft, openRight, width }` in `localStorage`; views are hash routes (`#coordination/panel/right/<view>?path=…`). Bundle cost is about +2 MB (KaTeX, react-markdown, Prism, MUI icons), 700 KB gzipped.
+
 ## Settings and configuration
 
 The settings page is driven by `SETTINGS_CONTROLS` in `src/shared/selection.ts`: **139 controls in 13 groups, 122 writable host rows, covering 155 config leaves**. Twelve scene leaves (`scenes.*.thinking`, `scenes.*.reasoningEffort`) stay in the schema but have no row: DSH's model page owns reasoning, and duplicating it here would create two sources of truth. The 18 top-level config keys include `database` and `databasePath`, which are deliberately not projected or writable.
@@ -259,23 +263,31 @@ The page is Material UI end to end: one default-expanded `Accordion` per group, 
 
 DSH freezes a model request before any adapter sees it: `buildRequest()` deep-freezes the messages and `Object.freeze`s the request, and the `llm/stream` waterfall's fallback closes over that object. The one supported place where outgoing content can still be rebuilt is the adapter boundary, so the plugin registers an extra provider route (`coordination-proxy`) and forwards each request to the real provider after rebuilding it.
 
-Wiring (`src/index.ts`, `src/host/proxy-adapter.ts`, `src/host/model-brand.ts`):
+Wiring (`src/index.ts`, `src/host/proxy-service.ts`, `src/host/proxy-adapter.ts`, `src/host/model-brand.ts`):
 
 - `agent/request` rewrites the route to `coordination-proxy` and remembers the real one. Only allowlisted providers (`deepseek`, `deepseek-account`, `deepseek-official`) are intercepted; anything else keeps the route the harness chose.
 - The adapter forwards through `ctx.llm.stream` with the real provider, so transport, retries, attribution headers and usage reporting stay with the real adapter.
 - `ctx.llm.resolveModelInfo(provider, model)` supplies the host's model identity; it is classified onto a built-in cache brand (DeepSeek, OpenAI, Anthropic, Google, xAI, Moonshot, Qwen, Zhipu, Mistral, Meta, unknown) with `automaticPrefixCache`, `explicitCacheBreakpoints`, `minPrefixTokens`, `effortBreaksCache` and `stripVolatileHelps`.
-- Outgoing content is decorated only when the family has an automatic prefix cache **and** `cache.enabled` is on: `CacheModule.decorate` moves fixed content first and replaces volatile fragments (ISO timestamps, UUIDs, long hex, current-time phrases) with stable placeholders. Explicit-breakpoint families (Anthropic) are never rewritten, because markers — not bytes — decide reuse there. The advisory `cacheWarning` field is stripped before forwarding.
+- In `normalize` mode, outgoing content is decorated only when the family has an automatic prefix cache **and** `cache.enabled` is on: `CacheModule.decorate` moves fixed content first and replaces volatile fragments (ISO timestamps, UUIDs, long hex, current-time phrases) with stable placeholders. Explicit-breakpoint families (Anthropic) are never rewritten, because markers — not bytes — decide reuse there. The advisory `cacheWarning` field is stripped before forwarding.
 
 Security model — the proxy sees every prompt, so it is built to be unable to leak:
 
 1. no credential access (no `ctx.credentials`, no token, no `Authorization`, no API key);
-2. no egress (the module has no imports and no `fetch`/`http`/`net`; forwarding is an in-process call);
-3. no content persistence — `proxy.log` receives structural events only (`{event, provider, model, brand, messages, chars, tools, reason}`), never prompt or answer text;
+2. no egress (the adapter module has no imports and no `fetch`/`http`/`net`; forwarding is an in-process call);
+3. no content persistence — `proxy.log` receives structural events only (`{event, provider, model, brand, messages, chars, tools, reason, upstreamProvider, prefix, stable, from, to}`), never prompt or answer text;
 4. provider allowlist enforced in both the routing listener and the adapter;
 5. refusal and failure messages name the route only;
 6. opt-in and reversible.
 
-Enable it by creating `%DSH_HOME%\coordination\proxy.enable` (or `DSH_COORDINATION_PROXY=1`) and restarting. `GET /deepseek-coordination/proxy/status` reports counts and ids only: `available`, `enabled`, `decorate`, `upstream`, `model` (brand and policy), `forwards`, `refusals`. Delete the flag file and restart to return to the normal path.
+Enable it by creating `%DSH_HOME%\coordination\proxy.enable` (or `DSH_COORDINATION_PROXY=1`) and restarting. The proxy then defaults to `measure` mode: it records baseline metrics and prefix hashes without rewriting content. `GET /deepseek-coordination/proxy/status` reports counts, ids and hashes only: `available`, `enabled`, `mode`, `decorate`, `upstream`, `upstreamProvider`, `model` (brand and policy), `forwards`, `refusals`, `metrics` and `prefix`. Delete the flag file and restart to return to the normal path.
+
+### Measure vs normalize
+
+Attaching the proxy and rewriting the request are independent switches. With the proxy enabled, the default `measure` mode forwards each request with only the real provider route restored; it never calls the cache decorator. To let the decorator run, create a `proxy.mode` file containing `normalize`, create a `proxy.rewrite` marker file, or set `DSH_COORDINATION_PROXY_REWRITE=1`, then restart. In both modes `proxy.log` gains a `prefix` line per forward (`{ prefix: '<16 hex>', stable }`) and a `prefix-churn` line (`{ from, to }`) when the fingerprint changes; `metrics` aggregates the last 100 requests (`requests`, `samples`, `inputTokens`, `cachedInputTokens`, `hitRate`, with DSH's `cacheReadTokens` surfaced as `cachedInputTokens`). Read a real session's baseline with `curl http://127.0.0.1:<port>/deepseek-coordination/proxy/status`, using the port that serves the Web GUI.
+
+### Interaction with exact-provider host modules
+
+The rewrite is visible to every `agent/request` consumer: while the proxy is attached, the route recorded in the request is `coordination-proxy`, not the real provider. `/proxy/status` therefore exposes `upstreamProvider` (the real provider captured before the rewrite) beside `upstream`. Host modules that resolve credentials or account state by exact provider id can misbehave under that rewrite; the known case is the host's web-search account fallback, which needed a host-side fix (shipped in the 0.2.1-rc.2 patch). `ProxyService.compatibility()` carries the same list as static data, and the proxy does not probe the host.
 
 ## Auto-compaction and the token governor
 
@@ -367,6 +379,8 @@ There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol
 
 - The plugin owns an independent SQLite database. It never opens DSH's `harness` database. The default path is `%DSH_HOME%\coordination\coordination.db`; `database`/`databasePath` are deployment-only and are neither projected nor writable from `/config`.
 - Parser nodes, `NodeCard`s, `ChainLink`s and their tool results never carry file bodies, attachments or ASTs. Only `coordination_read` returns text, and only for the requested range.
+- Preview is the only body-bearing route: workspace-relative only, 64 KiB text cap, user-initiated, never cached or logged; every other graph route stays body-free. Office previews are converted server-side and size-capped; no file is written.
+- The workspace panel is read-only: no edit/rename/delete/create/build; the only non-GET graph route is POST /graph/rebuild, which re-parses known paths.
 - File paths are workspace-relative; absolute paths, drive-rooted paths, UNC paths, `..` escapes and symlink escapes are rejected before a read. Binary/NUL/undecodable content is refused rather than guessed.
 - The turn hook records turn metadata and an empty prompt row; it does not mirror the DSH transcript. No file content is copied into the coordination database.
 - Permission presets are written to DSH immediately (full access needs a second confirmation) and are never stored in the offline localStorage copy. Offline replay covers only the five stored selection fields.
@@ -404,4 +418,4 @@ Known limitations, stated rather than hidden:
 
 `0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles; `0.12.0` added the per-ecosystem domain layer, the chain `kind` filter, the directory layer and `NodeRecord`. Earlier states remain in git history and tags.
 
-MIT © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).
+Apache-2.0 © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).

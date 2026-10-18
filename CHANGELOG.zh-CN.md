@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.14.0 | 2026-10-18 | `—` | 只读工作区/关系双面板、canvas 关系图、预览矩阵、代理名册、缓存策略接线 |
 | 0.13.0 | 2026-10-18 | `83d3601` | TS、Java、Rust、PHP 的 `interface`/`type`/`enumeration`/`namespace` 成为一等 kind |
 | 0.12.0 | 2026-10-18 | `84af8b8` | 领域体系：tex、book、markdown、html、各语言、office、包管理器；kind 过滤与目录层 |
 | 0.11.0 | 2026-10-18 | `19bfedf` | 设置持久化、推理交还 DSH、缓存代理与品牌策略、对话框与标签修复 |
@@ -45,6 +46,56 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.14.0] — 2026-10-18
+
+### 新增
+
+- **右侧停靠的两个只读面板。** 关系面板（文件/职能/依赖/导入/导出）与工作面板
+  （文件/大纲/依赖/导入与导出/预览）共用一个外壳：菜单、搜索、最小化/还原的标题栏，
+  由 hash 路由的 Card 内容（`#coordination/panel/right/<view>?path=…`），以及
+  flex 堆叠——一个还原会把另一个顶上去。只持久化 `{ openLeft, openRight, width }`；
+  最小化只保留 48px 标题栏，**没有浮动按钮**。
+- **canvas 关系图。** 原生 2D canvas，确定性环形/分层/星形布局，方向虚线流动、环脉动、
+  hover 高亮与自绘 tooltip、边/节点命中、点击选中、滚轮缩放、拖拽平移、键盘遍历与
+  文本替代；颜色取自 MUI 主题，`prefers-reduced-motion` 下静态渲染。
+- **预览矩阵。** Markdown/GFM + `remark-math`/`rehype-katex`；HTML 与 `docx` 经
+  DOMPurify；代码用 Prism（主题由 MUI 派生）；纯文本；`xlsx` 表格；`pptx` 卡片。
+  全部只读，64 KiB / 行 / 页上限以 `truncated` 呈现。
+- **代理名册。** 关系面板列出主代理与子代理的目标、状态、**预计**进度环
+  （`completed`/`turns`/`unknown`）与总体进度条；点击进入只读消息页。
+- **工作区图路由。** `GET /graph/tree|outline|dependencies|imports|search|preview|
+  intra|agents`、`GET /graph/agents/messages`、`POST /graph/rebuild`。查询支持可选
+  `path` 作用域与 `kind` 过滤；依赖用 SCC 报环且不删边。只有 `preview` 与
+  `agents/messages` 承载正文：有界、`no-store`、不落日志、不缓存。
+- **二级缓存与环检测。** L1 请求内，L2 以"图版本 + 作用域 + 路径"为键（容量 512、
+  FIFO、不缓存正文）；迭代 Kosaraju SCC 保证深链不爆栈。
+- **缓存策略表。** `src/host/cache-strategy.ts` 提供 18 条预置（10 品牌 + 5 模型 +
+  3 agent）与 18 条引用来源；`presetFor()` 接入代理的 normalize 门控，并以
+  `status.cacheStrategy` 暴露。
+- **代理服务抽取与度量。** `createProxyService()` 负责 install/status/trace/adapter；
+  `status` 新增 `mode`、`upstreamProvider`、`metrics { inputTokens, cachedInputTokens,
+  hitRate, window }`、`prefix { current, stable, changes }` 与 `cacheStrategy`；
+  新 trace 事件 `compat`/`prefix`/`prefix-churn` 均为结构化。
+
+### 变更
+
+- **代理默认 `measure`。** 开启代理不再改写请求；`normalize` 需 `proxy.mode`、
+  `proxy.rewrite` 或 `DSH_COORDINATION_PROXY_REWRITE=1`，先让基线可观。
+- **`effortBreaksCache` 改为三态。** 没有抓取到任何厂商文档说明 effort 会改变缓存键，
+  因此所有 profile 报 `'unknown'` + `effortEvidence: 'assumed'`，**未知不等于 false**。
+- **HTML 的 `<article>` 是分区容器。** HTML/Markdown 不再产出文学意义的 `article`，
+  只有 book 解析器产出。
+- **许可证改为 Apache-2.0**（原 MIT）。
+- **停靠布局后移除 `react-rnd`。**
+
+### 修复
+
+- **代理路由下 web 搜索的账户回退**（宿主侧）：记录的路由 id 不再阻断账户令牌；
+  已在 app asar 打补丁并附备份与回滚脚本，缓存与代理代码未动。
+- **声明跳过初始化器时丢失 `import`/`require` 引用**，以及 `handleDeclaration`
+  用原始 token 索引导致的崩溃。
+- **解析器过期断言**已对齐新 kind；公共导出白名单钉住每个新模块。
 
 ## [0.13.0] — 2026-10-18
 

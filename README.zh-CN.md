@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.13.0（2026-10-18）。** 本版让 `interface`、`type`、`enumeration`、`namespace` 成为 TypeScript、Java、Rust、PHP 的一等声明 kind，并新增按体系拆分的领域概念层——tex、book、markdown、html、五种编程语言、maven/npm 与 Office——并为 chain 查询加上 `kind` 过滤、加入目录层与规范 `NodeRecord`。它建立在 v0.11.0（持久设置、推理交还 DSH、实验性缓存代理）之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.14.0（2026-10-18）。** 本版让 `interface`、`type`、`enumeration`、`namespace` 成为 TypeScript、Java、Rust、PHP 的一等声明 kind，并新增按体系拆分的领域概念层——tex、book、markdown、html、五种编程语言、maven/npm 与 Office——并为 chain 查询加上 `kind` 过滤、加入目录层与规范 `NodeRecord`。它建立在 v0.11.0（持久设置、推理交还 DSH、实验性缓存代理）之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -219,6 +219,10 @@ deepseek-coordination/
 
 图通过 `coordination_parse`、`coordination_describe`、`coordination_chain` 回答"工作区里有什么"。chain 查询在所有返回节点的动作上支持可选 `kind`（去空格、大小写不敏感），因此"所有 lemma""所有 chapter"是一次调用而不是全量扫描。目录节点从无歧义的工作区路径派生并以 `contains`/`part_of` 连接；不变量是**`part_of`（子→父）精确、`contains`（父→子）尽力而为**。
 
+## 工作区面板
+
+两个只读面板停靠在右侧并纵向堆叠：关系面板（文件/职能/依赖/导入/导出）与工作面板（文件/大纲/依赖/导入与导出/预览）。每个面板保留 48px 标题栏（菜单、搜索、最小化/还原），展开一个会把另一个顶上去。关系 tab 用原生 canvas 画关系图（方向流动、环脉动、hover tooltip、点击选中）；职能 tab 列出主代理与子代理、预计进度环，并可打开只读消息页。预览 tab 渲染 Markdown/数学、净化后的 HTML、`docx` HTML、Prism 高亮代码、`xlsx` 表格与 `pptx` 卡片——全部只读、有界、`no-store`。状态只在 `localStorage` 存 `{ openLeft, openRight, width }`，视图是 hash 路由（`#coordination/panel/right/<view>?path=…`）。打包体积约 +2 MB（KaTeX、react-markdown、Prism、MUI icons），gzip 后约 700 KB。
+
 ## 设置与配置
 
 设置页由 `src/shared/selection.ts` 的 `SETTINGS_CONTROLS` 生成：**13 组、139 个控件、122 个可写宿主行，覆盖 155 个配置叶子**。其中 12 个情景叶子（`scenes.*.thinking`、`scenes.*.reasoningEffort`）留在 schema 里但没有对应行：推理由 DSH 的模型页负责，这里再放一套会形成两个真相来源。18 个顶层配置键包含 `database` 与 `databasePath`，这两个键故意不投影、不可写。
@@ -404,4 +408,4 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 `0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball；`0.11.0` 加入持久设置、推理交还 DSH，以及带品牌策略的实验性缓存代理；`0.12.0` 加入按体系拆分的领域层、chain `kind` 过滤、目录层与 `NodeRecord`。旧状态仍在 git 历史和 tag 中。
 
-MIT © 2026 Eloy Kim。见 [LICENSE](LICENSE)。源码：[github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination)。
+Apache-2.0 © 2026 Eloy Kim。见 [LICENSE](LICENSE)。源码：[github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination)。

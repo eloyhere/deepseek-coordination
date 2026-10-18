@@ -25,6 +25,13 @@
  * and `code` (one per fenced/`<pre>`/`<code>` block, `name` = explicit language).
  * All three stay body-free and never exceed `MAX_METADATA_NODES`.
  *
+ * Markup structural kinds (body-free, explicit syntax only): `blockquote`
+ * (nested quotes merge into the outermost block), `list`/`list-item`
+ * (`ordered`/`unordered`/`task`), `table` (header column count only), `figure`
+ * (explicit figcaption text), `image` (Markdown src + alt) and `footnote`
+ * (definition only). They are located after fenced/inline code and HTML
+ * comments are masked, so a construct inside a code block never emits one.
+ *
  * Metadata rules: `name` from an explicit heading/title; `brief` only from an
  * explicit description field (front matter `description`/`abstract`, HTML
  * `meta[name=description]`); `usage`/`purpose` only from explicit front-matter
@@ -281,6 +288,31 @@ function pushLinkNode(
 }
 
 /**
+ * Emit one body-free `image` node for a Markdown image. `name` is the explicit
+ * `src`, `label` the explicit alt text (capped); an empty alt is omitted. The
+ * same reference keeps its existing `link` node — the two are separate kinds and
+ * neither copies the image body.
+ */
+function pushImageNode(
+  ctx: ParseContext,
+  nodes: NodeMetadata[],
+  source: string,
+  alt: string,
+  span: SourceSpan,
+  fragment?: FlatFragment,
+): void {
+  if (source.length === 0) return
+  const label = sanitizeMetadataText(alt, MAX_NAME_LENGTH)
+  pushDocumentMetadata(ctx, nodes, {
+    kind: 'image',
+    name: source,
+    ...(label.length === 0 ? {} : { label }),
+    fragment: fragment ?? fragmentForSpan(ctx, span),
+    span,
+  })
+}
+
+/**
  * Emit one body-free `code` node for a code block: span, flat fragment and an
  * explicit language only. The code text itself is never stored.
  */
@@ -295,6 +327,49 @@ function pushCodeNode(
     ...(language === undefined ? {} : { name: language }),
     fragment: fragmentForSpan(ctx, span),
     span,
+  })
+}
+
+/** Kinds emitted by the markup structural pass; all are body-free. */
+type MarkupStructuralKind =
+  | 'blockquote'
+  | 'figure'
+  | 'footnote'
+  | 'image'
+  | 'list'
+  | 'list-item'
+  | 'table'
+
+/**
+ * One structural markup node before it is capped and sanitised: kind, span and
+ * at most an explicit name/label. Never carries text content.
+ */
+interface MarkupStructuralNode {
+  kind: MarkupStructuralKind
+  span: SourceSpan
+  name?: string
+  label?: string
+  source: 'html' | 'annotation'
+}
+
+/**
+ * Emit one body-free markup structural node (blockquote/list/list-item/table/
+ * figure/image/footnote). The flat fragment comes from the span, so byte/line/
+ * fingerprint coordinates agree with the reference layer; `MAX_METADATA_NODES`
+ * is enforced by `pushNodeMetadata`.
+ */
+function pushMarkupStructure(
+  ctx: ParseContext,
+  nodes: NodeMetadata[],
+  structure: MarkupStructuralNode,
+): void {
+  pushDocumentMetadata(ctx, nodes, {
+    kind: structure.kind,
+    ...(structure.name === undefined ? {} : { name: structure.name }),
+    ...(structure.label === undefined ? {} : { label: structure.label }),
+    fragment: fragmentForSpan(ctx, structure.span),
+    source: structure.source,
+    span: structure.span,
   })
 }
 
@@ -686,6 +761,8 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
   let titleSpan: SourceSpan | undefined
   let description: string | undefined
   let article = false
+  /** Open `<blockquote>` depth; only the outermost block emits a node. */
+  let blockquoteDepth = 0
   let index = 0
   let lastCheck = 0
 
@@ -779,12 +856,67 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
       continue
     }
     if (tag.closing) {
+      if (tag.name === 'blockquote' && blockquoteDepth > 0) blockquoteDepth -= 1
       if (tag.name === 'article' || tag.name === 'main' || tag.name === 'section') {
         for (let cursor = openContainers.length - 1; cursor >= 0; cursor -= 1) {
           if (openContainers[cursor].name !== tag.name) continue
           const [container] = openContainers.splice(cursor, 1)
           if (container !== undefined) emitContainerNode(container, tag.end)
           break
+        }
+      }
+      index = tag.end
+      continue
+    }
+    /*
+     * Markup structural elements: `<blockquote>` (nested quotes merge into the
+     * outermost block), `<figure>`/`<figcaption>`, `<table>`, `<ul>`/`<ol>`/
+     * `<li>`. An element is emitted only when its closing tag exists; scanning
+     * then continues inside it so nested references are still collected.
+     */
+    if (
+      tag.name === 'blockquote' || tag.name === 'figure' || tag.name === 'table' ||
+      tag.name === 'ul' || tag.name === 'ol' || tag.name === 'li'
+    ) {
+      if (!tag.selfClosing && tag.name === 'blockquote') {
+        if (blockquoteDepth === 0) {
+          const close = findMatchingClosingTag(source, tag.end, 'blockquote')
+          if (close >= 0) {
+            const span = lineSpan(lineAtOffset(lines, tag.start), tag.start, close)
+            pushMarkupStructure(ctx, nodes, { kind: 'blockquote', span, source: 'html' })
+          }
+        }
+        blockquoteDepth += 1
+      } else if (!tag.selfClosing) {
+        const close = findMatchingClosingTag(source, tag.end, tag.name)
+        if (close >= 0) {
+          const span = lineSpan(lineAtOffset(lines, tag.start), tag.start, close)
+          if (tag.name === 'figure') {
+            const caption = htmlFigureCaption(source, tag.end, close)
+            pushMarkupStructure(ctx, nodes, {
+              kind: 'figure',
+              ...(caption === undefined ? {} : { name: caption }),
+              span,
+              source: 'html',
+            })
+          } else if (tag.name === 'table') {
+            const label = htmlTableColumnLabel(source, tag.end, close)
+            pushMarkupStructure(ctx, nodes, {
+              kind: 'table',
+              ...(label === undefined ? {} : { label }),
+              span,
+              source: 'html',
+            })
+          } else if (tag.name === 'ul' || tag.name === 'ol') {
+            pushMarkupStructure(ctx, nodes, {
+              kind: 'list',
+              label: htmlListLabel(tag.name, source, tag.end, close),
+              span,
+              source: 'html',
+            })
+          } else {
+            pushMarkupStructure(ctx, nodes, { kind: 'list-item', span, source: 'html' })
+          }
         }
       }
       index = tag.end
@@ -1196,6 +1328,14 @@ export function parseMarkdown(text: string, options: ParseOptions = {}): Markdow
     if (startFence !== undefined) fenceStarts.set(startLine, startFence)
   }
 
+  /*
+   * Body-free structural constructs (blockquote/list/list-item/table/footnote).
+   * They are located in one masked pass so fenced/inline code and HTML comments
+   * cannot produce them; the body loop below emits each event on its start line
+   * to keep deterministic source order.
+   */
+  const structuralEvents = scanMarkdownStructure(maskedLines, lines, fenceLines, bodyStartLine)
+
   const divStack: Array<{ node?: AstNode<string>; fenceLength: number; info: FencedDivInfo }> = []
   let paragraphStart = -1
   let paragraphText: string[] = []
@@ -1291,6 +1431,12 @@ export function parseMarkdown(text: string, options: ParseOptions = {}): Markdow
       }
       flushParagraph()
       continue
+    }
+    const structures = structuralEvents.get(originalLine.number)
+    if (structures !== undefined) {
+      for (const structure of structures) {
+        pushMarkupStructure(ctx, nodes, { ...structure, source: 'annotation' })
+      }
     }
     const trimmed = maskedLine.text.trim()
     if (trimmed.length === 0) {
@@ -2057,6 +2203,322 @@ function matchHeading(
   }
 }
 
+/** Span from absolute UTF-16 offsets, with line/column from the line index. */
+function sourceSpanForOffsets(lines: readonly TextLine[], start: number, end: number): SourceSpan {
+  const line = lineAtOffset(lines, start)
+  return { start, end, line: line.number, column: start - line.start + 1 }
+}
+
+/** A structural event keyed by the 1-based line it starts on. */
+interface MarkdownStructuralEvent {
+  line: number
+  /** 0 = container (list) before its first item at the same offset. */
+  order: number
+  node: Omit<MarkupStructuralNode, 'source'>
+}
+
+/** Prefix of a Markdown list item: indentation, marker and following space. */
+const MARKDOWN_LIST_ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(.*)$/
+/** A GFM task-list checkbox immediately after the list marker. */
+const MARKDOWN_TASK_ITEM = /^\[[ xX]\](?:[ \t]|$)/
+/** A footnote definition: `[^id]: text` (never a link reference). */
+const MARKDOWN_FOOTNOTE = /^ {0,3}\[\^([^\]\s]{1,64})\]:[ \t]*(.*)$/
+/** A blockquote marker line (up to three spaces of indentation). */
+const MARKDOWN_QUOTE = /^ {0,3}>/
+
+interface MarkdownListItemDraft {
+  start: number
+  end: number
+}
+
+interface MarkdownListDraft {
+  indent: number
+  start: number
+  end: number
+  ordered: boolean
+  /** Bullet character (`-`/`*`/`+`) or ordered delimiter (`.`/`)`). */
+  delimiter: string
+  hasTask: boolean
+  items: MarkdownListItemDraft[]
+}
+
+/** Trimmed cells of one GFM pipe row, or undefined when the line is not a row. */
+function splitPipeRow(text: string): string[] | undefined {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return undefined
+  const cells: string[] = []
+  let current = ''
+  let escaping = false
+  let pipes = 0
+  for (const character of trimmed) {
+    if (escaping) {
+      current += character
+      escaping = false
+      continue
+    }
+    if (character === '\\') {
+      current += character
+      escaping = true
+      continue
+    }
+    if (character === '|') {
+      cells.push(current)
+      current = ''
+      pipes += 1
+      continue
+    }
+    current += character
+  }
+  if (pipes === 0) return undefined
+  cells.push(current)
+  if (trimmed.startsWith('|')) cells.shift()
+  // A trailing pipe closes the row unless it is escaped (`\|`).
+  let backslashes = 0
+  for (let index = trimmed.length - 2; index >= 0 && trimmed[index] === '\\'; index -= 1) backslashes += 1
+  if (trimmed.endsWith('|') && backslashes % 2 === 0) cells.pop()
+  return cells.map((cell) => cell.trim())
+}
+
+/** GFM delimiter cell: hyphens with optional alignment colons. */
+function isDelimiterCell(cell: string): boolean {
+  return /^:?-+:?$/.test(cell)
+}
+
+/**
+ * Scan Markdown for the body-free structural constructs the line-oriented body
+ * loop cannot own by itself: blockquotes (nested quotes merge into the
+ * outermost block), lists and their items, GFM pipe tables and footnote
+ * definitions. Runs on the already-masked text and skips fenced code, so a
+ * construct inside a code block or an HTML comment can never produce a node.
+ * Events are keyed by start line and emitted by the body loop in source order.
+ */
+function scanMarkdownStructure(
+  maskedLines: readonly TextLine[],
+  lines: readonly TextLine[],
+  fenceLines: ReadonlySet<number>,
+  bodyStartLine: number,
+): Map<number, Array<Omit<MarkupStructuralNode, 'source'>>> {
+  const events: MarkdownStructuralEvent[] = []
+  const push = (line: number, order: number, node: Omit<MarkupStructuralNode, 'source'>): void => {
+    events.push({ line, order, node })
+  }
+
+  // Blockquotes: consecutive `>` lines are one block; nested markers stay in the
+  // same contiguous run and therefore never emit a second node.
+  for (let index = bodyStartLine; index < maskedLines.length; index += 1) {
+    const original = lines[index]
+    const maskedLine = maskedLines[index]
+    if (original === undefined || maskedLine === undefined) continue
+    if (fenceLines.has(original.number)) continue
+    if (!MARKDOWN_QUOTE.test(maskedLine.text)) continue
+    let last = index
+    let cursor = index + 1
+    while (cursor < maskedLines.length) {
+      const next = maskedLines[cursor]
+      const nextOriginal = lines[cursor]
+      if (next === undefined || nextOriginal === undefined) break
+      if (fenceLines.has(nextOriginal.number)) break
+      if (!MARKDOWN_QUOTE.test(next.text)) break
+      last = cursor
+      cursor += 1
+    }
+    const startLine = lines[index]
+    const endLine = lines[last] ?? original
+    if (startLine !== undefined) {
+      push(startLine.number, 0, {
+        kind: 'blockquote',
+        span: lineSpan(startLine, startLine.start, endLine.end),
+      })
+    }
+    index = last
+  }
+
+  // Lists: indentation opens a nested list, a same-indent marker adds a sibling
+  // item, and a non-indented non-item line closes the open lists.
+  const listEvents: MarkdownStructuralEvent[] = []
+  const closeList = (list: MarkdownListDraft): void => {
+    const startLine = lineAtOffset(lines, list.start)
+    listEvents.push({
+      line: startLine.number,
+      order: 0,
+      node: {
+        kind: 'list',
+        label: list.hasTask ? 'task' : list.ordered ? 'ordered' : 'unordered',
+        span: sourceSpanForOffsets(lines, list.start, list.end),
+      },
+    })
+    for (const item of list.items) {
+      const itemLine = lineAtOffset(lines, item.start)
+      listEvents.push({
+        line: itemLine.number,
+        order: 1,
+        node: { kind: 'list-item', span: sourceSpanForOffsets(lines, item.start, item.end) },
+      })
+    }
+  }
+  const stack: MarkdownListDraft[] = []
+  const extendOpenItems = (indent: number, end: number): void => {
+    for (const list of stack) {
+      if (indent <= list.indent) continue
+      const item = list.items[list.items.length - 1]
+      if (item !== undefined && end > item.end) item.end = end
+      if (end > list.end) list.end = end
+    }
+  }
+  for (let index = bodyStartLine; index < maskedLines.length; index += 1) {
+    const original = lines[index]
+    const maskedLine = maskedLines[index]
+    if (original === undefined || maskedLine === undefined) continue
+    // A fenced block inside an item is content of that item but is never a
+    // structural construct itself; it neither opens nor closes a list.
+    if (fenceLines.has(original.number)) continue
+    if (maskedLine.text.trim().length === 0) continue
+    const item = MARKDOWN_LIST_ITEM.exec(maskedLine.text)
+    if (item === null) {
+      const indent = (/^[ \t]*/.exec(maskedLine.text)?.[0] ?? '').replace(/\t/g, '  ').length
+      while (stack.length > 0 && stack[stack.length - 1].indent >= indent) {
+        const closed = stack.pop()
+        if (closed !== undefined) closeList(closed)
+      }
+      extendOpenItems(indent, original.end)
+      continue
+    }
+    const indent = (item[1] ?? '').replace(/\t/g, '  ').length
+    // Four leading spaces start an indented code block, not a new top-level list.
+    if (stack.length === 0 && indent >= 4) continue
+    const marker = item[2] ?? '-'
+    const content = item[4] ?? ''
+    const itemStart = original.start + (item[1]?.length ?? 0)
+    const ordered = /^\d/.test(marker)
+    const delimiter = ordered ? marker[marker.length - 1] ?? '.' : marker
+    while (stack.length > 0 && stack[stack.length - 1].indent > indent) {
+      const closed = stack.pop()
+      if (closed !== undefined) closeList(closed)
+    }
+    // A different marker type/delimiter at the same indentation starts a new
+    // list (`-` vs `*`, `1.` vs `2)`) instead of extending the previous one.
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1]
+      if (top === undefined || top.indent !== indent) break
+      if (top.ordered === ordered && top.delimiter === delimiter) break
+      const closed = stack.pop()
+      if (closed !== undefined) closeList(closed)
+    }
+    extendOpenItems(indent, original.end)
+    let list = stack[stack.length - 1]
+    if (list === undefined || list.indent < indent) {
+      list = {
+        indent,
+        start: itemStart,
+        end: original.end,
+        ordered,
+        delimiter,
+        hasTask: false,
+        items: [],
+      }
+      stack.push(list)
+    }
+    list.items.push({ start: itemStart, end: original.end })
+    list.end = original.end
+    if (MARKDOWN_TASK_ITEM.test(content)) list.hasTask = true
+  }
+  while (stack.length > 0) {
+    const closed = stack.pop()
+    if (closed !== undefined) closeList(closed)
+  }
+  events.push(...listEvents)
+
+  // GFM pipe tables: an explicit header row followed by a delimiter row with
+  // the same cell count. The column count is the header cell count.
+  for (let index = bodyStartLine; index < maskedLines.length; index += 1) {
+    const original = lines[index]
+    const maskedLine = maskedLines[index]
+    if (original === undefined || maskedLine === undefined) continue
+    if (fenceLines.has(original.number)) continue
+    const text = maskedLine.text
+    if (text.trim().length === 0) continue
+    if (/^(?: {4,}|\t)/.test(text)) continue
+    if (MARKDOWN_QUOTE.test(text) || MARKDOWN_LIST_ITEM.test(text)) continue
+    const header = splitPipeRow(text)
+    if (header === undefined || header.length === 0) continue
+    const delimiterLine = maskedLines[index + 1]
+    const delimiterOriginal = lines[index + 1]
+    if (delimiterLine === undefined || delimiterOriginal === undefined) continue
+    if (fenceLines.has(delimiterOriginal.number)) continue
+    const delimiter = splitPipeRow(delimiterLine.text)
+    if (delimiter === undefined || delimiter.length !== header.length) continue
+    if (!delimiter.every(isDelimiterCell)) continue
+    let last = index + 1
+    let cursor = index + 2
+    while (cursor < maskedLines.length) {
+      const row = maskedLines[cursor]
+      const rowOriginal = lines[cursor]
+      if (row === undefined || rowOriginal === undefined) break
+      if (fenceLines.has(rowOriginal.number)) break
+      if (splitPipeRow(row.text) === undefined) break
+      last = cursor
+      cursor += 1
+    }
+    const endLine = lines[last] ?? original
+    push(original.number, 0, {
+      kind: 'table',
+      label: String(header.length),
+      span: lineSpan(original, original.start, endLine.end),
+    })
+    index = last
+  }
+
+  // Footnote definitions only: a `[^id]` reference is never a node.
+  for (let index = bodyStartLine; index < maskedLines.length; index += 1) {
+    const original = lines[index]
+    const maskedLine = maskedLines[index]
+    if (original === undefined || maskedLine === undefined) continue
+    if (fenceLines.has(original.number)) continue
+    const match = MARKDOWN_FOOTNOTE.exec(maskedLine.text)
+    if (match === null) continue
+    const id = match[1] ?? ''
+    if (id.length === 0) continue
+    let last = index
+    let hasContent = (match[2] ?? '').trim().length > 0
+    let cursor = index + 1
+    while (cursor < maskedLines.length) {
+      const next = maskedLines[cursor]
+      const nextOriginal = lines[cursor]
+      if (next === undefined || nextOriginal === undefined) break
+      if (fenceLines.has(nextOriginal.number)) break
+      if (next.text.trim().length === 0) {
+        cursor += 1
+        continue
+      }
+      if (/^(?: {2,}|\t)/.test(next.text)) {
+        last = cursor
+        hasContent = true
+        cursor += 1
+        continue
+      }
+      break
+    }
+    if (hasContent) {
+      const endLine = lines[last] ?? original
+      push(original.number, 0, {
+        kind: 'footnote',
+        name: id,
+        span: lineSpan(original, original.start, endLine.end),
+      })
+    }
+    index = cursor - 1
+  }
+
+  events.sort((left, right) => left.node.span.start - right.node.span.start || left.order - right.order)
+  const byLine = new Map<number, Array<Omit<MarkupStructuralNode, 'source'>>>()
+  for (const event of events) {
+    const bucket = byLine.get(event.line)
+    if (bucket === undefined) byLine.set(event.line, [event.node])
+    else bucket.push(event.node)
+  }
+  return byLine
+}
+
 function parseLinkDefinition(
   line: TextLine,
   source: string,
@@ -2161,6 +2623,7 @@ function scanMarkdownLinks(
         }
         references.push(reference)
         pushLinkNode(ctx, nodes, reference.specifier, span, reference)
+        if (isImage) pushImageNode(ctx, nodes, reference.specifier, label, span, reference)
       }
       index = close + 1
       continue
@@ -2192,6 +2655,7 @@ function scanMarkdownLinks(
         }
         references.push(reference)
         pushLinkNode(ctx, nodes, reference.specifier, span, reference)
+        if (isImage) pushImageNode(ctx, nodes, reference.specifier, label, span, reference)
       }
       index = close + 1
       continue
@@ -2215,6 +2679,7 @@ function scanMarkdownLinks(
       }
       references.push(reference)
       pushLinkNode(ctx, nodes, reference.specifier, span, reference)
+      if (isImage) pushImageNode(ctx, nodes, reference.specifier, label, span, reference)
     }
     index = labelEnd + 1
   }
@@ -2576,6 +3041,111 @@ function findClosingTagIn(source: string, from: number, name: string): number {
     cursor = after
   }
   return source.length
+}
+
+/**
+ * Offset just past the matching closing tag of `name`, counting same-name
+ * nesting. Comments and raw-text bodies are skipped so their text can never
+ * close the element. Unterminated elements return `-1` (no node is emitted).
+ */
+function findMatchingClosingTag(source: string, from: number, name: string): number {
+  let depth = 0
+  let cursor = Math.max(0, from)
+  while (cursor < source.length) {
+    const open = source.indexOf('<', cursor)
+    if (open < 0) return -1
+    if (source.startsWith('<!--', open)) {
+      const close = source.indexOf('-->', open + 4)
+      if (close < 0) return -1
+      cursor = close + 3
+      continue
+    }
+    const tag = readHtmlTag(source, open)
+    if (tag === undefined) {
+      cursor = open + 1
+      continue
+    }
+    if (!tag.closing && (tag.name === 'script' || tag.name === 'style')) {
+      const close = findClosingTagIn(source, tag.end, tag.name)
+      cursor = Math.max(tag.end, close)
+      continue
+    }
+    if (tag.closing) {
+      if (tag.name === name) {
+        if (depth === 0) return tag.end
+        depth -= 1
+      }
+    } else if (tag.name === name && !tag.selfClosing) {
+      depth += 1
+    }
+    cursor = tag.end
+  }
+  return -1
+}
+
+/** Explicit `<figcaption>` text of a `<figure>` element, or undefined. */
+function htmlFigureCaption(source: string, from: number, to: number): string | undefined {
+  const limit = Math.min(source.length, to)
+  if (limit <= from) return undefined
+  const open = /<figcaption\b[^>]*>/i.exec(source.slice(from, limit))
+  if (open === null) return undefined
+  const contentStart = from + open.index + open[0].length
+  const close = /<\/figcaption\s*>/i.exec(source.slice(contentStart, limit))
+  const contentEnd = close === null ? limit : contentStart + close.index
+  const text = stripTags(source.slice(contentStart, contentEnd)).replace(/\s+/g, ' ').trim()
+  return text.length === 0 ? undefined : text
+}
+
+/** Count `<th>`/`<td>` cells inside a range, ignoring longer tag names. */
+function countHtmlCells(lower: string, name: 'th' | 'td', from: number, to: number): number {
+  const needle = `<${name}`
+  let count = 0
+  let cursor = Math.max(0, from)
+  const limit = Math.min(lower.length, to)
+  while (cursor < limit) {
+    const open = lower.indexOf(needle, cursor)
+    if (open < 0 || open >= limit) break
+    const after = lower.charCodeAt(open + needle.length)
+    if (after === 62 || after === 47 || isWhitespaceCode(after)) count += 1
+    cursor = open + needle.length
+  }
+  return count
+}
+
+/**
+ * Column count of an HTML `<table>` as a decimal string, but only when the
+ * header row is explicit (`<thead>` or a `<th>` in the first row). A table with
+ * only data cells stays label-less rather than guessing a header.
+ */
+function htmlTableColumnLabel(source: string, from: number, to: number): string | undefined {
+  const limit = Math.min(source.length, to)
+  if (limit <= from) return undefined
+  const content = source.slice(from, limit)
+  const lower = content.toLowerCase()
+  const thead = lower.indexOf('<thead')
+  const rowStart = thead >= 0 ? thead : 0
+  const row = /<tr\b[^>]*>/i.exec(content.slice(rowStart))
+  const rowFrom = rowStart + (row?.index ?? 0)
+  const rowEnd = lower.indexOf('</tr', rowFrom)
+  const headEnd = lower.indexOf('</thead', rowFrom)
+  const rowTo = rowEnd >= 0 ? rowEnd : headEnd >= 0 ? headEnd : content.length
+  const headerCells = countHtmlCells(lower, 'th', rowFrom, rowTo)
+  const dataCells = countHtmlCells(lower, 'td', rowFrom, rowTo)
+  if (thead < 0 && headerCells === 0) return undefined
+  const columns = headerCells > 0 ? headerCells : dataCells
+  return columns > 0 ? String(columns) : undefined
+}
+
+/** Label of an HTML list; a checkbox input makes it a task list. */
+function htmlListLabel(
+  tagName: 'ul' | 'ol',
+  source: string,
+  from: number,
+  to: number,
+): 'ordered' | 'unordered' | 'task' {
+  const content = source.slice(from, Math.min(source.length, to))
+  if (/<input\b[^>]*\btype\s*=\s*(?:"checkbox"|'checkbox'|checkbox)/i.test(content)) return 'task'
+  return tagName === 'ol' ? 'ordered' : 'unordered'
 }
 
 function isIdentCode(code: number): boolean {

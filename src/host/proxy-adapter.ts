@@ -22,7 +22,8 @@
  *  2. **No egress.** The module contains no `fetch`, `http`, `https`, `net` or
  *     socket use. The only outbound act is an in-process call into the harness.
  *  3. **No content persistence.** Tracing is structural: an event carries a
- *     provider id, a model id, message/tool counts and a character total. No
+ *     provider id, a model id, message/tool counts, a character total and — for
+ *     the prefix-drift events emitted by the service — a 16-hex digest. No
  *     message text, tool payload or response text ever leaves the request.
  *  4. **Provider allowlist.** Forwarding is restricted to providers the host
  *     named explicitly; an unknown provider is refused rather than proxied, so
@@ -36,7 +37,7 @@
  *
  * What this module deliberately does *not* do: it does not register a service
  * other plugins can drive, and it exposes no method that takes or returns
- * message content. Observability is counts and identities only.
+ * message content. Observability is counts, identities and hashes only.
  */
 
 /** The slice of `ctx.llm` this adapter depends on. */
@@ -60,7 +61,15 @@ export interface ProxyRoute {
  * forbids, so the shape stays deliberately narrow.
  */
 export interface ProxyTraceEvent {
-  readonly event: 'install' | 'route' | 'forward' | 'refuse' | 'model'
+  readonly event:
+    | 'install'
+    | 'route'
+    | 'forward'
+    | 'refuse'
+    | 'model'
+    | 'compat'
+    | 'prefix'
+    | 'prefix-churn'
   readonly provider?: string
   readonly model?: string
   /** Cache brand the host's model identity classified onto. */
@@ -73,6 +82,16 @@ export interface ProxyTraceEvent {
   readonly tools?: number
   /** Machine-readable refusal reason; never content. */
   readonly reason?: string
+  /** Real provider id recorded before the route rewrite; identity only. */
+  readonly upstreamProvider?: string
+  /** 16-hex digest of the canonical prompt-prefix projection; never the prefix. */
+  readonly prefix?: string
+  /** Whether the digest matched the previous observation. */
+  readonly stable?: boolean
+  /** Previous prefix digest on a `prefix-churn` event. */
+  readonly from?: string
+  /** Current prefix digest on a `prefix-churn` event. */
+  readonly to?: string
 }
 
 export interface ProxyAdapterOptions {

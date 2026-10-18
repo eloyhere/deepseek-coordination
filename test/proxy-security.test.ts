@@ -65,9 +65,13 @@ test('the proxy module has no transport, credential or persistence surface', () 
 })
 
 test('the routing half of the host adds no transport or credential read', () => {
-  const code = sourceOf('index.ts')
-  for (const { pattern, why } of FORBIDDEN) {
-    assert.doesNotMatch(code, pattern, `index.ts must not contain ${why} (${pattern})`)
+  // The routing and installation half moved to `host/proxy-service.ts`; scan
+  // both files so the move cannot silently drop one from the audit.
+  for (const relative of ['index.ts', 'host/proxy-service.ts']) {
+    const code = sourceOf(relative)
+    for (const { pattern, why } of FORBIDDEN) {
+      assert.doesNotMatch(code, pattern, `${relative} must not contain ${why} (${pattern})`)
+    }
   }
 })
 
@@ -95,7 +99,21 @@ test('tracing is structural: no prompt or answer text reaches the sink', () => {
   assert.ok((forward?.chars ?? 0) > 0)
   assert.equal(forward?.tools, 1)
 
-  const allowedKeys = new Set(['event', 'provider', 'model', 'brand', 'messages', 'chars', 'tools', 'reason'])
+  const allowedKeys = new Set([
+    'event',
+    'provider',
+    'model',
+    'brand',
+    'messages',
+    'chars',
+    'tools',
+    'reason',
+    'upstreamProvider',
+    'prefix',
+    'stable',
+    'from',
+    'to',
+  ])
   for (const event of events) {
     for (const key of Object.keys(event)) {
       assert.ok(allowedKeys.has(key), `unexpected trace field "${key}" — content could hide here`)

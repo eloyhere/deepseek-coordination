@@ -18,7 +18,9 @@
  *  - `minPrefixTokens` — the documented (or conservatively assumed) prefix size
  *    below which the provider does not cache at all.
  *  - `effortBreaksCache` — whether changing `reasoningEffort` invalidates the
- *    cached prefix for this family.
+ *    cached prefix. Tri-state: `true`/`false` only when the researched
+ *    `cache-strategy.ts` row cites a fetched source; `'unknown'` is an evidence
+ *    gap and must not be read as `false`.
  *  - `stripVolatileHelps` — whether removing volatile fragments (timestamps,
  *    UUIDs, long hex) from outbound text can improve reuse. False for explicit
  *    caching, where markers, not bytes, decide reuse.
@@ -26,6 +28,7 @@
  * The numbers are policy defaults, never measurements: each profile carries the
  * note the UI shows, and an unknown family gets the conservative row.
  */
+import { presetFor } from './cache-strategy.js'
 
 /** Model family the cache policy knows about. */
 export type ModelBrand =
@@ -41,6 +44,9 @@ export type ModelBrand =
   | 'meta'
   | 'unknown'
 
+/** Whether a reasoning-effort change resets the cache: documented, or unknown. */
+export type EffortBreaksCache = boolean | 'unknown'
+
 /** One family's cache behaviour. */
 export interface BrandCacheProfile {
   readonly brand: ModelBrand
@@ -52,8 +58,13 @@ export interface BrandCacheProfile {
   readonly explicitCacheBreakpoints: boolean
   /** Prefix size below which the provider caches nothing. */
   readonly minPrefixTokens: number
-  /** Changing the reasoning effort invalidates the cached prefix. */
-  readonly effortBreaksCache: boolean
+  /**
+   * Changing the reasoning effort invalidates the cached prefix.
+   *
+   * Reconciled with the researched preset row: a boolean means a fetched source
+   * documents it, `'unknown'` means no fetched source does.
+   */
+  readonly effortBreaksCache: EffortBreaksCache
   /** Removing volatile fragments from outbound text can improve reuse. */
   readonly stripVolatileHelps: boolean
   /** One line the status/UI can show; never a guarantee. */
@@ -61,22 +72,23 @@ export interface BrandCacheProfile {
 }
 
 /**
- * Built-in profiles.
+ * The authored rows.
  *
- * Where a provider documents both an automatic and an explicit mode (Google),
- * the conservative automatic reading is used: the plugin can keep a prefix
- * stable, and cannot emit markers.
+ * Every row starts with `effortBreaksCache: 'unknown'`: no fetched vendor page
+ * states that reasoning effort participates in the cache key. The exported
+ * `BRAND_PROFILES` below reconciles the field with `cache-strategy.ts`, which is
+ * the researched source of truth.
  */
-export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
+const BASE_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
   deepseek: {
     brand: 'deepseek',
     label: 'DeepSeek',
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 64,
-    effortBreaksCache: true,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
-    note: 'Automatic prefix cache; keep the prefix stable and avoid effort changes.',
+    note: 'Automatic prefix cache; keep the prefix stable. Effort impact on the cache key is undocumented.',
   },
   openai: {
     brand: 'openai',
@@ -84,9 +96,9 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: false,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
-    note: 'Automatic prompt cache above ~1k tokens; effort does not change the prefix.',
+    note: 'Automatic prompt cache above ~1k tokens; stable prefixes are the lever. Effort impact is undocumented.',
   },
   anthropic: {
     brand: 'anthropic',
@@ -94,7 +106,7 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: false,
     explicitCacheBreakpoints: true,
     minPrefixTokens: 1024,
-    effortBreaksCache: true,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: false,
     note: 'Explicit cache_control breakpoints only; this plugin cannot emit them.',
   },
@@ -104,7 +116,7 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: true,
     minPrefixTokens: 1024,
-    effortBreaksCache: false,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
     note: 'Implicit prefix cache plus optional explicit contexts; the implicit mode is the safe lever.',
   },
@@ -114,9 +126,9 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: true,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
-    note: 'Automatic prefix cache; effort and prefix edits both reset it.',
+    note: 'Automatic prefix cache; keep the prefix stable. Effort impact is undocumented.',
   },
   moonshot: {
     brand: 'moonshot',
@@ -124,7 +136,7 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: true,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
     note: 'Automatic prefix cache; reasoning content is preserved separately.',
   },
@@ -134,7 +146,7 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: false,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
     note: 'Automatic prefix cache; keep the system prompt and tool list stable.',
   },
@@ -144,9 +156,9 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: true,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
-    note: 'Automatic prefix cache; treat a parameter change as a cache reset.',
+    note: 'Automatic prefix cache; keep parameters stable. Effort impact is undocumented.',
   },
   mistral: {
     brand: 'mistral',
@@ -154,7 +166,7 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: false,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
     note: 'Prefix caching with a conservative minimum; stable prefixes are the lever.',
   },
@@ -164,7 +176,7 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: false,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
     note: 'Self-hosted families vary by deployment; the conservative prefix rule applies.',
   },
@@ -174,11 +186,40 @@ export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = {
     automaticPrefixCache: true,
     explicitCacheBreakpoints: false,
     minPrefixTokens: 1024,
-    effortBreaksCache: true,
+    effortBreaksCache: 'unknown',
     stripVolatileHelps: true,
     note: 'Unknown family: assume an automatic prefix cache and keep everything stable.',
   },
 }
+
+/**
+ * Reconcile one family's effort field with the researched strategy table.
+ *
+ * The table is authoritative: a boolean there means a fetched source documents
+ * the behaviour; `'unknown'` records an evidence gap. A gap stays visible — it
+ * is never converted into a definite `false`.
+ */
+function reconcileEffort(profile: BrandCacheProfile): BrandCacheProfile {
+  const preset = presetFor({ brand: profile.brand })
+  const effortBreaksCache: EffortBreaksCache =
+    typeof preset.effortBreaksPrefix === 'boolean' ? preset.effortBreaksPrefix : 'unknown'
+  return { ...profile, effortBreaksCache }
+}
+
+/**
+ * Built-in profiles, with `effortBreaksCache` derived from the strategy table.
+ *
+ * Where a provider documents both an automatic and an explicit mode (Google),
+ * the conservative automatic reading is used: the plugin can keep a prefix
+ * stable, and cannot emit markers.
+ */
+export const BRAND_PROFILES: Readonly<Record<ModelBrand, BrandCacheProfile>> = (() => {
+  const profiles = {} as Record<ModelBrand, BrandCacheProfile>
+  for (const brand of Object.keys(BASE_PROFILES) as ModelBrand[]) {
+    profiles[brand] = reconcileEffort(BASE_PROFILES[brand])
+  }
+  return Object.freeze(profiles)
+})()
 
 /** The identity fields `classifyModelBrand` reads (all optional on the wire). */
 export interface ModelIdentity {

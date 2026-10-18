@@ -37,6 +37,7 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { ComposerControls, clearComposerCaches } from './controls.js'
 import { CoordinationSettings } from './settings.js'
 import { TakeoverDialog } from './takeover.js'
+import { CoordinationPanels } from './panel.js'
 import { currentCopy, installLocale } from './i18n.js'
 import { disposeTakeoverStyle, installTakeoverStyle } from './store.js'
 import { copyFor } from '../shared/i18n.js'
@@ -145,14 +146,15 @@ interface MemoControlsProps {
  */
 const MemoControls = React.memo(
   function MemoControlsInner(props: MemoControlsProps): React.ReactElement {
-    // The takeover dialog is a sibling, not a child of the composer row: its
-    // 1 s poll owns its own state, so opening or updating a dialog never
-    // re-renders (and never re-styles) the composer itself.
+    // The takeover dialog and the docked panel column are siblings, not
+    // children of the composer row: their own state (polling, routing) never
+    // re-renders the composer.
     return React.createElement(
       React.Fragment,
       null,
       React.createElement(ComposerControls, { sessionId: props.sessionId }),
       React.createElement(TakeoverDialog, { sessionId: props.sessionId }),
+      React.createElement(CoordinationPanels, { sessionId: props.sessionId }),
     )
   },
   (previous: MemoControlsProps, next: MemoControlsProps): boolean => previous.sessionId === next.sessionId,

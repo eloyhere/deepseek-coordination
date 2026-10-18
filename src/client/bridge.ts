@@ -702,6 +702,92 @@ export async function reportLocale(locale: Locale): Promise<void> {
   }
 }
 
+/* ------------------------------------------------------------------------- *
+ * Workspace panel graph queries
+ * ------------------------------------------------------------------------- */
+
+/** Graph reads can cover a large workspace; they get a longer budget than a poll. */
+const GRAPH_TIMEOUT = 8000
+/** The host rebuild budget is 10 s; the request must outlive it. */
+const REBUILD_TIMEOUT = 15000
+
+/**
+ * One graph answer. `value` is the host's `{ ok, value }` payload as untrusted
+ * JSON: the panel narrows it before rendering. A missing route (older host
+ * build) is an ordinary failure; the panel shows its error state either way.
+ */
+export type GraphOutcome =
+  | { ok: true; value: unknown }
+  | { ok: false; reached: boolean; status: number | null; code?: string; message?: string }
+
+/**
+ * Read one `/deepseek-coordination/graph/*` endpoint.
+ *
+ * @param path - route path under the plugin prefix, query string included and
+ * already encoded by the caller (e.g. `/graph/outline?path=src%2Fa.ts`).
+ */
+export async function fetchGraph(path: string): Promise<GraphOutcome> {
+  const { status, wire } = await call<unknown>(path, undefined, GRAPH_TIMEOUT)
+  if (wire === null) return { ok: false, reached: status !== null, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      reached: true,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  return { ok: true, value: wire.value }
+}
+
+/** What one rebuild indexed, as the panel's success notice reports it. */
+export interface RebuildReport {
+  files: number
+  nodes: number
+  ms: number
+  truncated: boolean
+}
+
+/** Result of `POST /deepseek-coordination/graph/rebuild`. */
+export type RebuildOutcome =
+  | { ok: true; report: RebuildReport }
+  | { ok: false; status: number | null; code?: string; message?: string }
+
+/**
+ * Ask the host to rebuild the workspace graph.
+ *
+ * A concurrent rebuild answers 409 (`BUSY`); the panel turns that into its
+ * "already running" notice rather than a generic failure. Never throws.
+ */
+export async function rebuildGraph(): Promise<RebuildOutcome> {
+  const { status, wire } = await call<unknown>(
+    '/graph/rebuild',
+    { method: 'POST' },
+    REBUILD_TIMEOUT,
+  )
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  const value = asRecord(wire.value)
+  const report = asRecord(value?.report) ?? value
+  return {
+    ok: true,
+    report: {
+      files: finiteNumberOf(report?.files) ?? 0,
+      nodes: finiteNumberOf(report?.nodes) ?? 0,
+      ms: finiteNumberOf(report?.durationMs) ?? finiteNumberOf(report?.ms) ?? 0,
+      truncated: report?.truncated === true,
+    },
+  }
+}
+
 /** True when a value is a non-empty, usable DSH session id. */
 export function usableSession(sessionId: unknown): sessionId is string {
   return typeof sessionId === 'string' && sessionId.trim().length > 0

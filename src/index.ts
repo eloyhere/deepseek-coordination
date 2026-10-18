@@ -13,8 +13,15 @@
  *    every sub-path beneath it.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { appendFileSync, existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+} from 'node:fs'
+import { dirname, join, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { Config, resolveConfig, type CoordinationConfig } from './host/config.js'
@@ -23,14 +30,46 @@ import { resolveDatabasePath } from './host/database.js'
 import { createRuntime, installTurnLifecycle } from './host/dsh.js'
 import { applyConfigPatch } from './host/selection.js'
 import { readOverrides, settingsPath, writeOverrides } from './host/settings-store.js'
-import { PROXY_ALLOWED_PROVIDERS, createProxyAdapter, isProxyProviderAllowed } from './host/proxy-adapter.js'
-import type { LlmRuntimeLike, ProxyRoute, ProxyTraceEvent } from './host/proxy-adapter.js'
+import { createProxyService } from './host/proxy-service.js'
 import { brandProfileOf, shouldDecorate } from './host/model-brand.js'
-import type { BrandCacheProfile, ModelBrand, ModelIdentity } from './host/model-brand.js'
 import type { GenerateOptionsLike } from './shared/service.js'
-import { registerCoordinationTools, toolRegistryOf } from './host/tools.js'
+import { registerCoordinationTools, resolveToolWorkspaceRoot, toolRegistryOf } from './host/tools.js'
+import { GraphStore } from './host/graph-store.js'
+import { ParseService } from './host/parse-service.js'
+import { ChainEngine } from './host/chain.js'
+import { NodeRegistry } from './host/node-registry.js'
+import {
+  MAX_PREVIEW_ARCHIVE_BYTES,
+  MAX_PREVIEW_TEXT_BYTES,
+  agentMessagesRoute,
+  buildAgentRoster,
+  buildDependencies,
+  buildDocxPreview,
+  buildImports,
+  buildIntra,
+  buildOutline,
+  buildPptxPreview,
+  buildTextPreview,
+  buildTree,
+  buildXlsxPreview,
+  collectAgentRoster,
+  createGraphQuery,
+  graphVersionOf,
+  isOfficePreviewKind,
+  normaliseGraphPath,
+  previewKindOf,
+  resetGraphCache,
+  resolveAgentSessionEvents,
+  searchGraph,
+  type AgentServiceBundle,
+  type GraphEdge,
+  type GraphNode,
+  type GraphQuery,
+  type GraphScope,
+  type PreviewValue,
+} from './host/graph-view.js'
 import type { TakeoverGateAnswer } from './host/takeover-gate.js'
-import { CoordinationError, toErrorJson } from './shared/error.js'
+import { CoordinationError, InvalidArgumentError, InvalidStateError, NotFoundError, toErrorJson } from './shared/error.js'
 import { normaliseLocale, type Locale } from './shared/i18n.js'
 import type { Profession } from './shared/enum.js'
 import type { ConfigPatch, ConfigScalar } from './shared/selection.js'
@@ -49,6 +88,21 @@ const ROUTE_PREFIX = '/deepseek-coordination'
 function json(response: ServerResponse, body: unknown, status = 200): void {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   response.end(JSON.stringify(body))
+}
+
+/** Shared 400 for every `/graph/*` path query with an invalid path. */
+function invalidGraphPath(response: ServerResponse): void {
+  json(
+    response,
+    {
+      ok: false,
+      error: {
+        code: 'INVALID_ARGUMENT',
+        message: 'path must be a workspace-relative path without ".."',
+      },
+    },
+    400,
+  )
 }
 
 /** Read a POST JSON body, with a size cap that guards against oversized payloads. */
@@ -107,6 +161,266 @@ function sessionOf(url: URL, body?: Record<string, unknown>): string {
   return (fromQuery ?? fromBody ?? '').trim()
 }
 
+/* ------------------------------------------------------------------------- *
+ * Read-only workspace graph (the `/graph/*` routes)
+ * ------------------------------------------------------------------------- */
+
+/** One body-free snapshot of the persisted v24 graph plus its version. */
+interface GraphSnapshot {
+  /** Absolute workspace root the indexed paths are relative to. */
+  root: string
+  /** Changes whenever the snapshot changes; keys the graph-view L2 cache. */
+  version: string
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
+/**
+ * Read the graph the file layer has persisted, without parsing or writing.
+ *
+ * The chain engine itself is a private part of the file-tool runtime, so the
+ * routes read its durable projection instead: `GraphStore.loadNodes()` /
+ * `loadEdges()` are the store's own bounded, read-only queries (newest 10k
+ * nodes / 50k edges). No parse is triggered, no snapshot is written, and an
+ * empty database simply yields empty projections.
+ *
+ * The workspace root comes from the same resolver the file tools use, so a
+ * graph parsed for `root` is the graph these routes describe; `version` is the
+ * route-side equivalent of the chain's monotonic `graphVersion`.
+ */
+function graphSnapshotOf(service: CoordinationService): GraphSnapshot {
+  const root = resolveToolWorkspaceRoot(service)
+  const store = new GraphStore(service.db, { workspaceRoot: root })
+  const nodes: GraphNode[] = store.loadNodes().map((record) => ({
+    handle: record.handle,
+    kind: record.kind,
+    ...(record.name === undefined ? {} : { name: record.name }),
+    ...(record.label === undefined ? {} : { label: record.label }),
+    ...(record.path === undefined ? {} : { path: record.path }),
+    ...(record.lineStart === undefined ? {} : { line: record.lineStart }),
+    ...(record.ordinal === undefined ? {} : { ordinal: record.ordinal }),
+    ...(record.changed === undefined ? {} : { changed: record.changed }),
+  }))
+  const edges: GraphEdge[] = store.loadEdges().map((edge) => ({
+    relation: edge.relation,
+    from: edge.from,
+    to: edge.to,
+    changed: edge.changed,
+  }))
+  return { root, version: graphVersionOf(nodes, edges), nodes, edges }
+}
+
+/** One scoped query over a snapshot; the scope is part of the L2 cache key. */
+function graphQueryOf(snapshot: GraphSnapshot, scope: GraphScope): GraphQuery {
+  return createGraphQuery({
+    version: snapshot.version,
+    scope,
+    nodes: snapshot.nodes,
+    edges: snapshot.edges,
+  })
+}
+
+/* ------------------------------------------------------------------------- *
+ * Preview — the only body-bearing file-content route
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Preview is the only body-bearing file-content route: workspace-relative only,
+ * 64 KiB cap, user-initiated, never cached or logged. The agent transcript
+ * route is the other body-bearing route, but it reads bounded session records
+ * (never file content) and is equally no-store and unlogged; every other graph
+ * route stays body-free.
+ */
+
+/** Hard cap on the bytes one text preview may return. */
+const PREVIEW_MAX_BYTES = MAX_PREVIEW_TEXT_BYTES
+
+/**
+ * Read one bounded, user-initiated preview of a workspace file.
+ *
+ * Text goes through `ParseService.readContent`, i.e. exactly the validation and
+ * containment path `coordination_read` uses: workspace-relative only, realpath
+ * checked against the workspace root (symlink escapes refused), UTF-8 decoded
+ * with fatal validation, binary/NUL refused. Office packages are read as bytes
+ * through the same containment checks and converted **in memory only** by the
+ * payload builders in `host/graph-view.ts`: no temporary file, no external
+ * process, no LibreOffice. Preview never parses into the graph, never caches a
+ * body and never logs one; the metadata-only parse caches are untouched.
+ *
+ * BOM handling: byte ranges exclude a UTF-8 BOM, so `start: 0` is refused for a
+ * BOM-prefixed file; retry just after it. Both attempts read at most 64 KiB.
+ */
+async function previewOf(service: CoordinationService, path: string): Promise<PreviewValue> {
+  const parser = new ParseService({ workspaceRoot: resolveToolWorkspaceRoot(service) })
+  const relative = parser.relativePath(path)
+  const kind = previewKindOf(relative)
+  if (isOfficePreviewKind(kind)) {
+    const bytes = readOfficePreviewBytes(parser, relative)
+    if (kind === 'docx') return buildDocxPreview(relative, bytes)
+    if (kind === 'xlsx') return buildXlsxPreview(relative, bytes)
+    return buildPptxPreview(relative, bytes)
+  }
+  let result: ReturnType<ParseService['readContent']>
+  try {
+    result = parser.readContent({ path: relative, mode: 'bytes', start: 0, maxBytes: PREVIEW_MAX_BYTES })
+  } catch (error) {
+    if (error instanceof InvalidArgumentError && error.message.includes('BOM')) {
+      result = parser.readContent({ path: relative, mode: 'bytes', start: 3, maxBytes: PREVIEW_MAX_BYTES })
+    } else {
+      throw error
+    }
+  }
+  return buildTextPreview(
+    relative,
+    kind,
+    result.content,
+    result.truncated,
+    result.byteRange.end - result.byteRange.start,
+  )
+}
+
+/**
+ * Read one Office package with the same containment guarantees as a text read.
+ *
+ * `ParseService.absolutePath` applies the lexical workspace-relative check;
+ * `realpathSync` then refuses a symlink that resolves outside the root. The
+ * file is opened once and `fstat` bounds the read, so at most
+ * {@link MAX_PREVIEW_ARCHIVE_BYTES} bytes reach the in-memory converter.
+ */
+function readOfficePreviewBytes(parser: ParseService, relative: string): Uint8Array {
+  const absolute = parser.absolutePath(relative)
+  let real: string
+  try {
+    real = realpathSync(absolute)
+  } catch {
+    throw new NotFoundError('file', relative)
+  }
+  let root: string
+  try {
+    root = realpathSync(parser.workspaceRoot)
+  } catch {
+    throw new InvalidStateError('workspace root is not readable')
+  }
+  const prefix = root.endsWith(sep) ? root : `${root}${sep}`
+  if (real !== root && !real.startsWith(prefix)) {
+    throw new InvalidArgumentError('path resolves outside the workspace root', { path: relative })
+  }
+
+  let fd: number
+  try {
+    fd = openSync(real, 'r')
+  } catch {
+    throw new NotFoundError('file', relative)
+  }
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile()) throw new InvalidArgumentError('path is not a regular file', { path: relative })
+    if (stat.size > MAX_PREVIEW_ARCHIVE_BYTES) {
+      throw new InvalidStateError(
+        `Office preview package exceeds the ${MAX_PREVIEW_ARCHIVE_BYTES}-byte cap`,
+      )
+    }
+    const buffer = Buffer.allocUnsafe(stat.size)
+    let read = 0
+    while (read < stat.size) {
+      const count = readSync(fd, buffer, read, stat.size - read, read)
+      if (count <= 0) break
+      read += count
+    }
+    return new Uint8Array(buffer.buffer, buffer.byteOffset, read)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Rebuild — re-index the already-known workspace files
+ * ------------------------------------------------------------------------- */
+
+/** Maximum files one rebuild re-parses. */
+const REBUILD_FILE_CAP = 2_000
+/** Wall-clock budget of one rebuild; overrun reports the completed count. */
+const REBUILD_TIME_LIMIT_MS = 10_000
+
+/** True while a rebuild runs; a second concurrent request answers BUSY. */
+let rebuildInFlight = false
+
+/** Value of `POST /graph/rebuild`. */
+interface RebuildValue {
+  files: number
+  nodes: number
+  durationMs: number
+  truncated: boolean
+}
+
+/**
+ * Re-parse and re-index every file the graph already knows.
+ *
+ * This is the only graph action, and it stays within the read-only contract:
+ * the file system is only read, no build/command/execution runs, and only the
+ * coordination database's own graph rows are refreshed. Each file goes through
+ * the normal `ParseService` budgets, then `NodeRegistry` + `ChainEngine` rebuild
+ * its cards and edges in one transaction; a single unreadable or unsupported
+ * file is skipped without aborting the run.
+ *
+ * Bounds: at most {@link REBUILD_FILE_CAP} files and
+ * {@link REBUILD_TIME_LIMIT_MS} ms — overrun returns the completed counts with
+ * `truncated: true`. The L2 dependency cache is cleared unconditionally at the
+ * end, and the rewritten rows bump the snapshot-derived graph version, so every
+ * `/graph/*` view is invalidated (L1 is request-scoped and already discarded).
+ */
+async function rebuildGraph(service: CoordinationService): Promise<RebuildValue> {
+  const startedAt = Date.now()
+  const root = resolveToolWorkspaceRoot(service)
+  const known = graphQueryOf(graphSnapshotOf(service), 'workspace').paths
+  const store = new GraphStore(service.db, { workspaceRoot: root })
+  const parser = new ParseService({ workspaceRoot: root })
+  const registry = new NodeRegistry({ persist: { saveNode: (record) => store.saveNode(record) } })
+  const chain = new ChainEngine({
+    persist: {
+      saveNode: (node) => store.saveChainNode(node),
+      saveEdge: (edge) => store.saveEdge(edge),
+      deleteEdge: (edge) => store.deleteEdge(edge),
+    },
+  })
+
+  const targets = known.slice(0, REBUILD_FILE_CAP)
+  let files = 0
+  let nodes = 0
+  let truncated = known.length > targets.length
+  for (const path of targets) {
+    if (Date.now() - startedAt >= REBUILD_TIME_LIMIT_MS) {
+      truncated = true
+      break
+    }
+    // Yield once per file so a concurrent request sees the in-flight flag and
+    // answers BUSY instead of waiting for the whole rebuild.
+    await new Promise<void>((resolve) => { setImmediate(resolve) })
+    let parsed: ReturnType<ParseService['parse']>
+    try {
+      parsed = parser.parse({ path })
+    } catch {
+      // Unsupported extension or a file removed since indexing: keep going.
+      continue
+    }
+    try {
+      const cards = store.transaction(() => {
+        store.beginParse(path)
+        const registered = registry.register(parsed)
+        chain.index(parsed)
+        store.saveSnapshot(parsed, { nodeCount: registered.length })
+        return registered.length
+      })
+      files += 1
+      nodes += cards
+    } catch {
+      // One bad file must never abort the rest of the rebuild.
+    }
+  }
+  resetGraphCache()
+  return { files, nodes, durationMs: Date.now() - startedAt, truncated }
+}
+
 /**
  * Nest a flat dotted override map, then merge it over the deployment config.
  *
@@ -146,297 +460,33 @@ function serviceOrUndefined(context: Context, name: string): Record<string, unkn
   }
 }
 
+/**
+ * Optional host services the two read-only `/graph/agents*` routes may read.
+ *
+ * Every entry is capability-optional: a headless or minimal profile may mount
+ * none of them, in which case the roster is empty and a transcript lookup is
+ * `NOT_FOUND`. Only read methods are called by `host/graph-view.ts`; this
+ * bundle never grants a send/cancel/resume path.
+ */
+function agentServicesOf(context: Context): AgentServiceBundle {
+  return {
+    agents: serviceOrUndefined(context, 'agents'),
+    sessions: serviceOrUndefined(context, 'sessions'),
+    subagents: serviceOrUndefined(context, 'subagents'),
+    sessionQuery: serviceOrUndefined(context, 'sessionQuery'),
+    goals: serviceOrUndefined(context, 'goals'),
+    sessionProjections: serviceOrUndefined(context, 'sessionProjections'),
+    sessionProjectionCache: serviceOrUndefined(context, 'sessionProjectionCache'),
+    sessionPersistence: serviceOrUndefined(context, 'sessionPersistence'),
+  }
+}
+
 /** The host webserver, when the profile runs one (a headless profile does not). */
 function webServerOf(context: Context): { register: (route: Record<string, unknown>) => () => void } | undefined {
   const service = serviceOrUndefined(context, 'webServer')
   return service !== undefined && typeof service.register === 'function'
     ? (service as unknown as { register: (route: Record<string, unknown>) => () => void })
     : undefined
-}
-
-/** The live `ctx.llm` runtime; the proxy adapter needs `stream`, not the port. */
-function llmRuntimeOf(context: Context): LlmRuntimeLike | undefined {
-  const service = serviceOrUndefined(context, 'llm')
-  return service !== undefined && typeof service.stream === 'function'
-    ? (service as unknown as LlmRuntimeLike)
-    : undefined
-}
-
-/** Provider route the cache proxy registers under. */
-const PROXY_PROVIDER = 'coordination-proxy'
-
-/**
- * Structural status of the proxy, exposed read-only to the host.
- *
- * Counts and identities only: no prompt, no answer, no tool payload, no
- * credential ever reaches this object. It is the observability half of the
- * proxy's security model — the host can see that it runs, not what it saw.
- */
-interface CacheProxyStatus {
-  available: boolean
-  enabled: boolean
-  provider: string
-  upstream?: { provider: string; model?: string }
-  /** Host-reported model identity mapped onto a built-in cache brand. */
-  model?: {
-    brand: ModelBrand
-    label: string
-    automaticPrefixCache: boolean
-    explicitCacheBreakpoints: boolean
-    minPrefixTokens: number
-    effortBreaksCache: boolean
-    stripVolatileHelps: boolean
-    note: string
-  }
-  forwards: number
-  refusals: number
-  lastForwardAt?: string
-  /** True when the wiring supplies a content decorator (brand-gated per call). */
-  decorate: boolean
-}
-
-const proxyStatus: CacheProxyStatus = {
-  available: false,
-  enabled: false,
-  provider: PROXY_PROVIDER,
-  forwards: 0,
-  refusals: 0,
-  decorate: false,
-}
-
-/** The status snapshot handed to `GET /proxy/status`. */
-export function cacheProxyStatus(): Readonly<CacheProxyStatus> {
-  return {
-    ...proxyStatus,
-    ...(proxyStatus.upstream === undefined ? {} : { upstream: { ...proxyStatus.upstream } }),
-  }
-}
-
-/** The deployment's default model route, used when no request has named one yet. */
-function defaultRouteOf(context: Context): ProxyRoute | undefined {
-  const service = serviceOrUndefined(context, 'agentDefaultModel')
-  const current = service?.currentSelection
-  if (typeof current !== 'function') return undefined
-  try {
-    const selection = current.call(service)
-    const record = typeof selection === 'object' && selection !== null
-      ? (selection as Record<string, unknown>)
-      : undefined
-    const provider = typeof record?.provider === 'string' ? record.provider : ''
-    const model = typeof record?.model === 'string' ? record.model : ''
-    return provider.length > 0 && model.length > 0 ? { provider, model } : undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Register the experimental cache proxy.
- *
- * `agent/request` rewrites the route to the proxy provider and remembers the
- * real one; the adapter forwards each frozen request to it after rebuilding it.
- * Every step fails open: no llm runtime, no adapter registration or no event bus
- * simply leaves the normal path untouched.
- *
- * Security posture (see `host/proxy-adapter.ts` for the full model):
- *  - only providers on `PROXY_ALLOWED_PROVIDERS` are ever intercepted, so the
- *    proxy cannot redirect traffic to an endpoint this plugin invented;
- *  - the trace file receives structural events only — provider, model, counts,
- *    sizes — never prompt or answer text;
- *  - the adapter holds no transport and no credential: forwarding delegates to
- *    `ctx.llm.stream`, so the real adapter keeps authentication and egress.
- *
- * The switch is a file (`proxy.enable`) as well as an environment variable: the
- * desktop app is launched from the shell's environment, so a file is the only
- * way to turn the experiment on without restarting with new variables.
- */
-function installCacheProxy(
-  context: Context,
-  stateDir: string,
-  decorate?: (request: Record<string, unknown>, identity: { provider: string; model: string }) => Record<string, unknown>,
-): () => void {
-  const flagFile = join(stateDir, 'proxy.enable')
-  const logFile = join(stateDir, 'proxy.log')
-  if (process.env.DSH_COORDINATION_PROXY !== '1' && !existsSync(flagFile)) return () => {}
-
-  const llm = llmRuntimeOf(context)
-  const service = serviceOrUndefined(context, 'llm')
-  const register = service?.registerAdapter
-  const on = (context as unknown as { on?: unknown }).on
-  if (llm === undefined || typeof register !== 'function' || typeof on !== 'function') return () => {}
-
-  /**
-   * Append one structural event as a JSON line.
-   *
-   * JSON (not a formatted sentence) keeps the record unambiguous, and the event
-   * type has no field that can carry content — a reviewer can verify the whole
-   * leak surface by reading `ProxyTraceEvent`.
-   */
-  const trace = (event: ProxyTraceEvent): void => {
-    if (event.event === 'forward') {
-      proxyStatus.forwards += 1
-      proxyStatus.lastForwardAt = new Date().toISOString()
-    }
-    if (event.event === 'refuse') proxyStatus.refusals += 1
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...event })
-    try {
-      appendFileSync(logFile, `${line}\n`, 'utf8')
-    } catch {
-      // A trace that cannot be written must never break a model call.
-    }
-    if (process.env.DSH_COORDINATION_PROXY_DEBUG === '1') console.error(`[coordination-proxy] ${line}`)
-  }
-
-  // A restarted session may already carry the proxy route in its request
-  // header, in which case `agent/request` never names the real one. Seed the
-  // upstream from the deployment default so the adapter is never route-less.
-  let upstream: ProxyRoute | undefined = defaultRouteOf(context)
-  if (upstream !== undefined) {
-    proxyStatus.upstream = { ...upstream }
-    trace({ event: 'install', provider: PROXY_PROVIDER, model: upstream.model })
-  } else {
-    trace({ event: 'install', provider: PROXY_PROVIDER })
-  }
-
-  /**
-   * Classify the host-reported model identity onto a built-in cache brand.
-   *
-   * `ctx.llm.resolveModelInfo(provider, model)` is the host's own answer for
-   * "what model is this": it carries the display name and description that a
-   * provider route id alone cannot. The call may hit the adapter, so it is
-   * fired and forgotten — routing never waits on catalog I/O, and a failure
-   * simply leaves the `unknown` conservative profile in place.
-   */
-  let describedKey = ''
-  const describeModel = (provider: string, model: string): void => {
-    const key = `${provider}\u0000${model}`
-    if (key === describedKey) return
-    describedKey = key
-    const llmService = serviceOrUndefined(context, 'llm')
-    const resolve = llmService?.resolveModelInfo
-    const apply = (identity: ModelIdentity): void => {
-      const profile = brandProfileOf(identity)
-      proxyStatus.model = {
-        brand: profile.brand,
-        label: profile.label,
-        automaticPrefixCache: profile.automaticPrefixCache,
-        explicitCacheBreakpoints: profile.explicitCacheBreakpoints,
-        minPrefixTokens: profile.minPrefixTokens,
-        effortBreaksCache: profile.effortBreaksCache,
-        stripVolatileHelps: profile.stripVolatileHelps,
-        note: profile.note,
-      }
-      trace({ event: 'model', provider, model, brand: profile.brand })
-    }
-    if (typeof resolve !== 'function') {
-      apply({ provider, model })
-      return
-    }
-    try {
-      const pending = resolve.call(llmService, provider, model)
-      if (pending instanceof Promise) {
-        pending.then((info: unknown) => {
-          const record = typeof info === 'object' && info !== null ? (info as Record<string, unknown>) : undefined
-          apply({
-            provider,
-            model,
-            ...(typeof record?.name === 'string' ? { name: record.name } : {}),
-            ...(typeof record?.description === 'string' ? { description: record.description } : {}),
-          })
-        }).catch(() => { apply({ provider, model }) })
-        return
-      }
-      const record = typeof pending === 'object' && pending !== null ? (pending as Record<string, unknown>) : undefined
-      apply({
-        provider,
-        model,
-        ...(typeof record?.name === 'string' ? { name: record.name } : {}),
-        ...(typeof record?.description === 'string' ? { description: record.description } : {}),
-      })
-    } catch {
-      apply({ provider, model })
-    }
-  }
-  if (upstream !== undefined) describeModel(upstream.provider, upstream.model ?? '')
-
-  const adapter = createProxyAdapter({
-    provider: PROXY_PROVIDER,
-    llm,
-    routeOf: () => upstream,
-    allowProviders: PROXY_ALLOWED_PROVIDERS,
-    trace,
-    ...(decorate === undefined
-      ? {}
-      : {
-          // The adapter sees only the request; the route came from `upstream`.
-          decorate: (request: Readonly<Record<string, unknown>>): Record<string, unknown> =>
-            decorate(request as Record<string, unknown>, {
-              provider: upstream?.provider ?? '',
-              model: upstream?.model ?? '',
-            }),
-        }),
-  })
-
-  let registration: unknown
-  let detach: unknown
-  try {
-    registration = register.call(service, [PROXY_PROVIDER], adapter)
-    detach = (on as (...args: unknown[]) => unknown).call(
-      context,
-      'agent/request',
-      async (_payload: unknown, next: () => Promise<unknown>): Promise<unknown> => {
-        const seed = await next()
-        const record = typeof seed === 'object' && seed !== null ? (seed as Record<string, unknown>) : undefined
-        const provider = typeof record?.provider === 'string' ? record.provider : ''
-        const model = typeof record?.model === 'string' ? record.model : ''
-        if (record === undefined || provider.length === 0 || model.length === 0 || provider === PROXY_PROVIDER) {
-          // A persisted proxy header carries no upstream; fall back to the
-          // deployment default so forwarding still has a route.
-          if (upstream === undefined) upstream = defaultRouteOf(context)
-          return seed
-        }
-        // Least privilege: an unrecognised provider is never intercepted. The
-        // request keeps the route the harness chose, so a third-party route
-        // cannot be pulled into this proxy by accident.
-        if (!isProxyProviderAllowed(provider, PROXY_ALLOWED_PROVIDERS)) {
-          trace({ event: 'refuse', provider, reason: 'provider-not-allowlisted' })
-          return seed
-        }
-        upstream = { provider, model }
-        proxyStatus.upstream = { ...upstream }
-        trace({ event: 'route', provider, model })
-        describeModel(provider, model)
-        return { ...record, provider: PROXY_PROVIDER, model }
-      },
-      { prepend: true },
-    )
-  } catch {
-    trace({ event: 'refuse', provider: PROXY_PROVIDER, reason: 'registration-failed' })
-    return () => {}
-  }
-
-  proxyStatus.available = true
-  proxyStatus.enabled = true
-  proxyStatus.decorate = decorate !== undefined
-
-  return () => {
-    proxyStatus.enabled = false
-    proxyStatus.decorate = false
-    if (typeof detach === 'function') {
-      try {
-        detach()
-      } catch {
-        // A disposed listener is harmless during unload.
-      }
-    }
-    if (typeof registration === 'function') {
-      try {
-        registration()
-      } catch {
-        // A disposed adapter registration is harmless during unload.
-      }
-    }
-  }
 }
 
 export function apply(context: Context, configInput?: Partial<CoordinationConfig>): void {
@@ -452,36 +502,37 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
   service.turn.recoverInterrupted()
 
   /*
-   * Cache proxy (experiment, off by default): `DSH_COORDINATION_PROXY=1` makes
-   * every model call take the `coordination-proxy` provider route so its request
-   * can be rebuilt at the adapter boundary — the one place the frozen request is
-   * still only an input. See `host/proxy-adapter.ts`.
+   * Cache proxy (experiment, off by default): `proxy.enable` or
+   * `DSH_COORDINATION_PROXY=1` decides whether the proxy is attached at all.
+   * The installation itself lives in `host/proxy-service.ts`; rewriting is a
+   * separate `proxy.mode` / `proxy.rewrite` switch and defaults to measurement.
    *
    * The decorator is brand-gated: only families with an automatic prefix cache
    * get the stable-prefix rewrite. An explicit-breakpoint family keeps its bytes
    * untouched, because markers — not text normalization — decide reuse there.
    */
-  if (process.env.DSH_COORDINATION_PROXY === '1' || existsSync(join(dirname(settingsFile), 'proxy.enable'))) {
-    const decorate = (
-      request: Record<string, unknown>,
-      identity: { provider: string; model: string },
-    ): Record<string, unknown> => {
-      const profile = brandProfileOf(identity)
-      // `config` is the live object, so a settings-page toggle applies at once.
-      if (!shouldDecorate(profile, config.cache.enabled)) return request
-      const strategy = service.provider.cacheStrategy(identity.provider)
-      const decorated = service.cache.decorate(
-        request as unknown as GenerateOptionsLike,
-        strategy,
-      ) as unknown as Record<string, unknown>
-      // `cacheWarning` is UI advice; a provider adapter must never receive it.
-      const { cacheWarning: _advice, ...outgoing } = decorated
-      return outgoing
-    }
-    context.effect(
-      () => installCacheProxy(context, dirname(settingsFile), decorate),
-      `${name}: cache proxy`,
-    )
+  const proxyStateDir = dirname(settingsFile)
+  const proxyEnabled =
+    process.env.DSH_COORDINATION_PROXY === '1' || existsSync(join(proxyStateDir, 'proxy.enable'))
+  const decorate = (
+    request: Record<string, unknown>,
+    identity: { provider: string; model: string },
+  ): Record<string, unknown> => {
+    const profile = brandProfileOf(identity)
+    // `config` is the live object, so a settings-page toggle applies at once.
+    if (!shouldDecorate(profile, config.cache.enabled)) return request
+    const strategy = service.provider.cacheStrategy(identity.provider)
+    const decorated = service.cache.decorate(
+      request as unknown as GenerateOptionsLike,
+      strategy,
+    ) as unknown as Record<string, unknown>
+    // `cacheWarning` is UI advice; a provider adapter must never receive it.
+    const { cacheWarning: _advice, ...outgoing } = decorated
+    return outgoing
+  }
+  const proxy = createProxyService({ context, stateDir: proxyStateDir, decorate })
+  if (proxyEnabled) {
+    context.effect(() => proxy.install(), `${name}: cache proxy`)
   }
 
   /** Re-register the tools after `POST /locale` changed the copy language. */
@@ -587,11 +638,12 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             return
           }
 
-          // Read-only observability for the cache proxy. Counts and route ids
-          // only: this endpoint exists so the host can see that the proxy runs
-          // and what it forwarded, never what the model was told.
+          // Read-only observability for the cache proxy. Counts, route ids,
+          // token totals and prefix hashes only: this endpoint exists so the
+          // host can see whether the proxy measures or normalises, and what it
+          // forwarded, never what the model was told.
           if (path === '/proxy/status' && method === 'GET') {
-            json(response, { ok: true, value: cacheProxyStatus() })
+            json(response, { ok: true, value: proxy.status() })
             return
           }
 
@@ -794,6 +846,262 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
                 config: service.selection.configView(),
               },
             })
+            return
+          }
+
+          /*
+           * Read-only workspace graph.
+           *
+           * Every route is body-free and side-effect free: it reads the graph
+           * the file tools already persisted and projects it through the pure
+           * helpers in `host/graph-view.ts`. No parse is triggered, no file is
+           * written and no prompt/credential/diagnostic text crosses the wire
+           * for the workspace-graph routes.
+           *
+           * The two agent routes are read-only projections of the host's own
+           * session records. `/graph/agents/messages` is body-bearing but
+           * bounded: one known id, no-store, newest 200 messages / 64 KiB and
+           * text blocks only. `/graph/agents` is JSON metadata (labels,
+           * objectives, timestamps, estimated progress); both are no-store and
+           * neither can send, cancel, resume or write.
+           *
+           * An empty graph (nothing parsed yet) or absent agent services answer
+           * with empty projections, never an error; a file-scoped query for an
+           * unindexed path is NOT_FOUND, as is an unknown agent id.
+           *
+           *   GET /graph/tree                     -> { root, entries }
+           *   GET /graph/outline[?path=<rel>]     -> file | workspace outline
+           *   GET /graph/intra?path=<rel>         -> in-file symbols + edges
+           *   GET /graph/dependencies[?path=<rel>][&level=file|intra]
+           *                                       -> file | workspace links/cycles
+           *   GET /graph/imports[?path=<rel>]     -> file | workspace rows
+           *   GET /graph/search?q=<text>&limit=<n> -> { hits }
+           *   GET /graph/agents                   -> { agents, progress }
+           *   GET /graph/agents/messages?id=<id>  -> bounded transcript
+           *   GET /graph/preview?path=<rel>       -> only body-bearing file route
+           *   POST /graph/rebuild                 -> re-index known paths (action)
+           */
+          if (path === '/graph/tree' && method === 'GET') {
+            const snapshot = graphSnapshotOf(service)
+            json(response, { ok: true, value: buildTree(snapshot.nodes, snapshot.root) })
+            return
+          }
+
+          if (path === '/graph/outline' && method === 'GET') {
+            // `path` is optional: present means one file, absent the whole
+            // workspace. An explicitly empty/invalid path is a 400, never a
+            // silent fallback to the workspace view.
+            const hasPath = url.searchParams.has('path')
+            const requested = hasPath ? normaliseGraphPath(url.searchParams.get('path')) : undefined
+            if (hasPath && requested === undefined) {
+              invalidGraphPath(response)
+              return
+            }
+            const snapshot = graphSnapshotOf(service)
+            const scope: GraphScope = requested === undefined ? 'workspace' : 'file'
+            json(response, { ok: true, value: buildOutline(graphQueryOf(snapshot, scope), requested) })
+            return
+          }
+
+          if (path === '/graph/intra' && method === 'GET') {
+            // `path` is mandatory here: the intra route describes exactly one
+            // indexed file, and its projection is body-free symbol metadata.
+            const requested = normaliseGraphPath(url.searchParams.get('path'))
+            if (requested === undefined) {
+              invalidGraphPath(response)
+              return
+            }
+            const snapshot = graphSnapshotOf(service)
+            json(response, { ok: true, value: buildIntra(graphQueryOf(snapshot, 'file'), requested) })
+            return
+          }
+
+          if (path === '/graph/dependencies' && method === 'GET') {
+            // `level=file` (default) keeps the file-level `depends` projection;
+            // `level=intra` mirrors `/graph/intra`'s symbol edges and requires
+            // an explicit path. An unknown level is a 400, never a silent
+            // fallback to the default.
+            const level = (url.searchParams.get('level') ?? 'file').trim().toLowerCase()
+            if (level !== 'file' && level !== 'intra') {
+              json(
+                response,
+                {
+                  ok: false,
+                  error: { code: 'INVALID_ARGUMENT', message: 'level must be "file" or "intra"' },
+                },
+                400,
+              )
+              return
+            }
+            const hasPath = url.searchParams.has('path')
+            if (level === 'intra' && !hasPath) {
+              json(
+                response,
+                {
+                  ok: false,
+                  error: { code: 'INVALID_ARGUMENT', message: 'path is required when level=intra' },
+                },
+                400,
+              )
+              return
+            }
+            const requested = hasPath ? normaliseGraphPath(url.searchParams.get('path')) : undefined
+            if (hasPath && requested === undefined) {
+              invalidGraphPath(response)
+              return
+            }
+            const snapshot = graphSnapshotOf(service)
+            if (level === 'intra') {
+              // The validation above guarantees a valid explicit path.
+              if (requested === undefined) {
+                invalidGraphPath(response)
+                return
+              }
+              json(response, {
+                ok: true,
+                value: buildDependencies(graphQueryOf(snapshot, 'file'), requested, 'intra'),
+              })
+              return
+            }
+            const scope: GraphScope = requested === undefined ? 'workspace' : 'file'
+            json(response, {
+              ok: true,
+              value: buildDependencies(graphQueryOf(snapshot, scope), requested, 'file'),
+            })
+            return
+          }
+
+          if (path === '/graph/imports' && method === 'GET') {
+            const hasPath = url.searchParams.has('path')
+            const requested = hasPath ? normaliseGraphPath(url.searchParams.get('path')) : undefined
+            if (hasPath && requested === undefined) {
+              invalidGraphPath(response)
+              return
+            }
+            const snapshot = graphSnapshotOf(service)
+            const scope: GraphScope = requested === undefined ? 'workspace' : 'file'
+            json(response, {
+              ok: true,
+              value: buildImports(graphQueryOf(snapshot, scope), requested),
+            })
+            return
+          }
+
+          if (path === '/graph/search' && method === 'GET') {
+            const snapshot = graphSnapshotOf(service)
+            const hits = searchGraph(
+              snapshot.nodes,
+              url.searchParams.get('q') ?? '',
+              url.searchParams.get('limit'),
+            )
+            json(response, { ok: true, value: { hits } })
+            return
+          }
+
+          /*
+           * Read-only agent roster. Metadata only: labels, objectives,
+           * parent/creation timestamps and a deterministic *estimated* progress
+           * value. `completedAt` is only set from a durable terminal turn of a
+           * non-live one-shot subagent; the DSH host exposes no completion flag
+           * for ordinary live sessions, so those stay `unknown` rather than
+           * fabricated. Missing services produce an empty roster.
+           */
+          if (path === '/graph/agents' && method === 'GET') {
+            response.setHeader('cache-control', 'no-store')
+            const snapshot = await collectAgentRoster(agentServicesOf(context))
+            json(response, {
+              ok: true,
+              value: buildAgentRoster(snapshot.records, snapshot.mainSessionId),
+            })
+            return
+          }
+
+          /*
+           * The one body-bearing agent-record route. It reads exactly one known
+           * session log and returns a bounded transcript (newest 200 messages /
+           * 8 KiB each / 64 KiB total, text blocks only). Missing id is 400,
+           * unknown id 404; every response — including errors — is no-store.
+           * Nothing is logged or cached and there is no send/cancel/resume path.
+           */
+          if (path === '/graph/agents/messages' && method === 'GET') {
+            response.setHeader('cache-control', 'no-store')
+            const requested = url.searchParams.get('id')
+            const id = requested === null ? undefined : requested.trim()
+            const events = id === undefined || id.length === 0
+              ? undefined
+              : await resolveAgentSessionEvents(agentServicesOf(context), id)
+            const result = agentMessagesRoute(requested, events)
+            response.setHeader('cache-control', result.headers['cache-control'])
+            json(response, result.body, result.status)
+            return
+          }
+
+          /*
+           * The only body-bearing file-content route. It is user-initiated (the
+           * preview dialog), bounded and never cached or traced. Text is limited
+           * to 64 KiB; docx/xlsx/pptx are converted in memory with their own
+           * caps (64 KiB document part / 256 KiB HTML, 1,000×50×20 sheet
+           * cells, 200×40 slides) and never written to disk. Invalid paths are
+           * 400, missing files 404, binary/NUL/undecodable content 415 — never
+           * a guessed rendering.
+           */
+          if (path === '/graph/preview' && method === 'GET') {
+            const requested = normaliseGraphPath(url.searchParams.get('path'))
+            if (requested === undefined) {
+              invalidGraphPath(response)
+              return
+            }
+            // Preview is explicitly not cacheable, at any layer — including
+            // an error response.
+            response.setHeader('cache-control', 'no-store')
+            try {
+              const value = await previewOf(service, requested)
+              json(response, { ok: true, value })
+            } catch (error) {
+              if (error instanceof NotFoundError) {
+                json(response, { ok: false, error: { code: 'NOT_FOUND', message: error.message } }, 404)
+              } else if (error instanceof InvalidStateError) {
+                json(
+                  response,
+                  {
+                    ok: false,
+                    error: {
+                      code: 'UNSUPPORTED_MEDIA',
+                      message: 'file content is binary, not decodable text, or not a readable Office package',
+                    },
+                  },
+                  415,
+                )
+              } else if (error instanceof InvalidArgumentError) {
+                json(response, { ok: false, error: { code: 'INVALID_ARGUMENT', message: error.message } }, 400)
+              } else {
+                throw error
+              }
+            }
+            return
+          }
+
+          /*
+           * The one graph action: re-parse and re-index the files already in
+           * the graph. It reads files only (no build, command or execution),
+           * is serialized in-process and bounded to 2000 files / 10 s. The
+           * response carries counts and timing only — never file content.
+           */
+          if (path === '/graph/rebuild' && method === 'POST') {
+            if (rebuildInFlight) {
+              json(
+                response,
+                { ok: false, error: { code: 'BUSY', message: 'a graph rebuild is already running' } },
+                409,
+              )
+              return
+            }
+            rebuildInFlight = true
+            try {
+              json(response, { ok: true, value: await rebuildGraph(service) })
+            } finally {
+              rebuildInFlight = false
+            }
             return
           }
 

@@ -29,7 +29,7 @@ export default defineConfig([
         id.startsWith('@deepseek-ai/dsh-'),
       // Office parsing is pure host code and must work from the packaged bundle
       // (lib/index.mjs) without a runtime node_modules lookup.
-      alwaysBundle: (id) => id === 'fflate' || id === 'fast-xml-parser',
+      alwaysBundle: (id) => id === 'fflate' || id === 'fast-xml-parser' || id === 'mammoth',
     },
   },
   {

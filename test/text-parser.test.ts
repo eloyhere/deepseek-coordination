@@ -781,6 +781,232 @@ test('HTML <article> is a sectioning container: no article node, root maps to do
   assert.equal(nodesOfKind(result, 'section').length, 2)
 })
 
+test('Markdown and HTML block quotes merge nesting into the outermost block node', () => {
+  const markdown = mdResult([
+    '> outer quote',
+    '> > nested quote',
+    '> tail line',
+    '',
+    '> second block',
+    '',
+    'Prose after the quotes.',
+  ].join('\n'))
+  const quotes = nodesOfKind(markdown, 'blockquote')
+  assert.equal(quotes.length, 2)
+  // Nested `>` lines belong to the first block, not to a duplicate node.
+  assert.deepEqual(quotes.map((node) => [node.lineStart, node.lineEnd]), [[1, 3], [5, 5]])
+  assert.equal(quotes[0]?.span.start, 0)
+  assert.ok((quotes[0]?.byteEnd ?? 0) > 0)
+  assert.ok(!JSON.stringify(quotes).includes('outer quote'))
+  for (const node of quotes) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+  }
+
+  const html = parseFileText(
+    'site/quote.html',
+    '<html><body><blockquote>one<blockquote>nested</blockquote></blockquote><blockquote>two</blockquote></body></html><blockquote>unterminated',
+  )
+  assert.ok(html !== undefined)
+  const htmlQuotes = nodesOfKind(html, 'blockquote')
+  assert.equal(htmlQuotes.length, 2)
+  assert.ok(!JSON.stringify(htmlQuotes).includes('nested'))
+  assert.equal(nodesOfKind(html, 'document').length, 1)
+})
+
+test('Markdown and HTML lists emit one list node per list and one list-item per item', () => {
+  const markdown = mdResult([
+    '- one',
+    '- two',
+    '  - nested',
+    '',
+    '1. first',
+    '',
+    '- [x] task item',
+  ].join('\n'))
+  const lists = nodesOfKind(markdown, 'list')
+  assert.deepEqual(lists.map((node) => node.label), ['unordered', 'unordered', 'ordered', 'task'])
+  const items = nodesOfKind(markdown, 'list-item')
+  assert.equal(items.length, 5)
+  assert.ok(items.every((node) => node.name === undefined))
+  assert.deepEqual(items.map((node) => [node.lineStart, node.lineEnd]), [[1, 1], [2, 3], [3, 3], [5, 5], [7, 7]])
+  // The second outer item spans its nested list (marker line through content).
+  assert.ok((items[1]?.span.end ?? 0) >= (items[2]?.span.end ?? 0))
+  for (const node of [...lists, ...items]) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+    assert.ok((node.fingerprint ?? '').startsWith('sha256:'))
+  }
+
+  const html = parseFileText(
+    'site/list.html',
+    '<ul><li>a</li><li>b<ul><li>c</li></ul></li></ul><ol><li><input type="checkbox"> d</li></ol>',
+  )
+  assert.ok(html !== undefined)
+  const htmlLists = nodesOfKind(html, 'list')
+  assert.deepEqual(htmlLists.map((node) => node.label), ['unordered', 'unordered', 'task'])
+  assert.equal(nodesOfKind(html, 'list-item').length, 4)
+})
+
+test('Markdown and HTML tables emit one table node with an explicit header column count', () => {
+  const markdown = mdResult([
+    '| Name | Note |',
+    '| --- | :---: |',
+    '| a | b |',
+    '| c | d |',
+    '',
+    'A paragraph.',
+    '',
+    '| malformed | header |',
+  ].join('\n'))
+  const tables = nodesOfKind(markdown, 'table')
+  // A pipe row without a GFM delimiter row is not a table.
+  assert.equal(tables.length, 1)
+  assert.equal(tables[0]?.label, '2')
+  assert.equal(tables[0]?.lineStart, 1)
+  assert.equal(tables[0]?.lineEnd, 4)
+  // Spreadsheet kinds are never reused for a Markdown table.
+  assert.equal(nodesOfKind(markdown, 'sheet').length, 0)
+  assert.equal(nodesOfKind(markdown, 'cell').length, 0)
+
+  const html = parseFileText(
+    'site/table.html',
+    [
+      '<table><thead><tr><th>Name</th><th>Note</th></tr></thead>',
+      '<tbody><tr><td>a</td><td>b</td></tr></tbody></table>',
+      '<table><tr><td>1</td><td>2</td></tr></table>',
+    ].join('\n'),
+  )
+  assert.ok(html !== undefined)
+  const htmlTables = nodesOfKind(html, 'table')
+  assert.equal(htmlTables.length, 2)
+  assert.equal(htmlTables[0]?.label, '2')
+  assert.equal(htmlTables[1]?.label, undefined)
+  assert.equal(nodesOfKind(html, 'sheet').length, 0)
+  assert.equal(nodesOfKind(html, 'cell').length, 0)
+})
+
+test('Markdown images and HTML figures emit image/figure nodes without duplicating links', () => {
+  const markdown = mdResult('![Alt text](img/pic.png) and ![](img/blank.png)')
+  const images = nodesOfKind(markdown, 'image')
+  assert.deepEqual(images.map((node) => node.name), ['img/pic.png', 'img/blank.png'])
+  assert.equal(images[0]?.label, 'Alt text')
+  assert.equal(images[1]?.label, undefined)
+  // The existing reference `link` nodes stay: image is an additional concept.
+  const links = nodesOfKind(markdown, 'link')
+  assert.deepEqual(links.map((node) => node.name), ['img/pic.png', 'img/blank.png'])
+  assert.equal(images.length, links.length)
+
+  const html = parseFileText(
+    'site/figure.html',
+    [
+      '<figure><img src="img/pic.png" alt="pic"><figcaption>The <b>caption</b></figcaption></figure>',
+      '<figure><img src="img/plain.png"></figure>',
+      '<figure><figcaption>unterminated',
+    ].join('\n'),
+  )
+  assert.ok(html !== undefined)
+  const figures = nodesOfKind(html, 'figure')
+  assert.equal(figures.length, 2)
+  assert.equal(figures[0]?.name, 'The caption')
+  assert.equal(figures[1]?.name, undefined)
+  assert.equal(nodesOfKind(html, 'image').length, 0)
+})
+
+test('Markdown footnote definitions emit footnote nodes but references do not', () => {
+  const source = [
+    'Text with a reference[^1] and another[^long-note].',
+    '',
+    '[^1]: First note body.',
+    '[^long-note]: Second note body',
+    '    continued line.',
+    '[^empty]:',
+  ].join('\n')
+  const result = mdResult(source)
+  const footnotes = nodesOfKind(result, 'footnote')
+  assert.deepEqual(footnotes.map((node) => node.name), ['1', 'long-note'])
+  assert.deepEqual(footnotes.map((node) => [node.lineStart, node.lineEnd]), [[3, 3], [4, 5]])
+  assert.equal(footnotes.some((node) => node.name?.startsWith('^')), false)
+  for (const node of footnotes) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+  }
+})
+
+test('markup structure inside fenced/inline code, HTML comments and pre blocks produces nothing', () => {
+  const markdown = mdResult([
+    '```md',
+    '> quote',
+    '- item',
+    '| a | b |',
+    '| --- | --- |',
+    '[^1]: note',
+    '![alt](img/inside.png)',
+    '```',
+    '',
+    'Inline `> quote`, `- item`, `[^2]: x` and `![alt](img/inside2.png)`.',
+    '',
+    '<!-- > comment quote',
+    '- comment item',
+    '[^3]: comment note',
+    '| a | b |',
+    '| --- | --- |',
+    '-->',
+  ].join('\n'))
+  for (const kind of ['blockquote', 'list', 'list-item', 'table', 'footnote', 'image']) {
+    assert.equal(nodesOfKind(markdown, kind).length, 0, `no ${kind} from masked code/comments`)
+  }
+
+  const html = parseFileText(
+    'site/code.html',
+    [
+      '<pre><code>',
+      '<blockquote>q</blockquote>',
+      '<ul><li>i</li></ul>',
+      '<table><tr><td>t</td></tr></table>',
+      '<figure><figcaption>f</figcaption></figure>',
+      '</code></pre>',
+    ].join('\n'),
+  )
+  assert.ok(html !== undefined)
+  for (const kind of ['blockquote', 'list', 'list-item', 'table', 'figure']) {
+    assert.equal(nodesOfKind(html, kind).length, 0, `no ${kind} from a pre/code body`)
+  }
+})
+
+test('nested Markdown lists keep containment spans and deterministic source order', () => {
+  const result = mdResult([
+    '- parent',
+    '  - child',
+    '    - grandchild',
+  ].join('\n'))
+  const lists = nodesOfKind(result, 'list')
+  const items = nodesOfKind(result, 'list-item')
+  assert.equal(lists.length, 3)
+  assert.equal(items.length, 3)
+  assert.deepEqual(lists.map((node) => node.lineStart), [1, 2, 3])
+  assert.deepEqual(items.map((node) => [node.lineStart, node.lineEnd]), [[1, 3], [2, 3], [3, 3]])
+  assert.ok((lists[0]?.span.start ?? 0) < (lists[1]?.span.start ?? 0))
+  assert.ok((lists[1]?.span.start ?? 0) < (lists[2]?.span.start ?? 0))
+  assert.ok((items[0]?.span.start ?? 0) < (items[1]?.span.start ?? 0))
+  assert.ok((items[0]?.span.end ?? 0) >= (lists[2]?.span.end ?? 0))
+  // The new nodes appear in source order inside the result node list.
+  const structural = (result.nodes ?? [])
+    .filter((node) => node.kind === 'list' || node.kind === 'list-item')
+    .map((node) => `${node.kind}:${node.span.start}`)
+  assert.deepEqual(structural, [
+    'list:0',
+    'list-item:0',
+    'list:11',
+    'list-item:11',
+    'list:23',
+    'list-item:23',
+  ])
+})
+
 /* ------------------------------------------------------------------------- *
  * TeX
  * ------------------------------------------------------------------------- */

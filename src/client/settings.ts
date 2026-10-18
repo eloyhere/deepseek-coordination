@@ -22,6 +22,10 @@
  * the lazy tool runtime is created (not live).
  */
 import * as React from 'react'
+import EmailIcon from '@mui/icons-material/Email'
+import GitHubIcon from '@mui/icons-material/GitHub'
+import Inventory2Icon from '@mui/icons-material/Inventory2'
+import PersonIcon from '@mui/icons-material/Person'
 import Accordion from '@mui/material/Accordion'
 import AccordionDetails from '@mui/material/AccordionDetails'
 import AccordionSummary from '@mui/material/AccordionSummary'
@@ -31,8 +35,11 @@ import Chip from '@mui/material/Chip'
 import FormControl from '@mui/material/FormControl'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import FormLabel from '@mui/material/FormLabel'
+import Link from '@mui/material/Link'
 import List from '@mui/material/List'
 import ListItem from '@mui/material/ListItem'
+import ListItemIcon from '@mui/material/ListItemIcon'
+import ListItemText from '@mui/material/ListItemText'
 import Radio from '@mui/material/Radio'
 import RadioGroup from '@mui/material/RadioGroup'
 import Table from '@mui/material/Table'
@@ -68,7 +75,9 @@ import {
   writeConfigPath,
 } from '../shared/selection.js'
 import type { ConfigScalar, ConfigValues, ConfigView, SettingsControl } from '../shared/selection.js'
-import { settingsControlCopy } from '../shared/i18n.js'
+import { settingsControlCopy, fillTemplate } from '../shared/i18n.js'
+import { ABOUT } from '../shared/about.js'
+import type { AboutDependency } from '../shared/about.js'
 import {
   CommandValues,
   InteractionValues,
@@ -91,8 +100,11 @@ const MuiChip = Chip as unknown as Loose
 const MuiFormControl = FormControl as unknown as Loose
 const MuiFormControlLabel = FormControlLabel as unknown as Loose
 const MuiFormLabel = FormLabel as unknown as Loose
+const MuiLink = Link as unknown as Loose
 const MuiList = List as unknown as Loose
 const MuiListItem = ListItem as unknown as Loose
+const MuiListItemIcon = ListItemIcon as unknown as Loose
+const MuiListItemText = ListItemText as unknown as Loose
 const MuiRadio = Radio as unknown as Loose
 const MuiRadioGroup = RadioGroup as unknown as Loose
 const MuiTable = Table as unknown as Loose
@@ -103,6 +115,10 @@ const MuiTableRow = TableRow as unknown as Loose
 const MuiTextField = TextField as unknown as Loose
 const MuiTooltip = Tooltip as unknown as Loose
 const MuiTypography = Typography as unknown as Loose
+const MuiEmailIcon = EmailIcon as unknown as Loose
+const MuiGitHubIcon = GitHubIcon as unknown as Loose
+const MuiInventory2Icon = Inventory2Icon as unknown as Loose
+const MuiPersonIcon = PersonIcon as unknown as Loose
 
 /* ------------------------------------------------------------------------- *
  * Row primitives
@@ -898,6 +914,10 @@ export function CoordinationSettings(): React.ReactElement {
         groupChildren(group),
       )),
       React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0 } }, settings.footer),
+      // The page ends with three read-only groups: About, References, Author.
+      React.createElement(AboutAccordion, { copy }),
+      React.createElement(ReferencesAccordion, { copy }),
+      React.createElement(AuthorAccordion, { copy }),
     ),
   )
 }
@@ -929,10 +949,232 @@ function GroupAccordion(props: {
 }
 
 /* ------------------------------------------------------------------------- *
+ * About / References / Author — the read-only page tail
+ * ------------------------------------------------------------------------- */
+
+/** One collapsed section whose body is static data; no input is ever built. */
+function SectionAccordion(props: {
+  title: string
+  children?: React.ReactNode[]
+}): React.ReactElement {
+  return React.createElement(
+    MuiAccordion,
+    { defaultExpanded: false, disableGutters: true, elevation: 0, sx: ACCORDION_SX },
+    React.createElement(
+      MuiAccordionSummary,
+      { sx: SUMMARY_SX },
+      React.createElement(MuiTypography, { variant: 'subtitle2', component: 'h3', sx: { m: 0, flex: 1 } }, props.title),
+    ),
+    React.createElement(
+      MuiAccordionDetails,
+      { sx: DETAILS_SX },
+      React.createElement('div', { style: PAGE_TAIL_STACK_STYLE }, ...(props.children ?? [])),
+    ),
+  )
+}
+
+/** Label for one dependency scope (runtime / development / peer). */
+function scopeLabel(copy: Copy, scope: AboutDependency['scope']): string {
+  if (scope === 'runtime') return copy.about.scopeRuntime
+  if (scope === 'development') return copy.about.scopeDevelopment
+  return copy.about.scopePeer
+}
+
+/** One static dependency or tooling table; same cell styles as the scene tables. */
+function AboutTable(props: {
+  label: string
+  copy: Copy
+  rows: readonly AboutDependency[]
+}): React.ReactElement {
+  const about = props.copy.about
+  return React.createElement(
+    MuiTable,
+    { size: 'small', 'aria-label': props.label },
+    React.createElement(
+      MuiTableHead,
+      null,
+      React.createElement(
+        MuiTableRow,
+        null,
+        React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, about.package),
+        React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, about.version),
+        React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, about.scope),
+        React.createElement(MuiTableCell, { sx: TABLE_HEAD_SX }, about.purpose),
+      ),
+    ),
+    React.createElement(
+      MuiTableBody,
+      null,
+      ...props.rows.map((row) => React.createElement(
+        MuiTableRow,
+        { key: row.name, 'data-about-dependency': row.name },
+        React.createElement(
+          MuiTableCell,
+          { sx: TABLE_CELL_SX },
+          React.createElement(MuiTypography, { variant: 'caption', component: 'div' }, row.name),
+          React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary', component: 'div' }, row.role),
+        ),
+        React.createElement(
+          MuiTableCell,
+          { sx: TABLE_CELL_SX },
+          React.createElement(MuiTypography, { variant: 'caption' }, row.version),
+        ),
+        React.createElement(
+          MuiTableCell,
+          { sx: TABLE_CELL_SX },
+          React.createElement(MuiTypography, { variant: 'caption' }, scopeLabel(props.copy, row.scope)),
+        ),
+        React.createElement(
+          MuiTableCell,
+          { sx: TABLE_CELL_SX },
+          React.createElement(MuiTypography, { variant: 'caption' }, row.reason),
+        ),
+      )),
+    ),
+  )
+}
+
+/** The project metadata and the dependency/tooling inventories. */
+function AboutAccordion(props: { copy: Copy }): React.ReactElement {
+  const about = props.copy.about
+  return React.createElement(
+    SectionAccordion,
+    { title: about.title },
+    React.createElement(MuiTypography, { variant: 'subtitle2', component: 'p', sx: { m: 0 } }, ABOUT.name),
+    React.createElement(
+      MuiTypography,
+      { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0 } },
+      ABOUT.summary,
+    ),
+    React.createElement(MuiTypography, { variant: 'body2', component: 'p', sx: { m: 0 } }, `${about.version}: ${ABOUT.version}`),
+    React.createElement(MuiTypography, { variant: 'body2', component: 'p', sx: { m: 0 } }, `${about.license}: ${ABOUT.license}`),
+    React.createElement(MuiTypography, { variant: 'body2', component: 'p', sx: { m: 0 } }, `${about.runtime}: ${ABOUT.runtime}`),
+    React.createElement(MuiTypography, { variant: 'subtitle2', component: 'h4', sx: { m: 0, mt: 1 } }, about.dependencies),
+    React.createElement(AboutTable, { label: about.dependencies, copy: props.copy, rows: ABOUT.dependencies }),
+    React.createElement(MuiTypography, { variant: 'subtitle2', component: 'h4', sx: { m: 0, mt: 1 } }, about.tooling),
+    React.createElement(AboutTable, { label: about.tooling, copy: props.copy, rows: ABOUT.tooling }),
+    React.createElement(
+      MuiTypography,
+      { variant: 'caption', color: 'text.secondary', component: 'p', sx: { m: 0 } },
+      `${about.license}: ${ABOUT.license}`,
+    ),
+  )
+}
+
+/** The citations, one read-only line each; a URL renders as an external link. */
+function ReferencesAccordion(props: { copy: Copy }): React.ReactElement {
+  const about = props.copy.about
+  return React.createElement(
+    SectionAccordion,
+    { title: props.copy.references.title },
+    React.createElement(
+      MuiList,
+      { dense: true, disablePadding: true, component: 'div' },
+      ...ABOUT.references.map((reference) => {
+        const line = fillTemplate(about.referenceItem, {
+          authors: reference.authors,
+          year: String(reference.year),
+          title: reference.title,
+          venue: reference.venue,
+        })
+        return React.createElement(
+          MuiListItem,
+          { key: reference.id, component: 'div', disableGutters: true, sx: { display: 'block', py: 0.25, px: 0 } },
+          React.createElement(
+            MuiTypography,
+            { variant: 'caption', component: 'p', sx: { m: 0 } },
+            line,
+            reference.url === undefined ? null : ' ',
+            reference.url === undefined
+              ? null
+              : React.createElement(
+                MuiLink,
+                {
+                  href: reference.url,
+                  target: '_blank',
+                  rel: 'noreferrer',
+                  variant: 'caption',
+                  sx: { wordBreak: 'break-all' },
+                },
+                reference.url,
+              ),
+          ),
+        )
+      }),
+    ),
+  )
+}
+
+/** One author row: a Material icon, a label and a read-only value or link. */
+function AuthorRow(props: {
+  icon: React.ReactNode
+  label: string
+  value: React.ReactNode
+}): React.ReactElement {
+  return React.createElement(
+    MuiListItem,
+    { disableGutters: true, sx: { py: 0.25, px: 0, alignItems: 'flex-start' } },
+    React.createElement(MuiListItemIcon, { sx: { minWidth: 28, mt: 0.25 } }, props.icon),
+    React.createElement(MuiListItemText, {
+      primary: props.label,
+      secondary: props.value,
+      slotProps: {
+        primary: { variant: 'caption', color: 'text.secondary' },
+        secondary: { variant: 'body2', color: 'text.primary' },
+      },
+      sx: { m: 0 },
+    }),
+  )
+}
+
+/** The maintainer: name, email, GitHub and npm, all read-only. */
+function AuthorAccordion(props: { copy: Copy }): React.ReactElement {
+  const author = props.copy.author
+  const githubLabel = ABOUT.author.github.replace(/^https:\/\/github\.com\//, '')
+  return React.createElement(
+    SectionAccordion,
+    { title: author.title },
+    React.createElement(
+      MuiList,
+      { dense: true, disablePadding: true, component: 'div' },
+      React.createElement(AuthorRow, {
+        icon: React.createElement(MuiPersonIcon, { fontSize: 'small' }),
+        label: author.name,
+        value: ABOUT.author.name,
+      }),
+      React.createElement(AuthorRow, {
+        icon: React.createElement(MuiEmailIcon, { fontSize: 'small' }),
+        label: author.email,
+        value: React.createElement(MuiLink, { href: `mailto:${ABOUT.author.email}` }, ABOUT.author.email),
+      }),
+      React.createElement(AuthorRow, {
+        icon: React.createElement(MuiGitHubIcon, { fontSize: 'small' }),
+        label: author.github,
+        value: React.createElement(
+          MuiLink,
+          { href: ABOUT.author.github, target: '_blank', rel: 'noreferrer' },
+          githubLabel,
+        ),
+      }),
+      React.createElement(AuthorRow, {
+        icon: React.createElement(MuiInventory2Icon, { fontSize: 'small' }),
+        label: author.npm,
+        value: React.createElement(
+          MuiLink,
+          { href: ABOUT.author.npm, target: '_blank', rel: 'noreferrer' },
+          ABOUT.name,
+        ),
+      }),
+    ),
+  )
+}
+
+/* ------------------------------------------------------------------------- *
  * Styles
  * ------------------------------------------------------------------------- */
 
 const SECTION_STYLE: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 }
+const PAGE_TAIL_STACK_STYLE: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6 }
 const HEADER_STYLE: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }
 const ROW_HEAD_STYLE: React.CSSProperties = {
   display: 'flex',
