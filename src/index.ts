@@ -34,7 +34,13 @@ import { readOverrides, settingsPath, writeOverrides } from './host/settings-sto
 import { createProxyService } from './host/proxy-service.js'
 import { brandProfileOf, shouldDecorate } from './host/model-brand.js'
 import type { GenerateOptionsLike } from './shared/service.js'
-import { registerCoordinationTools, resolveToolWorkspaceRoot, toolRegistryOf } from './host/tools.js'
+import {
+  createToolWorkspaceRootResolver,
+  registerCoordinationTools,
+  resolveToolWorkspaceRoot,
+  toolRegistryOf,
+  type ToolWorkspaceRootResolver,
+} from './host/tools.js'
 import { GraphStore } from './host/graph-store.js'
 import { ParseService } from './host/parse-service.js'
 import { ChainEngine } from './host/chain.js'
@@ -64,6 +70,7 @@ import {
   resetGraphCache,
   resolveAgentSessionEvents,
   searchGraph,
+  workspaceIndexReport,
   type AgentServiceBundle,
   type GraphEdge,
   type GraphNode,
@@ -72,7 +79,7 @@ import {
   type PreviewValue,
   type WorkspaceIndexEntry,
   type WorkspaceIndexIo,
-  type WorkspaceIndexResult,
+  type WorkspaceIndexReport,
 } from './host/graph-view.js'
 import type { TakeoverGateAnswer } from './host/takeover-gate.js'
 import { CoordinationError, InvalidArgumentError, InvalidStateError, NotFoundError, toErrorJson } from './shared/error.js'
@@ -190,12 +197,16 @@ interface GraphSnapshot {
  * nodes / 50k edges). No parse is triggered, no snapshot is written, and an
  * empty database simply yields empty projections.
  *
- * The workspace root comes from the same resolver the file tools use, so a
- * graph parsed for `root` is the graph these routes describe; `version` is the
+ * The workspace root is supplied by the caller: the `/graph/*` routes resolve
+ * it per request with the async, request-scoped resolver, so the graph these
+ * projections describe is the graph of the session workspace; `version` is the
  * route-side equivalent of the chain's monotonic `graphVersion`.
+ *
+ * The default root keeps the file-tool resolver for internal callers that do
+ * not carry a request context (rebuild, intra); the graph routes always pass
+ * their resolved root explicitly.
  */
-function graphSnapshotOf(service: CoordinationService): GraphSnapshot {
-  const root = resolveToolWorkspaceRoot(service)
+function graphSnapshotOf(service: CoordinationService, root = resolveToolWorkspaceRoot(service)): GraphSnapshot {
   const store = new GraphStore(service.db, { workspaceRoot: root })
   const nodes: GraphNode[] = store.loadNodes().map((record) => ({
     handle: record.handle,
@@ -223,6 +234,25 @@ function graphQueryOf(snapshot: GraphSnapshot, scope: GraphScope): GraphQuery {
     scope,
     nodes: snapshot.nodes,
     edges: snapshot.edges,
+  })
+}
+
+/**
+ * Resolve the workspace root for one `/graph/*` request.
+ *
+ * The resolver is request-scoped by construction: its answer is cached on the
+ * instance for the duration of this request only, so two requests (or two
+ * sessions) never share a root. An invalid explicit `root` throws
+ * `InvalidArgumentError`, which the route handler maps to 400.
+ */
+function graphRootResolver(
+  service: CoordinationService,
+  context: Context,
+  url: URL,
+): ToolWorkspaceRootResolver {
+  return createToolWorkspaceRootResolver(service, {}, {
+    root: url.searchParams.get('root'),
+    context,
   })
 }
 
@@ -378,7 +408,7 @@ interface RebuildValue {
 async function rebuildGraph(service: CoordinationService): Promise<RebuildValue> {
   const startedAt = Date.now()
   const root = resolveToolWorkspaceRoot(service)
-  const known = graphQueryOf(graphSnapshotOf(service), 'workspace').paths
+  const known = graphQueryOf(graphSnapshotOf(service, root), 'workspace').paths
   const store = new GraphStore(service.db, { workspaceRoot: root })
   const parser = new ParseService({ workspaceRoot: root })
   const registry = new NodeRegistry({ persist: { saveNode: (record) => store.saveNode(record) } })
@@ -452,8 +482,7 @@ const indexGate = new WorkspaceIndexGate()
  * graph rows are rewritten. No build, command or execution runs, no workspace
  * file is written, and symlinks are not followed.
  */
-async function indexWorkspace(service: CoordinationService): Promise<WorkspaceIndexResult> {
-  const root = resolveToolWorkspaceRoot(service)
+async function indexWorkspace(service: CoordinationService, root: string): Promise<WorkspaceIndexReport> {
   const parser = new ParseService({ workspaceRoot: root })
   const store = new GraphStore(service.db, { workspaceRoot: root })
   const registry = new NodeRegistry({ persist: { saveNode: (record) => store.saveNode(record) } })
@@ -490,7 +519,9 @@ async function indexWorkspace(service: CoordinationService): Promise<WorkspaceIn
   const result = await indexWorkspaceFiles(io)
   // Rewritten rows bump the snapshot-derived graph version; drop L2 explicitly.
   resetGraphCache()
-  return result
+  // The root is part of the answer: a wrong root is visible, not silent, and a
+  // zero-file scan carries the `no-workspace-files` diagnostic.
+  return workspaceIndexReport(result, root)
 }
 
 /**
@@ -941,6 +972,14 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            * with empty projections, never an error; a file-scoped query for an
            * unindexed path is NOT_FOUND, as is an unknown agent id.
            *
+           * Every graph read resolves its workspace root per request through
+           * the async resolver: an explicit `?root=<absolute dir>` wins, then
+           * the service/host declarations, the sandbox policy resolved with the
+           * active session, `workingDirectory.ensure`, the session's recorded
+           * `workingDirectory`, and only then `process.cwd()`. An invalid
+           * explicit root is a 400. The resolved root is part of the answer
+           * where a wrong root would otherwise look like an empty workspace.
+           *
            *   GET /graph/tree                     -> { root, entries }
            *   GET /graph/outline[?path=<rel>]     -> file | workspace outline
            *   GET /graph/intra?path=<rel>         -> in-file symbols + edges
@@ -952,10 +991,14 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            *   GET /graph/agents/messages?id=<id>  -> bounded transcript
            *   GET /graph/preview?path=<rel>       -> only body-bearing file route
            *   POST /graph/rebuild                 -> re-index known paths (action)
-           *   POST /graph/index                   -> scan + index a fresh workspace (action)
+           *   POST /graph/index                   -> scan + index a fresh workspace
+           *                                          { indexed, skipped, nodes,
+           *                                            durationMs, truncated, root,
+           *                                            diagnostics? } (action)
            */
           if (path === '/graph/tree' && method === 'GET') {
-            const snapshot = graphSnapshotOf(service)
+            const root = await graphRootResolver(service, context, url).resolve()
+            const snapshot = graphSnapshotOf(service, root)
             json(response, { ok: true, value: buildTree(snapshot.nodes, snapshot.root) })
             return
           }
@@ -970,7 +1013,8 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
               invalidGraphPath(response)
               return
             }
-            const snapshot = graphSnapshotOf(service)
+            const root = await graphRootResolver(service, context, url).resolve()
+            const snapshot = graphSnapshotOf(service, root)
             const scope: GraphScope = requested === undefined ? 'workspace' : 'file'
             json(response, { ok: true, value: buildOutline(graphQueryOf(snapshot, scope), requested) })
             return
@@ -1023,7 +1067,8 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
               invalidGraphPath(response)
               return
             }
-            const snapshot = graphSnapshotOf(service)
+            const root = await graphRootResolver(service, context, url).resolve()
+            const snapshot = graphSnapshotOf(service, root)
             if (level === 'intra') {
               // The validation above guarantees a valid explicit path.
               if (requested === undefined) {
@@ -1051,7 +1096,8 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
               invalidGraphPath(response)
               return
             }
-            const snapshot = graphSnapshotOf(service)
+            const root = await graphRootResolver(service, context, url).resolve()
+            const snapshot = graphSnapshotOf(service, root)
             const scope: GraphScope = requested === undefined ? 'workspace' : 'file'
             json(response, {
               ok: true,
@@ -1061,7 +1107,8 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
           }
 
           if (path === '/graph/search' && method === 'GET') {
-            const snapshot = graphSnapshotOf(service)
+            const root = await graphRootResolver(service, context, url).resolve()
+            const snapshot = graphSnapshotOf(service, root)
             const hits = searchGraph(
               snapshot.nodes,
               url.searchParams.get('q') ?? '',
@@ -1164,7 +1211,8 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            * is written — only the coordination database's own graph rows change.
            */
           if (path === '/graph/index' && method === 'POST') {
-            const outcome = await indexGate.run(() => indexWorkspace(service))
+            const root = await graphRootResolver(service, context, url).resolve()
+            const outcome = await indexGate.run(() => indexWorkspace(service, root))
             if (!outcome.ok) {
               json(
                 response,

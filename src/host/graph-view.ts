@@ -82,6 +82,8 @@
  * capped at {@link MAX_INDEX_FILES} files / {@link INDEX_TIME_LIMIT_MS} ms and
  * reports `truncated` when a bound stopped it. {@link WorkspaceIndexGate}
  * serializes concurrent runs (the route answers 409 `BUSY`).
+ * {@link workspaceIndexReport} adds the resolved root the route actually scanned
+ * and, when nothing was indexed, the `no-workspace-files` diagnostic.
  *
  * # Two-level cache (dependencies / imports / intra)
  *
@@ -3765,6 +3767,54 @@ export interface WorkspaceIndexResult {
   durationMs: number
   /** True when a file/time bound stopped the scan before it finished. */
   truncated: boolean
+}
+
+/**
+ * Why a workspace index answered with nothing useful.
+ *
+ * `no-workspace-files` means the scan indexed **zero** files under the root it
+ * was actually given. That is the visible symptom of a root resolved to the
+ * wrong directory (for example a desktop install directory instead of the
+ * session workspace), so the response carries the root beside the diagnostic.
+ */
+export interface WorkspaceIndexDiagnostic {
+  code: 'no-workspace-files'
+  message: string
+  /** Absolute workspace root the scan walked. */
+  root: string
+}
+
+/** Value of `POST /graph/index`: the scan counts plus the resolved root. */
+export interface WorkspaceIndexReport extends WorkspaceIndexResult {
+  /** Absolute workspace root the scan went on to read. */
+  root: string
+  /** Present when the scan indexed no files (`indexed === 0`). */
+  diagnostics?: WorkspaceIndexDiagnostic[]
+}
+
+/**
+ * Attach the resolved workspace root to one scan result and, at zero indexed
+ * files, the `no-workspace-files` diagnostic.
+ *
+ * Pure: the route supplies the root it actually scanned, so the response makes
+ * a wrong root visible instead of looking like an ordinary empty workspace.
+ */
+export function workspaceIndexReport(
+  result: WorkspaceIndexResult,
+  root: string,
+): WorkspaceIndexReport {
+  const diagnostics: WorkspaceIndexDiagnostic[] = result.indexed === 0
+    ? [{
+        code: 'no-workspace-files',
+        message: `no workspace files were indexed under ${root} (${result.skipped} skipped)`,
+        root,
+      }]
+    : []
+  return {
+    ...result,
+    root,
+    ...(diagnostics.length === 0 ? {} : { diagnostics }),
+  }
 }
 
 /** True when a workspace-relative path has an extension the text layer parses. */

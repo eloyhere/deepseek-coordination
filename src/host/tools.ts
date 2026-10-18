@@ -80,7 +80,8 @@ import type {
 } from './parse-service.js'
 import { GraphStore } from './graph-store.js'
 import type { CoordinationDatabase } from './database.js'
-import { resolve } from 'node:path'
+import { stat } from 'node:fs/promises'
+import { isAbsolute, resolve } from 'node:path'
 
 /* ------------------------------------------------------------------------- *
  * Registry shape (structural, so the module needs no dsh-tools dependency)
@@ -761,6 +762,380 @@ function hostWorkspaceRoot(service: CoordinationToolService): string | undefined
 
 function nonEmptyRoot(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+}
+
+/* ------------------------------------------------------------------------- *
+ * Request-scoped workspace root (the `/graph/*` routes)
+ * ------------------------------------------------------------------------- */
+
+/** Bound on `workingDirectory.ensure` while resolving one request's root. */
+export const WORKSPACE_ROOT_ENSURE_TIMEOUT_MS = 1_500
+
+/**
+ * Minimal service surface the request-scoped resolver reads.
+ *
+ * `CoordinationService` satisfies it structurally, but the narrow shape keeps
+ * the resolver testable without a host kernel: only the two optional root
+ * declarations and the sandbox-policy port are consulted.
+ */
+export interface ToolWorkspaceRootService {
+  /** An explicit service-side root (tests / alternate profiles). */
+  readonly workspaceRoot?: string
+  /** The composed host, when the service exposes it. */
+  readonly host?: {
+    readonly workspaceRoot?: string
+    readonly sandboxPolicy?: {
+      resolve(request?: { session?: unknown; mode?: string }): { workspaceRoot?: string }
+    }
+  }
+}
+
+/** One request's root inputs; every field is optional. */
+export interface ToolWorkspaceRootRequest {
+  /**
+   * The raw `root` query parameter. When present it must be absolute and name
+   * an existing directory, otherwise the resolver throws
+   * `InvalidArgumentError` (the route answers 400) — silence would hide a
+   * typo as "the workspace is empty".
+   */
+  root?: string | null
+  /** The active session object, when the caller already resolved it. */
+  session?: unknown
+  /**
+   * The Cordis context, read structurally for `agents`, `workingDirectory`,
+   * `sessionQuery` and `sessionProjections`. Absent in tests that only
+   * exercise the static sources.
+   */
+  context?: unknown
+}
+
+/** Options the request-scoped resolver honours (a test/profile root override). */
+export interface ToolWorkspaceRootOptions {
+  workspaceRoot?: string
+}
+
+/**
+ * Resolve the workspace root for one `/graph/*` request, best source first:
+ *
+ *  1. an explicit `root` query parameter — absolute, normalised, existing
+ *     directory; anything else is `InvalidArgumentError` (→ 400);
+ *  2. `options.workspaceRoot` / `service.workspaceRoot`;
+ *  3. `service.host.workspaceRoot`;
+ *  4. `service.host.sandboxPolicy.resolve({ session }).workspaceRoot` — DSH's
+ *     sandbox policy resolves the active session's recorded cwd, which is the
+ *     session workspace rather than the desktop install directory;
+ *  5. `workingDirectory.ensure(rootAgent, signal)` — the live session's
+ *     effective directory, guarded by a short timeout and a try/catch;
+ *  6. the root agent's session observation `workingDirectory` (read
+ *     structurally from `session.workingDirectory`,
+ *     `observation.projections.values.workingDirectory`, or the projection
+ *     registry's `stateOf`; a recorded `null` is not a root);
+ *  7. `process.cwd()` only when nothing else yields a usable directory.
+ *
+ * Every candidate is `stat`-validated and must be an existing directory; a
+ * non-directory candidate is skipped rather than returned. The resolved root
+ * is cached on this instance, so several reads in one request resolve once —
+ * the instance must never outlive the request (no process-wide cache).
+ *
+ * Reading the host and context structurally keeps this module free of a
+ * `dsh.ts`/Cordis runtime import, exactly like {@link resolveToolWorkspaceRoot}.
+ */
+export class ToolWorkspaceRootResolver {
+  private pending: Promise<string> | undefined
+  private readonly service: ToolWorkspaceRootService
+  private readonly options: ToolWorkspaceRootOptions
+  private readonly request: ToolWorkspaceRootRequest
+
+  constructor(
+    service: ToolWorkspaceRootService,
+    options: ToolWorkspaceRootOptions = {},
+    request: ToolWorkspaceRootRequest = {},
+  ) {
+    this.service = service
+    this.options = options
+    this.request = request
+  }
+
+  /** Resolve once per request; concurrent callers share the same promise. */
+  resolve(): Promise<string> {
+    this.pending ??= this.computeRoot()
+    return this.pending
+  }
+
+  private async computeRoot(): Promise<string> {
+    const explicit = await this.explicitRoot()
+    if (explicit !== undefined) return explicit
+
+    const context = this.request.context
+    const agent = rootAgentOf(context)
+    const session = this.activeSession(agent)
+    const candidates = [
+      nonEmptyRoot(this.options.workspaceRoot),
+      nonEmptyRoot(this.service.workspaceRoot),
+      nonEmptyRoot(this.service.host?.workspaceRoot),
+      this.sandboxRoot(session),
+    ]
+    for (const candidate of candidates) {
+      const root = await existingDirectoryRoot(candidate)
+      if (root !== undefined) return root
+    }
+
+    const ensured = await ensuredWorkingDirectoryRoot(context, agent)
+    if (ensured !== undefined) return ensured
+
+    const observed = await observedWorkingDirectoryRoot(context, agent)
+    if (observed !== undefined) return observed
+
+    // The final fallback is the only unresolvable case; `resolve` keeps the
+    // return absolute even if a caller replaced the process cwd.
+    return (await existingDirectoryRoot(process.cwd())) ?? resolve(process.cwd())
+  }
+
+  /** Validate the explicit query parameter, or `undefined` when absent. */
+  private async explicitRoot(): Promise<string | undefined> {
+    const raw = this.request.root
+    if (raw === undefined || raw === null) return undefined
+    const trimmed = raw.trim()
+    if (trimmed.length === 0 || !isAbsolute(trimmed)) {
+      throw new InvalidArgumentError('root must be an absolute directory path', { root: raw })
+    }
+    const root = await existingDirectoryRoot(trimmed)
+    if (root === undefined) {
+      throw new InvalidArgumentError('root must name an existing directory', { root: raw })
+    }
+    return root
+  }
+
+  /** The explicit session, else the root agent's live session. */
+  private activeSession(agent: unknown): unknown {
+    if (this.request.session !== undefined) return this.request.session
+    return recordOfValue(agent)?.['session']
+  }
+
+  /** DSH's sandbox policy, resolved with the active session when available. */
+  private sandboxRoot(session: unknown): string | undefined {
+    const policy = this.service.host?.sandboxPolicy
+    if (policy === undefined) return undefined
+    try {
+      const request = session === undefined ? undefined : { session }
+      return nonEmptyRoot(policy.resolve(request)?.workspaceRoot)
+    } catch {
+      // A policy that is not ready yet is not a workspace answer.
+      return undefined
+    }
+  }
+}
+
+/** One-shot form of {@link ToolWorkspaceRootResolver}. */
+export async function resolveToolWorkspaceRootForRequest(
+  service: ToolWorkspaceRootService,
+  options: ToolWorkspaceRootOptions = {},
+  request: ToolWorkspaceRootRequest = {},
+): Promise<string> {
+  return new ToolWorkspaceRootResolver(service, options, request).resolve()
+}
+
+/** Create the request-scoped resolver the `/graph/*` routes use. */
+export function createToolWorkspaceRootResolver(
+  service: ToolWorkspaceRootService,
+  options: ToolWorkspaceRootOptions = {},
+  request: ToolWorkspaceRootRequest = {},
+): ToolWorkspaceRootResolver {
+  return new ToolWorkspaceRootResolver(service, options, request)
+}
+
+type WorkspaceRootRecord = Record<string, unknown>
+
+function recordOfValue(value: unknown): WorkspaceRootRecord | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as WorkspaceRootRecord)
+    : undefined
+}
+
+/** Resolve one method of a structurally-read service, if it is callable. */
+function callableOf(
+  service: unknown,
+  name: string,
+): ((this: unknown, ...args: unknown[]) => unknown) | undefined {
+  const record = recordOfValue(service)
+  const value = record?.[name]
+  return typeof value === 'function'
+    ? (value as (this: unknown, ...args: unknown[]) => unknown)
+    : undefined
+}
+
+/** Read one Cordis service without tripping its context proxy. */
+function contextGet(context: unknown, name: string): unknown {
+  const get = callableOf(context, 'get')
+  if (get === undefined) return undefined
+  try {
+    return get.call(context, name)
+  } catch {
+    return undefined
+  }
+}
+
+/** The first live top-level agent (`agents.roots()[0]`), structurally. */
+function rootAgentOf(context: unknown): unknown {
+  const agents = contextGet(context, 'agents')
+  const roots = callableOf(agents, 'roots')
+  if (roots === undefined) return undefined
+  try {
+    const list = roots.call(agents)
+    return Array.isArray(list) ? list[0] : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The agent/session id from a live agent record, structurally. */
+function sessionIdOf(agent: unknown): string | undefined {
+  const record = recordOfValue(agent)
+  if (record === undefined) return undefined
+  const direct = nonEmptyRoot(record['id'])
+  if (direct !== undefined) return direct
+  const session = recordOfValue(record['session'])
+  return nonEmptyRoot(session?.['id']) ?? nonEmptyRoot(recordOfValue(session?.['header'])?.['id'])
+}
+
+/** Normalise a candidate and keep it only when `stat` says it is a directory. */
+async function existingDirectoryRoot(candidate: string | undefined): Promise<string | undefined> {
+  const value = nonEmptyRoot(candidate)
+  if (value === undefined) return undefined
+  const root = resolve(value)
+  try {
+    const info = await stat(root)
+    return info.isDirectory() ? root : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Step 5: the live session's effective directory.
+ *
+ * `workingDirectory.ensure` validates and may restore the directory, so it is
+ * the most accurate live answer; a missing service/agent, a throw or a timeout
+ * simply contributes nothing.
+ */
+async function ensuredWorkingDirectoryRoot(
+  context: unknown,
+  agent: unknown,
+): Promise<string | undefined> {
+  if (agent === undefined) return undefined
+  const directories = contextGet(context, 'workingDirectory')
+  const ensure = callableOf(directories, 'ensure')
+  if (ensure === undefined) return undefined
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<undefined>((resolveTimeout) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        resolveTimeout(undefined)
+      }, WORKSPACE_ROOT_ENSURE_TIMEOUT_MS)
+    })
+    const candidate = await Promise.race([
+      Promise.resolve(ensure.call(directories, agent, controller.signal)).catch(() => undefined),
+      timeout,
+    ])
+    return existingDirectoryRoot(typeof candidate === 'string' ? candidate : undefined)
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/**
+ * Step 6: the recorded `workingDirectory` of the root agent's session.
+ *
+ * Read in the order the host exposes it: the live session field
+ * (`session.workingDirectory`), the observation lease's
+ * `projections.values.workingDirectory`, then the projection registry's
+ * `stateOf(session, 'workingDirectory')`. A recorded `null` is ignored.
+ */
+async function observedWorkingDirectoryRoot(
+  context: unknown,
+  agent: unknown,
+): Promise<string | undefined> {
+  const session = recordOfValue(agent)?.['session']
+  const direct = recordedWorkingDirectory(session)
+  if (direct !== undefined) {
+    const root = await existingDirectoryRoot(direct)
+    if (root !== undefined) return root
+  }
+
+  const id = sessionIdOf(agent)
+  const query = contextGet(context, 'sessionQuery')
+  const observe = callableOf(query, 'observeSession')
+  if (observe !== undefined && id !== undefined) {
+    let lease: unknown
+    try {
+      lease = await observe.call(query, id, { projectionMode: 'all' })
+      const observed = recordedWorkingDirectory(lease)
+      if (observed !== undefined) {
+        const root = await existingDirectoryRoot(observed)
+        if (root !== undefined) return root
+      }
+    } catch {
+      // An unreadable observation contributes nothing.
+    } finally {
+      disposeSessionObservation(lease)
+    }
+  }
+
+  const projections = contextGet(context, 'sessionProjections')
+  const stateOf = callableOf(projections, 'stateOf')
+  if (stateOf !== undefined && session !== undefined) {
+    try {
+      const projected = nonEmptyRoot(stateOf.call(projections, session, 'workingDirectory'))
+      if (projected !== undefined) {
+        const root = await existingDirectoryRoot(projected)
+        if (root !== undefined) return root
+      }
+    } catch {
+      // Fall through to the process cwd.
+    }
+  }
+  return undefined
+}
+
+/** Structural read of a recorded `workingDirectory` (string or null). */
+function recordedWorkingDirectory(value: unknown): string | undefined {
+  const record = recordOfValue(value)
+  if (record === undefined) return undefined
+  const direct = nonEmptyRoot(record['workingDirectory'])
+  if (direct !== undefined) return direct
+  const values = recordOfValue(record['values'])
+  const fromValues = nonEmptyRoot(values?.['workingDirectory'])
+  if (fromValues !== undefined) return fromValues
+  const projections = recordOfValue(record['projections'])
+  const projected = nonEmptyRoot(recordOfValue(projections?.['values'])?.['workingDirectory'])
+  if (projected !== undefined) return projected
+  return nonEmptyRoot(recordOfValue(record['session'])?.['workingDirectory'])
+}
+
+/** Release one observation lease without requiring the ES2023 `using` syntax. */
+function disposeSessionObservation(lease: unknown): void {
+  if (lease === null || typeof lease !== 'object') return
+  const disposeSymbol = (Symbol as unknown as { dispose?: symbol }).dispose
+  if (disposeSymbol !== undefined) {
+    try {
+      const dispose = Reflect.get(lease as object, disposeSymbol)
+      if (typeof dispose === 'function') {
+        dispose.call(lease)
+        return
+      }
+    } catch {
+      // A failing lease release must never change the resolved root.
+    }
+  }
+  const dispose = callableOf(lease, 'dispose')
+  if (dispose === undefined) return
+  try {
+    dispose.call(lease)
+  } catch {
+    // A failing lease release must never change the resolved root.
+  }
 }
 
 /**

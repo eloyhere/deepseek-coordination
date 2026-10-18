@@ -28,10 +28,17 @@
  *  - the preview extension classifier plus the in-memory payload builders:
  *    tex text/cap, docx sanitized HTML conversion, xlsx row/column caps and
  *    string-only cells, pptx title/line caps, and oversize truncation (the
- *    reads themselves belong to `index.ts`).
+ *    reads themselves belong to `index.ts`);
+ *  - the workspace index report: the resolved root is always returned and a
+ *    zero-file scan adds the `no-workspace-files` diagnostic;
+ *  - the async, request-scoped workspace-root resolver's full precedence chain,
+ *    its normalisation/validation rules and its per-request cache.
  */
 import { deflateRawSync } from 'node:zlib'
-import { test } from 'node:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve, sep } from 'node:path'
+import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   INDEX_SKIP_DIRECTORIES,
@@ -82,6 +89,7 @@ import {
   resolveAgentSessionEvents,
   sanitizePreviewHtml,
   searchGraph,
+  workspaceIndexReport,
   type AgentRosterInput,
   type AgentServiceBundle,
   type AgentSessionEventLike,
@@ -92,6 +100,11 @@ import {
   type WorkspaceIndexEntry,
   type WorkspaceIndexIo,
 } from '../src/host/graph-view.js'
+import {
+  ToolWorkspaceRootResolver,
+  resolveToolWorkspaceRootForRequest,
+  type ToolWorkspaceRootService,
+} from '../src/host/tools.js'
 
 /* ------------------------------------------------------------------------- *
  * Fixtures
@@ -1869,4 +1882,255 @@ test('workspace index gate: a concurrent run answers BUSY and always releases', 
 test('index scan default budget constants match the documented bounds', () => {
   assert.equal(MAX_INDEX_DEPTH, 8)
   assert.equal(MAX_INDEX_FILES, 200)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Request-scoped workspace root (the async `/graph/*` resolver)
+ *
+ * The resolver is host-side (`src/host/tools.ts`) but pure enough for plain
+ * Node: every source is a stub, the filesystem is a temporary directory, and
+ * the `workingDirectory`/`agents`/`sessionQuery` surfaces are read
+ * structurally, exactly as the real Cordis context exposes them.
+ * ------------------------------------------------------------------------- */
+
+/** One temporary directory removed when its test finishes. */
+function temporaryDirectory(t: TestContext): string {
+  const directory = mkdtempSync(join(tmpdir(), 'coordination-root-'))
+  t.after(() => { rmSync(directory, { recursive: true, force: true }) })
+  return directory
+}
+
+/** One temporary regular file (a stat-able non-directory candidate). */
+function temporaryFile(t: TestContext): string {
+  const file = join(temporaryDirectory(t), 'candidate.txt')
+  writeFileSync(file, 'not a directory\n')
+  return file
+}
+
+/** A Cordis-context stub: `ctx.get(name)` returns the injected record. */
+function contextStub(services: Readonly<Record<string, unknown>>): unknown {
+  return { get: (name: string): unknown => services[name] }
+}
+
+test('workspace root resolver: the explicit root wins and must be an absolute directory', async (t) => {
+  const explicit = temporaryDirectory(t)
+  const serviceRoot = temporaryDirectory(t)
+  const service: ToolWorkspaceRootService = { workspaceRoot: serviceRoot }
+
+  // Explicit is trimmed to an absolute, normalised path and wins over every
+  // other source.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest(service, {}, { root: ` ${explicit} ` }),
+    resolve(explicit),
+  )
+  // A lexical dot segment is normalised away before the directory check.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest(service, {}, { root: `${explicit}${sep}.` }),
+    resolve(explicit),
+  )
+
+  await assert.rejects(
+    () => resolveToolWorkspaceRootForRequest(service, {}, { root: 'relative/path' }),
+    (error: unknown) => (error as { code?: string }).code === 'INVALID_ARGUMENT',
+  )
+  await assert.rejects(
+    () => resolveToolWorkspaceRootForRequest(service, {}, { root: temporaryFile(t) }),
+    (error: unknown) => (error as { code?: string }).code === 'INVALID_ARGUMENT',
+  )
+  // An absent parameter is not an invalid parameter.
+  assert.equal(await resolveToolWorkspaceRootForRequest(service), resolve(serviceRoot))
+})
+
+test('workspace root resolver: service > host > sandboxPolicy > ensure > observation > cwd', async (t) => {
+  const serviceRoot = temporaryDirectory(t)
+  const hostRoot = temporaryDirectory(t)
+  const policyRoot = temporaryDirectory(t)
+  const ensuredRoot = temporaryDirectory(t)
+  const observedRoot = temporaryDirectory(t)
+  const session = { header: { cwd: policyRoot } }
+  const agent = { id: 'root-session', session }
+
+  // 1. service.workspaceRoot beats host.workspaceRoot.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest({
+      workspaceRoot: serviceRoot,
+      host: { workspaceRoot: hostRoot },
+    }),
+    resolve(serviceRoot),
+  )
+
+  // 2. host.workspaceRoot beats the sandbox policy.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest({
+      host: {
+        workspaceRoot: hostRoot,
+        sandboxPolicy: { resolve: () => ({ workspaceRoot: policyRoot }) },
+      },
+    }),
+    resolve(hostRoot),
+  )
+
+  // 3. The sandbox policy receives the active session and beats ensure.
+  let seenSession: unknown
+  const policyService: ToolWorkspaceRootService = {
+    host: {
+      sandboxPolicy: {
+        resolve: (request?: { session?: unknown }) => {
+          seenSession = request?.session
+          return { workspaceRoot: policyRoot }
+        },
+      },
+    },
+  }
+  const fullContext = contextStub({
+    agents: { roots: () => [agent] },
+    workingDirectory: { ensure: async () => ensuredRoot },
+  })
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest(policyService, {}, { context: fullContext }),
+    resolve(policyRoot),
+  )
+  assert.equal(seenSession, session)
+
+  // 4. A throwing/failed policy falls through to workingDirectory.ensure.
+  const failingPolicy: ToolWorkspaceRootService = {
+    host: { sandboxPolicy: { resolve: () => { throw new Error('policy not ready') } } },
+  }
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest(failingPolicy, {}, { context: fullContext }),
+    resolve(ensuredRoot),
+  )
+
+  // 5. ensure wins over the recorded session observation.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest({}, {}, {
+      context: contextStub({
+        agents: { roots: () => [{ id: 'root-session', session: { ...session, workingDirectory: observedRoot } }] },
+        workingDirectory: { ensure: async () => ensuredRoot },
+      }),
+    }),
+    resolve(ensuredRoot),
+  )
+
+  // 6. A failing/missing ensure falls back to the recorded observation.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest({}, {}, {
+      context: contextStub({
+        agents: { roots: () => [{ id: 'root-session', session: { workingDirectory: observedRoot } }] },
+        workingDirectory: { ensure: async () => { throw new Error('directory disappeared') } },
+      }),
+    }),
+    resolve(observedRoot),
+  )
+
+  // 7. A `null` observation is not a root: the final fallback is process.cwd().
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest({}, {}, {
+      context: contextStub({
+        agents: { roots: () => [{ id: 'root-session', session: { workingDirectory: null } }] },
+      }),
+    }),
+    resolve(process.cwd()),
+  )
+})
+
+test('workspace root resolver: a non-directory candidate is skipped', async (t) => {
+  const file = temporaryFile(t)
+  const good = temporaryDirectory(t)
+
+  // A declared-but-invalid service root does not shadow a valid host root.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest({ workspaceRoot: file, host: { workspaceRoot: good } }),
+    resolve(good),
+  )
+
+  // A file returned by workingDirectory.ensure is skipped for the observation.
+  assert.equal(
+    await resolveToolWorkspaceRootForRequest({}, {}, {
+      context: contextStub({
+        agents: { roots: () => [{ id: 'root-session', session: { workingDirectory: good } }] },
+        workingDirectory: { ensure: async () => file },
+      }),
+    }),
+    resolve(good),
+  )
+})
+
+test('workspace root resolver: reads the session observation structurally', async (t) => {
+  const observedRoot = temporaryDirectory(t)
+  let disposed = false
+  let observedId = ''
+  const lease = {
+    projections: { values: { workingDirectory: observedRoot } },
+    dispose: () => { disposed = true },
+  }
+  const context = contextStub({
+    agents: { roots: () => [{ id: 'session-1', session: {} }] },
+    sessionQuery: {
+      observeSession: async (id: string) => {
+        observedId = id
+        return lease
+      },
+    },
+    workingDirectory: { ensure: async () => { throw new Error('cold session') } },
+  })
+
+  assert.equal(await resolveToolWorkspaceRootForRequest({}, {}, { context }), resolve(observedRoot))
+  assert.equal(observedId, 'session-1')
+  assert.equal(disposed, true)
+})
+
+test('workspace root resolver: caches per request and awaits the async ensure path', async (t) => {
+  const root = temporaryDirectory(t)
+  let calls = 0
+  const context = contextStub({
+    agents: { roots: () => [{ id: 'root-session', session: {} }] },
+    workingDirectory: {
+      ensure: async () => {
+        calls += 1
+        return root
+      },
+    },
+  })
+
+  const resolver = new ToolWorkspaceRootResolver({}, {}, { context })
+  const first = resolver.resolve()
+  assert.ok(first instanceof Promise)
+  assert.equal(await first, resolve(root))
+  // The second call shares the request-scoped answer: no second filesystem or
+  // service read.
+  assert.equal(await resolver.resolve(), resolve(root))
+  assert.equal(calls, 1)
+})
+
+test('index report: carries the resolved root and flags a zero-file scan', async () => {
+  const empty = await indexWorkspaceFiles(stubWalk({}).io, { now: () => 0 })
+  const emptyReport = workspaceIndexReport(empty, 'C:\\workspace')
+  assert.equal(emptyReport.root, 'C:\\workspace')
+  assert.equal(emptyReport.indexed, 0)
+  assert.equal(emptyReport.diagnostics?.length, 1)
+  assert.equal(emptyReport.diagnostics?.[0]?.code, 'no-workspace-files')
+  assert.equal(emptyReport.diagnostics?.[0]?.root, 'C:\\workspace')
+  assert.equal(typeof emptyReport.diagnostics?.[0]?.message, 'string')
+
+  // The desktop symptom: a wrong root that sees files but indexes none still
+  // carries the diagnostic (the skipped count is not a successful scan).
+  const skippedOnly = await indexWorkspaceFiles(
+    stubWalk({ '': [walkFile('logo.png'), walkFile('notes.json')] }).io,
+    { now: () => 0 },
+  )
+  const skippedReport = workspaceIndexReport(skippedOnly, 'C:\\wrong-root')
+  assert.equal(skippedReport.indexed, 0)
+  assert.equal(skippedReport.skipped, 2)
+  assert.equal(skippedReport.diagnostics?.[0]?.code, 'no-workspace-files')
+
+  // A productive scan reports the root but no diagnostic.
+  const productive = await indexWorkspaceFiles(
+    stubWalk({ '': [walkFile('src/app.ts'), walkFile('logo.png')] }).io,
+    { now: () => 0 },
+  )
+  const productiveReport = workspaceIndexReport(productive, 'C:\\workspace')
+  assert.equal(productiveReport.indexed, 1)
+  assert.equal(productiveReport.root, 'C:\\workspace')
+  assert.equal(productiveReport.diagnostics, undefined)
 })

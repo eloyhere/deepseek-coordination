@@ -797,6 +797,8 @@ export interface IndexReport {
   nodes: number
   ms: number
   truncated: boolean
+  /** Absolute workspace root the host actually scanned ('' when absent). */
+  root: string
 }
 
 /** Result of `POST /deepseek-coordination/graph/index`. */
@@ -837,6 +839,7 @@ export async function indexGraph(): Promise<IndexOutcome> {
       nodes: finiteNumberOf(report?.nodes) ?? 0,
       ms: finiteNumberOf(report?.durationMs) ?? finiteNumberOf(report?.ms) ?? 0,
       truncated: report?.truncated === true,
+      root: typeof report?.root === 'string' ? report.root : '',
     },
   }
 }

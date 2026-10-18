@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.14.4 | 2026-10-18 | `—` | 图索引解析会话工作区 |
 | 0.14.3 | 2026-10-18 | `088e2f6` | 底部堆叠、reducer 导航、工作区索引 |
 | 0.14.2 | 2026-10-18 | `5b5fdf8` | 客户端不再引用 Node 内建模块 |
 | 0.14.1 | 2026-10-18 | `c5f333b` | 面板错误隔离、面板懒加载、逃生开关 |
@@ -49,6 +50,13 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.14.4] — 2026-10-18
+
+### 修复
+
+- **索引器现在能找到会话工作区。** `resolveToolWorkspaceRoot()` 之前回退到 `process.cwd()`，而桌面应用的 cwd 是安装目录，导致 `POST /graph/index` 扫描不到文件（`indexed: 0`、2 毫秒），而从仓库启动的 CLI 却能索引 155 个文件。解析器改为**异步、按请求**：显式 `root` → `service.workspaceRoot` → `host.workspaceRoot` → `sandboxPolicy.resolve({ session })` → `workingDirectory.ensure(agent)`（1.5 秒超时）→ 会话记录的 `workingDirectory` → `cwd`。每个候选都做 stat 校验，非目录会被跳过。
+- **根目录错了要看得见。** `/graph/index` 返回 `root`；没有任何文件命中时返回 `diagnostics: [{ code: 'no-workspace-files', root }]`；客户端在空态显示解析到的根路径，`indexed === 0` 时用带路径的 warning 提示而不是成功提示。
 
 ## [0.14.3] — 2026-10-18
 

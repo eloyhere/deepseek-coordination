@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.4 | 2026-10-18 | `—` | Resolve the session workspace for graph indexing |
 | 0.14.3 | 2026-10-18 | `088e2f6` | Bottom-anchored panels, reducer navigation, workspace indexing |
 | 0.14.2 | 2026-10-18 | `5b5fdf8` | Client bundle no longer requires Node builtins |
 | 0.14.1 | 2026-10-18 | `c5f333b` | Panel error containment, lazy panel module, escape hatch |
@@ -52,6 +53,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.4] — 2026-10-18
+
+### Fixed
+
+- **The indexer now finds the session workspace.** `resolveToolWorkspaceRoot()` fell back to `process.cwd()`, which is the install directory in the desktop app, so `POST /graph/index` scanned nothing (`indexed: 0`, 2 ms) while a CLI launched from the repo indexed 155 files. The resolver is now async and request-scoped: explicit `root` → `service.workspaceRoot` → `host.workspaceRoot` → `sandboxPolicy.resolve({ session })` → `workingDirectory.ensure(agent)` (1.5 s timeout) → the session's recorded `workingDirectory` → `cwd`. Every candidate is stat-validated and a non-directory is skipped.
+- **A wrong root is now visible.** `/graph/index` returns `root`, and returns `diagnostics: [{ code: 'no-workspace-files', root }]` when nothing matched; the client shows the resolved root in the empty state and uses a warning snackbar (with the path) instead of a success notice when `indexed === 0`.
 
 ## [0.14.3] — 2026-10-18
 

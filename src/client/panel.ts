@@ -1549,7 +1549,19 @@ interface TreeEntry {
   depth: number
 }
 
-function parseTree(value: unknown): TreeEntry[] {
+/**
+ * The `/graph/tree` value the Files view renders.
+ *
+ * `root` is the absolute workspace root the host actually scanned; the empty
+ * state shows it so a wrong root (a desktop install directory, say) is visible
+ * instead of looking like an ordinary empty workspace.
+ */
+interface TreeData {
+  root: string
+  entries: TreeEntry[]
+}
+
+function parseTree(value: unknown): TreeData {
   const record = asRecord(value)
   const entries: TreeEntry[] = []
   let explicitDepth = false
@@ -1607,7 +1619,7 @@ function parseTree(value: unknown): TreeEntry[] {
       entry.depth = Math.max(0, pathSegmentCount(entry.path) - baseDepth)
     }
   }
-  return entries
+  return { root: asString(record?.root) ?? '', entries }
 }
 
 interface OutlineNode {
@@ -2199,12 +2211,29 @@ function IndexEmptyState(props: {
   copy: PanelCopy
   busy: boolean
   onIndex: (() => void) | undefined
+  /** Absolute workspace root the host resolved for `/graph/tree`. */
+  root: string
 }): React.ReactElement {
   return h(
     MuiBox,
     { sx: INDEX_EMPTY_SX },
     h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, props.copy.files.empty),
     h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, props.copy.indexHint),
+    // The resolved root is the one diagnostic that makes a wrong root visible:
+    // a valid but unexpected path here explains the empty tree immediately.
+    props.root.length === 0
+      ? null
+      : h(
+        MuiTypography,
+        {
+          variant: 'caption',
+          color: 'text.secondary',
+          component: 'div',
+          title: props.root,
+          sx: MONO_SX,
+        },
+        `${props.copy.scopeWorkspace}: ${props.root}`,
+      ),
     h(
       MuiButton,
       {
@@ -2319,18 +2348,19 @@ function FilesView(props: ViewProps): React.ReactElement {
     return h(LoadingState, { copy: props.copy })
   }
   if (state.status === 'error') return h(ErrorState, { copy: props.copy, onRetry: retry })
-  if (state.value.length === 0) {
+  if (state.value.entries.length === 0) {
     return h(IndexEmptyState, {
       copy: props.copy,
       busy: props.indexBusy === true,
       onIndex: props.onIndexWorkspace,
+      root: state.value.root,
     })
   }
 
   return h(
     MuiList,
     { dense: true, disablePadding: true, sx: LIST_SX },
-    ...state.value.map((entry, index) => {
+    ...state.value.entries.map((entry, index) => {
       const selected = props.path === entry.path
       return h(
         MuiBox,
@@ -5307,15 +5337,22 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
         return
       }
       const report = outcome.report
+      // The resolved root is part of every notice: it turns "nothing worked"
+      // into "this is the directory the host looked at". Zero indexed files is
+      // a warning, never the success notice, so a wrong root cannot look done.
+      const rootSuffix = report.root.length === 0 ? '' : ` · ${report.root}`
+      const indexedNothing = report.indexed === 0
       setNotice({
-        message: report.truncated
-          ? copy.indexPartial
-          : fillTemplate(copy.indexDone, {
-            indexed: String(report.indexed),
-            nodes: String(report.nodes),
-            ms: String(report.ms),
-          }),
-        severity: report.truncated ? 'warning' : 'success',
+        message: indexedNothing
+          ? `${copy.files.empty}${rootSuffix}`
+          : report.truncated
+            ? `${copy.indexPartial}${rootSuffix}`
+            : `${fillTemplate(copy.indexDone, {
+              indexed: String(report.indexed),
+              nodes: String(report.nodes),
+              ms: String(report.ms),
+            })}${rootSuffix}`,
+        severity: indexedNothing || report.truncated ? 'warning' : 'success',
       })
       // The graph changed: drop stale search hits and re-request the view.
       clearSearch()
