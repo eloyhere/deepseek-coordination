@@ -6379,6 +6379,14 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const view = navigation.view
   const path = navigation.path
   const id = navigation.id
+  /**
+   * Preview always previews the last picked file. A bottom-nav switch (or a
+   * restored panel) can arrive without a path even though the panel still owns
+   * a selection, so the preview tab reads the remembered path as its fallback.
+   * Other views keep their own file/workspace mode untouched.
+   */
+  const previewPath = view === 'preview' ? path ?? lastPathRef.current : null
+  const viewPath = view === 'preview' ? previewPath : path
 
   const go = React.useCallback((next: PanelView, params?: RouteParams): void => {
     dispatchNavigation({
@@ -6670,19 +6678,19 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   }
 
   const ActiveView = (props.side === 'left' ? LEFT_VIEW_REGISTRY : RIGHT_VIEW_REGISTRY)[view] ?? FilesView
-  const scopeLabel = path === null
+  const scopeLabel = viewPath === null
     ? copy.scopeWorkspace
-    : fillTemplate(copy.scopeFile, { path })
-  const scopeTip = path === null
+    : fillTemplate(copy.scopeFile, { path: viewPath })
+  const scopeTip = viewPath === null
     ? copy.tip.scopeWorkspace
-    : fillTemplate(copy.tip.scope, { path })
+    : fillTemplate(copy.tip.scope, { path: viewPath })
   const titleTip = fillTemplate(copy.expandTitle, { title: props.title })
   const errorTip = panelError === null ? '' : panelErrorTooltip(panelError)
 
   const scopeChip = h(
     MuiGrow,
     {
-      key: path ?? 'workspace',
+      key: viewPath ?? 'workspace',
       in: true,
       appear: true,
       timeout: props.reducedMotion ? 0 : SCOPE_GROW_MS,
@@ -6700,15 +6708,15 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           label: scopeLabel,
           'aria-label': scopeTip,
           onClick: (): void => {
-            go('files', path !== null ? { path } : undefined)
+            go('files', viewPath !== null ? { path: viewPath } : undefined)
           },
           onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>): void => {
-            if (path !== null && (event.key === 'Delete' || event.key === 'Backspace')) {
+            if (viewPath !== null && (event.key === 'Delete' || event.key === 'Backspace')) {
               event.preventDefault()
               clearSelection()
             }
           },
-          ...(path === null
+          ...(viewPath === null
             ? {}
             : {
               onDelete: (event: React.MouseEvent<HTMLDivElement>): void => {
@@ -6736,7 +6744,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
             }),
         }),
       ),
-      path === null
+      viewPath === null
         ? null
         : h(
           Tip,
@@ -6924,7 +6932,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           h(
             MuiFade,
             {
-              key: `view:${view}:${path ?? ''}:${id ?? ''}`,
+              key: `view:${view}:${viewPath ?? ''}:${id ?? ''}`,
               in: true,
               appear: true,
               timeout: props.reducedMotion ? 0 : VIEW_FADE_MS,
@@ -6932,7 +6940,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
             h(MuiBox, null, h(ActiveView, {
               side: props.side,
               copy,
-              path,
+              path: viewPath,
               id,
               refresh,
               onSettled: handleSettled,
@@ -6950,7 +6958,11 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           sx: NAV_SX,
           onChange: (_event: React.SyntheticEvent, value: string): void => {
             if (!isPanelView(value) || !props.views.includes(value)) return
-            go(value, path !== null ? { path } : undefined)
+            // A tab switch keeps the panel's file selection. Preview additionally
+            // falls back to the last picked file, so "select, then Preview"
+            // never lands on an empty preview.
+            const carryPath = path ?? lastPathRef.current
+            go(value, carryPath !== null ? { path: carryPath } : undefined)
           },
         },
         ...props.views.map((entry) =>

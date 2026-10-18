@@ -285,9 +285,17 @@ const PREVIEW_MAX_BYTES = MAX_PREVIEW_TEXT_BYTES
  *
  * BOM handling: byte ranges exclude a UTF-8 BOM, so `start: 0` is refused for a
  * BOM-prefixed file; retry just after it. Both attempts read at most 64 KiB.
+ *
+ * The workspace root is resolved per request (the same async resolver as the
+ * other graph reads) so a desktop install directory can never be used as the
+ * preview root; the lexical + realpath containment checks below still run
+ * against that resolved root, unchanged.
  */
-async function previewOf(service: CoordinationService, path: string): Promise<PreviewValue> {
-  const parser = new ParseService({ workspaceRoot: resolveToolWorkspaceRoot(service) })
+async function previewOf(
+  path: string,
+  workspaceRoot: string,
+): Promise<PreviewValue> {
+  const parser = new ParseService({ workspaceRoot })
   const relative = parser.relativePath(path)
   const kind = previewKindOf(relative)
   if (isOfficePreviewKind(kind)) {
@@ -1175,7 +1183,10 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             // an error response.
             response.setHeader('cache-control', 'no-store')
             try {
-              const value = await previewOf(service, requested)
+              // Same per-request root as the other graph reads (no `root`
+              // override: preview is workspace-relative only).
+              const root = await createToolWorkspaceRootResolver(service, {}, { context }).resolve()
+              const value = await previewOf(requested, root)
               json(response, { ok: true, value })
             } catch (error) {
               if (error instanceof NotFoundError) {

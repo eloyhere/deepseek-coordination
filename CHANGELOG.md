@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.7 | 2026-10-18 | `—` | Preview keeps the selection and resolves the workspace |
 | 0.14.6 | 2026-10-18 | `f4549a7` | WebGL2 relationship canvas, priority render queue |
 | 0.14.5 | 2026-10-18 | `3927d61` | Semantic canvas zoom, collapsible tree, auto-fit for dense graphs |
 | 0.14.4 | 2026-10-18 | `94aa48a` | Resolve the session workspace for graph indexing |
@@ -55,6 +56,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.7] — 2026-10-18
+
+### Fixed
+
+- **Preview keeps the selected file.** The preview tab now derives its path from `navigation.path ?? lastPathRef.current`, so switching to Preview through the bottom navigation carries the current selection, and the scope chip, the transition key and the view body all read one `viewPath` — they can no longer disagree.
+- **Preview resolves the session workspace.** `/graph/preview` still used the synchronous `resolveToolWorkspaceRoot(service)`, which resolves to the install directory in the desktop app and made workspace previews 404. The route now uses the same per-request async resolver as the other graph routes (workspace-relative only, no `root` override) and passes the root to `previewOf(path, root)`; path normalisation, realpath containment and the 64 KiB/Office caps are unchanged.
 
 ## [0.14.6] — 2026-10-18
 
