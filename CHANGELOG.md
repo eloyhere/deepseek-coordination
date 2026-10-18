@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.13.0 | 2026-10-18 | `—` | First-class `interface`/`type`/`enumeration`/`namespace` kinds across TS, Java, Rust and PHP |
+| 0.13.0 | 2026-10-18 | `83d3601` | First-class `interface`/`type`/`enumeration`/`namespace` kinds across TS, Java, Rust and PHP |
 | 0.12.0 | 2026-10-18 | `84af8b8` | Domain ecosystems: tex, book, markdown, html, languages, office, package managers; kind filter and directory layer |
 | 0.11.0 | 2026-10-18 | `19bfedf` | Durable settings, DSH-owned reasoning, cache proxy and brand profiles, dialog and label fixes |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | Settings catalog, durable file layer, turn pipeline, phase freeze, data structures, installable package |

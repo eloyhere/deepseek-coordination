@@ -17,7 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
-| 0.13.0 | 2026-10-18 | `—` | TS、Java、Rust、PHP 的 `interface`/`type`/`enumeration`/`namespace` 成为一等 kind |
+| 0.13.0 | 2026-10-18 | `83d3601` | TS、Java、Rust、PHP 的 `interface`/`type`/`enumeration`/`namespace` 成为一等 kind |
 | 0.12.0 | 2026-10-18 | `84af8b8` | 领域体系：tex、book、markdown、html、各语言、office、包管理器；kind 过滤与目录层 |
 | 0.11.0 | 2026-10-18 | `19bfedf` | 设置持久化、推理交还 DSH、缓存代理与品牌策略、对话框与标签修复 |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | 设置目录、持久文件层、Turn 流水线、阶段冻结、数据结构采纳、可安装包 |
