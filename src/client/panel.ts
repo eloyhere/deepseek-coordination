@@ -38,6 +38,15 @@
  * panel defaults minimized and the workspace panel defaults expanded; width
  * defaults to 420 px. Views and paths belong to the hash only.
  *
+ * # Failure containment
+ *
+ * The column, each panel and the lazily loaded preview renderer own separate
+ * error boundaries. A failure logs `[coordination] panel failed` with its
+ * component stack, renders nothing in that layer, and never escapes into the
+ * host tree; the last error is shown as a title-bar chip when a panel survives.
+ * `localStorage["coordination.panel.disabled"]` set to `1` (or `true`) mounts
+ * nothing at all, which is the no-restart recovery path for a bad build.
+ *
  * # Host contract
  *
  * All reads are `{ ok, value }` envelopes under `/deepseek-coordination` and are
@@ -143,12 +152,6 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import PeopleIcon from '@mui/icons-material/People'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import OpenInFullIcon from '@mui/icons-material/OpenInFull'
-import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
-import DOMPurify from 'dompurify'
-import { Highlight } from 'prism-react-renderer'
 import { ThemeProvider, useTheme } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
 import type { PrismTheme, RenderProps } from 'prism-react-renderer'
@@ -198,7 +201,6 @@ const MuiTable = Table as unknown as Loose
 const MuiTableBody = TableBody as unknown as Loose
 const MuiTableCell = TableCell as unknown as Loose
 const MuiTableRow = TableRow as unknown as Loose
-const MuiMarkdown = Markdown as unknown as Loose
 const MuiThemeProvider = ThemeProvider as unknown as Loose
 
 /* Icon components accept SvgIcon props; the loose alias keeps one call shape. */
@@ -246,6 +248,108 @@ const COLUMN_BOTTOM = 96
 const COLUMN_RIGHT = 16
 const HEADER_HEIGHT = 48
 const PANEL_MIN_HEIGHT = 320
+
+/**
+ * No-restart recovery switch: `localStorage['coordination.panel.disabled']`
+ * set to `1` (or `true`) mounts nothing at all. Reading is fail-closed: a
+ * blocked storage access keeps the panel enabled.
+ */
+const PANEL_DISABLED_STORAGE_KEY = 'coordination.panel.disabled'
+
+/** `panel.crashed` copy. Kept identical for zh/en, matching the shared copy style. */
+const PANEL_CRASHED_LABEL = 'Panel crashed'
+
+/** Error tooltips are capped so a huge stack-bearing message cannot fill the header. */
+const PANEL_ERROR_MAX_CHARS = 200
+
+/** Title-bar chip for the last boundary failure; small enough for the 48 px bar. */
+const CRASH_CHIP_SX = {
+  flex: 'none',
+  height: 22,
+  maxWidth: 132,
+  '& .MuiChip-label': {
+    paddingLeft: 0.75,
+    paddingRight: 0.75,
+    fontSize: 10,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+}
+
+/* ------------------------------------------------------------------------- *
+ * Failure containment
+ *
+ * React unmounts the whole tree when a render throws without a boundary, and
+ * the host renders the composer in the same root. Every panel layer therefore
+ * gets its own boundary, and the last failure is kept module-level so a
+ * surviving title bar can show it.
+ * ------------------------------------------------------------------------- */
+
+let lastPanelError: Error | null = null
+const panelErrorListeners = new Set<() => void>()
+
+function rememberPanelError(error: unknown): void {
+  lastPanelError = error instanceof Error ? error : new Error(String(error))
+  for (const listener of [...panelErrorListeners]) listener()
+}
+
+/** The last failure caught by any panel boundary (diagnostics/test hook). */
+export function getPanelError(): Error | null {
+  return lastPanelError
+}
+
+/** Subscribe to boundary failures; used by every panel title bar. */
+export function subscribePanelError(listener: () => void): () => void {
+  panelErrorListeners.add(listener)
+  return () => {
+    panelErrorListeners.delete(listener)
+  }
+}
+
+/** Tooltip for the crash chip: the error message, capped at 200 characters. */
+export function panelErrorTooltip(error: Error): string {
+  const message = error.message.trim()
+  return (message.length > 0 ? message : String(error)).slice(0, PANEL_ERROR_MAX_CHARS)
+}
+
+/**
+ * Whether the operator disabled the panel through `localStorage`.
+ *
+ * This is deliberately read at mount time only: the flag is a recovery path
+ * that takes effect after the next page load, not a reactive control.
+ */
+export function isPanelDisabled(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const storage = window.localStorage
+    if (storage === undefined) return false
+    const value = storage.getItem(PANEL_DISABLED_STORAGE_KEY)
+    return value === '1' || value === 'true'
+  } catch {
+    return false
+  }
+}
+
+/** Never rethrows: a boundary failure must not escape into the host tree. */
+export class PanelErrorBoundary extends React.Component<
+  { children?: React.ReactNode },
+  { failed: boolean }
+> {
+  state: { failed: boolean } = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    rememberPanelError(error)
+    console.error('[coordination] panel failed', error, info?.componentStack)
+  }
+
+  render(): React.ReactNode {
+    return this.state.failed ? null : this.props.children
+  }
+}
 
 /** The two panels' routed views, in BottomNavigation order. */
 const RIGHT_VIEWS: readonly PanelView[] = ['files', 'outline', 'dependencies', 'imports', 'preview']
@@ -2360,168 +2464,6 @@ const HTML_SANITIZE_CONFIG = {
   FORBID_ATTR: FORBIDDEN_HTML_ATTRS,
 }
 
-// DOMPurify's attribute allowlist already drops `on*`; this hook makes the
-// guarantee explicit for every future attribute name as well. The factory
-// export used outside a browser has no hooks, so guard the registration.
-if (typeof DOMPurify.addHook === 'function') {
-  DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-    const name = data.attrName.toLowerCase()
-    if (name.startsWith('on') || name === 'contenteditable' || name === 'style' || name === 'srcset') {
-      data.keepAttr = false
-    }
-  })
-}
-
-/** GFM task-list checkboxes become static glyphs (no `<input>` in previews). */
-function MarkdownTaskCheckbox(props: { checked?: boolean }): React.ReactElement {
-  const checked = props.checked === true
-  return h(
-    'span',
-    { role: 'img', 'aria-label': checked ? '☑' : '☐', 'data-task': checked ? 'done' : 'open' },
-    checked ? '☑' : '☐',
-  )
-}
-
-const MARKDOWN_COMPONENTS = { input: MarkdownTaskCheckbox }
-
-/**
- * KaTeX renders MathML only: the panel ships no stylesheet/font assets, so the
- * browser's native math rendering is the honest fallback (raw HTML is never
- * enabled in the Markdown pipeline).
- */
-const KATEX_OPTIONS = { output: 'mathml' as const }
-
-function MarkdownPreview(props: {
-  copy: PanelCopy
-  content: string
-  math: boolean
-}): React.ReactElement {
-  const remarkPlugins = props.math ? [remarkGfm, remarkMath] : [remarkGfm]
-  const rehypePlugins = props.math ? [rehypeKatex(KATEX_OPTIONS)] : []
-  return h(
-    MuiBox,
-    { sx: PREVIEW_BOX_SX, role: 'region', 'aria-label': props.copy.preview },
-    h(
-      MuiMarkdown,
-      { remarkPlugins, rehypePlugins, components: MARKDOWN_COMPONENTS },
-      props.content,
-    ),
-  )
-}
-
-/** Two high-contrast token sets derived from the MUI palette. */
-function prismThemeFor(muiTheme: Theme): PrismTheme {
-  const palette = muiTheme.palette
-  const dark = palette.mode === 'dark'
-  return {
-    plain: { color: palette.text.primary, backgroundColor: 'transparent' },
-    styles: [
-      {
-        types: ['comment', 'prolog', 'doctype', 'cdata'],
-        style: { color: palette.text.disabled, fontStyle: 'italic' },
-      },
-      {
-        types: ['punctuation', 'operator'],
-        style: { color: dark ? palette.grey[400] : palette.grey[700] },
-      },
-      {
-        types: ['keyword', 'builtin', 'tag', 'important', 'atrule'],
-        style: { color: palette.primary.main, fontWeight: '600' },
-      },
-      {
-        types: ['string', 'char', 'attr-value', 'regex', 'url'],
-        style: { color: palette.success.main },
-      },
-      {
-        types: ['number', 'boolean', 'constant', 'symbol', 'deleted'],
-        style: { color: palette.warning.main },
-      },
-      {
-        types: ['function', 'class-name', 'function-variable'],
-        style: { color: palette.info.main },
-      },
-      {
-        types: ['variable', 'parameter', 'property', 'attr-name'],
-        style: { color: palette.text.primary },
-      },
-      {
-        types: ['selector', 'rule'],
-        style: { color: palette.secondary.main },
-      },
-    ],
-  }
-}
-
-function languageOf(path: string | null): string {
-  if (path === null) return 'plain'
-  const dot = path.lastIndexOf('.')
-  if (dot === -1) return 'plain'
-  return LANGUAGE_BY_EXTENSION[path.slice(dot + 1).toLowerCase()] ?? 'plain'
-}
-
-/** Cap highlighting work; the notice always states the shown line count. */
-function clipCode(content: string): { code: string; truncated: boolean; lines: number } {
-  const allLines = content.split('\n')
-  if (allLines.length <= MAX_CODE_LINES && content.length <= MAX_CODE_BYTES) {
-    return { code: content, truncated: false, lines: allLines.length }
-  }
-  const shown = allLines.slice(0, MAX_CODE_LINES)
-  return { code: shown.join('\n'), truncated: true, lines: shown.length }
-}
-
-function CodePreview(props: {
-  copy: PanelCopy
-  path: string
-  content: string
-}): React.ReactElement {
-  const muiTheme = useTheme()
-  const prismTheme = React.useMemo(() => prismThemeFor(muiTheme), [muiTheme])
-  const clipped = React.useMemo(() => clipCode(props.content), [props.content])
-  const language = languageOf(props.path)
-
-  const render = (renderProps: RenderProps): React.ReactElement =>
-    h(
-      'pre',
-      {
-        className: renderProps.className,
-        style: {
-          ...renderProps.style,
-          margin: 0,
-          padding: 8,
-          overflowX: 'auto',
-          background: 'transparent',
-          fontFamily: 'monospace',
-          fontSize: 11,
-          lineHeight: 1.5,
-          whiteSpace: 'pre',
-          tabSize: 2,
-        },
-      },
-      ...renderProps.tokens.map((line, lineIndex) =>
-        h(
-          'div',
-          { ...renderProps.getLineProps({ line }), key: `line:${lineIndex}` },
-          ...line.map((token, tokenIndex) =>
-            h('span', { ...renderProps.getTokenProps({ token }), key: `token:${tokenIndex}` }),
-          ),
-        ),
-      ),
-    )
-
-  return h(
-    MuiBox,
-    { sx: PREVIEW_CODE_BOX_SX, role: 'region', 'aria-label': props.copy.preview, 'data-language': language },
-    h(Highlight, { code: clipped.code, language, theme: prismTheme, children: render }),
-    clipped.truncated
-      ? h(
-        MuiTypography,
-        { variant: 'caption', color: 'text.secondary', sx: MORE_SX },
-        fillTemplate(props.copy.codeTruncated, { lines: String(clipped.lines) }),
-      )
-      : null,
-  )
-}
-
 function SheetsPreview(props: {
   copy: PanelCopy
   sheets: readonly SheetData[]
@@ -2619,39 +2561,255 @@ function SlidesPreview(props: {
   )
 }
 
-function PreviewContent(props: {
+interface PreviewRendererProps {
   copy: PanelCopy
   data: PreviewData
-  sanitized: string
-}): React.ReactElement {
-  const { copy, data } = props
-  if (data.kind === 'xlsx') return h(SheetsPreview, { copy, sheets: data.sheets })
-  if (data.kind === 'pptx') return h(SlidesPreview, { copy, slides: data.slides })
-  if (data.kind === 'markdown' || data.kind === 'tex') {
-    if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
-    return h(MarkdownPreview, { copy, content: data.content, math: true })
-  }
-  if (data.kind === 'html' || data.kind === 'docx') {
-    if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
-    return h(MuiBox, {
-      sx: PREVIEW_BOX_SX,
-      role: 'region',
-      'aria-label': copy.preview,
-      dangerouslySetInnerHTML: { __html: props.sanitized },
+}
+
+/**
+ * Preview libraries are deferred behind `React.lazy`.
+ *
+ * react-markdown, KaTeX, Prism and DOMPurify are large and their module
+ * evaluation is the riskiest part of this bundle. Loading them only when a
+ * preview is actually rendered keeps the initial panel render independent of
+ * any failure in those libraries; the boundary around this subtree contains a
+ * failed load or render.
+ */
+const LazyPreviewRenderer = React.lazy(async (): Promise<{
+  default: React.ComponentType<PreviewRendererProps>
+}> => {
+  const [
+    markdownModule,
+    remarkGfmModule,
+    remarkMathModule,
+    rehypeKatexModule,
+    purifyModule,
+    prismModule,
+  ] = await Promise.all([
+    import('react-markdown'),
+    import('remark-gfm'),
+    import('remark-math'),
+    import('rehype-katex'),
+    import('dompurify'),
+    import('prism-react-renderer'),
+  ])
+
+  const MarkdownView = markdownModule.default as unknown as Loose
+  const remarkGfm = remarkGfmModule.default
+  const remarkMath = remarkMathModule.default
+  const rehypeKatex = rehypeKatexModule.default
+  const DOMPurify = purifyModule.default
+  const MuiHighlight = prismModule.Highlight as unknown as Loose
+
+  // DOMPurify's attribute allowlist already drops `on*`; this hook makes the
+  // guarantee explicit for every future attribute name as well. The factory
+  // export used outside a browser has no hooks, so guard the registration.
+  if (typeof DOMPurify.addHook === 'function') {
+    DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+      const name = data.attrName.toLowerCase()
+      if (name.startsWith('on') || name === 'contenteditable' || name === 'style' || name === 'srcset') {
+        data.keepAttr = false
+      }
     })
   }
-  if (data.kind === 'code') {
-    if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
-    return h(CodePreview, { copy, path: data.path, content: data.content })
+
+  /** GFM task-list checkboxes become static glyphs (no `<input>` in previews). */
+  function MarkdownTaskCheckbox(props: { checked?: boolean }): React.ReactElement {
+    const checked = props.checked === true
+    return h(
+      'span',
+      { role: 'img', 'aria-label': checked ? '☑' : '☐', 'data-task': checked ? 'done' : 'open' },
+      checked ? '☑' : '☐',
+    )
   }
-  if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
-  // `text` stays plain: no tokenizer, no highlighting.
-  return h(
-    MuiBox,
-    { component: 'pre', sx: PREVIEW_PRE_SX, role: 'region', 'aria-label': copy.preview },
-    h('code', null, data.content),
-  )
-}
+
+  const MARKDOWN_COMPONENTS = { input: MarkdownTaskCheckbox }
+
+  /**
+   * KaTeX renders MathML only: the panel ships no stylesheet/font assets, so the
+   * browser's native math rendering is the honest fallback (raw HTML is never
+   * enabled in the Markdown pipeline).
+   */
+  const KATEX_OPTIONS = { output: 'mathml' as const }
+
+  function MarkdownPreview(props: {
+    copy: PanelCopy
+    content: string
+    math: boolean
+  }): React.ReactElement {
+    const remarkPlugins = props.math ? [remarkGfm, remarkMath] : [remarkGfm]
+    const rehypePlugins = props.math ? [rehypeKatex(KATEX_OPTIONS)] : []
+    return h(
+      MuiBox,
+      { sx: PREVIEW_BOX_SX, role: 'region', 'aria-label': props.copy.preview },
+      h(
+        MarkdownView,
+        { remarkPlugins, rehypePlugins, components: MARKDOWN_COMPONENTS },
+        props.content,
+      ),
+    )
+  }
+
+  /** Two high-contrast token sets derived from the MUI palette. */
+  function prismThemeFor(muiTheme: Theme): PrismTheme {
+    const palette = muiTheme.palette
+    const dark = palette.mode === 'dark'
+    return {
+      plain: { color: palette.text.primary, backgroundColor: 'transparent' },
+      styles: [
+        {
+          types: ['comment', 'prolog', 'doctype', 'cdata'],
+          style: { color: palette.text.disabled, fontStyle: 'italic' },
+        },
+        {
+          types: ['punctuation', 'operator'],
+          style: { color: dark ? palette.grey[400] : palette.grey[700] },
+        },
+        {
+          types: ['keyword', 'builtin', 'tag', 'important', 'atrule'],
+          style: { color: palette.primary.main, fontWeight: '600' },
+        },
+        {
+          types: ['string', 'char', 'attr-value', 'regex', 'url'],
+          style: { color: palette.success.main },
+        },
+        {
+          types: ['number', 'boolean', 'constant', 'symbol', 'deleted'],
+          style: { color: palette.warning.main },
+        },
+        {
+          types: ['function', 'class-name', 'function-variable'],
+          style: { color: palette.info.main },
+        },
+        {
+          types: ['variable', 'parameter', 'property', 'attr-name'],
+          style: { color: palette.text.primary },
+        },
+        {
+          types: ['selector', 'rule'],
+          style: { color: palette.secondary.main },
+        },
+      ],
+    }
+  }
+
+  function languageOf(path: string | null): string {
+    if (path === null) return 'plain'
+    const dot = path.lastIndexOf('.')
+    if (dot === -1) return 'plain'
+    return LANGUAGE_BY_EXTENSION[path.slice(dot + 1).toLowerCase()] ?? 'plain'
+  }
+
+  /** Cap highlighting work; the notice always states the shown line count. */
+  function clipCode(content: string): { code: string; truncated: boolean; lines: number } {
+    const allLines = content.split('\n')
+    if (allLines.length <= MAX_CODE_LINES && content.length <= MAX_CODE_BYTES) {
+      return { code: content, truncated: false, lines: allLines.length }
+    }
+    const shown = allLines.slice(0, MAX_CODE_LINES)
+    return { code: shown.join('\n'), truncated: true, lines: shown.length }
+  }
+
+  function CodePreview(props: {
+    copy: PanelCopy
+    path: string
+    content: string
+  }): React.ReactElement {
+    const muiTheme = useTheme()
+    const prismTheme = React.useMemo(() => prismThemeFor(muiTheme), [muiTheme])
+    const clipped = React.useMemo(() => clipCode(props.content), [props.content])
+    const language = languageOf(props.path)
+
+    const render = (renderProps: RenderProps): React.ReactElement =>
+      h(
+        'pre',
+        {
+          className: renderProps.className,
+          style: {
+            ...renderProps.style,
+            margin: 0,
+            padding: 8,
+            overflowX: 'auto',
+            background: 'transparent',
+            fontFamily: 'monospace',
+            fontSize: 11,
+            lineHeight: 1.5,
+            whiteSpace: 'pre',
+            tabSize: 2,
+          },
+        },
+        ...renderProps.tokens.map((line, lineIndex) =>
+          h(
+            'div',
+            { ...renderProps.getLineProps({ line }), key: `line:${lineIndex}` },
+            ...line.map((token, tokenIndex) =>
+              h('span', { ...renderProps.getTokenProps({ token }), key: `token:${tokenIndex}` }),
+            ),
+          ),
+        ),
+      )
+
+    return h(
+      MuiBox,
+      { sx: PREVIEW_CODE_BOX_SX, role: 'region', 'aria-label': props.copy.preview, 'data-language': language },
+      h(MuiHighlight, { code: clipped.code, language, theme: prismTheme, children: render }),
+      clipped.truncated
+        ? h(
+          MuiTypography,
+          { variant: 'caption', color: 'text.secondary', sx: MORE_SX },
+          fillTemplate(props.copy.codeTruncated, { lines: String(clipped.lines) }),
+        )
+        : null,
+    )
+  }
+
+  function PreviewContent(props: {
+    copy: PanelCopy
+    data: PreviewData
+    sanitized: string
+  }): React.ReactElement {
+    const { copy, data } = props
+    if (data.kind === 'xlsx') return h(SheetsPreview, { copy, sheets: data.sheets })
+    if (data.kind === 'pptx') return h(SlidesPreview, { copy, slides: data.slides })
+    if (data.kind === 'markdown' || data.kind === 'tex') {
+      if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
+      return h(MarkdownPreview, { copy, content: data.content, math: true })
+    }
+    if (data.kind === 'html' || data.kind === 'docx') {
+      if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
+      return h(MuiBox, {
+        sx: PREVIEW_BOX_SX,
+        role: 'region',
+        'aria-label': copy.preview,
+        dangerouslySetInnerHTML: { __html: props.sanitized },
+      })
+    }
+    if (data.kind === 'code') {
+      if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
+      return h(CodePreview, { copy, path: data.path, content: data.content })
+    }
+    if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
+    // `text` stays plain: no tokenizer, no highlighting.
+    return h(
+      MuiBox,
+      { component: 'pre', sx: PREVIEW_PRE_SX, role: 'region', 'aria-label': copy.preview },
+      h('code', null, data.content),
+    )
+  }
+
+  function PreviewRenderer(props: PreviewRendererProps): React.ReactElement {
+    const { data } = props
+    const sanitized = React.useMemo(
+      () => (data.kind === 'html' || data.kind === 'docx'
+        ? String(DOMPurify.sanitize(data.content, HTML_SANITIZE_CONFIG))
+        : ''),
+      [data.kind, data.content],
+    )
+    return h(PreviewContent, { copy: props.copy, data, sanitized })
+  }
+
+  return { default: PreviewRenderer }
+})
 
 function PreviewView(props: ViewProps): React.ReactElement {
   const path = props.path ?? ''
@@ -2661,11 +2819,6 @@ function PreviewView(props: ViewProps): React.ReactElement {
 
   const ready = state.status === 'ready'
   const kind = ready ? state.value.kind : ''
-  const content = ready ? state.value.content : ''
-  const sanitized = React.useMemo(
-    () => (kind === 'html' || kind === 'docx' ? DOMPurify.sanitize(content, HTML_SANITIZE_CONFIG) : ''),
-    [kind, content],
-  )
 
   if (path.length === 0) return h(EmptyState, { message: props.copy.previewPickFile })
   if (state.status === 'error') {
@@ -2714,7 +2867,15 @@ function PreviewView(props: ViewProps): React.ReactElement {
             appear: true,
             timeout: reducedMotion ? 0 : PREVIEW_FADE_MS,
           },
-          h(PreviewContent, { copy: props.copy, data: state.value, sanitized }),
+          h(
+            PanelErrorBoundary,
+            null,
+            h(
+              React.Suspense,
+              { fallback: skeleton },
+              h(LazyPreviewRenderer, { copy: props.copy, data: state.value }),
+            ),
+          ),
         )
         : null,
     ),
@@ -3137,6 +3298,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   }, [])
 
   React.useEffect(() => {
+    if (typeof document === 'undefined') return
     const onVisibility = (): void => {
       setVisible(!document.hidden)
     }
@@ -3186,7 +3348,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     const width = size.width
     const height = size.height
     if (width <= 0 || height <= 0) return
-    const dpr = Math.max(1, window.devicePixelRatio || 1)
+    const dpr = Math.max(1, typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1)
     const pixelWidth = Math.max(1, Math.round(width * dpr))
     const pixelHeight = Math.max(1, Math.round(height * dpr))
     if (canvas.width !== pixelWidth) canvas.width = pixelWidth
@@ -3329,6 +3491,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
 
   const animate = !reducedMotion && visible && props.graph.edges.length > 0
   React.useEffect(() => {
+    if (typeof window === 'undefined') return
     if (!animate) {
       drawRef.current(performance.now())
       return
@@ -3797,6 +3960,7 @@ function StatusPulse(props: { enabled: boolean }): React.ReactElement {
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const [on, setOn] = React.useState(true)
   React.useEffect(() => {
+    if (typeof window === 'undefined') return
     if (!props.enabled || reducedMotion) {
       setOn(true)
       return
@@ -4382,6 +4546,7 @@ interface DockedPanelProps {
 function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const copy = useCopy().panel
   const route = useHashRoute()
+  const panelError = React.useSyncExternalStore(subscribePanelError, getPanelError, getPanelError)
   const [menuAnchor, setMenuAnchor] = React.useState<HTMLElement | null>(null)
   const [refresh, setRefresh] = React.useState(0)
   const [actionBusy, setActionBusy] = React.useState<'refresh' | 'rebuild' | null>(null)
@@ -4511,6 +4676,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     const top = pendingScrollRef.current
     if (top === null) return
     pendingScrollRef.current = null
+    if (typeof window === 'undefined') return
     window.requestAnimationFrame(() => {
       if (scrollRef.current !== null) scrollRef.current.scrollTop = top
     })
@@ -4584,6 +4750,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     ? copy.tip.scopeWorkspace
     : fillTemplate(copy.tip.scope, { path })
   const titleTip = fillTemplate(copy.expandTitle, { title: props.title })
+  const errorTip = panelError === null ? '' : panelErrorTooltip(panelError)
 
   const scopeChip = h(
     MuiGrow,
@@ -4739,6 +4906,21 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           h(MuiTypography, { variant: 'subtitle2', noWrap: true }, props.title),
         ),
       ),
+    panelError === null
+      ? null
+      : h(
+        Tip,
+        { label: errorTip },
+        h(MuiChip, {
+          size: 'small',
+          color: 'error',
+          variant: 'outlined',
+          label: PANEL_CRASHED_LABEL,
+          'aria-label': `${PANEL_CRASHED_LABEL}: ${errorTip}`,
+          'data-copy-key': 'panel.crashed',
+          sx: CRASH_CHIP_SX,
+        }),
+      ),
     props.expanded
       ? h(
         Tip,
@@ -4790,10 +4972,13 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   )
 
   const content = h(
-    MuiBox,
-    {
-      sx: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
-    },
+    PanelErrorBoundary,
+    null,
+    h(
+      MuiBox,
+      {
+        sx: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
+      },
     h(
       MuiBox,
       { sx: SCOPE_BAR_SX },
@@ -4878,6 +5063,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           sx: NAV_ACTION_SX,
         }),
       ),
+    ),
     ),
   )
 
@@ -5031,7 +5217,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
 }
 
 /** The fixed right-hand column: relationship panel above, workspace below. */
-function CoordinationPanelsInner(_props: PanelProps): React.ReactElement {
+function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
   const copy = useCopy().panel
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const narrow = useMediaQuery('(max-width:899.95px)')
@@ -5069,30 +5255,52 @@ function CoordinationPanelsInner(_props: PanelProps): React.ReactElement {
           pointerEvents: 'none',
         },
       },
-      h(DockedPanel, {
-        side: 'left',
-        views: LEFT_VIEWS,
-        title: copy.leftTitle,
-        expanded: column.openLeft,
-        reducedMotion,
-        onToggle: (): void => {
-          toggle('openLeft')
-        },
-        onResetWidth: resetWidth,
-      }),
-      h(DockedPanel, {
-        side: 'right',
-        views: RIGHT_VIEWS,
-        title: copy.rightTitle,
-        expanded: column.openRight,
-        reducedMotion,
-        onToggle: (): void => {
-          toggle('openRight')
-        },
-        onResetWidth: resetWidth,
-      }),
+      h(
+        PanelErrorBoundary,
+        null,
+        h(DockedPanel, {
+          side: 'left',
+          views: LEFT_VIEWS,
+          title: copy.leftTitle,
+          expanded: column.openLeft,
+          reducedMotion,
+          onToggle: (): void => {
+            toggle('openLeft')
+          },
+          onResetWidth: resetWidth,
+        }),
+      ),
+      h(
+        PanelErrorBoundary,
+        null,
+        h(DockedPanel, {
+          side: 'right',
+          views: RIGHT_VIEWS,
+          title: copy.rightTitle,
+          expanded: column.openRight,
+          reducedMotion,
+          onToggle: (): void => {
+            toggle('openRight')
+          },
+          onResetWidth: resetWidth,
+        }),
+      ),
     ),
   )
+}
+
+/**
+ * The `panel.enabled` escape hatch: `localStorage['coordination.panel.disabled']`
+ * set to `1` (or `true`) mounts nothing at all. This must be a component so the
+ * flag is read per mount (a page reload is the documented activation point) and
+ * never at module evaluation.
+ */
+function CoordinationPanelsInner(props: PanelProps): React.ReactElement | null {
+  const [disabled] = React.useState(isPanelDisabled)
+  if (disabled) return null
+  // Outer boundary around the whole fixed column: a failure in the column's own
+  // hooks or theme still cannot escape into the composer slot.
+  return h(PanelErrorBoundary, null, h(CoordinationPanelsColumn, props))
 }
 
 function sameSession(previous: PanelProps, next: PanelProps): boolean {

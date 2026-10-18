@@ -37,12 +37,80 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { ComposerControls, clearComposerCaches } from './controls.js'
 import { CoordinationSettings } from './settings.js'
 import { TakeoverDialog } from './takeover.js'
-import { CoordinationPanels } from './panel.js'
 import { currentCopy, installLocale } from './i18n.js'
 import { disposeTakeoverStyle, installTakeoverStyle } from './store.js'
 import { copyFor } from '../shared/i18n.js'
 
 const PLUGIN_ID = 'deepseek-coordination'
+
+/* ------------------------------------------------------------------------- *
+ * Panel chunk and its outer boundary
+ *
+ * `./panel.js` is a separate lazy module so a failure while its large
+ * preview/MUI dependency graph evaluates cannot take the whole client bundle
+ * down. The boundary that catches a failed chunk load must live in this module:
+ * a boundary inside the lazy module would not exist yet when the load fails.
+ * ------------------------------------------------------------------------- */
+
+/** Catches a panel chunk load or render failure; renders nothing on failure. */
+class PanelLoadBoundary extends React.Component<
+  { children?: React.ReactNode },
+  { failed: boolean }
+> {
+  state: { failed: boolean } = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    console.error('[coordination] panel failed', error, info?.componentStack)
+  }
+
+  render(): React.ReactNode {
+    return this.state.failed ? null : this.props.children
+  }
+}
+
+/**
+ * `CoordinationPanels` is a named export of the lazy module; the `.then`
+ * adapter gives `React.lazy` the `{ default }` shape it requires.
+ */
+const LazyCoordinationPanels = React.lazy(
+  () => import('./panel.js').then((module) => ({ default: module.CoordinationPanels })),
+)
+
+/* ------------------------------------------------------------------------- *
+ * Boot diagnostics
+ *
+ * Registered once, before any slot work: an asynchronous failure that React
+ * never renders (a rejected chunk load, a timer, an event handler) still
+ * leaves its cause in the console. Guarded and wrapped so a host without
+ * `window` or a throwing console never blocks activation.
+ * ------------------------------------------------------------------------- */
+
+let diagnosticsInstalled = false
+
+function installClientDiagnostics(): void {
+  if (typeof window === 'undefined' || diagnosticsInstalled) return
+  diagnosticsInstalled = true
+  try {
+    window.addEventListener('error', (event: ErrorEvent) => {
+      console.error('[coordination] client error', event.error ?? event.message)
+    })
+    window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+      console.error('[coordination] unhandled rejection', event.reason)
+    })
+  } catch {
+    // Diagnostics are best effort; never block plugin activation.
+  }
+}
+
+try {
+  installClientDiagnostics()
+} catch {
+  // A host without a usable window keeps booting without these listeners.
+}
 
 /* ------------------------------------------------------------------------- *
  * Settings nav icon
@@ -154,7 +222,15 @@ const MemoControls = React.memo(
       null,
       React.createElement(ComposerControls, { sessionId: props.sessionId }),
       React.createElement(TakeoverDialog, { sessionId: props.sessionId }),
-      React.createElement(CoordinationPanels, { sessionId: props.sessionId }),
+      React.createElement(
+        PanelLoadBoundary,
+        null,
+        React.createElement(
+          React.Suspense,
+          { fallback: null },
+          React.createElement(LazyCoordinationPanels, { sessionId: props.sessionId }),
+        ),
+      ),
     )
   },
   (previous: MemoControlsProps, next: MemoControlsProps): boolean => previous.sessionId === next.sessionId,

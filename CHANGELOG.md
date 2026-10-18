@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.1 | 2026-10-18 | `—` | Panel error containment, lazy panel module, escape hatch |
 | 0.14.0 | 2026-10-18 | `429d05e` | Read-only workspace & relationship panels, canvas graphs, preview matrix, agent roster, cache-strategy wiring |
 | 0.13.0 | 2026-10-18 | `83d3601` | First-class `interface`/`type`/`enumeration`/`namespace` kinds across TS, Java, Rust and PHP |
 | 0.12.0 | 2026-10-18 | `84af8b8` | Domain ecosystems: tex, book, markdown, html, languages, office, package managers; kind filter and directory layer |
@@ -49,6 +50,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.1] — 2026-10-18
+
+### Fixed
+
+- **A failing panel can no longer blank the harness.** Both panels, the fixed
+  column and the preview subtree are wrapped in error boundaries that render
+  `null`, log one `[coordination] panel failed` line with the component stack,
+  and surface a small "Panel crashed" chip in the title bar. `panel.ts` is loaded
+  through `React.lazy` (with `codeSplitting: false`, so the client stays a single
+  file and the module body still runs lazily), which contains failures that
+  happen while a dependency is being evaluated.
+- **Escape hatch without a reinstall.** `localStorage['coordination.panel.disabled']
+  = '1'` mounts nothing.
+- **Diagnosability.** `error` and `unhandledrejection` are logged with a
+  `[coordination]` prefix; the preview markdown/KaTeX/Prism/DOMPurify stack is
+  lazy so it cannot break the initial panel render.
+
+### Changed
+
+- **Release layout note:** the client bundle must remain a single `lib/client.js`
+  because the DSH client loader resolves registered ids only and the tarball ships
+  one client file.
 
 ## [0.14.0] — 2026-10-18
 

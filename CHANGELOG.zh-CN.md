@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.14.1 | 2026-10-18 | `—` | 面板错误隔离、面板懒加载、逃生开关 |
 | 0.14.0 | 2026-10-18 | `429d05e` | 只读工作区/关系双面板、canvas 关系图、预览矩阵、代理名册、缓存策略接线 |
 | 0.13.0 | 2026-10-18 | `83d3601` | TS、Java、Rust、PHP 的 `interface`/`type`/`enumeration`/`namespace` 成为一等 kind |
 | 0.12.0 | 2026-10-18 | `84af8b8` | 领域体系：tex、book、markdown、html、各语言、office、包管理器；kind 过滤与目录层 |
@@ -46,6 +47,25 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.14.1] — 2026-10-18
+
+### 修复
+
+- **面板出错不再拖垮整个 harness。** 两个面板、固定列与预览子树各自包了错误边界：
+  渲染 `null`、只打一条 `[coordination] panel failed`（含组件栈）、标题栏显示小号
+  “Panel crashed” 徽标。`panel.ts` 改为 `React.lazy` 加载（配合
+  `codeSplitting:false`，客户端仍是单文件、模块体仍延迟执行），可兜住依赖求值期
+  的失败。
+- **无需重装的逃生开关。** `localStorage['coordination.panel.disabled'] = '1'`
+  时不挂载任何面板。
+- **可诊断性。** `error`/`unhandledrejection` 统一以 `[coordination]` 前缀打印；
+  预览用的 markdown/KaTeX/Prism/DOMPurify 改为懒加载，不影响面板首屏。
+
+### 变更
+
+- **发布布局约束：** 客户端必须保持单个 `lib/client.js`——DSH 客户端加载器只解析
+  已注册 id，tarball 也只带一个客户端文件。
 
 ## [0.14.0] — 2026-10-18
 

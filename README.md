@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.14.0 (2026-10-18).** This release makes `interface`, `type`, `enumeration` and `namespace` first-class declaration kinds across TypeScript, Java, Rust and PHP. It adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.14.1 (2026-10-18).** This release makes `interface`, `type`, `enumeration` and `namespace` first-class declaration kinds across TypeScript, Java, Rust and PHP. It adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -60,7 +60,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.14.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.14.1.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -70,11 +70,23 @@ dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 
 `dsh plugin add` writes the dependency and the bundle row. If the profile still records a different package spec, replace it rather than assuming the new code loaded; check `dsh --profile <name> --dump-config` and the installed `package.json` version.
 
+### Uninstall or disable
+
+If a release makes the harness unreachable, remove it in this order and restart afterwards:
+
+1. Remove the `deepseek-coordination` bundle entry from the profile roster (`dsh plugin --profile <name> remove deepseek-coordination`, or delete the row by hand).
+2. `pnpm remove deepseek-coordination` in the profile.
+3. Delete `node_modules/deepseek-coordination` if it still exists; some uninstall paths leave the directory behind.
+4. `pnpm install` to rewrite the lockfile and dependency tree.
+5. Restart the harness. The client bundle is served at boot, so reloading the page alone does not unload the old plugin.
+
+For a no-restart recovery path limited to the panel UI, set `localStorage['coordination.panel.disabled'] = '1'` (or `'true'`) in the Web GUI and reload: the coordination panel column mounts nothing, while the rest of the plugin stays available. Set the key back to `'0'` (or delete it) and reload to restore the panels. The flag is read once at mount, so both directions need a reload.
+
 | Artifact | Format | Size in this build |
 |---|---|---|
-| `lib/index.mjs` | Host ESM, `platform: node` | 940,726 B |
+| `lib/index.mjs` | Host ESM, `platform: node` | 2,380,317 B |
 | `lib/index.d.mts` | Host declarations | 9,095 B |
-| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 1,170,887 B |
+| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 3,250,623 B (687,907 B gzipped) |
 
 Material UI, emotion and `react-dom` are bundled into `lib/client.js`; React itself comes from the host module table. The inlined `react-dom` is the 18.3.1 line that matches the host's React 18 — npm refuses to auto-install a React 19 `react-dom` against a React 18 `react`. The client bundle is large because MUI and `react-dom` are inlined, not because it ships a second React.
 

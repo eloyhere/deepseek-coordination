@@ -55,6 +55,12 @@ export default defineConfig([
       alwaysBundle: (id) => id !== 'react' && !id.startsWith('@deepseek-ai/dsh-'),
     },
     outputOptions: {
+      // DSH's client module loader resolves registered ids only; relative chunk
+      // imports break at runtime, and package.json ships only lib/client.js, so
+      // the client bundle must stay a single file. Rolldown still wraps each
+      // dynamic import in a lazy `__esmMin` initializer, so deferred module
+      // bodies stay deferred without emitting a chunk.
+      codeSplitting: false,
       entryFileNames: 'client.js',
       banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(PLUGIN_ID)}, factory: (require) => {`,
       footer: 'return module.exports; } });',
