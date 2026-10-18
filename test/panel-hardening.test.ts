@@ -35,11 +35,14 @@ import {
   SCOPE_BAR_SX,
   SCROLL_THUMB_SX,
   SCROLL_TRACK_SX,
+  fitScale,
   getPanelError,
   initialPanelNavigation,
   isPanelDisabled,
+  layoutRadius,
   panelErrorTooltip,
   panelNavigationReducer,
+  shouldDrawLabel,
 } from '../src/client/panel.js'
 
 interface ClientRoot {
@@ -678,6 +681,80 @@ test('Autocomplete dropdown replaces the native bar with the React scrollbar', (
   // The native bar is hidden so only the custom thumb remains.
   assert.match(source, /scrollbarWidth: 'none'/)
   assert.match(source, /&::-webkit-scrollbar/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Canvas graph density: auto-fit, label declutter and gap-aware layout radius
+ * ------------------------------------------------------------------------- */
+
+test('fitScale clamps auto-fit zoom to [0.15, 1]', () => {
+  const viewport = { width: 400, height: 300 }
+
+  // A huge graph hits the interactive floor; a tight one keeps the 1:1 ceiling.
+  assert.equal(fitScale({ minX: 0, minY: 0, maxX: 8000, maxY: 8000 }, viewport, 48), 0.15)
+  assert.equal(fitScale({ minX: 0, minY: 0, maxX: 100, maxY: 100 }, viewport, 48), 1)
+
+  // `pad` takes part in the formula: 400 / (600 + 48), not 400 / 600.
+  const padded = fitScale({ minX: 0, minY: 0, maxX: 600, maxY: 0 }, viewport, 48)
+  assert.ok(Math.abs(padded - 400 / 648) < 1e-12, `unexpected fit scale ${padded}`)
+
+  // The default pad matches the documented ~48 px breathing room.
+  assert.equal(
+    fitScale({ minX: 0, minY: 0, maxX: 600, maxY: 0 }, viewport),
+    fitScale({ minX: 0, minY: 0, maxX: 600, maxY: 0 }, viewport, 48),
+  )
+})
+
+test('fitScale returns 1 for a single node and an empty graph', () => {
+  // A one-node bbox is degenerate: even a tiny viewport must not zoom out.
+  assert.equal(
+    fitScale({ minX: 7, minY: 9, maxX: 7, maxY: 9 }, { width: 20, height: 20 }, 48),
+    1,
+  )
+  // No positions at all (empty/loading graph) keeps the neutral view.
+  assert.equal(fitScale(null, { width: 400, height: 300 }, 48), 1)
+  // An unmeasured viewport must not collapse the scale to the floor.
+  assert.equal(fitScale({ minX: 0, minY: 0, maxX: 10, maxY: 10 }, { width: 0, height: 0 }, 48), 1)
+})
+
+test('shouldDrawLabel hides inactive labels only below the 0.55 threshold', () => {
+  const cases: Array<{ scale: number; active: boolean; expected: boolean }> = [
+    { scale: 3, active: false, expected: true },
+    { scale: 1, active: false, expected: true },
+    { scale: 0.55, active: false, expected: true },
+    { scale: 0.549, active: false, expected: false },
+    { scale: 0.3, active: false, expected: false },
+    { scale: 0.15, active: false, expected: false },
+    { scale: 1, active: true, expected: true },
+    { scale: 0.549, active: true, expected: true },
+    { scale: 0.15, active: true, expected: true },
+  ]
+  for (const entry of cases) {
+    assert.equal(
+      shouldDrawLabel(entry.scale, entry.active),
+      entry.expected,
+      `scale=${entry.scale} active=${entry.active}`,
+    )
+  }
+})
+
+test('layoutRadius grows with sqrt(nodeCount) and stays bounded', () => {
+  const counts = [0, 1, 2, 5, 20, 50, 120, 200]
+  const radii = counts.map((count) => layoutRadius(count))
+  for (let index = 1; index < radii.length; index += 1) {
+    assert.ok(
+      radii[index] > radii[index - 1],
+      `radius must grow monotonically at ${counts[index]} nodes`,
+    )
+  }
+  assert.ok(radii[0] >= 48, 'radius has a floor')
+  assert.ok(radii[radii.length - 1] <= 640, 'radius is capped for the 200-node limit')
+  assert.ok(layoutRadius(120) > layoutRadius(20), '120 nodes get a wider ring than 20')
+
+  // Degenerate counts are neutral, and the cap wins above the node limit.
+  assert.equal(layoutRadius(-5), layoutRadius(0))
+  assert.equal(layoutRadius(Number.NaN), layoutRadius(0))
+  assert.equal(layoutRadius(5000), layoutRadius(200))
 })
 
 test('panel internals form a bounded stack: header / scope / scroll / nav', () => {

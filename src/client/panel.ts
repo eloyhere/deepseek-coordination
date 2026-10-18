@@ -2344,6 +2344,20 @@ interface ViewProps {
 
 function FilesView(props: ViewProps): React.ReactElement {
   const { state, retry } = useGraph('/graph/tree', parseTree, props.refresh, props.onSettled)
+  /** Directories whose descendants are hidden (expanded by default). */
+  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(() => new Set<string>())
+  // A different workspace is a different tree: its stored directory paths must
+  // not inherit the previous tree's collapsed state. An ordinary refresh keeps
+  // the same root, so the operator's collapse state survives it.
+  const treeRoot = state.status === 'ready' ? state.value.root : ''
+  const previousRoot = React.useRef(treeRoot)
+  React.useEffect(() => {
+    if (treeRoot.length === 0) return
+    if (previousRoot.current.length > 0 && previousRoot.current !== treeRoot) {
+      setCollapsed(new Set<string>())
+    }
+    previousRoot.current = treeRoot
+  }, [treeRoot])
   if (state.status === 'loading' || state.status === 'idle') {
     return h(LoadingState, { copy: props.copy })
   }
@@ -2357,74 +2371,105 @@ function FilesView(props: ViewProps): React.ReactElement {
     })
   }
 
+  const toggleDirectory = (path: string): void => {
+    setCollapsed((current) => {
+      const next = new Set(current)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  /** True when one of this row's ancestors is collapsed (its own row stays). */
+  const hiddenByCollapsed = (path: string): boolean => {
+    let separator = path.lastIndexOf('/')
+    while (separator > 0) {
+      const ancestor = path.slice(0, separator)
+      if (collapsed.has(ancestor)) return true
+      separator = ancestor.lastIndexOf('/')
+    }
+    return false
+  }
+
   return h(
     MuiList,
     { dense: true, disablePadding: true, sx: LIST_SX },
-    ...state.value.entries.map((entry, index) => {
-      const selected = props.path === entry.path
-      return h(
-        MuiBox,
-        {
-          key: `${entry.path}#${index}`,
-          sx: FILE_WRAPPER_SX,
-          style: { paddingLeft: 8 + entry.depth * 14 },
-        },
-        h(
-          MuiListItemButton,
+    ...state.value.entries
+      .filter((entry) => !hiddenByCollapsed(entry.path))
+      .map((entry, index) => {
+        const selected = props.path === entry.path
+        const isCollapsed = entry.directory && collapsed.has(entry.path)
+        return h(
+          MuiBox,
           {
-            selected,
-            onClick: entry.directory ? undefined : (): void => {
-              // Clicking the selected file again clears the selection. The
-              // right panel opens the outline; the left panel only selects.
-              if (selected) {
-                navigate(props.side, 'files')
-                return
-              }
-              navigate(props.side, props.side === 'right' ? 'outline' : 'files', { path: entry.path })
-            },
-            sx: FILE_ROW_SX,
-            title: entry.path,
+            key: `${entry.path}#${index}`,
+            sx: FILE_WRAPPER_SX,
+            style: { paddingLeft: 8 + entry.depth * 14 },
           },
           h(
-            MuiBox,
-            { component: 'span', sx: TREE_ICON_SX },
-            h(entry.directory ? IconChevron : IconArticle, { fontSize: 'small' }),
-          ),
-          h(
-            MuiBox,
-            { sx: TREE_TEXT_SX },
-            h(
-              MuiTypography,
-              { variant: 'body2', noWrap: true, sx: entry.directory ? TREE_DIR_LABEL_SX : undefined },
-              entry.name,
-            ),
-            h(
-              MuiTypography,
-              { variant: 'caption', color: 'text.secondary', component: 'div', noWrap: true },
-              entry.path,
-            ),
-          ),
-        ),
-        entry.directory || props.side !== 'right'
-          ? null
-          : h(
-            Tip,
-            { label: props.copy.tip.previewFile },
-            h(
-              MuiIconButton,
-              {
-                size: 'small',
-                sx: PREVIEW_BUTTON_SX,
-                'aria-label': props.copy.tip.previewFile,
-                onClick: (): void => {
-                  navigate(props.side, 'preview', { path: entry.path })
+            MuiListItemButton,
+            {
+              selected,
+              'aria-expanded': entry.directory ? !isCollapsed : undefined,
+              onClick: entry.directory
+                ? (): void => { toggleDirectory(entry.path) }
+                : (): void => {
+                  // Clicking the selected file again clears the selection. The
+                  // right panel opens the outline; the left panel only selects.
+                  if (selected) {
+                    navigate(props.side, 'files')
+                    return
+                  }
+                  navigate(props.side, props.side === 'right' ? 'outline' : 'files', { path: entry.path })
                 },
-              },
-              h(IconPreview, { fontSize: 'small' }),
+              sx: FILE_ROW_SX,
+              title: entry.path,
+            },
+            h(
+              MuiBox,
+              { component: 'span', sx: TREE_ICON_SX },
+              h(
+                entry.directory
+                  ? isCollapsed ? IconChevron : IconExpand
+                  : IconArticle,
+                { fontSize: 'small' },
+              ),
+            ),
+            h(
+              MuiBox,
+              { sx: TREE_TEXT_SX },
+              h(
+                MuiTypography,
+                { variant: 'body2', noWrap: true, sx: entry.directory ? TREE_DIR_LABEL_SX : undefined },
+                entry.name,
+              ),
+              h(
+                MuiTypography,
+                { variant: 'caption', color: 'text.secondary', component: 'div', noWrap: true },
+                entry.path,
+              ),
             ),
           ),
-      )
-    }),
+          entry.directory || props.side !== 'right'
+            ? null
+            : h(
+              Tip,
+              { label: props.copy.tip.previewFile },
+              h(
+                MuiIconButton,
+                {
+                  size: 'small',
+                  sx: PREVIEW_BUTTON_SX,
+                  'aria-label': props.copy.tip.previewFile,
+                  onClick: (): void => {
+                    navigate(props.side, 'preview', { path: entry.path })
+                  },
+                },
+                h(IconPreview, { fontSize: 'small' }),
+              ),
+            ),
+        )
+      }),
   )
 }
 
@@ -3180,10 +3225,94 @@ const CANVAS_FLOW_EDGES = 500
 const CANVAS_NODE_RADIUS = 7
 const CANVAS_NODE_SLOP = 4
 const CANVAS_EDGE_SLOP = 6
-const CANVAS_MIN_SCALE = 0.5
+const CANVAS_MIN_SCALE = 0.15
 const CANVAS_MAX_SCALE = 3
 const CANVAS_RELAX_STEPS = 90
 const CANVAS_LAYER_CAP = 8
+/** Breathing room around the graph when auto-fitting, in screen pixels. */
+const CANVAS_FIT_PAD = 48
+/** Below this zoom an inactive node is a dot instead of a dot + label. */
+const CANVAS_LABEL_SCALE = 0.55
+/** Below this zoom edges lose their arrowheads and draw at 1 screen pixel. */
+const CANVAS_LOW_DETAIL_SCALE = 0.3
+/** Ring/star radius base and per-sqrt(node) growth, both in world pixels. */
+const CANVAS_RADIUS_BASE = 48
+const CANVAS_RADIUS_PER_SQRT_NODE = 40
+const CANVAS_RADIUS_CAP = 640
+
+/** Axis-aligned bounding box of every laid-out node position. */
+export interface CanvasBBox {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+/** CSS-pixel size of the canvas viewport. */
+export interface CanvasViewportSize {
+  width: number
+  height: number
+}
+
+/**
+ * Zoom that makes `bbox` fit the viewport with `pad` px of breathing room.
+ * The result never exceeds 1:1 and never falls below the interactive zoom
+ * floor, so a 200-node graph stays reachable in a narrow panel. A degenerate
+ * box (a single node) and no box at all (empty graph) keep the neutral view.
+ */
+export function fitScale(
+  bbox: CanvasBBox | null,
+  viewport: CanvasViewportSize,
+  pad: number = CANVAS_FIT_PAD,
+): number {
+  if (bbox === null) return 1
+  if (!(viewport.width > 0) || !(viewport.height > 0)) return 1
+  const width = bbox.maxX - bbox.minX
+  const height = bbox.maxY - bbox.minY
+  if (!(width > 0) && !(height > 0)) return 1
+  const padding = Number.isFinite(pad) ? Math.max(0, pad) : CANVAS_FIT_PAD
+  const scale = Math.min(viewport.width / (width + padding), viewport.height / (height + padding))
+  if (!Number.isFinite(scale)) return 1
+  return Math.max(CANVAS_MIN_SCALE, Math.min(1, scale))
+}
+
+/**
+ * Labels are the expensive part of a dense canvas: below the threshold an
+ * inactive node collapses to a dot, while hover, selection and traced paths
+ * keep their labels regardless of zoom.
+ */
+export function shouldDrawLabel(scale: number, active: boolean): boolean {
+  return active || scale >= CANVAS_LABEL_SCALE
+}
+
+/**
+ * Ring/star radius for a node count. Growing with sqrt(n) keeps the per-node
+ * arc spacing at O(1/sqrt(n)) instead of O(1/n); the cap keeps a full 200-node
+ * graph finite before auto-fit shrinks it to the viewport.
+ */
+export function layoutRadius(nodeCount: number): number {
+  const count = Number.isFinite(nodeCount)
+    ? Math.min(CANVAS_MAX_NODES, Math.max(0, Math.floor(nodeCount)))
+    : 0
+  const radius = CANVAS_RADIUS_BASE + Math.sqrt(count) * CANVAS_RADIUS_PER_SQRT_NODE
+  return Math.min(CANVAS_RADIUS_CAP, radius)
+}
+
+/** Bounding box of the current node positions, or null for an empty graph. */
+function canvasBBox(positions: ReadonlyMap<string, CanvasPoint>): CanvasBBox | null {
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const point of positions.values()) {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue
+    minX = Math.min(minX, point.x)
+    minY = Math.min(minY, point.y)
+    maxX = Math.max(maxX, point.x)
+    maxY = Math.max(maxY, point.y)
+  }
+  return minX === Infinity ? null : { minX, minY, maxX, maxY }
+}
 
 function canvasRelationOf(value: string | undefined): CanvasRelation {
   return value === 'imports' || value === 'exports' || value === 'contains' || value === 'part_of'
@@ -3375,7 +3504,9 @@ function layoutCanvasGraph(
     return positions
   }
 
-  const radius = Math.max(48, Math.min(width, height) * 0.36)
+  // Density-aware ring: sqrt(n) growth widens the arc as the graph fills up,
+  // while the viewport floor keeps small graphs from collapsing into a knot.
+  const radius = Math.max(layoutRadius(count), Math.min(width, height) * 0.36)
   nodes.forEach((node, index) => {
     if (mode === 'star' && node.id === centerId) {
       positions.set(node.id, { x: cx, y: cy })
@@ -3394,6 +3525,12 @@ function layoutCanvasGraph(
   }
   const fixed = new Set<string>()
   if (mode === 'star' && centerId !== null && positions.has(centerId)) fixed.add(centerId)
+
+  // The relaxation used to clamp every node inside the viewport, which would
+  // collapse a density-grown ring back onto the border before auto-fit ran.
+  // Allow the ring's own extent (plus padding) and let fitScale shrink it.
+  const limitX = Math.max(width / 2 - padding, radius + padding)
+  const limitY = Math.max(height / 2 - padding, radius + padding)
 
   for (let step = 0; step < CANVAS_RELAX_STEPS; step += 1) {
     const forceX = new Array<number>(count).fill(0)
@@ -3448,8 +3585,8 @@ function layoutCanvasGraph(
       forceY[index] += (cy - point.y) * 0.0025
       const stepX = Math.max(-14, Math.min(14, forceX[index] * cooling))
       const stepY = Math.max(-14, Math.min(14, forceY[index] * cooling))
-      point.x = Math.min(width - padding, Math.max(padding, point.x + stepX))
-      point.y = Math.min(height - padding, Math.max(padding, point.y + stepY))
+      point.x = Math.min(cx + limitX, Math.max(cx - limitX, point.x + stepX))
+      point.y = Math.min(cy + limitY, Math.max(cy - limitY, point.y + stepY))
     }
   }
   return positions
@@ -3536,6 +3673,36 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   const [tooltip, setTooltip] = React.useState<{ left: number; top: number; lines: string[] } | null>(null)
   const [visible, setVisible] = React.useState(typeof document === 'undefined' ? true : !document.hidden)
 
+  /** True once the user zooms/pans; later resizes then keep their viewport. */
+  const userAdjustedRef = React.useRef(false)
+  const lastCanvasViewRef = React.useRef<{
+    graph: CanvasGraphData
+    layoutMode: CanvasLayoutMode
+    centerId: string | null
+  } | null>(null)
+
+  /**
+   * One auto-fit path shared by data loads, panel resizes and the fit button:
+   * centre the laid-out bounding box and clamp the zoom to [0.15, 1].
+   */
+  const fitViewport = (): void => {
+    const bbox = canvasBBox(positionsRef.current)
+    const width = size.width
+    const height = size.height
+    if (bbox === null || width <= 0 || height <= 0) {
+      viewportRef.current = { scale: 1, x: 0, y: 0 }
+      userAdjustedRef.current = false
+      return
+    }
+    const scale = fitScale(bbox, { width, height }, CANVAS_FIT_PAD)
+    viewportRef.current = {
+      scale,
+      x: width / 2 - ((bbox.minX + bbox.maxX) / 2) * scale,
+      y: height / 2 - ((bbox.minY + bbox.maxY) / 2) * scale,
+    }
+    userAdjustedRef.current = false
+  }
+
   React.useEffect(() => {
     const frame = frameRef.current
     if (frame === null) return
@@ -3563,6 +3730,16 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   }, [])
 
   React.useEffect(() => {
+    const previous = lastCanvasViewRef.current
+    const viewChanged = previous === null
+      || previous.graph !== props.graph
+      || previous.layoutMode !== props.layoutMode
+      || previous.centerId !== props.centerId
+    lastCanvasViewRef.current = {
+      graph: props.graph,
+      layoutMode: props.layoutMode,
+      centerId: props.centerId,
+    }
     positionsRef.current = layoutCanvasGraph(
       props.graph,
       size.width,
@@ -3570,12 +3747,17 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       props.layoutMode,
       props.centerId,
     )
-    viewportRef.current = { scale: 1, x: 0, y: 0 }
-    hoverRef.current = null
-    setHover(null)
-    setTooltip(null)
-    setSelectedEdge(null)
-    setSelectedNode(null)
+    if (viewChanged) {
+      userAdjustedRef.current = false
+      hoverRef.current = null
+      setHover(null)
+      setTooltip(null)
+      setSelectedEdge(null)
+      setSelectedNode(null)
+    }
+    // A fresh data load/view refits unconditionally; a resize refits only
+    // while the user has not manually zoomed or panned.
+    if (viewChanged || !userAdjustedRef.current) fitViewport()
     drawRef.current(performance.now())
   }, [props.graph, props.layoutMode, props.centerId, size.width, size.height])
 
@@ -3616,8 +3798,27 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     const trace = hovered !== null && hovered.kind === 'node'
       ? traceCanvasEdges(props.graph, hovered.id)
       : null
+    // Nodes touched by the hovered node's depth-3 upstream/downstream path:
+    // their labels stay visible at every zoom so the trace remains readable.
+    const tracedNodes = new Set<string>()
+    if (trace !== null) {
+      for (const edge of props.graph.edges) {
+        if (trace.upstream.has(edge.id) || trace.downstream.has(edge.id)) {
+          tracedNodes.add(edge.from)
+          tracedNodes.add(edge.to)
+        }
+      }
+    }
     const seconds = time / 1000
     const frameOffset = time / (1000 / 60)
+    // Semantic zoom: the viewport transform scales node *positions* and edge
+    // lengths, but marks stay readable at a constant screen size. Every mark
+    // (stroke width, node radius, label font, arrowhead, ripple) is therefore
+    // counter-scaled by the zoom factor.
+    const inverseScale = 1 / viewport.scale
+    // Below the low-detail threshold the per-edge arrowheads and thicker
+    // strokes are pure overdraw: one screen pixel per edge, no arrowheads.
+    const lowDetail = viewport.scale < CANVAS_LOW_DETAIL_SCALE
 
     context.save()
     context.translate(viewport.x, viewport.y)
@@ -3648,7 +3849,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       if (isUpstream && !edge.cyclic) color = '#26c6da'
       else if (isDownstream && !edge.cyclic) color = palette.primary.main
 
-      const lineWidth = isSelected ? 2.5 : isHovered ? 3 : 1.2
+      const lineWidth = lowDetail
+        ? inverseScale
+        : (isSelected ? 2.5 : isHovered ? 3 : 1.2) * inverseScale
       context.save()
       context.globalAlpha = alpha
       context.strokeStyle = color
@@ -3664,31 +3867,37 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       } else {
         const length = Math.hypot(to.x - from.x, to.y - from.y)
         const speed = (1.5 + 1.5 * Math.min(1, 160 / Math.max(length, 40))) * (isHovered ? 2 : 1)
-        context.setLineDash([6, 6])
+        context.setLineDash([6 * inverseScale, 6 * inverseScale])
         context.lineDashOffset = reducedMotion || index >= CANVAS_FLOW_EDGES
           ? 0
-          : -((frameOffset * speed) % 12)
+          : -(((frameOffset * speed) % 12) * inverseScale)
       }
       context.beginPath()
       context.moveTo(from.x, from.y)
       context.lineTo(to.x, to.y)
       context.stroke()
 
-      // Direction arrow, tied to the from → to order.
-      const angle = Math.atan2(to.y - from.y, to.x - from.x)
-      const arrowX = to.x - Math.cos(angle) * (CANVAS_NODE_RADIUS + 4)
-      const arrowY = to.y - Math.sin(angle) * (CANVAS_NODE_RADIUS + 4)
-      context.beginPath()
-      context.moveTo(arrowX, arrowY)
-      context.lineTo(arrowX - Math.cos(angle - 0.45) * 7, arrowY - Math.sin(angle - 0.45) * 7)
-      context.lineTo(arrowX - Math.cos(angle + 0.45) * 7, arrowY - Math.sin(angle + 0.45) * 7)
-      context.closePath()
-      context.fill()
+      // Direction arrow, tied to the from → to order. The gap and head keep a
+      // constant screen size, so the arrow never sinks under a zoomed node.
+      // At low zoom the heads are skipped entirely to cut overdraw.
+      if (!lowDetail) {
+        const angle = Math.atan2(to.y - from.y, to.x - from.x)
+        const arrowGap = (CANVAS_NODE_RADIUS + 4) * inverseScale
+        const arrowLength = 7 * inverseScale
+        const arrowX = to.x - Math.cos(angle) * arrowGap
+        const arrowY = to.y - Math.sin(angle) * arrowGap
+        context.beginPath()
+        context.moveTo(arrowX, arrowY)
+        context.lineTo(arrowX - Math.cos(angle - 0.45) * arrowLength, arrowY - Math.sin(angle - 0.45) * arrowLength)
+        context.lineTo(arrowX - Math.cos(angle + 0.45) * arrowLength, arrowY - Math.sin(angle + 0.45) * arrowLength)
+        context.closePath()
+        context.fill()
+      }
 
       if (isSelected) {
         context.beginPath()
-        context.arc(from.x, from.y, 3.5, 0, Math.PI * 2)
-        context.arc(to.x, to.y, 3.5, 0, Math.PI * 2)
+        context.arc(from.x, from.y, 3.5 * inverseScale, 0, Math.PI * 2)
+        context.arc(to.x, to.y, 3.5 * inverseScale, 0, Math.PI * 2)
         context.fill()
       }
       context.restore()
@@ -3699,28 +3908,37 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       if (point === undefined) return
       const isHovered = hovered !== null && hovered.kind === 'node' && hovered.id === node.id
       const isSelected = selectedNode === node.id
-      const traced = trace !== null && (trace.upstream.size > 0 || trace.downstream.size > 0)
-        ? true
-        : false
-      const radius = isHovered ? CANVAS_NODE_RADIUS + 3 : CANVAS_NODE_RADIUS
+      const onTrace = tracedNodes.has(node.id)
+      const active = isHovered || isSelected || onTrace
+      const radius = (isHovered ? CANVAS_NODE_RADIUS + 3 : CANVAS_NODE_RADIUS) * inverseScale
       let alpha = 1
       if (selectedEdge !== null) alpha = 0.4
       else if (trace !== null && hovered !== null && hovered.kind === 'node' && !isHovered) {
-        alpha = traced ? 0.75 : 0.35
+        alpha = onTrace ? 0.75 : 0.35
       }
       context.save()
       context.globalAlpha = alpha
+      if (!shouldDrawLabel(viewport.scale, active)) {
+        // Dense zoom: an inactive node is a solid status dot, no outline/text.
+        // The radius still counter-scales, so the dot stays 7 screen pixels.
+        context.beginPath()
+        context.arc(point.x, point.y, radius, 0, Math.PI * 2)
+        context.fillStyle = palette.primary.main
+        context.fill()
+        context.restore()
+        return
+      }
       context.beginPath()
       context.arc(point.x, point.y, radius, 0, Math.PI * 2)
       context.fillStyle = isSelected || isHovered ? palette.primary.main : palette.background.paper
       context.fill()
-      context.lineWidth = isSelected ? 2 : 1.2
+      context.lineWidth = (isSelected ? 2 : 1.2) * inverseScale
       context.strokeStyle = palette.primary.main
       context.stroke()
       context.fillStyle = palette.text.secondary
-      context.font = '10px ui-sans-serif, system-ui, sans-serif'
+      context.font = `${10 * inverseScale}px ui-sans-serif, system-ui, sans-serif`
       const label = node.label.length > 28 ? `…${node.label.slice(-27)}` : node.label
-      context.fillText(label, point.x + 11, point.y + 3)
+      context.fillText(label, point.x + 11 * inverseScale, point.y + 3 * inverseScale)
       context.restore()
     })
 
@@ -3731,9 +3949,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
         context.save()
         context.globalAlpha = Math.max(0, 1 - age / 300)
         context.strokeStyle = palette.primary.main
-        context.lineWidth = 2
+        context.lineWidth = 2 * inverseScale
         context.beginPath()
-        context.arc(ripple.x, ripple.y, 24 * (age / 300), 0, Math.PI * 2)
+        context.arc(ripple.x, ripple.y, 24 * (age / 300) * inverseScale, 0, Math.PI * 2)
         context.stroke()
         context.restore()
       } else {
@@ -3841,6 +4059,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     viewport.x = screenX - (screenX - viewport.x) * (scale / viewport.scale)
     viewport.y = screenY - (screenY - viewport.y) * (scale / viewport.scale)
     viewport.scale = scale
+    // Wheel and +/- are manual zooms: stop auto-fit from overriding them on
+    // the next resize. A data/view change clears this flag again.
+    userAdjustedRef.current = true
     drawRef.current(performance.now())
   }
   const zoomAtRef = React.useRef(zoomAt)
@@ -3867,11 +4088,6 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     }
   }, [props.graph])
 
-  const resetViewport = (): void => {
-    viewportRef.current = { scale: 1, x: 0, y: 0 }
-    drawRef.current(performance.now())
-  }
-
   const resetLayout = (): void => {
     positionsRef.current = layoutCanvasGraph(
       props.graph,
@@ -3880,7 +4096,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       props.layoutMode,
       props.centerId,
     )
-    viewportRef.current = { scale: 1, x: 0, y: 0 }
+    fitViewport()
     drawRef.current(performance.now())
   }
 
@@ -3974,6 +4190,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
                   const viewport = viewportRef.current
                   viewport.x = drag.originX + (event.clientX - drag.startX)
                   viewport.y = drag.originY + (event.clientY - drag.startY)
+                  userAdjustedRef.current = true
                 }
                 drawRef.current(performance.now())
                 return
@@ -4059,7 +4276,10 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
           control(copy.tip.zoomOut, IconZoomOut, () => {
             zoomAt(viewportRef.current.scale / 1.2, size.width / 2, size.height / 2)
           }),
-          control(copy.tip.fit, IconFit, resetViewport),
+          control(copy.tip.fit, IconFit, () => {
+            fitViewport()
+            drawRef.current(performance.now())
+          }),
           control(copy.tip.resetLayout, IconResetLayout, resetLayout),
         ),
         tooltip === null

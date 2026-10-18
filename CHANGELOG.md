@@ -54,6 +54,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.5] — 2026-10-18
+
+### Fixed
+
+- **Zoom no longer scales the marks.** Node dots, labels, stroke widths, dashes, arrowheads and the click ripple are counter-scaled by `1/scale`, so zooming in exposes detail instead of turning dots into blobs; the viewport still scales positions and edge lengths, and hit-testing (already `(radius + slop) / scale`) stays correct.
+- **Tree directories expand and collapse.** `FilesView` rendered `/graph/tree` as a flat list with `onClick: undefined`, so the chevrons were decorative. Directories now toggle on click/Enter/Space with `aria-expanded`, hide descendants through an ancestor-prefix filter, keep the state across refreshes of the same root, and reset when the resolved workspace root changes.
+- **Dense graphs open readable.** The canvas now auto-fits on every data/view load (bounding box → scale clamped to `[0.15, 1]`, centred, 48 px padding), grows the layout radius with `√nodeCount` (`min(640, 48 + √n · 40)`), hides inactive labels below `scale 0.55` (hover/selected/traced always labelled), and drops arrowheads plus 1 px edges below `0.3`. Wheel/`+`/`−`/pan set `userAdjusted` so a resize does not fight a manual zoom; the fit button reuses the same path, and the minimum scale is now `0.15`.
+
 ## [0.14.4] — 2026-10-18
 
 ### Fixed
