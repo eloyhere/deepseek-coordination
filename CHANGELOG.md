@@ -19,7 +19,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.14.4 | 2026-10-18 | `—` | Resolve the session workspace for graph indexing |
+| 0.14.5 | 2026-10-18 | `3927d61` | Semantic canvas zoom, collapsible tree, auto-fit for dense graphs |
+| 0.14.4 | 2026-10-18 | `94aa48a` | Resolve the session workspace for graph indexing |
 | 0.14.3 | 2026-10-18 | `088e2f6` | Bottom-anchored panels, reducer navigation, workspace indexing |
 | 0.14.2 | 2026-10-18 | `5b5fdf8` | Client bundle no longer requires Node builtins |
 | 0.14.1 | 2026-10-18 | `c5f333b` | Panel error containment, lazy panel module, escape hatch |
