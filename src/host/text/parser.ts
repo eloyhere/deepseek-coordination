@@ -376,6 +376,12 @@ export interface ParseResult {
 export interface Parser {
   id: string
   extensions: readonly string[]
+  /**
+   * Exact file names claimed by this parser (for example `pom.xml` or
+   * `package.json`), matched case-insensitively and consulted before the
+   * extension lookup. Optional: extension-selected parsers leave it unset.
+   */
+  filenames?: readonly string[]
   parse(text: string, options?: ParseOptions): ParseResult
 }
 
@@ -516,6 +522,17 @@ export interface FlatFragment {
   charset?: Charset
 }
 
+/** What a parsed declaration binds in its source context. */
+export type ConceptBinding = 'function' | 'class' | 'method' | 'variable' | 'parameter' | 'identifier'
+
+/**
+ * Declaration scope, only when the parser can prove it locally: `global` for a
+ * module-level declaration, `local` for one inside a function/method body,
+ * `static` for a class member declared with `static` (or a `static {}` block
+ * member). Parsers omit the field rather than guess.
+ */
+export type ConceptScope = 'global' | 'local' | 'static'
+
 /**
  * The common concept metadata every parsed node can carry, aligned with the
  * v25 domain model (identity/name/kind/summary/description/usage/purpose/brief
@@ -552,6 +569,10 @@ export interface NodeMetadata extends FlatFragment {
   purpose?: string
   /** Explicit one-line synopsis; the only prose field on the wire. */
   brief?: string
+  /** What this declaration binds, when the parser can prove it. */
+  binding?: ConceptBinding
+  /** Provable declaration scope; absent rather than guessed. */
+  scope?: ConceptScope
   /** Body-free locator for this node. */
   reference?: NodeReference
   source?: MetadataSource
@@ -577,6 +598,8 @@ export interface NodeMetadataInput {
   usage?: string
   purpose?: string
   brief?: string
+  binding?: ConceptBinding
+  scope?: ConceptScope
   reference?: NodeReferenceInput
   source?: MetadataSource
   span: SourceSpan
@@ -1147,6 +1170,8 @@ export function createNodeMetadata(input: NodeMetadataInput): NodeMetadata {
   if (purpose.length > 0) metadata.purpose = purpose
   const brief = sanitizeMetadataText(input.brief, MAX_BRIEF_LENGTH)
   if (brief.length > 0) metadata.brief = brief
+  if (input.binding !== undefined) metadata.binding = input.binding
+  if (input.scope !== undefined) metadata.scope = input.scope
   if (input.reference !== undefined) {
     const reference = createNodeReference(input.reference)
     metadata.reference = reference
@@ -1587,10 +1612,11 @@ export function createSpanLocator(text: string): (start: number, end: number) =>
 }
 
 /**
- * Registry of parsers keyed by extension and id.
+ * Registry of parsers keyed by exact file name, extension and id.
  *
- * `resolve` implements the documented order: an explicit path extension wins,
- * the caller's `parserId` is the fallback, and nothing is guessed. Unknown
+ * `resolve` implements the documented order: an exact file name wins (so
+ * `pom.xml` can be claimed without claiming every `.xml` file), then the path
+ * extension, then the caller's `parserId`, and nothing is guessed. Unknown
  * extensions return `undefined` rather than a default parser.
  *
  * All operations are O(1) average map lookups; `parsers`/`ids`/`extensions`
@@ -1599,11 +1625,13 @@ export function createSpanLocator(text: string): (start: number, end: number) =>
 export class ParserRegistry {
   private readonly byIdStore = new Map<string, Parser>()
   private readonly byExtensionStore = new Map<string, Parser>()
+  private readonly byFilenameStore = new Map<string, Parser>()
 
   /**
-   * Register a parser. Throws `InvalidArgumentError` for an invalid id, an
-   * empty extension list, a malformed extension or a duplicate id/extension:
-   * two parsers claiming one extension is a configuration bug, not a choice.
+   * Register a parser. Throws `InvalidArgumentError` for an invalid id, no
+   * extension and no exact file name, a malformed extension/file name or a
+   * duplicate id/extension/file name: two parsers claiming one key is a
+   * configuration bug, not a choice.
    */
   register(parser: Parser): this {
     if (parser === null || typeof parser !== 'object') {
@@ -1612,7 +1640,14 @@ export class ParserRegistry {
     if (typeof parser.id !== 'string' || parser.id.length === 0) {
       throw new InvalidArgumentError('parser id must be a non-empty string', { id: parser.id })
     }
-    if (!Array.isArray(parser.extensions) || parser.extensions.length === 0) {
+    if (!Array.isArray(parser.extensions)) {
+      throw new InvalidArgumentError('parser must declare at least one extension', { id: parser.id })
+    }
+    const filenames = parser.filenames ?? []
+    if (!Array.isArray(filenames)) {
+      throw new InvalidArgumentError('parser file names must be an array', { id: parser.id })
+    }
+    if (parser.extensions.length === 0 && filenames.length === 0) {
       throw new InvalidArgumentError('parser must declare at least one extension', { id: parser.id })
     }
     if (typeof parser.parse !== 'function') {
@@ -1640,8 +1675,37 @@ export class ParserRegistry {
       }
       extensions.push(extension)
     }
+    const exactNames: string[] = []
+    for (const raw of filenames) {
+      if (
+        typeof raw !== 'string' || raw.length === 0 || raw === '.' || raw === '..' ||
+        raw.includes('/') || raw.includes('\\')
+      ) {
+        throw new InvalidArgumentError('parser file names must be plain file names', {
+          id: parser.id,
+          filename: raw,
+        })
+      }
+      const filename = raw.toLowerCase()
+      const existing = this.byFilenameStore.get(filename)
+      if (existing !== undefined) {
+        throw new InvalidArgumentError('file name is already claimed by another parser', {
+          filename,
+          id: parser.id,
+          owner: existing.id,
+        })
+      }
+      if (exactNames.includes(filename)) {
+        throw new InvalidArgumentError('file name is declared twice by one parser', {
+          filename,
+          id: parser.id,
+        })
+      }
+      exactNames.push(filename)
+    }
     this.byIdStore.set(parser.id, parser)
     for (const extension of extensions) this.byExtensionStore.set(extension, parser)
+    for (const filename of exactNames) this.byFilenameStore.set(filename, parser)
     return this
   }
 
@@ -1658,11 +1722,18 @@ export class ParserRegistry {
   }
 
   /**
-   * Resolve a parser from `path` then `parserId`; never guesses.
-   * Time O(1) average.
+   * Resolve a parser from `path` then `parserId`; never guesses. An exact file
+   * name (basename, case-insensitive) is consulted before the extension lookup,
+   * so `pom.xml` can resolve to a manifest parser while `other.xml` stays
+   * unclaimed. Time O(1) average.
    */
   resolve(path?: string, parserId?: string): Parser | undefined {
     if (path !== undefined) {
+      const filename = fileNameOf(path)
+      if (filename !== undefined) {
+        const exact = this.byFilenameStore.get(filename)
+        if (exact !== undefined) return exact
+      }
       const extension = extensionOf(path)
       if (extension !== undefined) {
         const parser = this.byExtensionStore.get(extension)
@@ -1692,6 +1763,26 @@ export class ParserRegistry {
   get size(): number {
     return this.byIdStore.size
   }
+}
+
+/**
+ * Lowercased final path segment (the exact file name), or `undefined` when the
+ * path is empty or ends in a separator. Used by `ParserRegistry.resolve` for
+ * file-name matching; purely lexical.
+ */
+function fileNameOf(path: string): string | undefined {
+  if (typeof path !== 'string' || path.length === 0) return undefined
+  let baseStart = 0
+  for (let index = path.length - 1; index >= 0; index -= 1) {
+    const character = path[index]
+    if (character === '/' || character === '\\') {
+      baseStart = index + 1
+      break
+    }
+  }
+  const base = path.slice(baseStart)
+  if (base.length === 0 || base === '.' || base === '..') return undefined
+  return base.toLowerCase()
 }
 
 /**

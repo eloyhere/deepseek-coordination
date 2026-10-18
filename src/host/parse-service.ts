@@ -54,12 +54,16 @@ import {
   MAX_TOKENS,
   createNodeMetadata,
   createNodeReference,
+  extensionOf,
   isRangeCapableCharset,
   normaliseWorkspacePath,
   sha256Fingerprint,
   utf8ByteLength,
 } from './text/parser.js'
 import { defaultParserRegistry, parseFileText, parseText } from './text/index.js'
+import { MavenParser } from './text/maven.js'
+import { NpmParser } from './text/npm.js'
+import { OFFICE_PARSER_ID, OfficeParser, parseOffice } from './text/office.js'
 import { classifySpecifier } from './text/parser.js'
 import {
   MAX_GRAPH_EDGES,
@@ -77,6 +81,7 @@ import type {
   ParseOptions,
   ParseResult,
 } from './text/parser.js'
+import type { OfficeDiagnostic, OfficeParseResult } from './text/office.js'
 import type { SourceSpan } from '../shared/ast.js'
 import { estimateTokens } from './token.js'
 
@@ -110,6 +115,23 @@ export const MAX_LINE_SCAN_BYTES = 8 * 1024 * 1024
 export const MAX_STRUCTURE_ITEMS = 20_000
 /** Formula references retained per parse. */
 export const MAX_STRUCTURE_FORMULA_REFERENCES = 5_000
+
+/* ------------------------------------------------------------------------- *
+ * Office byte path
+ * ------------------------------------------------------------------------- */
+
+/**
+ * OOXML container extensions the service reads as raw bytes and hands to
+ * `parseOffice`. They are never decoded as text, so a NUL byte is expected
+ * content rather than a refusal.
+ */
+export const OFFICE_BINARY_EXTENSIONS: readonly string[] = ['.docx', '.xlsx', '.pptx']
+/**
+ * Proprietary Office extensions: refused with the Office parser's own
+ * `unsupported-format` diagnostic. No byte is read for them (the parser decides
+ * from the extension alone, before any content sniff).
+ */
+export const OFFICE_REFUSED_EXTENSIONS: readonly string[] = ['.pub', '.accdb']
 
 /* ------------------------------------------------------------------------- *
  * Result shapes (metadata only; no body)
@@ -178,6 +200,17 @@ export interface ReferenceView {
   lineEnd?: number
 }
 
+/**
+ * One service-level diagnostic: the shared `DiagnosticCode` union plus the
+ * Office parser's explicit `unsupported-format` refusal code.
+ *
+ * `DiagnosticCode` is a closed union owned by `text/parser.ts`; widening that
+ * shared type for one parser would change every parser's contract. The service
+ * boundary is the right place to carry the extra code (the tool wire already
+ * projects `code` as a plain string).
+ */
+export type ParseDiagnostic = Diagnostic | OfficeDiagnostic
+
 /** The body-free result of parsing one file or one text. */
 export interface ParsedFile {
   /** Workspace-relative path, when the input was a path. */
@@ -199,7 +232,7 @@ export interface ParsedFile {
   /** Parser nodes, bounded by `MAX_PARSE_NODES`. */
   nodes: NodeMetadata[]
   references: FileReference[]
-  diagnostics: Diagnostic[]
+  diagnostics: ParseDiagnostic[]
   structure: ParsedStructure
 }
 
@@ -573,6 +606,13 @@ export class ParseService {
     if (!stat.isFile()) throw new InvalidArgumentError('path is not a regular file', { path: relative })
     const size = stat.size
     const mtime = Math.trunc(stat.mtimeMs)
+    // Office containers are binary ZIP packages: the pure `Parser` contract is
+    // text-in, so decoding/correcting them as UTF-8 is never safe. Route them to
+    // `parseOffice(bytes)` before the NUL/binary detection below could refuse
+    // them; the read stays bounded by the same `maxFileBytes` cap as text.
+    if (parser.id === OFFICE_PARSER_ID) {
+      return this.parseOfficeFromPath(relative, absolute, size, mtime)
+    }
     const cacheInput = { path: relative, mtime, size, parserId: parser.id }
     const cached = this.cacheGet(cacheInput)
     if (cached !== undefined) {
@@ -623,6 +663,141 @@ export class ParseService {
     this.cacheSet(cacheInput, parsed)
     this.byPath.set(relative, parsed)
     return parsed
+  }
+
+  /**
+   * Bounded binary path for the Office parser (the only byte-in parser).
+   *
+   * `.docx`/`.xlsx`/`.pptx` are read as raw bytes (≤ `maxFileBytes`, the same
+   * 1 MiB cap as text) and handed to `parseOffice(bytes)`. A ZIP prefix is never
+   * a valid package, so an oversized file is refused with a `text-limit`
+   * diagnostic instead of being parsed partially; only a bounded prefix is read
+   * for the file fingerprint.
+   *
+   * `.pub`/`.accdb` are **not read at all**: the parser refuses them from the
+   * extension alone, with its own `unsupported-format` diagnostic, before any
+   * content sniff. Any other extension reached through `parserId: 'office'` is
+   * likewise described without a byte read.
+   *
+   * The result goes through `buildOffice`, so the service surface (file node,
+   * bounded nodes, references, diagnostics, status, cache) is identical to a
+   * text parse while the decoded text never exists. No write, no conversion, no
+   * network.
+   */
+  private parseOfficeFromPath(
+    relative: string,
+    absolute: string,
+    size: number,
+    mtime: number,
+  ): ParsedFile {
+    const cacheInput = { path: relative, mtime, size, parserId: OFFICE_PARSER_ID }
+    const cached = this.cacheGet(cacheInput)
+    if (cached !== undefined) {
+      this.byPath.set(relative, cached)
+      return { ...cached, cached: true }
+    }
+
+    const extension = extensionOf(relative) ?? ''
+    let bytes: Uint8Array = Buffer.alloc(0)
+    let truncatedByBytes = false
+    let result: OfficeParseResult
+    if (!OFFICE_BINARY_EXTENSIONS.includes(extension)) {
+      // `.pub`/`.accdb`: the parser refuses from the extension alone, before
+      // `toBytes`, so an empty buffer proves no byte of the proprietary
+      // container was touched. Any other extension reached through an explicit
+      // `parserId: 'office'` is likewise described without reading unknown bytes.
+      result = parseOffice(bytes, { path: relative })
+    } else if (size > this.maxFileBytes) {
+      truncatedByBytes = true
+      bytes = readRange(absolute, 0, this.maxFileBytes)
+      result = officeLimitResult(extension, size, this.maxFileBytes)
+    } else {
+      bytes = readRange(absolute, 0, size)
+      result = parseOffice(bytes, { path: relative, timeoutMs: this.timeoutMs })
+    }
+
+    const parsed = this.buildOffice(relative, result, {
+      size,
+      mtime,
+      bytes,
+      truncatedByBytes,
+    })
+    this.cacheSet(cacheInput, parsed)
+    this.byPath.set(relative, parsed)
+    return parsed
+  }
+
+  /** Build the body-free `ParsedFile` for a byte-parsed Office package. */
+  private buildOffice(
+    path: string,
+    result: OfficeParseResult,
+    meta: { size: number; mtime: number; bytes: Uint8Array; truncatedByBytes: boolean },
+  ): ParsedFile {
+    const rawNodes = result.nodes ?? []
+    const overflowNodes = rawNodes.length > this.maxNodes
+    const nodes = overflowNodes ? rawNodes.slice(0, this.maxNodes) : rawNodes
+    const diagnostics: ParseDiagnostic[] = [...result.diagnostics]
+    if (overflowNodes) {
+      diagnostics.push({
+        code: 'node-limit',
+        message: `node metadata limit ${this.maxNodes} reached; later nodes were dropped`,
+        severity: 'warning',
+      })
+    }
+    // A binary parse has no decoded text: the fingerprint is over the bounded
+    // byte prefix (the whole file unless the size cap refused it).
+    const fingerprint = fingerprintBytes(meta.bytes)
+    const byteEnd = meta.bytes.length
+    const truncated = result.truncated || meta.truncatedByBytes || overflowNodes
+    const reference = createNodeReference({
+      scheme: 'file',
+      path,
+      target: path,
+      bytes: { start: 0, end: byteEnd },
+      hash: fingerprint,
+      fileBytes: meta.size,
+      mtime: meta.mtime,
+      mediaType: mediaTypeOf(path),
+      parserId: result.parserId,
+      charset: 'binary',
+    })
+    const file = createNodeMetadata({
+      kind: fileKind(path, result.parserId, result.document),
+      name: basename(path),
+      reference,
+      fragment: {
+        path,
+        byteStart: 0,
+        byteEnd,
+        fingerprint,
+        charset: 'binary',
+      },
+      source: 'none',
+      span: { start: 0, end: 0, line: 1, column: 1 },
+    })
+    const status: NodeStatus = result.refused
+      ? 'unverifiable'
+      : truncated
+        ? 'truncated'
+        : 'parsed'
+    return {
+      path,
+      parserId: result.parserId,
+      charset: 'binary',
+      bomBytes: 0,
+      truncated,
+      tokens: result.tokens,
+      size: meta.size,
+      mtime: meta.mtime,
+      cached: false,
+      status,
+      ...(result.document === undefined ? {} : { document: result.document }),
+      file,
+      nodes,
+      references: result.references,
+      diagnostics,
+      structure: emptyStructure(),
+    }
   }
 
   private parseFromText(text: string, request: ParseRequest): ParsedFile {
@@ -1140,6 +1315,11 @@ function mediaTypeOf(path: string): string | undefined {
     '.md': 'text/markdown',
     '.markdown': 'text/markdown',
     '.tex': 'text/x-tex',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.pub': 'application/vnd.ms-publisher',
+    '.accdb': 'application/msaccess',
   }
   return media[extension]
 }
@@ -1283,4 +1463,78 @@ function fingerprintBytes(bytes: Uint8Array): string {
 
 function sha256Bytes(bytes: Uint8Array): string {
   return fingerprintBytes(bytes)
+}
+
+/**
+ * Result for an Office package above the service byte cap.
+ *
+ * The parser is never called: a ZIP prefix is not a valid archive, and
+ * partially describing it would fabricate structure. The diagnostic carries the
+ * real reason, so a caller can re-read the file through the host's authorized
+ * content path instead.
+ */
+function officeLimitResult(extension: string, size: number, maxBytes: number): OfficeParseResult {
+  return {
+    parserId: OFFICE_PARSER_ID,
+    references: [],
+    diagnostics: [
+      {
+        code: 'text-limit',
+        message: `file is ${size} bytes and exceeds the ${maxBytes}-byte read cap; Office package not parsed (a truncated ZIP is not a valid package)`,
+        severity: 'warning',
+      },
+    ],
+    truncated: true,
+    tokens: 0,
+    charset: 'binary',
+    bomBytes: 0,
+    format: officeFormatOf(extension),
+    refused: true,
+  }
+}
+
+/** Container format implied by a path extension (never a content guess). */
+function officeFormatOf(pathOrExtension: string): OfficeParseResult['format'] {
+  switch (pathOrExtension.toLowerCase()) {
+    case '.docx':
+      return 'docx'
+    case '.xlsx':
+      return 'xlsx'
+    case '.pptx':
+      return 'pptx'
+    case '.pub':
+      return 'pub'
+    case '.accdb':
+      return 'accdb'
+    default:
+      return 'unknown'
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * File-layer-only parser registration
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Register the parsers that cannot live in the pure text-layer registry.
+ *
+ * descriptive only: no edit, no build, no install; a real 'project create' would be a shell command behind DSH's permission model, not a plugin tool.
+ *
+ * `pom.xml` and `package.json` are matched by exact file name, never by their
+ * shared `.xml`/`.json` extensions: registering the extensions would claim every
+ * XML and JSON file.
+ *
+ * `office` is registered here rather than in `text/index.ts` because its real
+ * API is `parseOffice(bytes)`: only this file layer has the bounded binary read
+ * path (`parseOfficeFromPath`). Registering it on the pure `ParserRegistry`
+ * would let `parseFileText` claim `.docx`/`.xlsx`/`.pptx` and hand the parser
+ * decoded text, which the binary contract forbids. It also owns the
+ * `unsupported-format` refusal for `.pub`/`.accdb`.
+ *
+ * The registration is idempotent (a parser id that is already present is left
+ * untouched) so importing this module twice, or a test that pre-registers the
+ * parser, cannot throw.
+ */
+for (const parser of [new MavenParser(), new NpmParser(), new OfficeParser()]) {
+  if (defaultParserRegistry.get(parser.id) === undefined) defaultParserRegistry.register(parser)
 }

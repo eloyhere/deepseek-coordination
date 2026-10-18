@@ -13,6 +13,12 @@
 import { CssParser, DelimitedParser, HtmlParser, MarkdownParser } from './markup.js'
 import { JavaScriptParser } from './javascript.js'
 import { LatexParser } from './tex.js'
+import { PythonParser } from './python.js'
+import { JavaParser } from './java.js'
+import { RustParser } from './rust.js'
+import { PhpParser } from './php.js'
+import { CFamilyParser } from './c-family.js'
+import { BookParser } from './book.js'
 import { ParserRegistry, extensionOf } from './parser.js'
 import type { NodeMetadata, ParseOptions, ParseResult, Parser } from './parser.js'
 import { createDependencyGraph } from './dependency.js'
@@ -26,7 +32,19 @@ import type {
   UnresolvedDependency,
 } from './dependency.js'
 
-/** Parser instances registered by `createParserRegistry` by default. */
+/**
+ * Parser instances registered by `createParserRegistry` by default.
+ *
+ * The list is the text-layer registration point: every extension-selected
+ * language parser lives here. `BookParser` also claims the exact `SUMMARY.md` /
+ * `SUMMARY.txt` file names, and the registry consults file names before
+ * extensions, so a book table of contents resolves to `book` while `README.md`
+ * stays Markdown.
+ *
+ * Binary parsers are deliberately absent: `OfficeParser` needs raw bytes and is
+ * registered by the host file layer (`parse-service.ts`), which owns the bounded
+ * binary read path.
+ */
 export const builtinParsers: readonly Parser[] = [
   new JavaScriptParser(),
   new CssParser(),
@@ -34,6 +52,12 @@ export const builtinParsers: readonly Parser[] = [
   new MarkdownParser(),
   new LatexParser(),
   new DelimitedParser(),
+  new PythonParser(),
+  new JavaParser(),
+  new RustParser(),
+  new PhpParser(),
+  new CFamilyParser(),
+  new BookParser(),
 ]
 
 /** Build a registry; pass a custom list to override the P0 set. */

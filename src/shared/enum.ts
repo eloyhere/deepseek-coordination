@@ -136,7 +136,7 @@ export type StructuralKind =
   | 'person'
   | 'venue'
 
-/** The ten formal statement kinds; `proof` is evidence, not a claim. */
+/** The eleven formal statement kinds; `proof` is evidence, not a claim. */
 export type StatementKind =
   | 'definition'
   | 'lemma'
@@ -148,11 +148,19 @@ export type StatementKind =
   | 'claim'
   | 'example'
   | 'remark'
+  | 'calculation'
 
 /** Form of a chapter-like unit (§2.1 `Chapter.form`). */
 export type ChapterForm = 'chapter' | 'preface' | 'appendix' | 'index' | 'frontmatter'
 
-/** Logical form of a condition, mapped only from an explicit marker. */
+/**
+ * Logical form of a condition, mapped only from an explicit marker.
+ *
+ * A `necessary`/`necessary condition` marker maps to `precondition`; a
+ * `sufficient`/`adequate` marker maps to `postcondition`. `invariant`,
+ * `assumption`, `hypothesis`, `guard`, `constraint` and `goal` keep their own
+ * form. None of these is a node kind, and prose never sets one.
+ */
 export type ConditionForm =
   | 'precondition'
   | 'postcondition'
@@ -219,6 +227,7 @@ export const StatementKindValues: readonly StatementKind[] = [
   'claim',
   'example',
   'remark',
+  'calculation',
 ]
 
 /** True when `value` is a formal statement kind. */

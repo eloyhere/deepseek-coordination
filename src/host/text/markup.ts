@@ -8,15 +8,22 @@
  *
  *  - CSS: `@import "x"`, `@import url(...)`, `url(...)` (excluding `data:`), and
  *    `/* … *\/` comments. CSS class selectors are **not** `Class`.
- *  - HTML: `<script src>`, `<link href>`, `<img src>` (case-insensitive tags and
- *    attributes, quoted or unquoted), headings, paragraphs, `<article>`,
- *    `<title>`/`<meta name="description">`, comments. Inline script/style bodies
- *    are skipped so their text cannot look like markup.
+ *  - HTML: `<script src>`, `<link href>`, `<img src>`, `<a href>` (case-insensitive
+ *    tags and attributes, quoted or unquoted), headings, paragraphs, block
+ *    `<pre>`/`<code>`, `<title>`/`<meta name="description">`, comments. Inline
+ *    script/style/pre/code bodies are skipped so their text cannot look like
+ *    markup. `article` is a book concept; an HTML `<article>` element is a
+ *    sectioning container and maps to `section`/`document`, never to `article`.
  *  - Markdown: inline/reference links and images, headings, paragraphs, fenced
  *    code blocks, YAML front matter (text keys only, no YAML engine), Pandoc
  *    fenced divs (`::: definition` / `require` / `meet` / `condition`), and
  *    `$...$`/`$$...$$` formulas. Fenced code, inline code and HTML comments are
  *    masked before link/formula scanning.
+ *
+ * Node kinds added on top of the structural set: `chapter` (level-1 Markdown
+ * heading / HTML `<h1>`), `link` (one per scanned reference, `name` = specifier)
+ * and `code` (one per fenced/`<pre>`/`<code>` block, `name` = explicit language).
+ * All three stay body-free and never exceed `MAX_METADATA_NODES`.
  *
  * Metadata rules: `name` from an explicit heading/title; `brief` only from an
  * explicit description field (front matter `description`/`abstract`, HTML
@@ -248,6 +255,61 @@ function pushDocumentMetadata(
   input: Parameters<typeof pushNodeMetadata>[2],
 ): NodeMetadata | undefined {
   return pushNodeMetadata(ctx, nodes, input)
+}
+
+/**
+ * Emit one body-free `link` node for a scanned reference. The node reuses the
+ * reference's span and flat fragment (bytes/lines/fingerprint), so the link node
+ * and the reference occurrence can never drift; `name` is the raw specifier
+ * (`href`/`src`) and the target body is never copied. `fragment` is derived from
+ * `span` when the element has no reference occurrence (HTML `<a href>`).
+ */
+function pushLinkNode(
+  ctx: ParseContext,
+  nodes: NodeMetadata[],
+  specifier: string,
+  span: SourceSpan,
+  fragment?: FlatFragment,
+): void {
+  if (specifier.length === 0) return
+  pushDocumentMetadata(ctx, nodes, {
+    kind: 'link',
+    name: specifier,
+    fragment: fragment ?? fragmentForSpan(ctx, span),
+    span,
+  })
+}
+
+/**
+ * Emit one body-free `code` node for a code block: span, flat fragment and an
+ * explicit language only. The code text itself is never stored.
+ */
+function pushCodeNode(
+  ctx: ParseContext,
+  nodes: NodeMetadata[],
+  language: string | undefined,
+  span: SourceSpan,
+): void {
+  pushDocumentMetadata(ctx, nodes, {
+    kind: 'code',
+    ...(language === undefined ? {} : { name: language }),
+    fragment: fragmentForSpan(ctx, span),
+    span,
+  })
+}
+
+/** Language of a Markdown fence info string: `` ```ts `` → `ts`, `{.ts}` → `ts`. */
+function codeLanguageOfInfo(info: string): string | undefined {
+  const token = info.trim().split(/\s+/)[0] ?? ''
+  const cleaned = token.replace(/^\{\.?/, '').replace(/\}$/, '')
+  return cleaned.length === 0 ? undefined : cleaned
+}
+
+/** Language declared by an explicit HTML `class="language-ts"`/`"lang-ts"` marker. */
+function codeLanguageOfClass(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  const match = /(?:^|\s)(?:language|lang)-([A-Za-z0-9_+#.-]+)/.exec(value)
+  return match?.[1]
 }
 
 function reportMissingBrief(ctx: ParseContext, count: number, span: SourceSpan | undefined): void {
@@ -599,7 +661,7 @@ function readHtmlTag(text: string, start: number): HtmlTag | undefined {
   return { name, attributes, start, end: cursor, closing, selfClosing }
 }
 
-/** Parse HTML: references, headings, paragraphs, title/description/article. */
+/** Parse HTML: references, headings, links, code, paragraphs and the document anchor. */
 export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseResult {
   const ctx = new ParseContext(text, options)
   const scanned = tokenize(ctx.text, {
@@ -628,11 +690,12 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
   let lastCheck = 0
 
   /*
-   * Structural containers: `<article>`/`<main>` (the Article work node) and
-   * nested `<section>` elements. A heading names its enclosing section only when
-   * no other content precedes it, and never invents a name.
+   * Structural containers: `<article>`/`<main>` and nested `<section>` elements.
+   * `article` is a book concept; an HTML `<article>` element is a sectioning
+   * container and maps to section/document, never to an `article` node. A
+   * heading names its enclosing container only when no other content precedes
+   * it, and never invents a name.
    */
-  const hasArticleElement = /<\s*article\b/i.test(source)
   const conceptOrdinals = new Map<string, number>()
   const nextConceptOrdinal = (kind: string): number => {
     const next = (conceptOrdinals.get(kind) ?? 0) + 1
@@ -649,7 +712,6 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
     title?: string
   }
   const openContainers: HtmlContainer[] = []
-  let workLocator: string | undefined
   let paragraphNodeCount = 0
   let missingBrief = 0
   let firstSpan: SourceSpan | undefined
@@ -667,7 +729,9 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
     const concept = container.concept
     if (container.locator === undefined || concept === undefined) return
     const span = lineSpan(lineAtOffset(lines, container.start), container.start, end)
-    const name = container.name === 'section' ? container.title : (title ?? container.title)
+    // Emitted containers are always sections; the name is only what a heading
+    // inside them proved, never the document title (that belongs to `document`).
+    const name = container.title
     const reference = documentReference(ctx, undefined, span, 'symbol', 'html')
     const node = domainNode(ctx, nodes, {
       kind: concept.kind,
@@ -681,7 +745,6 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
     if (node !== undefined) {
       concepts.push(concept)
       if (concept.partOf !== undefined) addConceptChild(conceptChildren, concept.partOf, container.locator)
-      if (concept.kind === 'article' && workLocator === undefined) workLocator = container.locator
     }
     missingBrief += 1
     firstSpan ??= span
@@ -729,29 +792,31 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
     }
     if (tag.name === 'article' || tag.name === 'main' || tag.name === 'section') {
       if (tag.name !== 'section') article = true
-      // A `<main>` that wraps `<article>` elements is a transparent container.
-      if (tag.name === 'main' && hasArticleElement) {
-        openContainers.push({ name: 'main', start: tag.start, level: 0 })
+      /*
+       * `article` is a book concept; an HTML `<article>` element is a sectioning
+       * container and maps to section/document. A root-level `<article>`/`<main>`
+       * is the document itself: it stays transparent so the file's `document`
+       * node anchors its content. A nested one becomes a `section`.
+       */
+      if (tag.name !== 'section' && containerParent() === undefined) {
+        openContainers.push({ name: tag.name, start: tag.start, level: 0 })
         index = tag.end
         continue
       }
-      const kind: 'article' | 'section' = tag.name === 'section' ? 'section' : 'article'
+      const kind = 'section' as const
       const ordinal = nextConceptOrdinal(kind)
       const locator = structuralLocator(ctx.path, kind, ordinal)
-      const parent = kind === 'section' ? containerParent() : undefined
-      const level = kind === 'section'
-        ? openContainers.filter((entry) => entry.name === 'section').length + 1
-        : 0
+      const parent = containerParent()
+      const level = openContainers.filter((entry) => entry.name === 'section').length + 1
       const concept: StructuralConcept = {
         kind,
         locator,
         ordinal,
         explicit: true,
-        ...(level > 0 ? { level } : {}),
+        level,
         ...(parent === undefined ? {} : { partOf: parent }),
       }
       openContainers.push({ name: tag.name, start: tag.start, level, locator, concept })
-      if (kind === 'article' && workLocator === undefined) workLocator = locator
       addConceptChild(conceptChildren, parent, locator)
       index = tag.end
       continue
@@ -775,7 +840,7 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
     const hrefAttribute = sourceSpecifier(tag, 'href')
     if (tag.name === 'script') {
       if (sourceAttribute !== undefined) {
-        addHtmlReference(ctx, references, 'html-script', tag, sourceAttribute, tag.attributes.get('type')?.value)
+        addHtmlReference(ctx, references, nodes, 'html-script', tag, sourceAttribute, tag.attributes.get('type')?.value)
       } else {
         const close = findClosingTag(source, tag.end, 'script')
         index = close
@@ -783,10 +848,26 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
       }
     } else if (tag.name === 'link') {
       if (hrefAttribute !== undefined) {
-        addHtmlReference(ctx, references, 'html-link', tag, hrefAttribute, tag.attributes.get('rel')?.value)
+        addHtmlReference(ctx, references, nodes, 'html-link', tag, hrefAttribute, tag.attributes.get('rel')?.value)
       }
     } else if (tag.name === 'img') {
-      if (sourceAttribute !== undefined) addHtmlReference(ctx, references, 'html-image', tag, sourceAttribute)
+      if (sourceAttribute !== undefined) addHtmlReference(ctx, references, nodes, 'html-image', tag, sourceAttribute)
+    } else if (tag.name === 'a') {
+      // `<a href>` names a link, not a file dependency: no `ReferenceKind` exists
+      // for anchors, so only the body-free `link` node is emitted.
+      if (hrefAttribute !== undefined) {
+        pushLinkNode(ctx, nodes, hrefAttribute.value, htmlAttributeSpan(ctx, hrefAttribute))
+      }
+    } else if (tag.name === 'pre' || tag.name === 'code') {
+      // A block code element: emit one `code` node and skip the body so code
+      // text can never look like markup or a link.
+      const close = tag.selfClosing ? tag.end : findClosingTagIn(source, tag.end, tag.name)
+      const span = lineSpan(lineAtOffset(lines, index), tag.start, close)
+      const language = codeLanguageOfClass(tag.attributes.get('class')?.value)
+        ?? (tag.name === 'pre' ? nestedCodeLanguage(source, tag.end, close) : undefined)
+      pushCodeNode(ctx, nodes, language, span)
+      index = close
+      continue
     } else if (/^h[1-6]$/.test(tag.name)) {
       const level = Number(tag.name.slice(1))
       const close = new RegExp(`</${tag.name}\\s*>`, 'i').exec(source.slice(tag.end))
@@ -811,11 +892,28 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
       missingBrief += 1
       firstSpan ??= span
       appendAstNode(ctx, root, 'heading', span, heading.title)
+      if (level === 1) {
+        /*
+         * A top-level HTML heading is the document's Chapter. The P0 `heading`
+         * node above is kept unchanged so the existing heading hierarchy still
+         * resolves; only the body-free `chapter` node is added.
+         */
+        pushDocumentMetadata(ctx, nodes, {
+          kind: 'chapter',
+          name: heading.title,
+          ...(heading.reference === undefined ? {} : { reference: heading.reference }),
+          fragment: heading,
+          source: 'heading',
+          span,
+        })
+      }
+      scanNestedHtmlNodes(ctx, nodes, source, lines, tag.end, contentEnd)
       /*
-       * A heading that is the first content of `<article>`/`<section>` is that
+       * A heading that is the first content of a `<section>` is that
        * container's label, not a nested second concept: reuse the container
        * concept and give the heading node its domain. Only when other content
-       * precedes the heading is it a separate Section.
+       * precedes the heading is it a separate Section. A heading inside a
+       * transparent root `<article>`/`<main>` is the document's own section.
        */
       let naming: HtmlContainer | undefined
       for (let cursor = openContainers.length - 1; cursor >= 0; cursor -= 1) {
@@ -859,7 +957,7 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
       paragraphs.push(paragraph)
       if (paragraphNodeCount < MAX_MARKDOWN_PARAGRAPHS) {
         paragraphNodeCount += 1
-        const parent = containerParent() ?? workLocator
+        const parent = containerParent()
         const ordinal = nextConceptOrdinal('paragraph')
         const locator = structuralLocator(ctx.path, 'paragraph', ordinal)
         const concept: StructuralConcept = {
@@ -889,6 +987,7 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
           addConceptChild(conceptChildren, parent, locator)
         }
       }
+      scanNestedHtmlNodes(ctx, nodes, source, lines, tag.end, contentEnd)
       index = close === null ? contentEnd : contentEnd + close[0].length
       continue
     }
@@ -907,6 +1006,11 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
   }
   finalizeConceptChildren(conceptChildren, concepts)
 
+  /*
+   * `form` describes the file shape (a page-shaped document); it never produces
+   * an `article` node from HTML. `article` is a book concept, so the file-shape
+   * flag stays separate from the node taxonomy.
+   */
   const documentForm: DocumentMetadata['form'] = article ? 'article' : 'unknown'
   const metadata = documentMetadata(
     documentForm,
@@ -915,24 +1019,27 @@ export function parseHtml(text: string, options: ParseOptions = {}): HtmlParseRe
     undefined,
     undefined,
   )
-  if (title !== undefined) {
-    const span = titleSpan ?? { start: 0, end: 0, line: 1, column: 1 }
-    const reference = documentReference(ctx, ctx.path, span, 'file', 'html')
-    pushDocumentMetadata(ctx, nodes, {
-      kind: 'document',
-      name: title,
-      brief: description,
-      ...(reference === undefined ? {} : { reference }),
-      ...fragmentForSpan(ctx, span),
-      source: description === undefined ? 'html' : 'html',
-      span,
-    })
-    if (description === undefined) {
-      missingBrief += 1
-      firstSpan ??= span
-    }
-    appendAstNode(ctx, root, 'document', span, title)
+  /*
+   * Every HTML document carries one file-anchored `document` node, even when it
+   * has no `<title>`: the name stays absent rather than being guessed from
+   * prose, and the span collapses to the file start.
+   */
+  const documentSpan = titleSpan ?? { start: 0, end: 0, line: 1, column: 1 }
+  const documentReferenceNode = documentReference(ctx, ctx.path, documentSpan, 'file', 'html')
+  pushDocumentMetadata(ctx, nodes, {
+    kind: 'document',
+    ...(title === undefined ? {} : { name: title }),
+    ...(description === undefined ? {} : { brief: description }),
+    ...(documentReferenceNode === undefined ? {} : { reference: documentReferenceNode }),
+    fragment: fragmentForSpan(ctx, documentSpan),
+    source: 'html',
+    span: documentSpan,
+  })
+  if (description === undefined) {
+    missingBrief += 1
+    firstSpan ??= documentSpan
   }
+  appendAstNode(ctx, root, 'document', documentSpan, title)
   for (const comment of comments) appendAstNode(ctx, root, 'comment', comment.span, comment.brief)
   reportMissingBrief(ctx, missingBrief, firstSpan)
   return {
@@ -1178,6 +1285,8 @@ export function parseMarkdown(text: string, options: ParseOptions = {}): Markdow
           line: originalLine.number,
           column: 1,
         }
+        // Body-free `code` node: span + explicit info-string language only.
+        pushCodeNode(ctx, nodes, codeLanguageOfInfo(startFence.info), span)
         appendAstNode(ctx, currentParent(root), 'code', span, startFence.info)
       }
       flushParagraph()
@@ -1259,6 +1368,21 @@ export function parseMarkdown(text: string, options: ParseOptions = {}): Markdow
       missingBrief += 1
       firstMissingSpan ??= span
       appendAstNode(ctx, currentParent(root), 'heading', span, heading.title)
+      if (!isSummary && heading.level === 1) {
+        /*
+         * Every top-level Markdown heading is a Chapter. SUMMARY.md is the
+         * explicit book format where a level-1 heading already names a Part, so
+         * the summary pass below owns those and no second node is emitted.
+         */
+        pushDocumentMetadata(ctx, nodes, {
+          kind: 'chapter',
+          name: heading.title,
+          ...(info.reference === undefined ? {} : { reference: info.reference }),
+          fragment: info,
+          source: 'heading',
+          span,
+        })
+      }
       if (!isSummary) {
         // Book chapter vs article/chapter section is explicit from the document
         // form plus heading level; no prose heuristic is involved.
@@ -1291,7 +1415,7 @@ export function parseMarkdown(text: string, options: ParseOptions = {}): Markdow
       continue
     }
     // Links and images on this line.
-    scanMarkdownLinks(ctx, maskedLine, originalLine, definitions, references)
+    scanMarkdownLinks(ctx, maskedLine, originalLine, definitions, references, nodes)
     if (paragraphStart < 0) paragraphStart = index
     paragraphText.push(originalLine.text.trim())
   }
@@ -1989,6 +2113,7 @@ function scanMarkdownLinks(
   originalLine: TextLine,
   definitions: Map<string, LinkDefinition>,
   references: FileReference[],
+  nodes: NodeMetadata[],
 ): void {
   void originalLine
   const text = maskedLine.text
@@ -2027,13 +2152,15 @@ function scanMarkdownLinks(
       const destination = parseInlineDestination(rawDestination, maskedLine.start + labelEnd + 2)
       if (destination !== undefined) {
         const span = destination.span
-        references.push({
+        const reference: FileReference = {
           kind,
           specifier: destination.value,
           external: isExternal(destination.value),
           span,
           ...fragmentForSpan(ctx, span),
-        })
+        }
+        references.push(reference)
+        pushLinkNode(ctx, nodes, reference.specifier, span, reference)
       }
       index = close + 1
       continue
@@ -2056,13 +2183,15 @@ function scanMarkdownLinks(
           line: maskedLine.number,
           column: index + 1,
         }
-        references.push({
+        const reference: FileReference = {
           kind,
           specifier: definition.destination,
           external: isExternal(definition.destination),
           span,
           ...fragmentForSpan(ctx, span),
-        })
+        }
+        references.push(reference)
+        pushLinkNode(ctx, nodes, reference.specifier, span, reference)
       }
       index = close + 1
       continue
@@ -2077,13 +2206,15 @@ function scanMarkdownLinks(
         line: maskedLine.number,
         column: index + 1,
       }
-      references.push({
+      const reference: FileReference = {
         kind,
         specifier: definition.destination,
         external: isExternal(definition.destination),
         span,
         ...fragmentForSpan(ctx, span),
-      })
+      }
+      references.push(reference)
+      pushLinkNode(ctx, nodes, reference.specifier, span, reference)
     }
     index = labelEnd + 1
   }
@@ -2278,14 +2409,8 @@ function sourceSpecifier(tag: HtmlTag, name: string): { value: string; start: nu
   return attribute.value.length === 0 ? undefined : attribute
 }
 
-function addHtmlReference(
-  ctx: ParseContext,
-  references: FileReference[],
-  kind: FileReference['kind'],
-  tag: HtmlTag,
-  attribute: { value: string; start: number; end: number },
-  extra?: string,
-): void {
+/** Span of one HTML attribute value, with line/column from the source map. */
+function htmlAttributeSpan(ctx: ParseContext, attribute: { start: number; end: number }): SourceSpan {
   const span: SourceSpan = {
     start: attribute.start,
     end: attribute.end,
@@ -2299,17 +2424,95 @@ function addHtmlReference(
     const column = ctx.sourceMap.columnAt(span.start)
     if (column !== undefined) span.column = column
   }
+  return span
+}
+
+function addHtmlReference(
+  ctx: ParseContext,
+  references: FileReference[],
+  nodes: NodeMetadata[],
+  kind: FileReference['kind'],
+  tag: HtmlTag,
+  attribute: { value: string; start: number; end: number },
+  extra?: string,
+): void {
+  const span = htmlAttributeSpan(ctx, attribute)
   const attributes: Record<string, string> = {}
   if (extra !== undefined && extra.length > 0) attributes.type = extra
-  references.push({
+  const reference: FileReference = {
     kind,
     specifier: attribute.value,
     external: isExternal(attribute.value),
     span,
     ...(Object.keys(attributes).length === 0 ? {} : { attributes }),
     ...fragmentForSpan(ctx, span),
-  })
+  }
+  references.push(reference)
+  // One `link` node per reference occurrence, sharing its span and fragment.
+  pushLinkNode(ctx, nodes, reference.specifier, span, reference)
   void tag
+}
+
+/** Language class of the first `<code>` element inside a `<pre>` block. */
+function nestedCodeLanguage(source: string, from: number, to: number): string | undefined {
+  if (to <= from) return undefined
+  const match = /<\s*code\b/i.exec(source.slice(from, to))
+  if (match === null) return undefined
+  const tag = readHtmlTag(source, from + match.index)
+  return tag === undefined ? undefined : codeLanguageOfClass(tag.attributes.get('class')?.value)
+}
+
+/**
+ * Emit `link`/`code` nodes for markup nested inside an element whose content the
+ * scanner consumes (`<p>`, `<h1>`–`<h6>`). Reference scanning keeps its current
+ * behaviour; only the additional body-free nodes are produced here.
+ */
+function scanNestedHtmlNodes(
+  ctx: ParseContext,
+  nodes: NodeMetadata[],
+  source: string,
+  lines: readonly TextLine[],
+  from: number,
+  to: number,
+): void {
+  let cursor = Math.max(0, from)
+  const limit = Math.min(source.length, to)
+  while (cursor < limit) {
+    const open = source.indexOf('<', cursor)
+    if (open < 0 || open >= limit) return
+    // Comments and raw-text bodies are masked: their text is never markup.
+    if (source.startsWith('<!--', open)) {
+      const close = source.indexOf('-->', open + 4)
+      cursor = close < 0 || close >= limit ? limit : close + 3
+      continue
+    }
+    const nested = readHtmlTag(source, open)
+    if (nested === undefined) {
+      cursor = open + 1
+      continue
+    }
+    if (!nested.closing && (nested.name === 'script' || nested.name === 'style')) {
+      cursor = Math.max(open + 1, Math.min(limit, findClosingTagIn(source, nested.end, nested.name)))
+      continue
+    }
+    if (!nested.closing && (nested.name === 'a' || nested.name === 'img')) {
+      const attribute = sourceSpecifier(nested, nested.name === 'a' ? 'href' : 'src')
+      if (attribute !== undefined) {
+        pushLinkNode(ctx, nodes, attribute.value, htmlAttributeSpan(ctx, attribute))
+      }
+    } else if (!nested.closing && (nested.name === 'code' || nested.name === 'pre')) {
+      const close = nested.selfClosing
+        ? Math.min(limit, nested.end)
+        : Math.min(limit, findClosingTagIn(source, nested.end, nested.name))
+      const span = lineSpan(lineAtOffset(lines, open), open, Math.max(open, close))
+      const language = codeLanguageOfClass(nested.attributes.get('class')?.value)
+        ?? (nested.name === 'pre' ? nestedCodeLanguage(source, nested.end, close) : undefined)
+      pushCodeNode(ctx, nodes, language, span)
+      cursor = Math.max(open + 1, close)
+      continue
+    }
+    cursor = Math.max(open + 1, nested.end)
+  }
 }
 
 function stripTags(text: string): string {
@@ -2353,6 +2556,26 @@ function findClosingTag(source: string, from: number, name: string): number {
   if (close < 0) return source.length
   const end = source.indexOf('>', close)
   return end < 0 ? source.length : end + 1
+}
+
+/**
+ * Closing tag for a content block, scanned forward from the opening tag without
+ * lowercasing the whole source. Callers skip the block afterwards, so the total
+ * work across one parse is linear in the document length.
+ */
+function findClosingTagIn(source: string, from: number, name: string): number {
+  let cursor = from
+  while (cursor < source.length) {
+    const open = source.indexOf('</', cursor)
+    if (open < 0) return source.length
+    const after = open + 2
+    if (source.slice(after, after + name.length).toLowerCase() === name) {
+      const end = source.indexOf('>', after)
+      return end < 0 ? source.length : end + 1
+    }
+    cursor = after
+  }
+  return source.length
 }
 
 function isIdentCode(code: number): boolean {

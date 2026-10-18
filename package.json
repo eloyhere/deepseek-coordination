@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.",
   "keywords": [
     "deepseek-harness",
@@ -93,6 +93,8 @@
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@mui/material": "^9.5.0",
+    "fast-xml-parser": "^5.11.2",
+    "fflate": "^0.8.3",
     "react-dom": "^18.2.0"
   }
 }

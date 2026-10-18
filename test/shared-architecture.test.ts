@@ -188,6 +188,7 @@ function exportedNonClasses(text: string): string[] {
 const expectedClasses: Record<string, string[]> = {
   'hash.ts': [],
   'node.ts': ['LinearNode', 'BinaryNode', 'SkipNode'],
+  'node-record.ts': [],
   'tree.ts': ['BinaryTree', 'BPlusTree'],
   'redblack.ts': ['RedBlackTree', 'RedBlackSet'],
   'heap.ts': ['BinaryHeap', 'IndexedHeap'],

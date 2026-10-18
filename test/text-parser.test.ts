@@ -98,6 +98,14 @@ function nodeNamed(result: ParseResult, name: string): NodeMetadata | undefined 
   return result.nodes?.find((node) => node.name === name)
 }
 
+function nodesOfKind(result: ParseResult, kind: string): NodeMetadata[] {
+  return (result.nodes ?? []).filter((node) => node.kind === kind)
+}
+
+function nodeSignatures(result: ParseResult): string[] {
+  return (result.nodes ?? []).map((node) => `${node.kind}:${node.name ?? ''}`)
+}
+
 function fragmentSha(text: string): string {
   return `sha256:${createHash('sha256').update(new TextEncoder().encode(text)).digest('hex')}`
 }
@@ -284,7 +292,41 @@ test('JS extracts literal dynamic import and require, and marks non-literals unv
     'require:./required',
   ])
   const unverifiable = result.diagnostics.filter((diagnostic) => diagnostic.code === 'unverifiable')
-  assert.ok(unverifiable.length >= 2)
+  // Only the two non-literal specifiers produce import diagnostics; the
+  // metadata warnings below are unrelated and stay out of this assertion.
+  assert.deepEqual(
+    unverifiable
+      .filter((diagnostic) => diagnostic.message.startsWith('dynamic import') || diagnostic.message.startsWith('require'))
+      .map((diagnostic) => diagnostic.message),
+    [
+      'dynamic import specifier is not a string literal',
+      'require specifier is not a string literal',
+    ],
+  )
+  // Every binding becomes a variable node; each literal dynamic import/require
+  // becomes an importation node, in source order.
+  assert.deepEqual(nodeSignatures(result), [
+    'variable:a',
+    'variable:b',
+    'variable:c',
+    'variable:d',
+    'variable:e',
+    'variable:f',
+    'importation:./dynamic',
+    'importation:./required',
+    'importation:./dynamic',
+  ])
+  const variables = result.symbols.filter((symbol) => symbol.kind === 'variable')
+  assert.deepEqual(variables.map((symbol) => symbol.name), ['a', 'b', 'c', 'd', 'e', 'f'])
+  for (const variable of variables) {
+    assert.equal(variable.binding, 'variable')
+    assert.equal(variable.scope, 'global')
+  }
+  for (const node of result.nodes ?? []) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+  }
 })
 
 test('JS extracts classes, functions, arrows, methods and export flags', () => {
@@ -331,6 +373,35 @@ test('JS extracts classes, functions, arrows, methods and export flags', () => {
   assert.equal(later?.async, true)
   const generator = result.symbols.find((symbol) => symbol.name === 'generator')
   assert.equal(generator?.generator, true)
+  // One metadata node per symbol, in source order. Arrow bindings stay function
+  // symbols, so no duplicate `variable` nodes appear.
+  assert.deepEqual(nodeSignatures(result), [
+    'class:Widget',
+    'method:constructor',
+    'method:render',
+    'method:load',
+    'method:make',
+    'method:value',
+    'method:value',
+    'function:named',
+    'function:later',
+    'function:generator',
+    'function:arrow',
+    'function:asyncArrow',
+  ])
+  assert.equal(nodesOfKind(result, 'variable').length, 0)
+  assert.equal(widget?.binding, 'class')
+  assert.equal(widget?.scope, 'global')
+  assert.equal(render?.binding, 'method')
+  const named = result.symbols.find((symbol) => symbol.name === 'named')
+  assert.equal(named?.binding, 'function')
+  assert.equal(named?.scope, 'global')
+  assert.equal(later?.scope, 'global')
+  for (const node of result.nodes ?? []) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+  }
 })
 
 test('JS comments attach to the nearest following symbol and never leak the body', () => {
@@ -588,6 +659,126 @@ test('Markdown without a body source never invents a brief and reports it', () =
   const heading = nodeNamed(result, 'Only a heading')
   assert.equal(heading?.brief, undefined)
   assert.ok(codes(result).includes('unverifiable'))
+})
+
+test('Markdown level-1 heading emits a chapter node with its text as name', () => {
+  const source = ['# Chapter One', '', '## Section One', '', '### Detail'].join('\n')
+  const result = mdResult(source)
+  const chapters = nodesOfKind(result, 'chapter')
+  assert.equal(chapters.length, 1)
+  assert.equal(chapters[0]?.name, 'Chapter One')
+  const heading = nodesOfKind(result, 'heading').find((node) => node.name === 'Chapter One')
+  assert.ok(heading !== undefined)
+  assert.equal(chapters[0]?.span.start, heading.span.start)
+  assert.equal(chapters[0]?.span.end, heading.span.end)
+  // Deeper headings keep the `heading` kind; only level 1 becomes a chapter.
+  assert.equal(nodesOfKind(result, 'chapter').some((node) => node.name === 'Section One'), false)
+  for (const node of chapters) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+  }
+})
+
+test('Markdown links and images emit one link node per reference with the destination as name', () => {
+  const source = [
+    '[doc](docs/a.md) and ![pic](img/pic.png) and [guide][g].',
+    '',
+    '[g]: ./ref.md "Guide"',
+    '',
+    '`[inline-code](ignored.md)`',
+    '',
+    '```',
+    '[fenced](ignored2.md)',
+    '```',
+    '',
+    '<!-- [commented](ignored3.md) -->',
+  ].join('\n')
+  const result = mdResult(source)
+  const links = nodesOfKind(result, 'link')
+  assert.deepEqual(links.map((node) => node.name), ['docs/a.md', 'img/pic.png', './ref.md'])
+  const references = result.references.filter((reference) =>
+    reference.kind === 'markdown-link' || reference.kind === 'markdown-image')
+  assert.equal(links.length, references.length)
+  for (const link of links) {
+    assert.equal('content' in link, false)
+    assert.equal('text' in link, false)
+    assert.equal('body' in link, false)
+    const reference = references.find((entry) => entry.span.start === link.span.start)
+    assert.ok(reference !== undefined)
+    assert.equal(link.span.end, reference.span.end)
+    assert.equal(link.byteStart, reference.byteStart)
+    assert.equal(link.fingerprint, reference.fingerprint)
+  }
+})
+
+test('Markdown fenced code emits a body-free code node named by its info string', () => {
+  const marker = 'SECRET_CODE_BODY_9f3c'
+  const source = [
+    '```ts',
+    `const secret = '${marker}'`,
+    '```',
+    '',
+    '```',
+    `plain ${marker}`,
+    '```',
+  ].join('\n')
+  const result = mdResult(source)
+  const code = nodesOfKind(result, 'code')
+  assert.equal(code.length, 2)
+  assert.equal(code[0]?.name, 'ts')
+  assert.equal(code[1]?.name, undefined)
+  assert.ok(!JSON.stringify(result.nodes).includes(marker))
+  for (const node of code) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+  }
+})
+
+test('HTML anchors and pre/code blocks emit link and body-free code nodes', () => {
+  const marker = 'SECRET_HTML_CODE_5a71'
+  const source = [
+    '<!doctype html>',
+    '<html><head><title>Docs</title></head><body>',
+    '<a href="docs/a.md">Doc</a>',
+    '<p>Inline <a href="./anchor.md">anchor</a>.</p>',
+    `<pre><code class="language-ts">const hidden = "${marker}"</code></pre>`,
+    '<p>Use <code>npm test</code> locally.</p>',
+    '</body></html>',
+  ].join('\n')
+  const result = parseFileText('site/page.html', source)
+  assert.ok(result !== undefined)
+  const links = nodesOfKind(result, 'link')
+  assert.deepEqual(links.map((node) => node.name), ['docs/a.md', './anchor.md'])
+  const code = nodesOfKind(result, 'code')
+  assert.equal(code.length, 2)
+  assert.equal(code[0]?.name, 'ts')
+  assert.equal(code[1]?.name, undefined)
+  assert.ok(!JSON.stringify(result.nodes).includes(marker))
+  assert.equal(nodesOfKind(result, 'document').length, 1)
+  for (const node of [...links, ...code]) {
+    assert.equal('content' in node, false)
+    assert.equal('text' in node, false)
+    assert.equal('body' in node, false)
+  }
+})
+
+test('HTML <article> is a sectioning container: no article node, root maps to document', () => {
+  const source = [
+    '<html><body>',
+    '<article>',
+    '<h1>Field Guide</h1>',
+    '<section><h2>Birds</h2><article><h2>Nested</h2></article></section>',
+    '</article>',
+    '</body></html>',
+  ].join('\n')
+  const result = parseFileText('docs/guide.html', source)
+  assert.ok(result !== undefined)
+  assert.equal(nodesOfKind(result, 'article').length, 0)
+  assert.equal(nodesOfKind(result, 'document').length, 1)
+  // The root <article> is transparent; the nested one becomes a section.
+  assert.equal(nodesOfKind(result, 'section').length, 2)
 })
 
 /* ------------------------------------------------------------------------- *

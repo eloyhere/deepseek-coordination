@@ -95,6 +95,15 @@ const KNOWN_FILE_EXTENSIONS: readonly string[] = [
 const FILE_NODE_KINDS: ReadonlySet<string> = new Set(['module', 'document', 'book', 'article'])
 
 /**
+ * Graph kind of a derived workspace directory node. Directories are structural
+ * descriptions only: they live in the chain graph, are derived from path
+ * prefixes with no filesystem access, and are never registered in
+ * `knownPaths`, so an extensionless import cannot bind to one as if it were a
+ * parsed file (or claim the directory exists on disk).
+ */
+const DIRECTORY_NODE_KIND = 'directory'
+
+/**
  * Canonical chain relations. `depends_on` is an input alias for `depends`
  * (domain model §4: "requested `depends_on` is `depends` … no underscores").
  */
@@ -190,6 +199,12 @@ export interface ChainQueryOptions {
   target?: string
   /** Narrow the traversal to one relation (aliases accepted). */
   relation?: ChainRelation | 'depends_on' | 'imports' | 'satisfiedBy'
+  /**
+   * Only return nodes of this graph kind (`module`, `function`, `directory`,
+   * …). Case-insensitive and trimmed; an empty value means no filter. A kind
+   * that matches nothing yields an empty projection, never an error.
+   */
+  kind?: string
 }
 
 /** Host-only edge write (`relate`); the only way to add non-parser relations. */
@@ -390,6 +405,12 @@ export class ChainEngine {
   private readonly edges = new Map<string, ChainEdge>()
   private readonly edgesByTarget = new Map<string, Set<string>>()
   private readonly knownPaths = new Map<string, string>()
+  /**
+   * Exact directory path keyed by its lower-cased spelling. A second spelling is
+   * path ambiguity (a case-insensitive workspace cannot prove which one owns
+   * the tree), so the directory layer refuses to emit edges rather than guess.
+   */
+  private readonly directorySpellings = new Map<string, string>()
   private readonly cache: LruList<string, ChainProjection>
   private readonly now: () => number
   private readonly persist: ChainPersistenceSink | undefined
@@ -478,6 +499,9 @@ export class ChainEngine {
       ) {
         this.knownPaths.set(snapshot.path, snapshot.handle)
       }
+      if (snapshot.kind === DIRECTORY_NODE_KIND && snapshot.path !== undefined) {
+        this.directorySpellings.set(snapshot.path.toLowerCase(), snapshot.path)
+      }
     }
     for (const snapshot of edges) {
       if (this.edges.size >= MAX_CHAIN_EDGES) {
@@ -561,10 +585,17 @@ export class ChainEngine {
   }
 
   /**
-   * Index one body-free parse: register its nodes, add `contains`/`part_of`,
-   * heading hierarchy, proof and condition edges, then resolve its file
-   * references into `depends` edges. Bumps `graphVersion`, so every cached
-   * projection is invalidated.
+   * Index one body-free parse: register its nodes, derive ancestor directory
+   * vertices, add `contains`/`part_of`, heading hierarchy, proof and condition
+   * edges, then resolve its file references into `depends` edges. Bumps
+   * `graphVersion`, so every cached projection is invalidated.
+   *
+   * Direction invariant: *`part_of` is exact; `contains` is best-effort.* A
+   * `part_of` edge is written only from parser evidence (or an exact path
+   * prefix for the directory layer); `contains` may be absent or partial and
+   * is never invented to make the pair look symmetric. A reverse query
+   * direction (`dependentsOf`, `satisfiesOf`, …) is computed from the stored
+   * forward edge and never persists a new edge.
    */
   index(parsed: ParsedFile): void {
     if (parsed.path === undefined) {
@@ -583,14 +614,19 @@ export class ChainEngine {
       origin: 'parser',
     })
     this.knownPaths.set(path, fileHandle)
+    // Ancestor directories (`a/b/c.ts` → `a`, `a/b`) are structural vertices;
+    // they are created once and never enter `knownPaths`.
+    this.indexDirectories(path, fileHandle)
     // A file parsed after its importers adopts their extensionless stub edges.
     this.adoptStubEdges(path, fileHandle)
 
-    const handles = new Map<string, string>()
+    // Locator → handle, for relations the parser states by natural key
+    // (TeX `domain.appliesTo`) instead of by name/label.
+    const locatorHandles = new Map<string, string>()
     for (const metadata of parsed.nodes) {
       const key = nodeKeyOf(metadata)
       const handle = nodeHandleFor(path, metadata.kind, key)
-      handles.set(`${metadata.kind}\u0000${key}`, handle)
+      if (metadata.locator !== undefined) locatorHandles.set(metadata.locator, handle)
       this.upsertNode({
         handle,
         kind: metadata.kind,
@@ -602,8 +638,7 @@ export class ChainEngine {
         version: metadata.fingerprint ?? `status:${parsed.status}`,
         origin: 'parser',
       })
-      this.addEdge(fileHandle, handle, 'contains', 'satisfied')
-      this.addEdge(handle, fileHandle, 'part_of', 'satisfied')
+      this.linkContainment(fileHandle, handle)
     }
 
     // Heading hierarchy from explicit levels (Markdown `#`, HTML `<h1>`–`<h6>`).
@@ -615,8 +650,7 @@ export class ChainEngine {
       while (stack.length > 0 && stack[stack.length - 1].level >= heading.level) stack.pop()
       const parent = stack.length === 0 ? fileHandle : stack[stack.length - 1].handle
       if (parent !== handle) {
-        this.addEdge(parent, handle, 'contains', 'satisfied')
-        this.addEdge(handle, parent, 'part_of', 'satisfied')
+        this.linkContainment(parent, handle)
       }
       stack.push({ level: heading.level, handle })
     }
@@ -665,6 +699,31 @@ export class ChainEngine {
       this.addEdge(formulaHandle, targetHandle, 'references', 'satisfied')
     }
 
+    // Explicit TeX condition relations (`\requires` / `\meets`). The parser
+    // sets `domain.relation` only for those two markers, so a form-only marker
+    // (`\necessary`, `\sufficient`, …) never creates an edge. `appliesTo` is a
+    // natural locator, not a handle: an unattached condition or one whose
+    // target node was dropped yields no edge at all rather than a guessed one.
+    // Directions match the markup contract: `requires` = target → condition,
+    // `meets` = condition → target. `source` keeps this limited to TeX markers;
+    // Markdown/front-matter conditions already have their own div/front-matter
+    // wiring above and must not gain a second semantic edge.
+    for (const metadata of parsed.nodes) {
+      if (metadata.source !== 'command' && metadata.source !== 'environment') continue
+      const concept = metadata.domain
+      if (concept === undefined || concept.kind !== 'condition') continue
+      const relation = concept.relation
+      if (relation !== 'requires' && relation !== 'meets') continue
+      const conditionHandle = nodeHandleFor(path, metadata.kind, nodeKeyOf(metadata))
+      if (!this.nodes.has(conditionHandle)) continue
+      const appliesTo = concept.appliesTo
+      if (appliesTo === undefined) continue
+      const targetHandle = locatorHandles.get(appliesTo)
+      if (targetHandle === undefined || targetHandle === conditionHandle) continue
+      if (relation === 'requires') this.addEdge(targetHandle, conditionHandle, 'requires', 'unknown')
+      else this.addEdge(conditionHandle, targetHandle, 'meets', 'unknown')
+    }
+
     // File references: lexical resolution only, external/unresolved never edges.
     for (const reference of parsed.references) {
       const resolved = resolveSpecifier(reference.specifier, path)
@@ -691,6 +750,76 @@ export class ChainEngine {
         ...(known === undefined || known.version === 'unknown' ? {} : { targetVersion: known.version }),
       })
       this.refreshDependentsOf(targetHandle)
+    }
+  }
+
+  /**
+   * Derive the workspace-relative ancestor directories of one indexed file
+   * (`a/b/c.ts` → `a`, `a/b`) once each.
+   *
+   * Direction invariant: *`part_of` is exact; `contains` is best-effort.* The
+   * child → parent (`part_of`) edge is the fact the path prefix proves and must
+   * never be wrong; the parent → child (`contains`) edge is derived from the
+   * same fact but may be absent (budget/truncation). It is never invented just
+   * to make the pair symmetric.
+   *
+   * A path that cannot name an unambiguous lexical hierarchy (absolute, UNC,
+   * drive letter, `.`/`..` segment, empty segment, or a second case spelling of
+   * an already-known directory) contributes no directory hierarchy at all: the
+   * chain has no filesystem probe, so it refuses to guess `part_of`.
+   *
+   * Directories are structural descriptions only: they are derived from the
+   * workspace-relative path prefix, never created on disk, never stat'ed, and
+   * their presence says nothing about the project being initialized.
+   *
+   * Idempotent by handle: re-indexing a sibling only re-upserts the shared
+   * directories and their existing edges. Creation is bounded by the same
+   * `MAX_CHAIN_NODES` vertex cap as every other node; when the cap is hit no
+   * edge is added for the missing vertex, and the engine stays explicitly
+   * truncated.
+   */
+  private indexDirectories(path: string, fileHandle: string): void {
+    const segments = workspaceSegments(path)
+    if (segments === undefined || segments.length < 2) return
+    const directories: Array<{ path: string; name: string }> = []
+    for (let index = 0; index < segments.length - 1; index += 1) {
+      directories.push({
+        path: segments.slice(0, index + 1).join('/'),
+        name: segments[index],
+      })
+    }
+    // On a case-insensitive workspace `Pkg` and `pkg` may be the same
+    // directory; two spellings cannot prove one exact parent, so emit nothing.
+    for (const directory of directories) {
+      const known = this.directorySpellings.get(directory.path.toLowerCase())
+      if (known !== undefined && known !== directory.path) return
+    }
+    for (const directory of directories) {
+      this.directorySpellings.set(directory.path.toLowerCase(), directory.path)
+    }
+    let parent: string | undefined
+    for (const directory of directories) {
+      const handle = nodeHandleFor(directory.path, DIRECTORY_NODE_KIND, directory.path)
+      this.upsertNode({
+        handle,
+        kind: DIRECTORY_NODE_KIND,
+        name: directory.name,
+        path: directory.path,
+        // Directories have no content fingerprint; an explicit stable version
+        // keeps re-indexing from looking like a stale baseline.
+        version: 'host:directory',
+        origin: 'host',
+      })
+      if (!this.nodes.has(handle)) {
+        // Vertex cap reached: no exact child → parent edge is possible.
+        parent = undefined
+        continue
+      }
+      if (parent !== undefined) this.linkContainment(parent, handle)
+      parent = handle
+    }
+    if (parent !== undefined && this.nodes.has(fileHandle)) {
+      this.linkContainment(parent, fileHandle)
     }
   }
 
@@ -782,6 +911,7 @@ export class ChainEngine {
     this.edges.clear()
     this.edgesByTarget.clear()
     this.knownPaths.clear()
+    this.directorySpellings.clear()
     this.graphs.clear()
     this.cache.clear()
     this.counter += 1
@@ -820,6 +950,8 @@ export class ChainEngine {
     const relations = relation === undefined
       ? (spec?.relations ?? ALL_RELATIONS)
       : [relation]
+    // Trimmed, case-insensitive node-kind filter; blank means "no filter".
+    const kind = normaliseKind(options.kind)
     if (action === 'path') {
       if (typeof options.target !== 'string' || options.target.length === 0) {
         throw new InvalidArgumentError('path requires a target handle')
@@ -834,6 +966,7 @@ export class ChainEngine {
       depth,
       limit,
       options.target ?? '',
+      kind ?? '',
     ].join('\u0000')
     const cached = this.cache.get(key)
     if (cached !== undefined) {
@@ -841,10 +974,10 @@ export class ChainEngine {
     }
 
     const projection = action === 'cycle'
-      ? this.projectCycle(handle, relations)
+      ? this.projectCycle(handle, relations, kind, relation !== undefined)
       : action === 'path'
-        ? this.projectPath(handle, options.target as string, relations, depth, limit)
-        : this.projectWalk(handle, action, spec as ActionSpec, relations, depth, limit)
+        ? this.projectPath(handle, options.target as string, relations, depth, limit, kind, relation !== undefined)
+        : this.projectWalk(handle, action, spec as ActionSpec, relations, depth, limit, kind)
     if (cappedByConfig) projection.truncated = true
     this.cache.set(key, projection)
     return projection
@@ -857,8 +990,9 @@ export class ChainEngine {
     relations: readonly ChainRelation[],
     depth: number,
     limit: number,
+    kind: string | undefined,
   ): ChainProjection {
-    const walk = this.walk(root, relations, spec.direction, depth, limit, spec.statusFilter)
+    const walk = this.walk(root, relations, spec.direction, depth, limit, spec.statusFilter, kind)
     void action
     return this.projectionOf(root, relations.length === 1 ? relations[0] : undefined, walk)
   }
@@ -869,6 +1003,8 @@ export class ChainEngine {
     relations: readonly ChainRelation[],
     depth: number,
     limit: number,
+    kind: string | undefined,
+    relationExplicit: boolean,
   ): ChainProjection {
     const parents = new Map<string, { from: string; relation: ChainRelation }>()
     const visited = new Set<string>([root])
@@ -881,6 +1017,14 @@ export class ChainEngine {
         const graph = this.graphs.get(relation)
         if (graph === undefined) continue
         for (const far of graph.neighbors(current.handle)) {
+          // Directory membership is not a semantic path: a shared directory
+          // would make every sibling file reachable from every other one. The
+          // generic `path` skips directory endpoints unless the caller names
+          // the relation explicitly (`{ relation: 'contains' | 'part_of' }`).
+          if (!relationExplicit && (this.isDirectory(current.handle) || this.isDirectory(far))) continue
+          // A kind-filtered path may only travel through matching nodes, so
+          // every returned link is of the requested kind.
+          if (!this.matchesKind(far, kind)) continue
           if (visited.has(far)) continue
           visited.add(far)
           parents.set(far, { from: current.handle, relation })
@@ -930,9 +1074,16 @@ export class ChainEngine {
     })
   }
 
-  private projectCycle(root: string, relations: readonly ChainRelation[]): ChainProjection {
+  private projectCycle(
+    root: string,
+    relations: readonly ChainRelation[],
+    kind: string | undefined,
+    relationExplicit: boolean,
+  ): ChainProjection {
     // Build the root-reachable subgraph, then let the frozen primitive find the
-    // cycle; a cycle is a legal result and is reported, never thrown.
+    // cycle; a cycle is a legal result and is reported, never thrown. A kind
+    // filter gates which vertices may be traversed, and a found cycle that
+    // still contains an unmatched vertex (the root) is not returned.
     const sub = new DirectedGraph<string>()
     const visited = new Set<string>([root])
     const queue: string[] = [root]
@@ -943,6 +1094,12 @@ export class ChainEngine {
         const graph = this.graphs.get(relation)
         if (graph === undefined) continue
         for (const far of graph.neighbors(current)) {
+          // Directory membership is structural, not a cycle: `root → dir →
+          // sibling → …` would report every directory tree as a cycle. The
+          // generic `cycle` skips directory endpoints unless the caller names
+          // the relation explicitly.
+          if (!relationExplicit && (this.isDirectory(current) || this.isDirectory(far))) continue
+          if (!this.matchesKind(far, kind)) continue
           sub.addEdge(current, far)
           if (visited.has(far)) continue
           if (visited.size >= MAX_CHAIN_NODES) {
@@ -954,7 +1111,8 @@ export class ChainEngine {
         }
       }
     }
-    const cycle = sub.findCycle()
+    const found = sub.findCycle()
+    const cycle = found !== null && found.every((handle) => this.matchesKind(handle, kind)) ? found : null
     return this.projectionOf(root, relations.length === 1 ? relations[0] : undefined, {
       links: [],
       depth: 0,
@@ -971,6 +1129,7 @@ export class ChainEngine {
     depth: number,
     limit: number,
     filter: ((status: ChainStatus) => boolean) | undefined,
+    kind: string | undefined,
   ): WalkResult {
     const links: ChainLink[] = []
     const visited = new Set<string>([root])
@@ -997,6 +1156,9 @@ export class ChainEngine {
           if (edge === undefined) continue
           const status = this.statusOf(edge)
           if (filter !== undefined && !filter(status)) continue
+          // Filtering gates the traversal as well as the result: a node of
+          // another kind is neither returned nor used as a bridge.
+          if (!this.matchesKind(far, kind)) continue
           if (links.length >= limit) {
             truncated = true
             omitted += 1
@@ -1141,6 +1303,21 @@ export class ChainEngine {
     })
   }
 
+  /**
+   * Record one containment fact with the mandated direction semantics:
+   * *`part_of` is exact; `contains` is best-effort.* The caller only reaches
+   * this method with an evidence-backed parent/child pair, so `part_of`
+   * (child → parent) is written first and is never inferred from `contains`.
+   * The derived `contains` (parent → child) is added only when that exact
+   * `part_of` edge was stored; an edge-budget drop therefore leaves the exact
+   * direction intact instead of fabricating a one-sided reverse.
+   */
+  private linkContainment(parent: string, child: string): void {
+    this.addEdge(child, parent, 'part_of', 'satisfied')
+    if (!this.edges.has(this.edgeKey('part_of', child, parent))) return
+    this.addEdge(parent, child, 'contains', 'satisfied')
+  }
+
   private addEdge(
     from: string,
     to: string,
@@ -1264,6 +1441,18 @@ export class ChainEngine {
     this.persist?.deleteEdge({ relation: edge.relation, from: edge.from, to: edge.to })
   }
 
+  /** True when `handle` is a derived workspace directory vertex. */
+  private isDirectory(handle: string): boolean {
+    return this.nodes.get(handle)?.kind === DIRECTORY_NODE_KIND
+  }
+
+  /** True when `handle` has the normalised kind, or when no filter is active. */
+  private matchesKind(handle: string, kind: string | undefined): boolean {
+    if (kind === undefined) return true
+    const node = this.nodes.get(handle)
+    return node !== undefined && node.kind.trim().toLowerCase() === kind
+  }
+
   /** Current status: `stale` when a pinned/target version no longer matches. */
   private statusOf(edge: ChainEdge): ChainStatus {
     if (edge.relation === 'baseline' && edge.baselineVersion !== undefined) {
@@ -1320,6 +1509,26 @@ export class ChainEngine {
  * Helpers
  * ------------------------------------------------------------------------- */
 
+/**
+ * Split a workspace-relative path into hierarchy segments, or `undefined` when
+ * the path cannot prove an exact hierarchy: absolute/UNC/drive paths, empty
+ * segments (including a trailing slash), and in-tree `.`/`..` segments. One
+ * leading `./` is tolerated because it never changes the target. Case is
+ * preserved; the directory layer refuses conflicting spellings itself.
+ */
+function workspaceSegments(path: string): string[] | undefined {
+  let value = path.replace(/\\/g, '/')
+  if (value.length === 0 || value.startsWith('/')) return undefined
+  if (/^[A-Za-z]:/.test(value)) return undefined
+  while (value.startsWith('./')) value = value.slice(2)
+  if (value.length === 0) return undefined
+  const segments = value.split('/')
+  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
+    return undefined
+  }
+  return segments
+}
+
 /** Lexical stub paths a newly parsed file can adopt (`src/b.ts` → `src/b`). */
 function stubAliases(path: string): string[] {
   const slash = path.lastIndexOf('/')
@@ -1374,6 +1583,13 @@ function defaultStatus(relation: ChainRelation, hasEvidence: boolean): ChainStat
 export function normaliseRelation(value: unknown): ChainRelation | undefined {
   if (typeof value !== 'string' || value.length === 0) return undefined
   return RELATION_ALIASES[value]
+}
+
+/** Normalise a node-kind filter: trimmed and lower-cased; blank means none. */
+function normaliseKind(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const kind = value.trim().toLowerCase()
+  return kind.length === 0 ? undefined : kind
 }
 
 /** Validate a depth argument: integer 1..8; `undefined` uses the action default. */

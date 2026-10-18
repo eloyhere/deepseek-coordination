@@ -3,7 +3,11 @@
  *
  * Scope (`docs/domain-model-v24.md` §5, P0): theorem-like environments
  * (`definition`, `lemma`, `theorem`, `proposition`, `corollary`, `axiom`,
- * `property`, `claim`, `example`, `remark`, `proof`), `\label{...}` and
+ * `property`, `claim`, `example`, `remark`, `proof`), derivation environments
+ * (`calculation`, `computation`, `derivation`), explicit condition markers
+ * (`\begin{condition}[…]`, `\requires`, `\meets`, `\necessary`, `\sufficient`,
+ * `\adequate`, `\invariant`, `\assumption`, `\hypothesis`, `\guard`,
+ * `\constraint`, `\goal`), `\label{...}` and
  * `\ref`/`\eqref`/`\autoref`/`\pageref`, `\begin{proof}…\end{proof}`,
  * `$…$`, `$$…$$`, `\(…\)`, `\[…\]` and math environments
  * (`equation`/`align`/`gather`/`array`/`matrix`, starred variants), and
@@ -14,8 +18,9 @@
  * dependency, never formula content. Theorem text is **not** returned; only the
  * body-free span, label, title and an explicit abstract brief are metadata.
  *
- * Complexity: comments O(n); statements O(n) because each known environment is
- * consumed once; labels/refs/inputs O(n); formulas O(n) via `formula.ts`.
+ * Complexity: comments O(n); statements and explicit condition markers O(n)
+ * because each known environment/command is consumed once; labels/refs/inputs
+ * O(n); formulas O(n) via `formula.ts`.
  * Metadata references are O(log lines) each through `SourceMap`.
  */
 import { AstTree } from '../../shared/ast.js'
@@ -45,23 +50,18 @@ import type {
 } from './parser.js'
 import { formulaMetadata, scanTexFormulas, texCommentRanges } from './formula.js'
 import type { Formula } from './formula.js'
-import { MAX_CONCEPT_NAMES, structuralLocator } from './markup.js'
+import { MAX_CONCEPT_CONDITIONS, MAX_CONCEPT_NAMES, structuralLocator } from './markup.js'
 import { splitTextLines, tokenize } from './tokenizer.js'
 import type { StructuralConcept } from '../../shared/entity.js'
-import type { StructuralKind } from '../../shared/enum.js'
+import type {
+  ConditionForm,
+  StatementKind,
+  StructuralKind,
+  StructuralRelation,
+} from '../../shared/enum.js'
 
-/** Statement kinds the P0 TeX parser recognises. */
-export type TexStatementKind =
-  | 'definition'
-  | 'lemma'
-  | 'theorem'
-  | 'proof'
-  | 'property'
-  | 'axiom'
-  | 'corollary'
-  | 'claim'
-  | 'example'
-  | 'remark'
+/** Statement kinds the TeX parser recognises (mirrors `StatementKind`). */
+export type TexStatementKind = StatementKind
 
 /** One explicit sectioning command (`\part`, `\chapter`, `\section`, ...). */
 export interface TexSection extends FlatFragment {
@@ -98,6 +98,18 @@ export interface TexStatement extends FlatFragment {
 export interface TexLabel {
   name: string
   span: SourceSpan
+}
+
+/**
+ * One explicit condition marker, before it becomes a `condition` concept.
+ * Body-free: `brief` is the macro argument only, never an environment body.
+ */
+interface TexConditionMarker {
+  form: ConditionForm
+  relation?: StructuralRelation
+  brief?: string
+  span: SourceSpan
+  source: 'command' | 'environment'
 }
 
 /** One cross-reference command (`\ref`, `\eqref`, `\autoref`, `\pageref`). */
@@ -144,6 +156,46 @@ const STATEMENT_ENVIRONMENTS: Readonly<Record<string, TexStatementKind>> = {
   example: 'example',
   remark: 'remark',
   proof: 'proof',
+  calculation: 'calculation',
+  computation: 'calculation',
+  derivation: 'calculation',
+}
+
+/**
+ * Explicit condition marker commands, mapped to a `ConditionForm`.
+ *
+ * Only these commands may set a form; prose is never inspected. `\requires`
+ * and `\meets` additionally state the relation primitive (necessary /
+ * sufficient); the other markers set the form alone. `necessary` maps to
+ * `precondition`, `sufficient`/`adequate` to `postcondition`, and `invariant`,
+ * `assumption`, `hypothesis`, `guard`, `constraint` and `goal` keep their own
+ * form (the `ConditionForm` vocabulary is unchanged).
+ */
+const CONDITION_MARKERS: Readonly<Record<string, { form: ConditionForm; relation?: StructuralRelation }>> = {
+  necessary: { form: 'precondition' },
+  requires: { form: 'precondition', relation: 'requires' },
+  sufficient: { form: 'postcondition' },
+  adequate: { form: 'postcondition' },
+  meets: { form: 'postcondition', relation: 'meets' },
+  invariant: { form: 'invariant' },
+  assumption: { form: 'assumption' },
+  hypothesis: { form: 'hypothesis' },
+  guard: { form: 'guard' },
+  constraint: { form: 'constraint' },
+  goal: { form: 'goal' },
+}
+
+/**
+ * Explicit condition environments. A bare `condition` environment has no
+ * qualifier (`unknown`); a named environment states its form directly. An
+ * optional `[…]` qualifier overrides the environment name and accepts the
+ * phrases `necessary condition` / `sufficient condition`.
+ */
+const CONDITION_ENVIRONMENTS: Readonly<Record<string, { form: ConditionForm; relation?: StructuralRelation }>> = {
+  condition: { form: 'unknown' },
+  precondition: { form: 'precondition' },
+  postcondition: { form: 'postcondition' },
+  ...CONDITION_MARKERS,
 }
 
 const REFERENCE_COMMANDS: Readonly<Record<string, TexReference['command']>> = {
@@ -247,6 +299,94 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
     }
     statements.push(statement)
     index = end.next
+  }
+
+  /*
+   * Explicit condition markers. Only a marker command or a condition
+   * environment creates a condition concept; prose is never scanned. The
+   * marker set is deliberately closed (`CONDITION_MARKERS` /
+   * `CONDITION_ENVIRONMENTS`), so a word such as "necessary" in a paragraph
+   * has no effect.
+   */
+  const conditionMarkers: TexConditionMarker[] = []
+  index = 0
+  while (index < source.length) {
+    if (index - lastCheck >= 2_048) {
+      lastCheck = index
+      if (!ctx.checkpoint()) break
+    }
+    const commentEnd = insideExcluded(excluded, index)
+    if (commentEnd !== undefined) {
+      index = commentEnd
+      continue
+    }
+    if (source.startsWith('\\begin{', index)) {
+      const parsed = parseBegin(source, index)
+      const mapping = parsed === undefined ? undefined : CONDITION_ENVIRONMENTS[parsed.environment]
+      if (parsed !== undefined && mapping !== undefined) {
+        const end = findEnvironmentEnd(source, parsed.environment, parsed.nameEnd + 1, excluded)
+        if (end === undefined) {
+          index = parsed.nameEnd + 1
+          continue
+        }
+        if (conditionMarkers.length >= MAX_CONCEPT_CONDITIONS) {
+          ctx.unverifiableOnce(
+            'tex-condition-cap',
+            `condition limit ${MAX_CONCEPT_CONDITIONS} reached; later conditions were dropped`,
+            locate(index, source.length),
+          )
+          break
+        }
+        const qualifier = parsed.title === undefined ? undefined : conditionMarkerOf(parsed.title)
+        const selected = qualifier ?? mapping
+        conditionMarkers.push({
+          form: selected.form,
+          ...(selected.relation === undefined ? {} : { relation: selected.relation }),
+          span: locate(index, end.next),
+          source: 'environment',
+        })
+        // Keep scanning inside the body so nested explicit markers are seen.
+        index = parsed.nameEnd + 1
+        continue
+      }
+    }
+    if (source.charCodeAt(index) !== 92) {
+      index += 1
+      continue
+    }
+    const command = readCommand(source, index)
+    if (command === undefined) {
+      index += 1
+      continue
+    }
+    const mapping = CONDITION_MARKERS[command.name]
+    if (mapping === undefined) {
+      index = command.end
+      continue
+    }
+    const argument = readBracedArgument(source, command.end)
+    if (argument === undefined) {
+      // A bare `\requires` states no condition value; no node is invented.
+      index = command.end
+      continue
+    }
+    if (conditionMarkers.length >= MAX_CONCEPT_CONDITIONS) {
+      ctx.unverifiableOnce(
+        'tex-condition-cap',
+        `condition limit ${MAX_CONCEPT_CONDITIONS} reached; later conditions were dropped`,
+        locate(index, source.length),
+      )
+      break
+    }
+    const brief = sanitizeMetadataText(argument.value, MAX_BRIEF_LENGTH)
+    conditionMarkers.push({
+      form: mapping.form,
+      ...(mapping.relation === undefined ? {} : { relation: mapping.relation }),
+      ...(brief.length === 0 ? {} : { brief }),
+      span: locate(index, argument.next),
+      source: 'command',
+    })
+    index = argument.next
   }
 
   // Labels, cross-references and file inputs.
@@ -672,6 +812,75 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
     }
   }
 
+  /*
+   * Condition concepts. A condition applies to the innermost theorem-like
+   * statement whose span contains its marker, else to the explicit work
+   * (`\documentclass{book|article}`). Both are locators, never handles. When a
+   * containing statement has no locator (its node was dropped at the metadata
+   * cap), the condition stays unattached rather than falling back to the work
+   * and naming the wrong target.
+   */
+  const statementRanges: Array<{ start: number; end: number; locator?: string }> = []
+  for (const statement of statements) {
+    const statementLocator = statementConcepts.get(statement)?.locator
+    statementRanges.push({
+      start: statement.span.start,
+      end: statement.span.end,
+      ...(statementLocator === undefined ? {} : { locator: statementLocator }),
+    })
+  }
+  for (let conditionIndex = 0; conditionIndex < conditionMarkers.length; conditionIndex += 1) {
+    const marker = conditionMarkers[conditionIndex]
+    const ordinal = conditionIndex + 1
+    const locator = structuralLocator(ctx.path, 'condition', ordinal)
+    let enclosing: { start: number; end: number; locator?: string } | undefined
+    for (const range of statementRanges) {
+      if (marker.span.start >= range.start && marker.span.start < range.end) {
+        enclosing = range
+        break
+      }
+    }
+    const appliesTo = enclosing === undefined ? workLocator : enclosing.locator
+    const concept: StructuralConcept = {
+      kind: 'condition',
+      locator,
+      ordinal,
+      form: marker.form,
+      status: 'unknown',
+      explicit: true,
+      ...(marker.relation === undefined ? {} : { relation: marker.relation }),
+      ...(appliesTo === undefined ? {} : { appliesTo }),
+    }
+    let reference: NodeReference | undefined
+    if (ctx.path !== undefined) {
+      try {
+        reference = referenceForSpan(ctx, {
+          scheme: 'symbol',
+          target: `${ctx.path}#condition:${ordinal}`,
+          span: marker.span,
+          parserId: 'latex',
+        })
+      } catch {
+        reference = undefined
+      }
+    }
+    const node = pushNodeMetadata(ctx, nodes, {
+      kind: 'condition',
+      locator,
+      ...(marker.brief === undefined ? {} : { brief: marker.brief }),
+      ...(reference === undefined ? {} : { reference }),
+      fragment: fragmentForSpan(ctx, marker.span),
+      source: marker.source,
+      span: marker.span,
+    })
+    if (node !== undefined) {
+      node.domain = concept
+      concepts.push(concept)
+      addConceptChild(appliesTo, locator)
+    }
+    appendAstNode(ctx, root, 'condition', marker.span, marker.brief)
+  }
+
   for (const concept of concepts) {
     if (concept.locator === undefined) continue
     const list = conceptChildren.get(concept.locator)
@@ -906,6 +1115,24 @@ function readEnvironmentContent(
   const end = findEnvironmentEnd(source, environment, begin + `\\begin{${environment}}`.length, excluded)
   if (end === undefined) return undefined
   return source.slice(begin + `\\begin{${environment}}`.length, end.start)
+}
+
+/**
+ * Map an explicit `\begin{condition}[…]` qualifier to a condition form.
+ *
+ * Only exact marker vocabulary is accepted; `necessary condition` and
+ * `sufficient condition` are the documented two-word forms. Anything else
+ * returns `undefined`, so an arbitrary title never invents a form.
+ */
+function conditionMarkerOf(value: string): { form: ConditionForm; relation?: StructuralRelation } | undefined {
+  const normalised = value.slice(0, MAX_NAME_LENGTH).trim().toLowerCase().replace(/\s+/g, ' ')
+  if (normalised.length === 0) return undefined
+  const direct = CONDITION_MARKERS[normalised] ?? CONDITION_ENVIRONMENTS[normalised]
+  if (direct !== undefined) return direct
+  const suffix = ' condition'
+  if (!normalised.endsWith(suffix)) return undefined
+  const base = normalised.slice(0, -suffix.length)
+  return CONDITION_MARKERS[base] ?? CONDITION_ENVIRONMENTS[base]
 }
 
 function documentClassForm(name: string | undefined): DocumentMetadata['form'] {

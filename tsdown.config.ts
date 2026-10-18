@@ -27,6 +27,9 @@ export default defineConfig([
         id === '@deepseek-ai/cordis' ||
         id === '@deepseek-ai/dsh-host-webserver' ||
         id.startsWith('@deepseek-ai/dsh-'),
+      // Office parsing is pure host code and must work from the packaged bundle
+      // (lib/index.mjs) without a runtime node_modules lookup.
+      alwaysBundle: (id) => id === 'fflate' || id === 'fast-xml-parser',
     },
   },
   {

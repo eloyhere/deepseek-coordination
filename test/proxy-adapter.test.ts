@@ -13,6 +13,8 @@ import type { LlmRuntimeLike, ProxyRoute } from '../src/host/proxy-adapter.js'
 
 interface Forwarded {
   provider?: unknown
+  model?: unknown
+  temperature?: unknown
   messages?: unknown
   extra?: unknown
 }

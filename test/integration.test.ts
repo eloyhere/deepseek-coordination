@@ -12,7 +12,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createTestHost, insertGoal, insertPlan, insertSession, insertTurn } from './helpers.js'
+import type { TestHostOptions } from './helpers.js'
 import { resolveConfig } from '../src/host/config.js'
+import { ChainEngine } from '../src/host/chain.js'
+import { fileHandleFor, nodeHandleFor } from '../src/host/node-registry.js'
+import type { ParsedFile } from '../src/host/parse-service.js'
 import { ProfessionModule } from '../src/host/profession.js'
 import {
   SelectionModule,
@@ -21,6 +25,7 @@ import {
   rebuildProfession,
 } from '../src/host/selection.js'
 import {
+  coordinationFileToolDefinitions,
   coordinationToolDefinitions,
   registerCoordinationTools,
 } from '../src/host/tools.js'
@@ -32,6 +37,8 @@ import type {
   ProfessionToolValue,
 } from '../src/host/tools.js'
 import type { SelectionState } from '../src/shared/selection.js'
+import type { Locale } from '../src/shared/i18n.js'
+import type { PermissionPresetOption, PermissionPresetPort } from '../src/host/module.js'
 import {
   InvalidArgumentError,
   InvalidStateError,
@@ -44,8 +51,31 @@ import {
 
 type Fixture = ReturnType<typeof buildModules>
 
-function buildModules(options: Parameters<typeof createTestHost>[0] = {}) {
-  const fixture = createTestHost(options)
+/** One catalog row as a DSH deployment may answer it: the label is optional. */
+type PresetOptionFixture = Partial<PermissionPresetOption> & Pick<PermissionPresetOption, 'value'>
+
+/**
+ * A permission-preset double before `buildModules` completes it into a
+ * `PermissionPresetPort`.
+ *
+ * The port declares a label on every row and a string from `current()`, but a
+ * deployment may omit a row's `name` and have no current preset for a session.
+ * The fixture keeps that honest, incomplete shape; `permissionPresetPort`
+ * supplies only the mechanical defaults, never a fabricated label.
+ */
+interface PermissionPresetFixture {
+  catalog(): { options: PresetOptionFixture[]; defaultPreset?: string }
+  current?(session: unknown): string | undefined
+  set?(session: unknown, name: string): void
+  resolve?: PermissionPresetPort['resolve']
+}
+
+type BuildOptions = Omit<TestHostOptions, 'permissionPresets'> & {
+  permissionPresets?: PermissionPresetFixture
+}
+
+function buildModules(options: BuildOptions = {}) {
+  const fixture = createTestHost(hostOptions(options))
   const selection = new SelectionModule(fixture.host)
   const profession = new ProfessionModule(fixture.host)
   return {
@@ -53,6 +83,36 @@ function buildModules(options: Parameters<typeof createTestHost>[0] = {}) {
     selection,
     profession,
     deps: { selection, profession },
+  }
+}
+
+/** Complete only the mechanical parts of the partial preset fixture. */
+function hostOptions(options: BuildOptions): TestHostOptions {
+  const { permissionPresets, ...rest } = options
+  return permissionPresets === undefined
+    ? rest
+    : { ...rest, permissionPresets: permissionPresetPort(permissionPresets) }
+}
+
+function permissionPresetPort(fixture: PermissionPresetFixture): PermissionPresetPort {
+  return {
+    catalog: () => {
+      const catalog = fixture.catalog()
+      return {
+        // The port's declared option requires `name`, but the fixture models a
+        // deployment that omits the label. Keep the row nameless at runtime —
+        // the fallback label is the behaviour under test — and narrow only here,
+        // at the fixture boundary.
+        options: catalog.options as PermissionPresetOption[],
+        ...(catalog.defaultPreset === undefined ? {} : { defaultPreset: catalog.defaultPreset }),
+      }
+    },
+    // The port requires a string; an absent preset reads as the empty key.
+    current: (session) => fixture.current?.(session) ?? '',
+    set: (session, name) => {
+      fixture.set?.(session, name)
+    },
+    ...(fixture.resolve === undefined ? {} : { resolve: fixture.resolve }),
   }
 }
 
@@ -67,6 +127,37 @@ function toolService(fixture: Fixture, locale = 'zh-CN'): CoordinationToolServic
     activeTurn: (session) => fixture.selection.activeTurn(session),
     getProfessionRecord: (turn) => fixture.profession.getProfessionRecord(turn),
     turnByOrdinal: (session, ordinal) => fixture.selection.turnByOrdinal(session, ordinal),
+  }
+}
+
+/** A body-free parse fixture for the chain directory layer. */
+function parsedFile(path: string, nodes: ParsedFile['nodes'] = []): ParsedFile {
+  const name = path.slice(path.lastIndexOf('/') + 1)
+  return {
+    path,
+    parserId: 'javascript',
+    charset: 'utf-8',
+    bomBytes: 0,
+    truncated: false,
+    tokens: 1,
+    size: 1,
+    cached: false,
+    status: 'parsed',
+    file: {
+      kind: 'module',
+      name,
+      path,
+      byteStart: 0,
+      byteEnd: 1,
+      lineStart: 1,
+      lineEnd: 1,
+      fingerprint: `sha256:${path}`,
+      span: { start: 0, end: 1, line: 1, column: 1 },
+    },
+    nodes,
+    references: [],
+    diagnostics: [],
+    structure: { headings: [], statements: [], divs: [], formulaReferences: [], frontMatter: {} },
   }
 }
 
@@ -697,6 +788,237 @@ test('a preset catalog that echoes its key as the name still shows the shipped l
         ['custom-tier', 'Custom tier'],
       ],
     )
+  } finally {
+    fixture.close()
+  }
+})
+
+/* ------------------------------------------------------------------------- *
+ * Chain directory layer and kind filter
+ * ------------------------------------------------------------------------- */
+
+test('chain index derives directory nodes and edges once per ancestor', () => {
+  const chain = new ChainEngine()
+  try {
+    const file = fileHandleFor('pkg/src/a.ts')
+    chain.index(parsedFile('pkg/src/a.ts'))
+
+    // child -> directory `part_of` is the exact hierarchy, one level per hop.
+    const ancestors = chain.dependenciesOf(file, { relation: 'part_of', depth: 2 })
+    assert.deepEqual(
+      ancestors.links.map((link) => ({
+        path: link.path,
+        kind: link.kind,
+        relation: link.relation,
+        direction: link.direction,
+        depth: link.depth,
+      })),
+      [
+        { path: 'pkg/src', kind: 'directory', relation: 'part_of', direction: 'forward', depth: 1 },
+        { path: 'pkg', kind: 'directory', relation: 'part_of', direction: 'forward', depth: 2 },
+      ],
+    )
+    const src = ancestors.links[0]?.handle as string
+    const pkg = ancestors.links[1]?.handle as string
+    assert.notEqual(src, pkg)
+    assert.equal(chain.size, 3, 'file + pkg + pkg/src')
+    assert.equal(chain.edgeCount, 4, 'two exact part_of + two derived contains')
+
+    // The derived `contains` mirrors the same fact (directory -> child).
+    assert.deepEqual(
+      chain.dependenciesOf(src, { relation: 'contains' }).links.map((link) => link.path),
+      ['pkg/src/a.ts'],
+    )
+    assert.deepEqual(
+      chain.dependenciesOf(pkg, { relation: 'contains' }).links.map((link) => link.path),
+      ['pkg/src'],
+    )
+
+    // A sibling reuses both directory vertices: only its own vertex and the
+    // two file-level edges are new.
+    chain.index(parsedFile('pkg/src/b.ts'))
+    assert.equal(chain.size, 4)
+    assert.equal(chain.edgeCount, 6)
+    assert.deepEqual(
+      chain.dependenciesOf(file, { relation: 'part_of', depth: 2 }).links.map((link) => link.handle),
+      [src, pkg],
+    )
+    assert.deepEqual(
+      chain.dependenciesOf(src, { relation: 'contains' }).links.map((link) => link.path).sort(),
+      ['pkg/src/a.ts', 'pkg/src/b.ts'],
+    )
+  } finally {
+    chain.dispose()
+  }
+})
+
+test('chain refuses directory edges for ambiguous paths and case spellings', () => {
+  for (const path of ['pkg/../src/a.ts', '//server/share/a.ts', 'C:/work/a.ts']) {
+    const chain = new ChainEngine()
+    try {
+      chain.index(parsedFile(path))
+      const file = fileHandleFor(path)
+      assert.deepEqual(
+        chain.dependenciesOf(file, { relation: 'part_of', depth: 2 }).links,
+        [],
+        `${path} must not claim an exact parent`,
+      )
+      assert.equal(chain.size, 1, `${path} creates only the file vertex`)
+      assert.equal(chain.edgeCount, 0, `${path} creates no directory edge`)
+    } finally {
+      chain.dispose()
+    }
+  }
+
+  // `Pkg` and `pkg` may be the same case-insensitive directory: the second
+  // spelling proves no exact `part_of`, so it contributes no hierarchy.
+  const chain = new ChainEngine()
+  try {
+    chain.index(parsedFile('pkg/src/a.ts'))
+    chain.index(parsedFile('Pkg/src/b.ts'))
+    const sibling = fileHandleFor('Pkg/src/b.ts')
+    assert.deepEqual(chain.dependenciesOf(sibling, { relation: 'part_of' }).links, [])
+    assert.equal(chain.size, 4, 'the two `pkg` directory vertices are not duplicated')
+    assert.equal(chain.edgeCount, 4, 'no edge is guessed for the ambiguous sibling')
+  } finally {
+    chain.dispose()
+  }
+})
+
+test('chain kind filter is trimmed, case-insensitive and filters instead of erroring', () => {
+  const chain = new ChainEngine()
+  try {
+    const path = 'pkg/src/a.ts'
+    const file = fileHandleFor(path)
+    chain.index(
+      parsedFile(path, [
+        {
+          kind: 'function',
+          name: 'alpha',
+          path,
+          byteStart: 0,
+          byteEnd: 1,
+          lineStart: 1,
+          lineEnd: 1,
+          fingerprint: 'sha256:alpha',
+          span: { start: 0, end: 1, line: 1, column: 1 },
+        },
+        {
+          kind: 'class',
+          name: 'Beta',
+          path,
+          byteStart: 2,
+          byteEnd: 3,
+          lineStart: 1,
+          lineEnd: 1,
+          fingerprint: 'sha256:beta',
+          span: { start: 2, end: 3, line: 1, column: 1 },
+        },
+      ]),
+    )
+
+    // The filter gates traversal and links alike: only matching nodes survive.
+    const dirs = chain.dependenciesOf(file, {
+      relation: 'part_of',
+      depth: 2,
+      kind: '  DIRECTORY ',
+    })
+    assert.deepEqual(
+      dirs.links.map((link) => [link.kind, link.path]),
+      [['directory', 'pkg/src'], ['directory', 'pkg']],
+    )
+    const classes = chain.dependenciesOf(file, { relation: 'contains', kind: ' class ' })
+    assert.deepEqual(classes.links.map((link) => [link.kind, link.name]), [['class', 'Beta']])
+
+    // A kind that matches nothing is an empty list, never an error.
+    const none = chain.dependenciesOf(file, { relation: 'contains', kind: 'theorem' })
+    assert.deepEqual(none.links, [])
+    assert.equal(none.truncated, false)
+
+    // The filtered answer is cached separately from the unfiltered one.
+    assert.deepEqual(
+      chain.dependenciesOf(file, { relation: 'part_of', depth: 2 }).links.map((link) => link.path),
+      ['pkg/src', 'pkg'],
+    )
+  } finally {
+    chain.dispose()
+  }
+})
+
+test('chain wires explicit TeX requires/meets only from a proven locator target', () => {
+  const chain = new ChainEngine()
+  try {
+    const path = 'pkg/src/paper.tex'
+    const theorem = nodeHandleFor(path, 'theorem', `document:${path}/theorem:1`)
+    const requires = nodeHandleFor(path, 'condition', `document:${path}/condition:1`)
+    const meets = nodeHandleFor(path, 'condition', `document:${path}/condition:2`)
+    const unattached = nodeHandleFor(path, 'condition', `document:${path}/condition:3`)
+    const unresolved = nodeHandleFor(path, 'condition', `document:${path}/condition:4`)
+    const span = { start: 0, end: 1, line: 1, column: 1 }
+    const condition = (
+      locator: string,
+      relation: 'requires' | 'meets' | undefined,
+      appliesTo: string | undefined,
+    ): ParsedFile['nodes'][number] => ({
+      kind: 'condition',
+      locator,
+      path,
+      source: 'command',
+      span,
+      domain: {
+        kind: 'condition',
+        locator,
+        form: relation === 'meets' ? 'postcondition' : 'precondition',
+        status: 'unknown',
+        explicit: true,
+        ...(relation === undefined ? {} : { relation }),
+        ...(appliesTo === undefined ? {} : { appliesTo }),
+      },
+    })
+    chain.index(
+      parsedFile(path, [
+        { kind: 'theorem', locator: `document:${path}/theorem:1`, name: 'Main', path, span },
+        condition(`document:${path}/condition:1`, 'requires', `document:${path}/theorem:1`),
+        condition(`document:${path}/condition:2`, 'meets', `document:${path}/theorem:1`),
+        // Form-only markers never set `relation`: no edge may be invented.
+        condition(`document:${path}/condition:3`, undefined, `document:${path}/theorem:1`),
+        // An appliesTo locator with no surviving node stays unattached.
+        condition(`document:${path}/condition:4`, 'requires', `document:${path}/theorem:99`),
+      ]),
+    )
+
+    // `requires` points target → condition; `meets` points condition → target.
+    assert.deepEqual(
+      chain.dependenciesOf(theorem, { relation: 'requires' }).links.map((link) => link.handle),
+      [requires],
+    )
+    assert.deepEqual(
+      chain.dependenciesOf(meets, { relation: 'meets' }).links.map((link) => link.handle),
+      [theorem],
+    )
+    assert.deepEqual(chain.dependenciesOf(unattached, { relation: 'requires' }).links, [])
+    assert.deepEqual(chain.dependenciesOf(unresolved, { relation: 'requires' }).links, [])
+  } finally {
+    chain.dispose()
+  }
+})
+
+test('coordination_chain exposes the kind parameter in both locales', () => {
+  const fixture = buildModules()
+  try {
+    const expected: Array<[Locale, RegExp]> = [
+      ['en-US', /kind/i],
+      ['zh-CN', /种类/],
+    ]
+    for (const [locale, pattern] of expected) {
+      const tool = toolOf(
+        coordinationFileToolDefinitions(toolService(fixture), locale),
+        'coordination_chain',
+      )
+      const properties = tool.parameters.properties as Record<string, Record<string, unknown>>
+      assert.equal(properties.kind?.type, 'string', `${locale}: kind must be a string parameter`)
+      assert.match(String(properties.kind?.description), pattern, `${locale}: kind description`)
+    }
   } finally {
     fixture.close()
   }

@@ -10,13 +10,11 @@
  *    `NodeCard` projection, the host-only `Chain` projection and the single
  *    authorized content path).
  *
- * Names stay English and stable. The three composer tools take their
- * description and parameter copy from the shared table (`src/shared/i18n.ts`),
- * so switching the host locale changes what the model sees without forking the
- * tool surface. The four file tools have no shared copy keys yet (adding them
- * would mean editing `i18n.ts`, which is out of scope for this wiring change),
- * so they carry a minimal English/Chinese pair inline below; when the keys
- * land, swap `fileToolCopy` for `copyFor(locale).tools`.
+ * Names stay English and stable. All seven tools take their description and
+ * parameter copy from the shared tables (`src/shared/i18n.ts`): the composer
+ * tools from `copy.tools`, the file layer from `copy.fileTools`. Switching the
+ * host locale therefore changes what the model sees without forking the tool
+ * surface or keeping a second inline copy table.
  *
  * The definitions are authored in the registry's canonical `ToolDefinition`
  * shape: a JSON-Schema `parameters` object, an `output` with its own schema and
@@ -58,7 +56,7 @@ import {
   isOneOf,
 } from '../shared/enum.js'
 import { InvalidArgumentError, InvalidStateError } from '../shared/error.js'
-import { copyFor, normaliseLocale, type Locale, type ToolCopy, type ToolName } from '../shared/i18n.js'
+import { copyFor, normaliseLocale, type FileToolName, type Locale, type ToolCopy, type ToolName } from '../shared/i18n.js'
 import type { SelectionLockView, SelectionPatch, SelectionState } from '../shared/selection.js'
 import { assertProfession } from './profession.js'
 import { ChainEngine, MAX_CHAIN_DEPTH, MAX_CHAIN_LINKS, MAX_CHAIN_TOKENS } from './chain.js'
@@ -101,11 +99,7 @@ export interface CoordinationToolOutput<T = unknown> {
 }
 
 /** File-layer tool names added by the v0.9 wiring. */
-export type CoordinationFileToolName =
-  | 'coordination_parse'
-  | 'coordination_describe'
-  | 'coordination_chain'
-  | 'coordination_read'
+export type CoordinationFileToolName = FileToolName
 
 /** Every tool name this module can register. */
 export type CoordinationAnyToolName = ToolName | CoordinationFileToolName
@@ -1201,7 +1195,8 @@ export function coordinationFileToolDefinitions(
   locale: Locale = normaliseLocale(service.locale),
   options: CoordinationToolOptions = {},
 ): CoordinationToolDefinition[] {
-  const copy = fileToolCopy(locale)
+  // Keep the pre-i18n fallback: an unsupported tag still gets the zh-CN table.
+  const copy = (copyFor(locale) ?? copyFor('zh-CN')).fileTools
   return [
     parseTool(service, copy.coordination_parse, options),
     describeTool(service, copy.coordination_describe, options),
@@ -1212,7 +1207,7 @@ export function coordinationFileToolDefinitions(
 
 function parseTool(
   service: CoordinationToolService,
-  copy: FileToolCopy,
+  copy: ToolCopy,
   options: CoordinationToolOptions,
 ): CoordinationToolDefinition<ParseToolValue> {
   return {
@@ -1255,7 +1250,7 @@ function parseTool(
 
 function describeTool(
   service: CoordinationToolService,
-  copy: FileToolCopy,
+  copy: ToolCopy,
   options: CoordinationToolOptions,
 ): CoordinationToolDefinition<DescribeResult> {
   return {
@@ -1289,7 +1284,7 @@ function describeTool(
 
 function chainDefinition(
   service: CoordinationToolService,
-  copy: FileToolCopy,
+  copy: ToolCopy,
   options: CoordinationToolOptions,
 ): CoordinationToolDefinition<ChainToolValue> {
   return {
@@ -1310,6 +1305,7 @@ function chainDefinition(
         limit: { type: 'integer', description: fileParameter(copy, 'limit') },
         target: fileStringParameter(copy, 'target'),
         relation: fileStringParameter(copy, 'relation'),
+        kind: fileStringParameter(copy, 'kind'),
       },
     },
     output: {
@@ -1326,6 +1322,7 @@ function chainDefinition(
         ...(args.relation === undefined
           ? {}
           : { relation: requiredToken(args, 'relation') as ChainRelation }),
+        ...(args.kind === undefined ? {} : { kind: requiredToken(args, 'kind') }),
       }
       const engine = toolRuntimeOf(service, options).chain
       switch (action) {
@@ -1354,7 +1351,7 @@ function chainDefinition(
 
 function readTool(
   service: CoordinationToolService,
-  copy: FileToolCopy,
+  copy: ToolCopy,
   options: CoordinationToolOptions,
 ): CoordinationToolDefinition<ReadToolValue> {
   return {
@@ -1512,109 +1509,10 @@ function requiredMode(args: Record<string, unknown>): 'bytes' | 'lines' {
 }
 
 /* ------------------------------------------------------------------------- *
- * File-layer copy (inline until shared i18n gains the keys)
+ * File-layer copy helpers (the copy itself lives in the shared `fileTools` table)
  * ------------------------------------------------------------------------- */
 
-interface FileToolCopy {
-  readonly description: string
-  readonly parameters: Readonly<Record<string, string>>
-}
-
-type FileToolCopyTable = Readonly<Record<CoordinationFileToolName, FileToolCopy>>
-
-const FILE_TOOL_COPY: Readonly<Record<Locale, FileToolCopyTable>> = {
-  'zh-CN': {
-    coordination_parse: {
-      description:
-        '解析工作区文件（或给定文本）：返回引用、诊断、字符集、截断标记与节点卡片；绝不返回文件全文。',
-      parameters: {
-        path: '工作区相对路径；与 text 二选一。',
-        text: '要直接解析的文本；与 path 二选一，不写缓存。',
-        parserId: '强制解析器（javascript / css / html / markdown / latex）；省略时按扩展名。',
-      },
-    },
-    coordination_describe: {
-      description: '按 handle 查询节点卡片与指定的元数据字段；正文永不返回。',
-      parameters: {
-        handle: '公共节点 handle（由 coordination_parse 的 cards 返回）。',
-        fields: '额外字段：summary / description / usage / purpose；brief、reference 与六个平面字段总是返回。',
-      },
-    },
-    coordination_chain: {
-      description:
-        '查询节点的有界关系链：依赖 / 被依赖 / 满足 / 基线 / 前置 / 未满足 / 路径 / 环；最多 8 层、50 条链接，不返回 AST 或图结构。',
-      parameters: {
-        handle: '链根节点的公共 handle。',
-        action: 'dependencies / dependents / satisfies / satisfied_by / baseline / prerequisites / unmet / path / cycle。',
-        depth: '遍历深度 1–8；省略时按动作取默认值。',
-        limit: '链接上限 1–50；默认 50。',
-        target: 'path 动作的目标 handle。',
-        relation: '只沿单一关系遍历（depends_on 等价于 depends）。',
-      },
-    },
-    coordination_read: {
-      description:
-        '读取工作区文件的字节或行范围；这是唯一返回文件内容的工具，单次上限 256 KiB / 2000 行 / 16k tokens。',
-      parameters: {
-        path: '工作区相对路径。',
-        mode: 'bytes（字节偏移，end 不含）或 lines（1 基行号，end 含）。',
-        start: '起始字节偏移或起始行号。',
-        end: '结束字节偏移（不含）或结束行号（含）。',
-        maxBytes: '本次最多返回的字节数（≤262144）。',
-        maxLines: '本次最多返回的行数（≤2000）。',
-      },
-    },
-  },
-  'en-US': {
-    coordination_parse: {
-      description:
-        'Parse a workspace file (or supplied text): returns references, diagnostics, charset, truncation and node cards; never the file body.',
-      parameters: {
-        path: 'Workspace-relative path; exactly one of path or text.',
-        text: 'Text to parse directly; exactly one of path or text, not cached.',
-        parserId: 'Force a parser (javascript / css / html / markdown / latex); the extension decides when omitted.',
-      },
-    },
-    coordination_describe: {
-      description:
-        'Read one node card and the requested metadata fields by handle; the body is never returned.',
-      parameters: {
-        handle: 'Public node handle (from coordination_parse cards).',
-        fields: 'Extra fields: summary / description / usage / purpose; brief, reference and the six flat fields are always returned.',
-      },
-    },
-    coordination_chain: {
-      description:
-        'Query a bounded relation chain: dependencies / dependents / satisfies / baseline / prerequisites / unmet / path / cycle; at most depth 8 and 50 links, never an AST or graph structure.',
-      parameters: {
-        handle: 'Public handle of the chain root.',
-        action: 'dependencies / dependents / satisfies / satisfied_by / baseline / prerequisites / unmet / path / cycle.',
-        depth: 'Traversal depth 1–8; the action default applies when omitted.',
-        limit: 'Link cap 1–50; default 50.',
-        target: 'Target handle for the path action.',
-        relation: 'Traverse a single relation (depends_on is an alias of depends).',
-      },
-    },
-    coordination_read: {
-      description:
-        'Read a byte or line range of a workspace file; the only tool that returns file content, capped at 256 KiB / 2,000 lines / 16k tokens per call.',
-      parameters: {
-        path: 'Workspace-relative path.',
-        mode: 'bytes (byte offsets, end exclusive) or lines (1-based lines, end inclusive).',
-        start: 'Start byte offset or 1-based start line.',
-        end: 'End byte offset (exclusive) or end line (inclusive).',
-        maxBytes: 'Maximum bytes to return this call (≤262144).',
-        maxLines: 'Maximum lines to return this call (≤2000).',
-      },
-    },
-  },
-}
-
-function fileToolCopy(locale: Locale): FileToolCopyTable {
-  return FILE_TOOL_COPY[locale] ?? FILE_TOOL_COPY['zh-CN']
-}
-
-function fileParameter(copy: FileToolCopy, name: string): string {
+function fileParameter(copy: ToolCopy, name: string): string {
   const description = copy.parameters[name]
   if (typeof description !== 'string' || description.length === 0) {
     throw new Error(`missing file-tool parameter copy for "${name}"`)
@@ -1622,7 +1520,7 @@ function fileParameter(copy: FileToolCopy, name: string): string {
   return description
 }
 
-function fileStringParameter(copy: FileToolCopy, name: string): Record<string, unknown> {
+function fileStringParameter(copy: ToolCopy, name: string): Record<string, unknown> {
   return { type: 'string', description: fileParameter(copy, name) }
 }
 

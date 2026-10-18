@@ -43,25 +43,39 @@ import type { NodeStatus, ParsedFile } from './parse-service.js'
  * Handles and kinds
  * ------------------------------------------------------------------------- */
 
-/** Node kinds a parsed file can carry (`heading`/`div` are P0 parser kinds). */
+/**
+ * Node kinds a parsed file can carry (`heading`/`div` are P0 parser kinds;
+ * `interface`/`type`/`enum`/`variable` are language-declaration kinds emitted
+ * by the Python/Java/Rust/PHP/C-family parsers).
+ */
 export type NodeKind =
   | 'project'
   | 'module'
   | 'document'
+  /** OOXML workbook root (`xl/workbook.xml`); `sheet`/`range`/`formula` live under it. */
+  | 'workbook'
   | 'book'
   | 'part'
   | 'chapter'
   | 'article'
   | 'section'
   | 'paragraph'
+  /** Explicit hyperlink (`w:hyperlink` resolved through document rels); no display text. */
+  | 'link'
   | 'sheet'
   | 'slide'
   | 'cell'
   | 'range'
   | 'formula'
   | 'class'
+  /** Type declarations: a language `interface` / `enum` / `type` alias. */
+  | 'interface'
+  | 'enum'
+  | 'type'
   | 'function'
   | 'method'
+  /** A field / local / file-scope binding declared by a language parser. */
+  | 'variable'
   | 'definition'
   | 'lemma'
   | 'proof'

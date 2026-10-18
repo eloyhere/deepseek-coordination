@@ -10,6 +10,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   domainNodesOf,
+  MarkdownParser,
   parseFileText,
   parseText,
   structuralLocator,
@@ -203,7 +204,8 @@ test('Markdown article collected in a book links partOf/contains; SUMMARY.md bui
   const setup = nodesOfKind(articleResult, 'heading')[0]
   assert.equal(domainOf(setup)?.partOf, articleDomain?.locator)
 
-  const summary = md(
+  // SUMMARY.md resolves to the book parser by design; this case exercises Markdown directly.
+  const summary = new MarkdownParser().parse(
     [
       '# Summary',
       '',
@@ -217,7 +219,7 @@ test('Markdown article collected in a book links partOf/contains; SUMMARY.md bui
       '',
       '- [Advanced](ch2.md)',
     ].join('\n'),
-    'docs/SUMMARY.md',
+    { path: 'docs/SUMMARY.md' },
   )
   const summaryBook = nodesOfKind(summary, 'book')[0]
   const parts = nodesOfKind(summary, 'part')
@@ -319,7 +321,7 @@ test('Markdown contract divs and front-matter lists emit Condition nodes without
  * HTML
  * ------------------------------------------------------------------------- */
 
-test('HTML article/main/section/paragraph build an Article hierarchy; a bare page does not', () => {
+test('HTML article/main/section/paragraph build a section hierarchy; a bare page does not', () => {
   const source = [
     '<!doctype html>',
     '<html><head>',
@@ -344,26 +346,32 @@ test('HTML article/main/section/paragraph build an Article hierarchy; a bare pag
   const result = html(source, 'docs/guide.html')
   assertBodyFree(result)
 
-  const articles = nodesOfKind(result, 'article')
-  assert.equal(articles.length, 1)
-  assert.equal(articles[0].name, 'Field Guide')
-  const articleDomain = domainOf(articles[0])
-  assert.equal(articleDomain?.kind, 'article')
-  assert.equal(articleDomain?.explicit, true)
+  // `article` is a book concept: an HTML <article> element is a sectioning
+  // container and maps to `document` (root level) or `section` (nested), so it
+  // never produces an `article` node and no Article hierarchy is invented.
+  assert.equal(nodesOfKind(result, 'article').length, 0)
+  const documents = nodesOfKind(result, 'document')
+  assert.equal(documents.length, 1)
+  assert.equal(documents[0]?.name, 'Field Guide')
+  assert.equal(nodesOfKind(result, 'chapter').length, 1)
+  assert.equal(nodesOfKind(result, 'chapter')[0]?.name, 'Field Guide')
 
+  // The root <main>/<article> pair stays transparent: the two nested
+  // <section> elements are the only emitted section nodes.
   const sections = nodesOfKind(result, 'section')
   assert.equal(sections.length, 2)
   assert.deepEqual(sections.map((node) => node.name), ['Birds', 'Plants'])
-  assert.equal(domainOf(sections[0])?.partOf, articleDomain?.locator)
+  assert.deepEqual(sections.map((node) => domainOf(node)?.kind), ['section', 'section'])
+  assert.equal(domainOf(sections[0])?.partOf, undefined)
   assert.equal(domainOf(sections[1])?.level, 1)
 
   const headings = nodesOfKind(result, 'heading')
   assert.equal(headings.length, 3)
-  // The h1 is the article's own label, so its domain is the article concept.
-  assert.equal(domainOf(headings[0])?.kind, 'article')
-  assert.equal(domainOf(headings[0])?.locator, articleDomain?.locator)
+  // The h1 belongs to the document, not to an article concept.
+  assert.equal(domainOf(headings[0])?.kind, 'section')
+  assert.equal(domainOf(headings[0])?.partOf, undefined)
   assert.equal(domainOf(headings[1])?.kind, 'section')
-  assert.equal(domainOf(headings[1])?.partOf, articleDomain?.locator)
+  assert.equal(domainOf(headings[1])?.partOf, undefined)
   assert.equal(domainOf(headings[1])?.locator, domainOf(sections[0])?.locator)
   assert.equal(domainOf(headings[2])?.locator, domainOf(sections[1])?.locator)
 
@@ -372,7 +380,6 @@ test('HTML article/main/section/paragraph build an Article hierarchy; a bare pag
   assert.equal(domainOf(paragraphs[0])?.partOf, domainOf(sections[0])?.locator)
   assert.equal(domainOf(paragraphs[1])?.partOf, domainOf(sections[1])?.locator)
   assert.equal(result.document?.form, 'article')
-  assert.deepEqual(articleDomain?.contains, sections.map((node) => domainOf(node)?.locator))
 
   // Negative: a page without article/main/section invents no container.
   const bare = html('<html><body><p>Just prose.</p></body></html>', 'docs/bare.html')
@@ -592,7 +599,10 @@ test('CSV/TSV malformed and empty input never crashes or invents cells', () => {
 test('no explicit marker means no Book/Person/Venue/Condition metadata', () => {
   const result = md('# Title\n\nPlain prose with no front matter.')
   assert.equal(nodesOfKind(result, 'book').length, 0)
-  assert.equal(nodesOfKind(result, 'chapter').length, 0)
+  // Every level-1 `#` heading is a Chapter, so plain prose with a title has one.
+  const chapters = nodesOfKind(result, 'chapter')
+  assert.equal(chapters.length, 1)
+  assert.equal(chapters[0]?.name, 'Title')
   assert.equal(nodesOfKind(result, 'person').length, 0)
   assert.equal(nodesOfKind(result, 'venue').length, 0)
   assert.equal(nodesOfKind(result, 'condition').length, 0)

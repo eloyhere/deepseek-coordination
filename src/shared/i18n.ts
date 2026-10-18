@@ -416,6 +416,16 @@ export type ToolName =
   | 'coordination_profession'
   | 'coordination_professionlock'
 
+/**
+ * The four file-layer tools (v0.9). They use the same description/parameter
+ * shape as {@link ToolCopy}; their names stay English like every other tool.
+ */
+export type FileToolName =
+  | 'coordination_parse'
+  | 'coordination_describe'
+  | 'coordination_chain'
+  | 'coordination_read'
+
 /** Everything user-visible or model-facing, in one language. */
 export interface Copy {
   readonly controls: Readonly<Record<ControlName, ControlCopy>>
@@ -429,6 +439,8 @@ export interface Copy {
   readonly settings: SettingsCopy
   readonly errors: Readonly<Record<CoordinationErrorCode, string>>
   readonly tools: Readonly<Record<ToolName, ToolCopy>>
+  /** The file-layer tools; same model-facing shape as {@link tools}. */
+  readonly fileTools: Readonly<Record<FileToolName, ToolCopy>>
 }
 
 /** The five composer dropdowns, in render order (v24 §15.1). */
@@ -759,6 +771,50 @@ const ZH_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
     parameters: {
       session: '目标 DSH 会话 id；省略时使用当前会话。',
       turn: '目标 Turn 序号；省略时使用当前活动 Turn。',
+    },
+  },
+}
+
+const ZH_FILE_TOOLS: Readonly<Record<FileToolName, ToolCopy>> = {
+  coordination_parse: {
+    description:
+      '解析工作区文件（或给定文本）：返回引用、诊断、字符集、截断标记与节点卡片；绝不返回文件全文。',
+    parameters: {
+      path: '工作区相对路径；与 text 二选一。',
+      text: '要直接解析的文本；与 path 二选一，不写缓存。',
+      parserId: '强制解析器（javascript / css / html / markdown / latex）；省略时按扩展名。',
+    },
+  },
+  coordination_describe: {
+    description: '按 handle 查询节点卡片与指定的元数据字段；正文永不返回。',
+    parameters: {
+      handle: '公共节点 handle（由 coordination_parse 的 cards 返回）。',
+      fields: '额外字段：summary / description / usage / purpose；brief、reference 与六个平面字段总是返回。',
+    },
+  },
+  coordination_chain: {
+    description:
+      '查询节点的有界关系链：依赖 / 被依赖 / 满足 / 基线 / 前置 / 未满足 / 路径 / 环；最多 8 层、50 条链接，不返回 AST 或图结构。',
+    parameters: {
+      handle: '链根节点的公共 handle。',
+      action: 'dependencies / dependents / satisfies / satisfied_by / baseline / prerequisites / unmet / path / cycle。',
+      depth: '遍历深度 1–8；省略时按动作取默认值。',
+      limit: '链接上限 1–50；默认 50。',
+      target: 'path 动作的目标 handle。',
+      relation: '只沿单一关系遍历（depends_on 等价于 depends）。',
+      kind: '只返回该种类的节点（忽略大小写与首尾空白），例如 lemma；省略时不过滤。',
+    },
+  },
+  coordination_read: {
+    description:
+      '读取工作区文件的字节或行范围；这是唯一返回文件内容的工具，单次上限 256 KiB / 2000 行 / 16k tokens。',
+    parameters: {
+      path: '工作区相对路径。',
+      mode: 'bytes（字节偏移，end 不含）或 lines（1 基行号，end 含）。',
+      start: '起始字节偏移或起始行号。',
+      end: '结束字节偏移（不含）或结束行号（含）。',
+      maxBytes: '本次最多返回的字节数（≤262144）。',
+      maxLines: '本次最多返回的行数（≤2000）。',
     },
   },
 }
@@ -1198,6 +1254,7 @@ const ZH: Copy = {
     NOT_IMPLEMENTED: '当前部署没有提供这个功能。',
   },
   tools: ZH_TOOLS,
+  fileTools: ZH_FILE_TOOLS,
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1526,6 +1583,51 @@ const EN_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
     parameters: {
       session: 'Target DSH session id; the current session when omitted.',
       turn: 'Target turn ordinal; the active turn when omitted.',
+    },
+  },
+}
+
+const EN_FILE_TOOLS: Readonly<Record<FileToolName, ToolCopy>> = {
+  coordination_parse: {
+    description:
+      'Parse a workspace file (or supplied text): returns references, diagnostics, charset, truncation and node cards; never the file body.',
+    parameters: {
+      path: 'Workspace-relative path; exactly one of path or text.',
+      text: 'Text to parse directly; exactly one of path or text, not cached.',
+      parserId: 'Force a parser (javascript / css / html / markdown / latex); the extension decides when omitted.',
+    },
+  },
+  coordination_describe: {
+    description:
+      'Read one node card and the requested metadata fields by handle; the body is never returned.',
+    parameters: {
+      handle: 'Public node handle (from coordination_parse cards).',
+      fields: 'Extra fields: summary / description / usage / purpose; brief, reference and the six flat fields are always returned.',
+    },
+  },
+  coordination_chain: {
+    description:
+      'Query a bounded relation chain: dependencies / dependents / satisfies / baseline / prerequisites / unmet / path / cycle; at most depth 8 and 50 links, never an AST or graph structure.',
+    parameters: {
+      handle: 'Public handle of the chain root.',
+      action: 'dependencies / dependents / satisfies / satisfied_by / baseline / prerequisites / unmet / path / cycle.',
+      depth: 'Traversal depth 1–8; the action default applies when omitted.',
+      limit: 'Link cap 1–50; default 50.',
+      target: 'Target handle for the path action.',
+      relation: 'Traverse a single relation (depends_on is an alias of depends).',
+      kind: 'Only return nodes of this kind (case-insensitive, trimmed), e.g. lemma; omit it to disable the filter.',
+    },
+  },
+  coordination_read: {
+    description:
+      'Read a byte or line range of a workspace file; the only tool that returns file content, capped at 256 KiB / 2,000 lines / 16k tokens per call.',
+    parameters: {
+      path: 'Workspace-relative path.',
+      mode: 'bytes (byte offsets, end exclusive) or lines (1-based lines, end inclusive).',
+      start: 'Start byte offset or 1-based start line.',
+      end: 'End byte offset (exclusive) or end line (inclusive).',
+      maxBytes: 'Maximum bytes to return this call (≤262144).',
+      maxLines: 'Maximum lines to return this call (≤2000).',
     },
   },
 }
@@ -1965,6 +2067,7 @@ const EN: Copy = {
     NOT_IMPLEMENTED: 'This deployment does not provide that feature.',
   },
   tools: EN_TOOLS,
+  fileTools: EN_FILE_TOOLS,
 }
 
 /** Every shipped language, keyed by its canonical tag. */
