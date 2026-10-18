@@ -25,24 +25,51 @@ import {
   COLUMN_SX,
   CoordinationPanels,
   HEADER_SX,
+  LEFT_PANEL_ROUTES,
+  LEFT_PANEL_TABS,
+  MESSAGE_SANITIZE_CONFIG,
   NAV_SX,
   PANEL_COLLAPSED_FLEX,
   PANEL_CONTENT_SX,
   PANEL_EXPANDED_FLEX,
   PANEL_ITEM_SX,
   PANEL_RESIZE_TRANSITION,
+  PANEL_ROW_ACTION_SX,
+  PANEL_ROW_HEIGHT,
+  PANEL_ROW_ICON_SX,
+  PANEL_ROW_SX,
   PanelErrorBoundary,
+  RIGHT_PANEL_ROUTES,
+  RIGHT_PANEL_TABS,
   SCOPE_BAR_SX,
   SCROLL_THUMB_SX,
   SCROLL_TRACK_SX,
+  Task,
+  createVirtualListAdapter,
+  createVirtualTreeAdapter,
+  entryTreeAdapter,
+  estimateMessageHeight,
   fitScale,
   getPanelError,
+  getTaskQueue,
+  groupOutlineByProject,
   initialPanelNavigation,
+  isOutlineStructureKind,
   isPanelDisabled,
   layoutRadius,
+  messageAlignment,
+  messageCanExpand,
+  messageRoleKind,
+  outermostOutlineProjects,
+  outlineProjectOf,
   panelErrorTooltip,
   panelNavigationReducer,
+  sanitizeMessageHtml,
   shouldDrawLabel,
+  splitPanelHeights,
+  taskQueue,
+  visibleTreeRows,
+  workspaceRelativeRoot,
 } from '../src/client/panel.js'
 
 interface ClientRoot {
@@ -637,7 +664,7 @@ test('column is bottom-anchored so expansion pushes the upper panel up', () => {
 test('two expanded panels split the column height equally', () => {
   // Identical flex-basis/grow for every expanded panel -> 50/50 split; the
   // collapsed panel is pinned to its 48 px title bar instead.
-  assert.equal(PANEL_EXPANDED_FLEX, '1 1 0px')
+  assert.equal(PANEL_EXPANDED_FLEX, '1 1 0')
   assert.equal(PANEL_COLLAPSED_FLEX, '0 0 48px')
   assert.equal(PANEL_ITEM_SX.minHeight, 0)
 })
@@ -780,4 +807,916 @@ test('panel internals form a bounded stack: header / scope / scroll / nav', () =
   assert.equal(typeof NAV_SX.height, 'number')
   assert.equal(typeof NAV_SX.maxHeight, 'number')
   assert.ok((NAV_SX.height as number) > 0)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Virtual tree / list API
+ * ------------------------------------------------------------------------- */
+
+interface TreeNode {
+  name: string
+  children?: TreeNode[]
+}
+
+const TREE: TreeNode[] = [
+  {
+    name: 'a',
+    children: [
+      { name: 'a1' },
+      { name: 'a2', children: [{ name: 'a2x' }] },
+    ],
+  },
+  { name: 'b' },
+]
+
+function treeAdapter(nodes: readonly TreeNode[]) {
+  return createVirtualTreeAdapter<TreeNode>(
+    nodes,
+    (node) => node.name,
+    (node) => node.children ?? [],
+  )
+}
+
+function rowsOf(nodes: readonly TreeNode[], collapsed: readonly string[] = []) {
+  return visibleTreeRows(treeAdapter(nodes), new Set(collapsed)).map((row) => [
+    row.depth,
+    row.index,
+    row.value.name,
+  ])
+}
+
+test('visibleTreeRows flattens pre-order with a continuous array index', () => {
+  assert.deepEqual(rowsOf(TREE), [
+    [0, 0, 'a'],
+    [1, 1, 'a1'],
+    [1, 2, 'a2'],
+    [2, 3, 'a2x'],
+    [0, 4, 'b'],
+  ])
+})
+
+test('visibleTreeRows keeps a collapsed branch row but skips its subtree', () => {
+  assert.deepEqual(rowsOf(TREE, ['a']), [
+    [0, 0, 'a'],
+    [0, 1, 'b'],
+  ])
+  // Collapsing a nested branch only hides that branch, and indices stay
+  // continuous across the remaining rows.
+  assert.deepEqual(rowsOf(TREE, ['a2']), [
+    [0, 0, 'a'],
+    [1, 1, 'a1'],
+    [1, 2, 'a2'],
+    [0, 3, 'b'],
+  ])
+})
+
+test('visibleTreeRows handles the empty tree and a single node', () => {
+  assert.deepEqual(visibleTreeRows(treeAdapter([]), new Set()), [])
+  assert.deepEqual(visibleTreeRows(treeAdapter([{ name: 'only' }]), new Set()), [
+    { depth: 0, index: 0, value: { name: 'only' } },
+  ])
+})
+
+test('tree keys are stable across an equivalent rebuild', () => {
+  interface KeyedEntry {
+    key: string
+    value: string
+    children?: KeyedEntry[]
+  }
+  const build = (): KeyedEntry[] => [
+    { key: 'a', value: 'A', children: [{ key: 'a1', value: 'A1' }] },
+    { key: 'b', value: 'B' },
+  ]
+  const first = entryTreeAdapter(build())
+  const second = entryTreeAdapter(build())
+  assert.deepEqual(
+    visibleTreeRows(first, new Set()).map((row) => row.value.key),
+    ['a', 'a1', 'b'],
+  )
+  // The same collapsed key hides the same subtree after the rebuild.
+  assert.deepEqual(
+    visibleTreeRows(second, new Set(['a'])).map((row) => row.value.key),
+    ['a', 'b'],
+  )
+})
+
+test('createVirtualTreeAdapter treats a missing children callback as a leaf', () => {
+  const adapter = createVirtualTreeAdapter(['x', 'y'], (value) => value)
+  assert.deepEqual(adapter.children('x'), [])
+  assert.deepEqual(visibleTreeRows(adapter, new Set()).map((row) => row.value), ['x', 'y'])
+})
+
+test('createVirtualListAdapter covers the size boundaries', () => {
+  const empty = createVirtualListAdapter<number>([])
+  assert.equal(empty.size, 0)
+  assert.equal(empty.at(0), undefined)
+
+  const one = createVirtualListAdapter(['only'])
+  assert.equal(one.size, 1)
+  assert.equal(one.at(0), 'only')
+  assert.equal(one.at(1), undefined)
+  assert.equal(one.at(-1), undefined)
+  assert.equal(one.key(0), '0')
+
+  const keyed = createVirtualListAdapter(['a', 'b'], (value, index) => `${index}:${value}`)
+  assert.equal(keyed.size, 2)
+  assert.equal(keyed.key(1), '1:b')
+})
+
+/* ------------------------------------------------------------------------- *
+ * MUI dense row recipe and canvas tab routes
+ * ------------------------------------------------------------------------- */
+
+function panelSource(): string {
+  return readFileSync(resolve(process.cwd(), 'src/client/panel.ts'), 'utf8')
+}
+
+test('panel rows use the MUI dense ListItemButton recipe', () => {
+  assert.equal(PANEL_ROW_HEIGHT, 48)
+  assert.equal(PANEL_ROW_SX.height, 48)
+  assert.equal(PANEL_ROW_SX.minHeight, 48)
+  assert.equal(PANEL_ROW_SX.maxHeight, 48)
+  assert.equal(PANEL_ROW_SX.padding, '4px 8px')
+  assert.equal(PANEL_ROW_SX.display, 'flex')
+  assert.equal(PANEL_ROW_SX.alignItems, 'center')
+  assert.equal(PANEL_ROW_SX.width, '100%')
+  assert.equal(PANEL_ROW_SX.borderRadius, 4)
+  assert.equal(PANEL_ROW_SX['&:hover'].backgroundColor, 'action.hover')
+  assert.equal(PANEL_ROW_SX['&.Mui-selected'].backgroundColor, 'action.selected')
+
+  // Inset 2 px primary focus ring.
+  assert.equal(PANEL_ROW_SX['&:focus-visible'].outline, '2px solid')
+  assert.equal(PANEL_ROW_SX['&:focus-visible'].outlineColor, 'primary.main')
+  assert.equal(PANEL_ROW_SX['&:focus-visible'].outlineOffset, -2)
+
+  // Reduced motion disables the background transition; the ripple is untouched.
+  assert.equal(
+    PANEL_ROW_SX['@media (prefers-reduced-motion: reduce)'].transition,
+    'none',
+  )
+  assert.equal(PANEL_ROW_ACTION_SX.opacity, 0)
+  assert.match(String(PANEL_ROW_ACTION_SX.transition), /opacity/)
+  assert.equal(
+    PANEL_ROW_ACTION_SX['@media (prefers-reduced-motion: reduce)'].transition,
+    'none',
+  )
+  assert.equal(PANEL_ROW_ICON_SX.minWidth, 32)
+  assert.equal(PANEL_ROW_ICON_SX['& svg'].fontSize, 20)
+})
+
+test('every list row is a ListItemButton with icon + two-line text', () => {
+  const source = panelSource()
+  assert.ok((source.match(/h\(\s*MuiListItemButton,/g) ?? []).length >= 4)
+  assert.ok((source.match(/h\(\s*MuiListItemIcon,/g) ?? []).length >= 4)
+  assert.ok((source.match(/h\(\s*MuiListItemText,/g) ?? []).length >= 4)
+  assert.ok((source.match(/paddingLeft: 8 \+ depth \* 16/g) ?? []).length >= 2)
+  assert.match(source, /role: 'treeitem'/)
+  assert.match(source, /'aria-level': depth \+ 1/)
+  assert.match(source, /'aria-expanded': hasChildren \? expanded : undefined/)
+  assert.match(source, /role: 'option'/)
+  assert.match(source, /'aria-selected': selected/)
+  assert.match(source, /className: 'coordination-row-action'/)
+})
+
+test('the two panels keep separate tab and route sets', () => {
+  assert.deepEqual([...RIGHT_PANEL_TABS], [
+    'files',
+    'outline',
+    'dependencies',
+    'imports',
+    'exports',
+  ])
+  assert.deepEqual([...LEFT_PANEL_TABS], [
+    'files',
+    'agents',
+    'dependencies',
+    'imports',
+    'exports',
+  ])
+  // `preview` / `agent` are routed detail pages, never tabs.
+  assert.equal(RIGHT_PANEL_TABS.includes('preview'), false)
+  assert.equal(LEFT_PANEL_TABS.includes('agent'), false)
+  assert.equal(RIGHT_PANEL_ROUTES.includes('preview'), true)
+  assert.equal(LEFT_PANEL_ROUTES.includes('agent'), true)
+
+  // Each tab is its own hash route.
+  for (const tab of RIGHT_PANEL_TABS) {
+    assert.equal(
+      initialPanelNavigation(
+        `#coordination/panel/right/${tab}`,
+        'right',
+        RIGHT_PANEL_ROUTES,
+        'files',
+      ).view,
+      tab,
+    )
+  }
+
+  // The detail routes deep-link when validated against `routes`...
+  assert.deepEqual(
+    initialPanelNavigation(
+      '#coordination/panel/right/preview?path=src%2Fa.ts',
+      'right',
+      RIGHT_PANEL_ROUTES,
+      'files',
+    ),
+    { view: 'preview', path: 'src/a.ts', id: null },
+  )
+  assert.deepEqual(
+    initialPanelNavigation(
+      '#coordination/panel/left/agent?id=agent-1',
+      'left',
+      LEFT_PANEL_ROUTES,
+      'files',
+    ),
+    { view: 'agent', path: null, id: 'agent-1' },
+  )
+  // ...and are rejected when a caller cheats by validating against tabs only.
+  assert.equal(
+    initialPanelNavigation(
+      '#coordination/panel/right/preview?path=src%2Fa.ts',
+      'right',
+      RIGHT_PANEL_TABS,
+      'files',
+    ).view,
+    'files',
+  )
+  assert.equal(
+    initialPanelNavigation(
+      '#coordination/panel/left/agent?id=agent-1',
+      'left',
+      LEFT_PANEL_TABS,
+      'files',
+    ).view,
+    'files',
+  )
+})
+
+test('imports and exports are WebGL canvas pages on both panels', () => {
+  const source = panelSource()
+  assert.doesNotMatch(source, /function ImportsView\(/)
+  assert.doesNotMatch(source, /imports: ImportsView/)
+  assert.equal((source.match(/imports: ImportsCanvasView/g) ?? []).length, 2)
+  assert.equal((source.match(/exports: ExportsCanvasView/g) ?? []).length, 2)
+  // The imports tab icon differs from exports.
+  assert.match(source, /IconImports = CallReceivedIcon/)
+  assert.match(source, /IconExports = CallMadeIcon/)
+  assert.match(source, /tabImportsGraph/)
+  assert.match(source, /tabExportsGraph/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Agent transcript: sanitized Markdown, roles and read-only controls
+ * ------------------------------------------------------------------------- */
+
+test('sanitizeMessageHtml strips script/event handlers/javascript: URLs', () => {
+  const dirty = [
+    '<p>safe</p>',
+    '<script>alert(1)</script>',
+    '<img src="x" onerror="alert(1)">',
+    '<a href="javascript:alert(1)">click</a>',
+    '<iframe src="https://example.test"></iframe>',
+    '<div style="color:red" contenteditable="true" onclick="alert(1)">text</div>',
+  ].join('')
+  const clean = sanitizeMessageHtml(dirty)
+  assert.match(clean, /<p>safe<\/p>/)
+  assert.match(clean, /<img src="x">/)
+  assert.match(clean, /click/)
+  for (const forbidden of [
+    /<script/i,
+    /onerror/i,
+    /onclick/i,
+    /javascript:/i,
+    /<iframe/i,
+    /style=/i,
+    /contenteditable/i,
+    /srcset=/i,
+  ]) {
+    assert.doesNotMatch(clean, forbidden)
+  }
+})
+
+test('sanitizeMessageHtml runs the DOMPurify pass first, then the scrub', () => {
+  let seenConfig: unknown
+  const html = sanitizeMessageHtml('<p>raw</p>', {
+    sanitize: (raw: string, config?: Record<string, unknown>) => {
+      seenConfig = config
+      return `${raw}<script>bad</script><b>ok</b>`
+    },
+  })
+  assert.equal(seenConfig, MESSAGE_SANITIZE_CONFIG)
+  assert.equal(html, '<p>raw</p><b>ok</b>')
+})
+
+test('MESSAGE_SANITIZE_CONFIG denies the documented tags and attributes', () => {
+  for (const tag of [
+    'script',
+    'style',
+    'iframe',
+    'object',
+    'embed',
+    'form',
+    'input',
+    'textarea',
+    'select',
+    'button',
+    'video',
+    'audio',
+  ]) {
+    assert.ok(MESSAGE_SANITIZE_CONFIG.FORBID_TAGS.includes(tag), `missing FORBID_TAGS ${tag}`)
+  }
+  for (const attr of ['onerror', 'onclick', 'contenteditable', 'style', 'srcset']) {
+    assert.ok(MESSAGE_SANITIZE_CONFIG.FORBID_ATTR.includes(attr), `missing FORBID_ATTR ${attr}`)
+  }
+  assert.ok(MESSAGE_SANITIZE_CONFIG.ADD_ATTR.includes('target'))
+  assert.ok(MESSAGE_SANITIZE_CONFIG.ADD_ATTR.includes('rel'))
+  const source = panelSource()
+  assert.match(source, /purify\.sanitize\(html, MESSAGE_SANITIZE_CONFIG\)/)
+  assert.match(source, /renderToStaticMarkup/)
+  assert.match(source, /target: '_blank', rel: 'noreferrer'/)
+})
+
+test('message roles map to the documented bubble alignment', () => {
+  assert.equal(messageRoleKind('USER'), 'user')
+  assert.equal(messageRoleKind('assistant'), 'assistant')
+  assert.equal(messageRoleKind('tool'), 'tool')
+  assert.equal(messageRoleKind('system'), 'system')
+  assert.equal(messageRoleKind('developer'), 'assistant')
+  assert.equal(messageRoleKind(''), 'assistant')
+
+  assert.equal(messageAlignment('user'), 'flex-end')
+  assert.equal(messageAlignment('assistant'), 'flex-start')
+  assert.equal(messageAlignment('tool'), 'center')
+  assert.equal(messageAlignment('system'), 'center')
+})
+
+test('transcript rows expand inside the 48–240 px estimate', () => {
+  assert.ok(estimateMessageHeight({ text: '' }, false) >= 48)
+  assert.ok(estimateMessageHeight({ text: 'x'.repeat(10_000) }, true) <= 240)
+  assert.ok(
+    estimateMessageHeight({ text: 'x'.repeat(600) }, true) >
+      estimateMessageHeight({ text: 'x'.repeat(600) }, false),
+  )
+  assert.equal(messageCanExpand({ text: 'short' }), false)
+  assert.equal(messageCanExpand({ text: 'x'.repeat(500) }), true)
+})
+
+test('agent detail is virtualized, truncation-aware and has no composer', () => {
+  const source = panelSource()
+  const viewStart = source.indexOf('function AgentMessagesView')
+  assert.ok(viewStart !== -1, 'AgentMessagesView must exist')
+  const view = source.slice(viewStart, source.indexOf('const RIGHT_VIEW_REGISTRY', viewStart))
+  assert.match(view, /h\(VirtualList<AgentMessageData>, \{/)
+  assert.match(view, /rowHeight,/)
+  assert.match(view, /data\.truncated/)
+  assert.match(view, /props\.copy\.agentTruncated/)
+  assert.doesNotMatch(view, /MuiTextField/)
+  assert.doesNotMatch(view, /<input|<textarea|<form/)
+  assert.doesNotMatch(view, /SendIcon|sendMessage|onSend|MuiButton[^]*发送/)
+
+  // The raw message text is never handed to dangerouslySetInnerHTML directly.
+  const bubbleStart = source.indexOf('function MessageBubble')
+  assert.ok(bubbleStart !== -1)
+  const bubble = source.slice(bubbleStart, source.indexOf('const EMPTY_AGENT_MESSAGES', bubbleStart))
+  assert.match(bubble, /dangerouslySetInnerHTML: \{ __html: html \}/)
+  assert.doesNotMatch(bubble, /__html: props\.message\.text/)
+  assert.match(bubble, /messageRoleKind/)
+  assert.match(bubble, /messageAlignment/)
+  assert.match(bubble, /formatAgentTime/)
+  assert.match(bubble, /copy\.messageExpand/)
+  assert.match(bubble, /copy\.messageCollapse/)
+})
+
+test('agent detail is a routed page and Escape returns to the roster', () => {
+  const source = panelSource()
+  assert.match(source, /agent: AgentMessagesView/)
+  assert.match(source, /if \(view === 'agent'\) \{\s*go\('agents'\)/)
+  assert.match(source, /navigate\(props\.side, 'agents'\)/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Outline: one route, two modes
+ * ------------------------------------------------------------------------- */
+
+test('the local outline keeps only document-structure node kinds', () => {
+  for (const kind of [
+    'module',
+    'class',
+    'function',
+    'method',
+    'interface',
+    'type',
+    'enumeration',
+    'namespace',
+    'chapter',
+    'heading',
+  ]) {
+    assert.equal(isOutlineStructureKind(kind), true, `${kind} must be kept`)
+  }
+  for (const kind of [
+    'variable',
+    'property',
+    'static',
+    'import',
+    'export',
+    'line',
+    'sentence',
+    'Variable',
+    '  PROPERTY  ',
+  ]) {
+    assert.equal(isOutlineStructureKind(kind), false, `${kind} must be filtered`)
+  }
+})
+
+test('manifest projects are grouped one level deep (outermost manifest wins)', () => {
+  // Nested manifests never create nested projects.
+  const projects = [
+    { root: 'packages/app', name: 'app', manifest: 'package.json', files: [] },
+    { root: 'packages', name: 'packages', manifest: 'pom.xml', files: [] },
+    { root: 'tools/cli', name: 'cli', manifest: 'package.json', files: [] },
+  ]
+  assert.deepEqual(
+    outermostOutlineProjects(projects).map((project) => project.root),
+    ['packages', 'tools/cli'],
+  )
+
+  const groups = [
+    { path: 'packages/app/src/a.ts', family: 'project', nodes: [] },
+    { path: 'packages/lib/b.ts', family: 'project', nodes: [] },
+    { path: 'tools/cli/main.ts', family: 'project', nodes: [] },
+    { path: 'docs/readme.md', family: 'document', nodes: [] },
+  ]
+  const bucketed = groupOutlineByProject(groups, projects)
+  assert.deepEqual(
+    bucketed.projects.map((bucket) => ({
+      root: bucket.project.root,
+      files: bucket.groups.map((group) => group.path),
+    })),
+    [
+      { root: 'packages', files: ['packages/app/src/a.ts', 'packages/lib/b.ts'] },
+      { root: 'tools/cli', files: ['tools/cli/main.ts'] },
+    ],
+  )
+  // No manifest claims these: they hang off the workspace root.
+  assert.deepEqual(bucketed.loose.map((group) => group.path), ['docs/readme.md'])
+  assert.equal(outlineProjectOf('packages/app/src/a.ts', projects)?.root, 'packages')
+  assert.equal(outlineProjectOf('docs/readme.md', projects), undefined)
+
+  // With no projects the UI shows one workspace root and never invents one.
+  const noProjects = groupOutlineByProject(groups, [])
+  assert.deepEqual(noProjects.projects, [])
+  assert.deepEqual(noProjects.loose.map((group) => group.path), groups.map((group) => group.path))
+})
+
+test('an absolute project root is displayed relative to the workspace root', () => {
+  assert.equal(workspaceRelativeRoot('R:\\ws', 'R:\\ws'), '')
+  assert.equal(workspaceRelativeRoot('R:\\ws\\packages\\app', 'R:\\ws'), 'packages/app')
+  assert.equal(workspaceRelativeRoot('/ws/packages/app', '/ws/'), 'packages/app')
+  assert.equal(workspaceRelativeRoot('packages/app', 'R:\\ws'), 'packages/app')
+  // A workspace-root manifest claims every file; nested manifests fold in.
+  const rootProject = [{ root: '', name: 'workspace', manifest: 'package.json', files: [] }]
+  assert.deepEqual(outermostOutlineProjects(rootProject).map((project) => project.root), [''])
+  assert.equal(outlineProjectOf('src/a.ts', rootProject)?.root, '')
+})
+
+test('outline mode is selected by the path parameter, with a back affordance', () => {
+  const source = panelSource()
+  assert.match(source, /withPath\('\/graph\/outline', props\.path\)/)
+  // Global mode: group rows navigate to the local route (`path` present).
+  assert.match(source, /navigate\(props\.side, 'outline', \{ path: value\.group\.path \}\)/)
+  // Local mode: the DockedPanel scope bar owns the back button.
+  assert.match(source, /view === 'outline' && viewPath !== null/)
+  assert.match(source, /copy\.outlineBack/)
+  assert.match(source, /onClick: leaveOutlineLocal/)
+  assert.match(source, /const leaveOutlineLocal = \(\): void => \{[\s\S]*?go\('outline'\)/)
+  // Escape follows the same path back and drops `path` from the hash mirror.
+  assert.match(source, /view === 'outline' && path !== null\) \{\s*leaveOutlineLocal\(\)/)
+  assert.match(source, /mirrorHash\(props\.side, next, params\)/)
+  // Both modes render the one controlled VirtualTree.
+  const start = source.indexOf('function OutlineView')
+  const outline = source.slice(start, source.indexOf('function DependenciesView', start))
+  assert.equal((outline.match(/h\(VirtualTree/g) ?? []).length, 1)
+  assert.match(outline, /if \(local\) \{/)
+  assert.match(outline, /if \(scope !== 'workspace' \|\| collapsedWorkspace\.current \|\| groupKeys\.length === 0\) return/)
+  assert.match(outline, /copy\.outlineNodeCount/)
+  assert.match(outline, /copy\.outlineKind/)
+  assert.match(outline, /sx: \{ fontWeight: 500 \}/)
+  assert.match(outline, /paddingLeft: 8 \+ depth \* 16/)
+
+  // Local mode renders only the requested file's `nodes`; it never turns the
+  // workspace `groups` payload into the local list.
+  assert.match(outline, /data !== null && data\.scope === 'file' \? structureNodes\(data\.nodes\)/)
+  assert.match(outline, /if \(local && state\.value\.scope !== 'file'\)/)
+  assert.match(outline, /return h\(EmptyState, \{ message: props\.copy\.outline\.empty \}\)/)
+
+  // Global mode roots at the resolved workspace root (never a path prefix) and
+  // groups only by the outermost manifest projects.
+  assert.match(outline, /useGraph\(local \? null : '\/graph\/tree', parseTree/)
+  assert.match(outline, /workspaceRoot = \(data\?\.root \?\? ''\)\.length > 0/)
+  assert.match(outline, /const bucketed = groupOutlineByProject\(groups, effectiveProjects\)/)
+  assert.match(outline, /key: `workspace-root:/)
+  assert.match(outline, /kind: 'project'/)
+  // The family chip exists only in the group branch, not on root/project rows.
+  const rootBranch = outline.slice(
+    outline.indexOf("if (value.kind === 'root' || value.kind === 'project')"),
+    outline.indexOf("if (value.kind === 'group')"),
+  )
+  assert.doesNotMatch(rootBranch, /MuiChip/)
+  assert.match(outline, /label: family/)
+})
+
+test('the outline component stays mounted across the global/local route flip', () => {
+  const source = panelSource()
+  // The Fade key is stable for `outline` so the view's collapse state survives
+  // the path change; other views still remount per selection.
+  assert.match(source, /key: view === 'outline' \? 'view:outline'/)
+  assert.match(source, /outlineScrollRef/)
+  assert.match(source, /pendingScrollRef\.current = outlineScrollRef\.current/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Column height budget
+ * ------------------------------------------------------------------------- */
+
+test('the column is bounded above and below and never scrolls its own box', () => {
+  assert.equal(COLUMN_SX.top, 72)
+  assert.equal(COLUMN_SX.bottom, 120)
+  assert.equal(COLUMN_SX.overflow, 'hidden')
+  assert.equal(COLUMN_SX.display, 'flex')
+  assert.equal(COLUMN_SX.flexDirection, 'column')
+  assert.match(String(COLUMN_SX.maxHeight), /calc\(100dvh - 192px\)/)
+  const fallback = COLUMN_SX['@supports not (height: 100dvh)']
+  assert.match(String(fallback.maxHeight), /calc\(100vh - 192px\)/)
+  // Panel items shrink inside the column; fixed 320 px minimums are gone.
+  assert.equal(PANEL_ITEM_SX.minHeight, 0)
+  assert.equal(PANEL_ITEM_SX.maxHeight, '100%')
+  assert.equal(PANEL_ITEM_SX.overflow, 'hidden')
+  assert.doesNotMatch(panelSource(), /minHeight: 320/)
+})
+
+test('splitPanelHeights keeps both panels inside the container', () => {
+  for (const height of [96, 150, 199, 200, 240, 400, 808, 1200]) {
+    for (const left of [true, false]) {
+      for (const right of [true, false]) {
+        const split = splitPanelHeights(height, left, right)
+        assert.ok(split.left >= 48, `left floor at ${height}`)
+        assert.ok(split.right >= 48, `right floor at ${height}`)
+        assert.ok(
+          split.left + split.right <= height,
+          `sum ${split.left + split.right} must fit ${height}`,
+        )
+      }
+    }
+  }
+
+  // Too short for two title bars: both are forced collapsed.
+  assert.deepEqual(splitPanelHeights(150, false, false), { left: 48, right: 48 })
+  assert.deepEqual(splitPanelHeights(0, false, false), { left: 48, right: 48 })
+  // Both expanded: equal halves of (container - gap).
+  const both = splitPanelHeights(808, false, false)
+  assert.equal(both.left + both.right, 800)
+  assert.equal(both.left, both.right)
+  // One collapsed: the other takes the rest.
+  assert.deepEqual(splitPanelHeights(400, true, false), { left: 48, right: 344 })
+  assert.deepEqual(splitPanelHeights(400, false, true), { left: 344, right: 48 })
+})
+
+/* ------------------------------------------------------------------------- *
+ * Header search animation
+ * ------------------------------------------------------------------------- */
+
+test('header search expands horizontally from the right', () => {
+  const source = panelSource()
+  assert.match(source, /const SEARCH_SLOT_WIDTH = 240/)
+  assert.match(source, /orientation: 'horizontal'/)
+  assert.match(source, /collapsedSize: 0/)
+  assert.match(source, /unmountOnExit: true/)
+  assert.match(source, /timeout: props\.reducedMotion \? 0 : SEARCH_ANIMATION_MS/)
+  assert.match(source, /easing: PANEL_EASING/)
+  assert.match(source, /'& \.MuiCollapse-wrapper, & \.MuiCollapse-wrapperInner': \{ minWidth: 0 \}/)
+  // The field never squeezes the title-bar buttons out; the title ellipsizes.
+  assert.match(source, /minWidth: 0,\s*flex: '0 0 auto'/)
+  assert.match(source, /h\(MuiTypography, \{ variant: 'subtitle2', noWrap: true \}, props\.title\)/)
+})
+
+test('search open state drives aria, focus and clearing', () => {
+  const source = panelSource()
+  assert.match(source, /'aria-expanded': searchOpen/)
+  assert.match(source, /'aria-controls': SEARCH_INPUT_ID/)
+  assert.match(source, /id: SEARCH_INPUT_ID/)
+  assert.match(source, /copy\.tip\.closeSearch/)
+  // Focus only after the horizontal Collapse reports entered.
+  assert.match(source, /onEntered: \(\): void => \{[\s\S]*?searchRef\.current\?\.focus\(\)/)
+  // Closing (button, title area or Esc) clears query + results.
+  assert.match(source, /if \(searchOpen\) \{\s*setSearchOpen\(false\)\s*clearSearch\(\)/)
+  assert.match(source, /setSearchOpen\(false\)\s*clearSearch\(\)/)
+})
+
+test('the file tree roots at the workspace and groups outermost projects', () => {
+  const source = panelSource()
+  const start = source.indexOf('function FilesView')
+  const files = source.slice(start, source.indexOf('function familyLabel', start))
+  // Workspace root row, never a common path prefix such as `src`.
+  assert.match(files, /key: `workspace-root:\$\{root\}`/)
+  assert.match(files, /state\.value\.projects/)
+  assert.match(files, /workspaceRelativeRoot\(project\.root, root\)/)
+  assert.match(files, /key: `project-root:\$\{index\}:\$\{project\.root\}`/)
+  assert.match(files, /manifest: project\.manifest/)
+  // Root/project heading rows fold; they never navigate.
+  const heading = files.slice(
+    files.indexOf("if (node.key.startsWith('workspace-root:') || projectRoot)"),
+    files.indexOf('const selected = props.path === entry.path'),
+  )
+  assert.doesNotMatch(heading, /navigate\(/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Priority task queue
+ * ------------------------------------------------------------------------- */
+
+interface FakeScheduler {
+  readonly frames: Map<number, FrameRequestCallback>
+  readonly idles: Map<number, (deadline: { didTimeout: boolean; timeRemaining(): number }) => void>
+  runFrame(): void
+  runIdle(remaining?: number, didTimeout?: boolean): void
+  restore(): void
+}
+
+function installFakeScheduler(): FakeScheduler {
+  const saved = {
+    requestAnimationFrame: globals.requestAnimationFrame,
+    cancelAnimationFrame: globals.cancelAnimationFrame,
+    requestIdleCallback: globals.requestIdleCallback,
+    cancelIdleCallback: globals.cancelIdleCallback,
+  }
+  const frames = new Map<number, FrameRequestCallback>()
+  const idles = new Map<number, (deadline: { didTimeout: boolean; timeRemaining(): number }) => void>()
+  let nextId = 1
+  globals.requestAnimationFrame = (callback: FrameRequestCallback): number => {
+    const id = nextId
+    nextId += 1
+    frames.set(id, callback)
+    return id
+  }
+  globals.cancelAnimationFrame = (id: number): void => {
+    frames.delete(id)
+  }
+  globals.requestIdleCallback = (
+    callback: (deadline: { didTimeout: boolean; timeRemaining(): number }) => void,
+  ): number => {
+    const id = nextId
+    nextId += 1
+    idles.set(id, callback)
+    return id
+  }
+  globals.cancelIdleCallback = (id: number): void => {
+    idles.delete(id)
+  }
+  return {
+    frames,
+    idles,
+    runFrame(): void {
+      const entry = [...frames.entries()][0]
+      assert.ok(entry !== undefined, 'a frame callback must be scheduled')
+      frames.delete(entry[0])
+      entry[1](performance.now())
+    },
+    runIdle(remaining = 50, didTimeout = false): void {
+      const entry = [...idles.entries()][0]
+      assert.ok(entry !== undefined, 'an idle callback must be scheduled')
+      idles.delete(entry[0])
+      entry[1]({ didTimeout, timeRemaining: () => remaining })
+    },
+    restore(): void {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete globals[key]
+        else globals[key] = value
+      }
+      frames.clear()
+      idles.clear()
+    },
+  }
+}
+
+test('Task drains high, then medium, then low', () => {
+  const queue: Task = getTaskQueue()
+  queue.reset()
+  const scheduler = installFakeScheduler()
+  const order: string[] = []
+  try {
+    queue.schedule('low', 'low', () => order.push('low'))
+    queue.schedule('high', 'high', () => order.push('high'))
+    queue.schedule('medium', 'medium', () => order.push('medium'))
+    assert.equal(queue.pending, 3)
+    // The first pump was scheduled for `low` (idle) and upgraded to a frame
+    // when `high` arrived.
+    assert.equal(scheduler.frames.size, 1)
+    assert.equal(scheduler.idles.size, 0)
+
+    scheduler.runFrame()
+    assert.deepEqual(order, ['high'])
+    assert.equal(scheduler.idles.size, 1)
+
+    scheduler.runIdle(50)
+    assert.deepEqual(order, ['high', 'medium'])
+    scheduler.runIdle(50)
+    assert.deepEqual(order, ['high', 'medium', 'low'])
+    assert.equal(queue.pending, 0)
+    assert.equal(scheduler.frames.size, 0)
+    assert.equal(scheduler.idles.size, 0)
+  } finally {
+    queue.reset()
+    scheduler.restore()
+  }
+})
+
+test('Task runs one high task per animation frame', () => {
+  const queue = getTaskQueue()
+  queue.reset()
+  const scheduler = installFakeScheduler()
+  const calls: string[] = []
+  try {
+    queue.schedule('high', 'first', () => calls.push('first'))
+    queue.schedule('high', 'second', () => calls.push('second'))
+    assert.equal(queue.pending, 2)
+    scheduler.runFrame()
+    assert.deepEqual(calls, ['first'])
+    assert.equal(queue.pending, 1)
+    assert.equal(scheduler.frames.size, 1)
+    scheduler.runFrame()
+    assert.deepEqual(calls, ['first', 'second'])
+    assert.equal(scheduler.frames.size, 0)
+  } finally {
+    queue.reset()
+    scheduler.restore()
+  }
+})
+
+test('Task runs one idle task per callback and yields under 4 ms', () => {
+  const queue = getTaskQueue()
+  queue.reset()
+  const scheduler = installFakeScheduler()
+  const calls: string[] = []
+  try {
+    queue.schedule('medium', 'm1', () => calls.push('m1'))
+    queue.schedule('medium', 'm2', () => calls.push('m2'))
+    assert.equal(scheduler.idles.size, 1)
+    scheduler.runIdle(2)
+    assert.deepEqual(calls, [], 'a nearly exhausted deadline must yield')
+    assert.equal(scheduler.idles.size, 1)
+    scheduler.runIdle(40)
+    assert.deepEqual(calls, ['m1'])
+    assert.equal(queue.pending, 1)
+    scheduler.runIdle(40)
+    assert.deepEqual(calls, ['m1', 'm2'])
+    assert.equal(scheduler.idles.size, 0)
+  } finally {
+    queue.reset()
+    scheduler.restore()
+  }
+})
+
+test('Task merges the same key and keeps only the highest priority', () => {
+  const queue = getTaskQueue()
+  queue.reset()
+  const scheduler = installFakeScheduler()
+  const calls: string[] = []
+  try {
+    queue.schedule('low', 'paint', () => calls.push('low'))
+    queue.schedule('low', 'paint', () => calls.push('low-again'))
+    assert.equal(queue.pending, 1, 'same priority is ignored, not duplicated')
+    queue.schedule('high', 'paint', () => calls.push('high'))
+    assert.equal(queue.pending, 1, 'an upgrade moves the single entry')
+    scheduler.runFrame()
+    assert.deepEqual(calls, ['high'])
+    assert.equal(queue.pending, 0)
+  } finally {
+    queue.reset()
+    scheduler.restore()
+  }
+})
+
+test('Task isolates a throwing task and keeps draining', () => {
+  const queue = getTaskQueue()
+  queue.reset()
+  const scheduler = installFakeScheduler()
+  const calls: string[] = []
+  const logged: unknown[][] = []
+  const originalError = console.error
+  console.error = (...args: unknown[]): void => {
+    logged.push(args)
+  }
+  try {
+    queue.schedule('high', 'boom', () => {
+      throw new Error('boom')
+    })
+    queue.schedule('high', 'after', () => calls.push('after'))
+    scheduler.runFrame()
+    assert.deepEqual(calls, [])
+    scheduler.runFrame()
+    assert.deepEqual(calls, ['after'])
+    const reports = logged.filter((args) => args[0] === '[coordination] task failed')
+    assert.equal(reports.length, 1)
+  } finally {
+    console.error = originalError
+    queue.reset()
+    scheduler.restore()
+  }
+})
+
+test('Task dispose no-ops safely and reset re-arms it', () => {
+  const queue = getTaskQueue()
+  queue.reset()
+  const scheduler = installFakeScheduler()
+  const calls: string[] = []
+  const warnings: unknown[][] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]): void => {
+    warnings.push(args)
+  }
+  try {
+    queue.schedule('high', 'pending', () => calls.push('pending'))
+    assert.equal(scheduler.frames.size, 1)
+    queue.dispose()
+    assert.equal(queue.pending, 0)
+    assert.equal(scheduler.frames.size, 0, 'dispose cancels the pending callback')
+    assert.doesNotThrow(() => {
+      queue.schedule('high', 'after-dispose', () => calls.push('after-dispose'))
+    })
+    assert.equal(queue.pending, 0)
+    assert.equal(warnings.length, 1)
+    assert.equal(warnings[0]?.[0], '[coordination] task queue disposed')
+
+    queue.reset()
+    queue.schedule('high', 'again', () => calls.push('again'))
+    scheduler.runFrame()
+    assert.deepEqual(calls, ['again'])
+  } finally {
+    console.warn = originalWarn
+    queue.reset()
+    scheduler.restore()
+  }
+})
+
+test('Task falls back to setTimeout without requestAnimationFrame/idleCallback', () => {
+  const queue = getTaskQueue()
+  queue.reset()
+  const saved = {
+    setTimeout: globals.setTimeout,
+    clearTimeout: globals.clearTimeout,
+    requestAnimationFrame: globals.requestAnimationFrame,
+    cancelAnimationFrame: globals.cancelAnimationFrame,
+    requestIdleCallback: globals.requestIdleCallback,
+    cancelIdleCallback: globals.cancelIdleCallback,
+  }
+  const timers = new Map<number, () => void>()
+  let nextId = 1
+  globals.setTimeout = ((callback: () => void): number => {
+    const id = nextId
+    nextId += 1
+    timers.set(id, callback)
+    return id
+  }) as unknown as typeof setTimeout
+  globals.clearTimeout = ((id: number): void => {
+    timers.delete(id)
+  }) as unknown as typeof clearTimeout
+  delete globals.requestAnimationFrame
+  delete globals.cancelAnimationFrame
+  delete globals.requestIdleCallback
+  delete globals.cancelIdleCallback
+  const order: string[] = []
+  const runTimer = (): void => {
+    const entry = [...timers.entries()][0]
+    assert.ok(entry !== undefined, 'a timeout must be scheduled')
+    timers.delete(entry[0])
+    entry[1]()
+  }
+  try {
+    queue.schedule('high', 'high', () => order.push('high'))
+    assert.equal(timers.size, 1)
+    runTimer()
+    assert.deepEqual(order, ['high'])
+    queue.schedule('medium', 'medium', () => order.push('medium'))
+    assert.equal(timers.size, 1, 'idle falls back to setTimeout(16)')
+    runTimer()
+    assert.deepEqual(order, ['high', 'medium'])
+    queue.schedule('low', 'low', () => order.push('low'))
+    runTimer()
+    assert.deepEqual(order, ['high', 'medium', 'low'])
+    assert.equal(queue.pending, 0)
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete globals[key]
+      else globals[key] = value
+    }
+    timers.clear()
+    queue.reset()
+  }
+})
+
+test('the task queue is a module-level singleton', () => {
+  assert.strictEqual(getTaskQueue(), getTaskQueue())
+  assert.strictEqual(taskQueue, getTaskQueue())
+  // Exactly one construction site in the whole panel module.
+  assert.equal((panelSource().match(/new Task\(/g) ?? []).length, 1)
 })

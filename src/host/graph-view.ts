@@ -8,7 +8,8 @@
  * (`node`/`edge` rows read through `GraphStore.loadNodes()` / `loadEdges()`),
  * and they project that snapshot into the six response shapes:
  *
- *   - {@link buildTree}        `{ root, entries }`         directory/file tree
+ *   - {@link buildTree}        `{ root, entries, projects }` directory/file tree
+ *                                                         plus manifest projects
  *   - {@link buildOutline}     `{ path, family, nodes }`   per-file outline
  *   - {@link buildIntra}       `{ path, family, nodes, edges, truncated }`
  *                                                         intra-file symbol graph
@@ -78,7 +79,9 @@
  * indexing entry point and is still pure orchestration — the host injects a
  * read-only {@link WorkspaceIndexIo} that binds it to `node:fs`, `ParseService`
  * and `GraphStore`/`ChainEngine`. The scan never descends into
- * `node_modules`/`.git`/`dist`/`.tmp`, never attempts a binary extension, is
+ * `node_modules`/`.git`/`dist`/`.tmp`, never attempts a binary extension,
+ * accepts the structural manifests by exact file name (the `.json`/`.xml`/
+ * `.toml` extensions themselves stay off the allowlist), and is
  * capped at {@link MAX_INDEX_FILES} files / {@link INDEX_TIME_LIMIT_MS} ms and
  * reports `truncated` when a bound stopped it. {@link WorkspaceIndexGate}
  * serializes concurrent runs (the route answers 409 `BUSY`).
@@ -227,6 +230,12 @@ export interface GraphQueryInput {
    * workspace view of the same version never share cached entries.
    */
   scope?: GraphScope
+  /**
+   * Absolute workspace root the snapshot's paths are relative to. Project
+   * scopes are resolved against it; the workspace fallback root is this value.
+   * Defaults to `'.'` for callers that do not project workspace metadata.
+   */
+  workspaceRoot?: string
   nodes: readonly GraphNode[]
   edges: readonly GraphEdge[]
 }
@@ -245,6 +254,8 @@ export interface FileFacts {
 export interface GraphQuery {
   readonly version: string
   readonly scope: GraphScope
+  /** Absolute workspace root this query's paths are relative to. */
+  readonly workspaceRoot: string
   readonly nodes: readonly GraphNode[]
   readonly edges: readonly GraphEdge[]
   /** Sorted, unique workspace-relative paths of the indexed files. */
@@ -268,10 +279,474 @@ export interface TreeNode {
   children?: TreeNode[]
 }
 
+/** One outermost project scope of `/graph/tree`. */
+export interface TreeProject {
+  /** Project ecosystem inferred from the manifest file name. */
+  kind: ManifestKind
+  /** Absolute directory containing the manifest (the project root). */
+  root: string
+  /** Manifest file name (for example `package.json`). */
+  manifest: string
+  /**
+   * Workspace-relative paths of the manifests nested inside this project.
+   *
+   * They belong to the outermost project: a nested manifest never creates a
+   * nested project scope.
+   */
+  nestedManifests: string[]
+}
+
 /** Value of `GET /graph/tree`. */
 export interface GraphTree {
+  /** Resolved workspace root the scan used; never a common path prefix. */
   root: string
   entries: TreeNode[]
+  /** Outermost manifest projects, deduplicated by their root directory. */
+  projects: TreeProject[]
+}
+
+/**
+ * Project ecosystem inferred from a structural manifest file name.
+ *
+ * `unknown` is a custom name accepted through `manifestNames` that has no
+ * built-in kind yet. Use {@link MANIFEST_ROOTS} to add a new exact file name.
+ */
+export type ManifestKind =
+  | 'npm'
+  | 'maven'
+  | 'cargo'
+  | 'go'
+  | 'python'
+  | 'gradle'
+  | 'composer'
+  | 'ruby'
+  | 'elixir'
+  | 'dune'
+  | 'unknown'
+
+/**
+ * Default manifest file names accepted by the workspace scan.
+ *
+ * These are matched by **exact file name** (case-insensitively), not by a
+ * shared extension: `.json`/`.xml`/`.toml` stay off the extension allowlist, so
+ * only the structural manifests below are claimed. A caller can replace the
+ * list with `manifestNames`; the ignore list still wins over this acceptance.
+ */
+export const DEFAULT_MANIFEST_NAMES = [
+  'package.json',
+  'pom.xml',
+  'Cargo.toml',
+  'go.mod',
+  'pyproject.toml',
+  'build.gradle',
+  'settings.gradle',
+  'composer.json',
+  'Gemfile',
+  'mix.exs',
+  'dune-project',
+] as const
+
+/**
+ * Explicit exact-filename → project-kind table.
+ *
+ * This is deliberately a fixed table, not "any known build file becomes a
+ * project root": only the structural manifests listed here define a project
+ * scope. Extend it to add a new ecosystem; a custom `manifestNames` entry that
+ * is not in this table is still indexed but has kind `unknown`.
+ */
+export const MANIFEST_ROOTS: Readonly<Record<string, ManifestKind>> = {
+  'package.json': 'npm',
+  'pom.xml': 'maven',
+  'Cargo.toml': 'cargo',
+  'go.mod': 'go',
+  'pyproject.toml': 'python',
+  'build.gradle': 'gradle',
+  'settings.gradle': 'gradle',
+  'composer.json': 'composer',
+  'Gemfile': 'ruby',
+  'mix.exs': 'elixir',
+  'dune-project': 'dune',
+}
+
+/** Lower-cased lookup for the case-insensitive exact-name match. */
+const MANIFEST_KIND_BY_NAME: ReadonlyMap<string, ManifestKind> = new Map(
+  Object.entries(MANIFEST_ROOTS).map(([name, kind]): [string, ManifestKind] => [name.toLowerCase(), kind]),
+)
+
+/** Canonical file name per kind; the first table entry for a kind wins. */
+const MANIFEST_NAME_BY_KIND: ReadonlyMap<ManifestKind, string> = (() => {
+  const names = new Map<ManifestKind, string>()
+  for (const [name, kind] of Object.entries(MANIFEST_ROOTS)) {
+    if (!names.has(kind)) names.set(kind, name)
+  }
+  return names
+})()
+
+/**
+ * One structural manifest in the indexed file set.
+ *
+ * `path` is workspace-relative (an absolute path inside the workspace root is
+ * also accepted and resolved back to the relative form). `manifest` and `root`
+ * are accepted as aliases for callers that already split them.
+ */
+export interface Manifest {
+  kind: ManifestKind
+  /** Workspace-relative manifest path, for example `packages/web/package.json`. */
+  path?: string
+  /** Alias for `path`. */
+  manifest?: string
+  /** Workspace-relative project directory; used when neither path alias is set. */
+  root?: string
+}
+
+/** One manifest input: a structured record or its workspace-relative path. */
+export type ManifestInput = Manifest | string
+
+/**
+ * One project scope resolved against a workspace root.
+ *
+ * `root` is always absolute: the directory that contains the manifest. The
+ * workspace scope (`kind: 'workspace'`) is the fallback for a file that no
+ * manifest claims; its root is the workspace root itself and it has no
+ * manifest.
+ */
+export interface ProjectScope {
+  kind: ManifestKind | 'workspace'
+  /** Absolute project root (the manifest's directory, or the workspace root). */
+  root: string
+  /** Manifest file name (not its path); `null` for the workspace scope. */
+  manifest: string | null
+}
+
+/** Project scope echoed on one workspace-outline group. */
+export interface OutlineProjectScope {
+  kind: ManifestKind
+  /** Absolute project root. */
+  root: string
+}
+
+/** One manifest resolved against a workspace root (workspace-relative paths). */
+interface ManifestRecord {
+  kind: ManifestKind
+  /** Workspace-relative manifest path. */
+  path: string
+  /** Workspace-relative project directory (`''` is the workspace root). */
+  root: string
+}
+
+/** Basename of a slash-normalised path. */
+function basenameOf(path: string): string {
+  const normalised = normaliseScopePath(path)
+  const index = normalised.lastIndexOf('/')
+  return index < 0 ? normalised : normalised.slice(index + 1)
+}
+
+/** Directory part of a slash-normalised path (`''` for a root-level name). */
+function dirnameOf(path: string): string {
+  const normalised = normaliseScopePath(path)
+  const index = normalised.lastIndexOf('/')
+  return index < 0 ? '' : normalised.slice(0, index)
+}
+
+/** Normalise a workspace-relative path for project-scope comparisons. */
+function normaliseScopePath(path: string): string {
+  let normalised = path.trim().replace(/\\/g, '/').replace(/\/+/g, '/')
+  while (normalised.startsWith('./')) normalised = normalised.slice(2)
+  normalised = normalised.replace(/\/+$/, '')
+  return normalised === '.' ? '' : normalised
+}
+
+/** True for a POSIX-absolute, drive-rooted or UNC path. */
+function isAbsoluteScopePath(path: string): boolean {
+  return /^[A-Za-z]:\//.test(path) || path.startsWith('/') || path.startsWith('//')
+}
+
+/** Join one workspace-relative path onto an absolute workspace root. */
+function resolveWorkspaceChild(workspaceRoot: string, relative: string): string {
+  const child = normaliseScopePath(relative)
+  if (child.length === 0) return workspaceRoot
+  if (isAbsoluteScopePath(child)) return child
+  const base = workspaceRoot.replace(/[\\/]+$/, '')
+  const windows = /^[A-Za-z]:[\\/]/.test(workspaceRoot) || workspaceRoot.includes('\\')
+  const separator = windows ? '\\' : '/'
+  return `${base}${separator}${child.replace(/\//g, separator)}`
+}
+
+/** Make an absolute path inside the workspace relative; other paths are unchanged. */
+function toWorkspaceRelative(path: string, workspaceRoot: string): string {
+  const normalised = normaliseScopePath(path)
+  const root = normaliseScopePath(workspaceRoot)
+  if (!isAbsoluteScopePath(normalised) || root.length === 0) return normalised
+  const lowerPath = normalised.toLowerCase()
+  const lowerRoot = root.toLowerCase()
+  if (lowerPath === lowerRoot) return ''
+  if (lowerPath.startsWith(`${lowerRoot}/`)) return normalised.slice(root.length + 1)
+  return normalised
+}
+
+/** True when `path` is `root` itself or lies below it. */
+function isPathWithin(root: string, path: string): boolean {
+  const base = normaliseScopePath(root)
+  const target = normaliseScopePath(path)
+  if (base.length === 0) return true
+  return target === base || target.startsWith(`${base}/`)
+}
+
+/** Lower-cased exact manifest-name set (case-insensitive match). */
+function manifestNameSet(names: readonly string[] = DEFAULT_MANIFEST_NAMES): ReadonlySet<string> {
+  const result = new Set<string>()
+  for (const name of names) {
+    const normalised = basenameOf(name)
+    if (normalised.length > 0) result.add(normalised.toLowerCase())
+  }
+  return result
+}
+
+/**
+ * Project kind of an exact manifest file name, or `undefined` when the path is
+ * not a manifest. The match is case-insensitive and by exact file name only.
+ */
+export function manifestKindOfPath(
+  path: string,
+  manifestNames: readonly string[] = DEFAULT_MANIFEST_NAMES,
+): ManifestKind | undefined {
+  const name = basenameOf(path).toLowerCase()
+  // The caller's list is authoritative: a replacement list narrows the exact
+  // names the scan accepts, and only an accepted name gets a project kind.
+  if (!manifestNameSet(manifestNames).has(name)) return undefined
+  return MANIFEST_KIND_BY_NAME.get(name) ?? 'unknown'
+}
+
+/** True when the path is one of the accepted structural manifests. */
+export function isManifestPath(
+  path: string,
+  manifestNames: readonly string[] = DEFAULT_MANIFEST_NAMES,
+): boolean {
+  return manifestKindOfPath(path, manifestNames) !== undefined
+}
+
+/** Workspace-relative manifest path of one {@link Manifest} input, if resolvable. */
+function manifestPathOf(manifest: Manifest, workspaceRoot: string): string | undefined {
+  if (manifest.path !== undefined) {
+    const normalised = toWorkspaceRelative(manifest.path, workspaceRoot)
+    return normalised.length === 0 ? undefined : normalised
+  }
+  if (manifest.manifest !== undefined) {
+    // With a project root beside it, `manifest` is a file name; without one it
+    // is the manifest path itself. A path-looking value always wins.
+    const raw = manifest.root !== undefined && !manifest.manifest.includes('/') && !manifest.manifest.includes('\\')
+      ? joinScopePath(manifest.root, manifest.manifest)
+      : manifest.manifest
+    const normalised = toWorkspaceRelative(raw, workspaceRoot)
+    return normalised.length === 0 ? undefined : normalised
+  }
+  if (manifest.root !== undefined) {
+    const name = MANIFEST_NAME_BY_KIND.get(manifest.kind)
+    if (name === undefined) return undefined
+    const normalised = toWorkspaceRelative(joinScopePath(manifest.root, name), workspaceRoot)
+    return normalised.length === 0 ? undefined : normalised
+  }
+  return undefined
+}
+
+/** Join two workspace-relative path fragments. */
+function joinScopePath(directory: string, name: string): string {
+  const base = normaliseScopePath(directory)
+  return base.length === 0 ? name : `${base}/${name}`
+}
+
+/** Normalise a structured or bare-string manifest input. */
+function normaliseManifest(input: ManifestInput): Manifest | undefined {
+  if (typeof input !== 'string') return input
+  const path = normaliseScopePath(input)
+  if (path.length === 0) return undefined
+  return { kind: manifestKindOfPath(path) ?? 'unknown', path }
+}
+
+/** One manifest record from an indexed path, when the path is a manifest. */
+function manifestRecordOf(
+  path: string,
+  workspaceRoot: string,
+  manifestNames: readonly string[],
+): ManifestRecord | undefined {
+  const relative = toWorkspaceRelative(path, workspaceRoot)
+  const kind = manifestKindOfPath(relative, manifestNames)
+  if (kind === undefined) return undefined
+  return { kind, path: relative, root: dirnameOf(relative) }
+}
+
+/** All distinct manifest records of an indexed path set, outermost first. */
+function manifestRecordsOf(
+  paths: readonly string[],
+  workspaceRoot: string,
+  manifestNames: readonly string[] = DEFAULT_MANIFEST_NAMES,
+): ManifestRecord[] {
+  const seen = new Set<string>()
+  const records: ManifestRecord[] = []
+  for (const path of paths) {
+    const record = manifestRecordOf(path, workspaceRoot, manifestNames)
+    if (record === undefined || seen.has(record.path)) continue
+    seen.add(record.path)
+    records.push(record)
+  }
+  records.sort(compareManifestRecords)
+  return records
+}
+
+/** Shallowest project root first, then deterministic manifest path. */
+function compareManifestRecords(left: ManifestRecord, right: ManifestRecord): number {
+  return (
+    scopeDepth(left.root) - scopeDepth(right.root) ||
+    compareText(left.path, right.path)
+  )
+}
+
+/** Number of directory segments in a workspace-relative project root. */
+function scopeDepth(root: string): number {
+  const normalised = normaliseScopePath(root)
+  return normalised.length === 0 ? 0 : normalised.split('/').length
+}
+
+/**
+ * Resolve the project scope of one file.
+ *
+ * The manifests are matched by their workspace-relative manifest paths. The
+ * file belongs to the manifest directory **closest to the workspace root**
+ * (the outermost ancestor); a nested manifest never narrows the scope. When no
+ * manifest claims the file, the workspace scope is returned: its root is the
+ * resolved workspace root and its manifest is `null`.
+ *
+ * The match is purely lexical: no file-system access and no common-prefix
+ * guess. `workspaceRoot` is echoed as the fallback root, so the answer is the
+ * directory the scan actually walked.
+ */
+export function projectScopeOf(
+  path: string,
+  manifests: readonly ManifestInput[],
+  workspaceRoot = '.',
+): ProjectScope {
+  const filePath = toWorkspaceRelative(path, workspaceRoot)
+  let best: { scope: ProjectScope; depth: number; order: string } | undefined
+  for (const input of manifests) {
+    const manifest = normaliseManifest(input)
+    if (manifest === undefined) continue
+    const manifestPath = manifestPathOf(manifest, workspaceRoot)
+    if (manifestPath === undefined) continue
+    const projectRoot = dirnameOf(manifestPath)
+    if (!isPathWithin(projectRoot, filePath)) continue
+    const depth = scopeDepth(projectRoot)
+    const order = manifestPath
+    if (best !== undefined && (depth > best.depth || (depth === best.depth && compareText(order, best.order) >= 0))) {
+      continue
+    }
+    best = {
+      scope: {
+        kind: manifest.kind,
+        root: resolveWorkspaceChild(workspaceRoot, projectRoot),
+        manifest: basenameOf(manifestPath),
+      },
+      depth,
+      order,
+    }
+  }
+  return best?.scope ?? { kind: 'workspace', root: workspaceRoot, manifest: null }
+}
+
+/**
+ * Global outline root: the outermost manifest project's root when one exists,
+ * otherwise the resolved workspace root.
+ *
+ * The result is never a longest common prefix of the group paths. When several
+ * unrelated projects are outermost (siblings), there is no single project
+ * root, so the workspace root remains the only correct global root.
+ */
+export function outlineRootOf(
+  workspaceRoot: string,
+  projects: readonly (Pick<ProjectScope, 'kind' | 'root'> & { manifest?: string | null } | string)[],
+): string {
+  const roots = projects
+    .map((project): { kind: ProjectScope['kind']; root: string } =>
+      typeof project === 'string'
+        ? { kind: 'unknown', root: project }
+        : project)
+    .filter((project) => project.kind !== 'workspace')
+    .map((project) => {
+      // Keep an already-absolute project root exactly as reported; only a
+      // relative root is resolved against the workspace root. Normalising an
+      // absolute root here would rewrite its separators (C:\x → C:/x).
+      const absolute = isAbsoluteScopePath(normaliseScopePath(project.root))
+        ? project.root
+        : resolveWorkspaceChild(workspaceRoot, project.root)
+      return { absolute, relative: toWorkspaceRelative(absolute, workspaceRoot) }
+    })
+    .filter((root) => root.absolute.length > 0)
+  const unique = new Map<string, string>()
+  for (const root of roots) {
+    if (!unique.has(root.relative)) unique.set(root.relative, root.absolute)
+  }
+  if (unique.size === 0) return workspaceRoot
+  let shallowest = Number.POSITIVE_INFINITY
+  for (const relative of unique.keys()) shallowest = Math.min(shallowest, scopeDepth(relative))
+  const outermost = [...unique.entries()]
+    .filter(([relative]) => scopeDepth(relative) === shallowest)
+    .map(([, absolute]) => absolute)
+  return outermost.length === 1 ? (outermost[0] as string) : workspaceRoot
+}
+
+/**
+ * Outermost project list of the tree: one entry per outermost manifest
+ * directory. Nested manifests are recorded in `nestedManifests` and do not
+ * create a nested project.
+ */
+function treeProjectsOf(
+  records: readonly ManifestRecord[],
+  workspaceRoot: string,
+): TreeProject[] {
+  const projects: TreeProject[] = []
+  const relativeRoots: string[] = []
+  for (const record of records) {
+    const parent = relativeRoots.findIndex((root) => isPathWithin(root, record.root))
+    if (parent >= 0) {
+      const project = projects[parent] as TreeProject
+      if (!project.nestedManifests.includes(record.path)) project.nestedManifests.push(record.path)
+      continue
+    }
+    projects.push({
+      kind: record.kind,
+      root: resolveWorkspaceChild(workspaceRoot, record.root),
+      manifest: basenameOf(record.path),
+      nestedManifests: [],
+    })
+    relativeRoots.push(record.root)
+  }
+  for (const project of projects) project.nestedManifests.sort(compareText)
+  projects.sort(
+    (left, right) =>
+      scopeDepth(toWorkspaceRelative(left.root, workspaceRoot)) -
+        scopeDepth(toWorkspaceRelative(right.root, workspaceRoot)) ||
+      compareText(left.root, right.root),
+  )
+  return projects
+}
+
+/** Outermost manifest record claiming one file, if any. */
+function outermostManifestOf(
+  path: string,
+  records: readonly ManifestRecord[],
+  workspaceRoot: string,
+): ManifestRecord | undefined {
+  const filePath = toWorkspaceRelative(path, workspaceRoot)
+  let best: ManifestRecord | undefined
+  let bestDepth = Number.POSITIVE_INFINITY
+  for (const record of records) {
+    if (!isPathWithin(record.root, filePath)) continue
+    const depth = scopeDepth(record.root)
+    if (depth < bestDepth || (depth === bestDepth && best !== undefined && compareText(record.path, best.path) < 0)) {
+      best = record
+      bestDepth = depth
+    }
+  }
+  return best
 }
 
 /**
@@ -279,24 +754,53 @@ export interface GraphTree {
  *
  * Only `directory` nodes and the parser's file-backed kinds
  * (`module`/`document`/`book`/`article`/`file`) contribute; every parser
- * child node is ignored, so the tree never claims a symbol is a file. Ancestor
- * directories are derived from path prefixes, because the chain creates them
- * exactly that way. Invalid or path-less nodes are skipped rather than guessed.
+ * child node is ignored, so the tree never claims a symbol is a file. A
+ * structural manifest is always a file entry, even when its parser reports a
+ * non-file kind (`project`). Ancestor directories are derived from path
+ * prefixes, because the chain creates them exactly that way. Invalid or
+ * path-less nodes are skipped rather than guessed.
+ *
+ * `root` is the resolved workspace root the scan used. It is echoed verbatim
+ * and is never derived from the indexed paths: `src` is a directory under the
+ * root, not the root, even when every indexed file lives below it.
+ *
+ * Manifest projects are computed from the indexed manifest paths. Only the
+ * **outermost** manifest directory becomes a project: a nested manifest is
+ * listed in `nestedManifests` and never creates a nested scope. `projects` is
+ * empty when the workspace has no structural manifest.
  *
  * Depth is capped at {@link MAX_TREE_DEPTH} (root children are depth 1) and the
  * total entry count at {@link MAX_TREE_ENTRIES}; input paths are sorted first,
  * so the truncation is deterministic. Children are ordered directories first,
  * then by code-point name.
  */
-export function buildTree(nodes: readonly GraphNode[], root = '.'): GraphTree {
+export function buildTree(
+  nodes: readonly GraphNode[],
+  root = '.',
+  options: { manifestNames?: readonly string[] } | readonly string[] = {},
+): GraphTree {
+  const manifestNames = Array.isArray(options)
+    ? (options as readonly string[])
+    : (options as { manifestNames?: readonly string[] }).manifestNames ?? DEFAULT_MANIFEST_NAMES
   const files: string[] = []
   const directories: string[] = []
+  const manifestPaths = new Set<string>()
   for (const node of nodes) {
     const path = node.path === undefined ? undefined : normaliseGraphPath(node.path)
     if (path === undefined) continue
     const kind = node.kind.trim().toLowerCase()
-    if (kind === 'directory') directories.push(path)
-    else if (FILE_NODE_KINDS.has(kind)) files.push(path)
+    if (kind === 'directory') {
+      directories.push(path)
+      continue
+    }
+    // A structural manifest is a file entry even when its parser reports a
+    // non-file kind such as `project`. The manifest's own file node is also
+    // accepted through FILE_NODE_KINDS; the Set below removes the duplicate.
+    const manifest = isManifestPath(path, manifestNames)
+    if (manifest || FILE_NODE_KINDS.has(kind)) {
+      files.push(path)
+      if (manifest) manifestPaths.add(path)
+    }
   }
   // Deterministic insertion order also makes the entry cap deterministic.
   const ordered = [...new Set([...directories, ...files])].sort(compareText)
@@ -365,7 +869,11 @@ export function buildTree(nodes: readonly GraphNode[], root = '.'): GraphTree {
       if (entry.children !== undefined) stack.push(entry.children)
     }
   }
-  return { root, entries: childrenOf.get('') as TreeNode[] }
+  return {
+    root,
+    entries: childrenOf.get('') as TreeNode[],
+    projects: treeProjectsOf(manifestRecordsOf([...manifestPaths], root, manifestNames), root),
+  }
 }
 
 function compareTreeNodes(left: TreeNode, right: TreeNode): number {
@@ -396,6 +904,12 @@ export interface OutlineGroup {
   path: string
   family: GraphFamily
   nodes: OutlineNode[]
+  /**
+   * Outermost manifest project that claims this file, when the workspace has
+   * one. A file outside every project (or in a workspace with no manifest) has
+   * no `project` field at all.
+   */
+  project?: OutlineProjectScope
 }
 
 /** Value of `GET /graph/outline?path=<file>`. */
@@ -499,12 +1013,16 @@ export function familyOf(path: string, kinds: ReadonlySet<string>): GraphFamily 
 /**
  * Build the outline projection for one file or the whole workspace.
  *
- * With `requestPath` the value is `{ scope: 'file', path, family, nodes }`; the
- * path must be valid (`InvalidArgumentError` → 400) and indexed
- * (`NotFoundError` → 404). Without it the value is
- * `{ scope: 'workspace', groups }`: one group per indexed file, sorted by path,
- * at most {@link MAX_OUTLINE_FILES} files and {@link MAX_OUTLINE_NODES} nodes
- * per group.
+ * With `requestPath` the value is `{ scope: 'file', path, family, nodes }` — it
+ * never carries `groups`. The path must be valid (`InvalidArgumentError` → 400)
+ * and indexed (`NotFoundError` → 404).
+ * Without it the value is `{ scope: 'workspace', groups }`: one group per
+ * indexed file, sorted by path, at most {@link MAX_OUTLINE_FILES} files and
+ * {@link MAX_OUTLINE_NODES} nodes per group. Each group carries the outermost
+ * manifest `project` that claims its file; a file no manifest claims (or every
+ * file when the workspace has no manifest) has no `project` field, and the
+ * global root remains the resolver's workspace root (see
+ * {@link outlineRootOf}).
  *
  * Nodes are ordered by source line, then depth, then name, so a heading and its
  * first paragraph keep their natural order.
@@ -515,14 +1033,18 @@ export function buildOutline(query: GraphQuery, requestPath: string | undefined)
 export function buildOutline(query: GraphQuery, requestPath?: string): OutlineView {
   if (requestPath === undefined) {
     const byPath = groupNodesByPath(query.nodes)
+    const manifests = manifestRecordsOf(query.paths, query.workspaceRoot)
     const groups: OutlineGroup[] = []
     for (const path of query.paths.slice(0, MAX_OUTLINE_FILES)) {
       const outline = computeOutline(path, byPath.get(path) ?? [])
-      groups.push({
+      const scope = outermostManifestOf(path, manifests, query.workspaceRoot)
+      const group: OutlineGroup = {
         path,
         family: outline.family,
         nodes: outline.nodes.slice(0, MAX_OUTLINE_NODES),
-      })
+      }
+      if (scope !== undefined) group.project = { kind: scope.kind, root: resolveWorkspaceChild(query.workspaceRoot, scope.root) }
+      groups.push(group)
     }
     return { scope: 'workspace', groups }
   }
@@ -737,7 +1259,15 @@ export function createGraphQuery(input: GraphQueryInput): GraphQuery {
     return facts
   }
 
-  return { version: input.version, scope, nodes: input.nodes, edges: input.edges, paths, factsOf }
+  return {
+    version: input.version,
+    scope,
+    workspaceRoot: input.workspaceRoot ?? '.',
+    nodes: input.nodes,
+    edges: input.edges,
+    paths,
+    factsOf,
+  }
 }
 
 /** Body-free facts of one path group: specifier names in source order. */
@@ -3701,7 +4231,12 @@ type Color = (typeof Color)[keyof typeof Color]
  *  - at most {@link INDEX_TIME_LIMIT_MS} ms of wall-clock time;
  *  - dependency/build output and VCS directories are never descended into;
  *  - only extensions the text layer has a parser for are attempted, so a
- *    binary can never reach the parser by extension.
+ *    binary can never reach the parser by extension;
+ *  - structural manifests ({@link DEFAULT_MANIFEST_NAMES}, or a caller's
+ *    `manifestNames`) are accepted by exact file name even though their
+ *    `.json`/`.xml`/`.toml` extensions are not on the allowlist;
+ *  - the caller's ignore list is checked **before** every acceptance rule, so
+ *    ignoring `package.json` really skips it.
  * Overrunning any bound reports `truncated: true` with the completed counts;
  * a file that fails to parse is counted as `skipped` and never aborts the run.
  * ------------------------------------------------------------------------- */
@@ -3717,11 +4252,21 @@ export const MAX_INDEX_DEPTH = 8
 export const INDEX_SKIP_DIRECTORIES: readonly string[] = ['node_modules', '.git', 'dist', '.tmp']
 
 /**
+ * Default ignore list of the scan.
+ *
+ * Deliberately empty: the structural manifests are indexed by default. A
+ * caller's `ignore` list still wins over manifest acceptance.
+ */
+export const INDEX_DEFAULT_IGNORE: readonly string[] = []
+
+/**
  * Extensions the scan accepts, mirroring the registered text parsers.
  *
  * Deliberately an allowlist: shared `.json`/`.yaml`/`.xml` extensions have no
  * registered parser (the text layer refuses to guess), and binary documents
- * (`.docx`, `.pdf`, images, archives) stay out by construction.
+ * (`.docx`, `.pdf`, images, archives) stay out by construction. Structural
+ * manifests are the one exact-filename exception and are handled by
+ * {@link isIndexableWorkspaceFile} / {@link DEFAULT_MANIFEST_NAMES}.
  */
 export const INDEX_FILE_EXTENSIONS: readonly string[] = [
   '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
@@ -3752,8 +4297,27 @@ export interface WorkspaceIndexOptions {
   maxFiles?: number
   timeLimitMs?: number
   maxDepth?: number
+  /**
+   * Exact manifest file names accepted even without an allowlisted extension.
+   * Case-insensitive; defaults to {@link DEFAULT_MANIFEST_NAMES}.
+   */
+  manifestNames?: readonly string[]
+  /**
+   * User ignore list. Matched before every acceptance rule, so an ignored
+   * manifest is skipped like any other file. Entries are workspace-relative
+   * paths, bare file/directory names, or simple `*`/`?`/`**` globs.
+   */
+  ignore?: readonly string[]
   /** Clock injection for deterministic tests; defaults to `Date.now`. */
   now?: () => number
+}
+
+/** Acceptance policy for {@link isIndexableWorkspaceFile}. */
+export interface WorkspaceFilePolicy {
+  /** Exact manifest file names accepted by name (defaults to the preset list). */
+  manifestNames?: readonly string[]
+  /** User ignore list, matched first. */
+  ignore?: readonly string[]
 }
 
 /** Value of `POST /graph/index`. */
@@ -3817,8 +4381,83 @@ export function workspaceIndexReport(
   }
 }
 
-/** True when a workspace-relative path has an extension the text layer parses. */
-export function isIndexableWorkspaceFile(path: string): boolean {
+/** Escape one literal glob character for a regular expression. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&')
+}
+
+/** Compile a case-insensitive glob (`*`, `**`, `?`) over slash paths. */
+function globRegExp(pattern: string): RegExp {
+  const source = normaliseScopePath(pattern).toLowerCase()
+  let expression = '^'
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] as string
+    if (character === '*') {
+      if (source[index + 1] === '*') {
+        expression += '.*'
+        index += 1
+      } else {
+        expression += '[^/]*'
+      }
+      continue
+    }
+    if (character === '?') {
+      expression += '[^/]'
+      continue
+    }
+    expression += escapeRegExp(character)
+  }
+  return new RegExp(`${expression}$`, 'i')
+}
+
+/**
+ * True when the user ignore list matches a workspace-relative path.
+ *
+ * Matching is case-insensitive and checked before every acceptance rule. A
+ * bare entry (`package.json`, `node_modules`) matches that name at any depth; a
+ * path entry (`packages/web`) matches that directory and everything below it;
+ * `*`, `?` and `**` are simple glob wildcards.
+ */
+export function isIgnoredWorkspacePath(path: string, ignore: readonly string[] | undefined): boolean {
+  if (ignore === undefined || ignore.length === 0) return false
+  const target = normaliseScopePath(path).toLowerCase()
+  const segments = target.split('/').filter((segment) => segment.length > 0)
+  for (const raw of ignore) {
+    const entry = normaliseScopePath(raw).toLowerCase()
+    if (entry.length === 0) continue
+    if (entry.includes('*') || entry.includes('?')) {
+      const matcher = globRegExp(entry)
+      if (matcher.test(target)) return true
+      if (!entry.includes('/') && segments.some((segment) => matcher.test(segment))) return true
+      continue
+    }
+    if (entry.includes('/')) {
+      if (target === entry || target.startsWith(`${entry}/`)) return true
+      continue
+    }
+    if (target === entry || segments.includes(entry)) return true
+  }
+  return false
+}
+
+/**
+ * True when a workspace-relative path is accepted by the workspace scan.
+ *
+ * The exact file names of the structural manifests are accepted first (the
+ * default preset, or `policy.manifestNames`), then the extension allowlist.
+ * The user ignore list is checked first, so it always wins: ignoring
+ * `package.json` makes this function return `false` for it.
+ */
+export function isIndexableWorkspaceFile(
+  path: string,
+  policy: WorkspaceFilePolicy | readonly string[] = {},
+): boolean {
+  const settings: WorkspaceFilePolicy = Array.isArray(policy)
+    ? { manifestNames: policy as readonly string[] }
+    : (policy as WorkspaceFilePolicy)
+  if (isIgnoredWorkspacePath(path, settings.ignore)) return false
+  const manifestNames = settings.manifestNames ?? DEFAULT_MANIFEST_NAMES
+  if (isManifestPath(path, manifestNames)) return true
   const extension = extensionOf(path)
   return extension.length > 0 && INDEX_FILE_EXTENSIONS.includes(extension)
 }
@@ -3848,6 +4487,8 @@ export async function indexWorkspaceFiles(
   const maxFiles = Math.max(0, Math.floor(options.maxFiles ?? MAX_INDEX_FILES))
   const timeLimitMs = Math.max(0, Math.floor(options.timeLimitMs ?? INDEX_TIME_LIMIT_MS))
   const maxDepth = Math.max(1, Math.floor(options.maxDepth ?? MAX_INDEX_DEPTH))
+  const manifestNames = options.manifestNames ?? DEFAULT_MANIFEST_NAMES
+  const ignore = options.ignore ?? INDEX_DEFAULT_IGNORE
   const now = options.now ?? Date.now
   const startedAt = now()
 
@@ -3879,18 +4520,22 @@ export async function indexWorkspaceFiles(
         break scan
       }
       if (entry.directory) {
+        const childPath = joinWorkspacePath(directory.path, entry.name)
+        // The user ignore list wins over every structural rule, including a
+        // directory that merely happens to be named like a known build dir.
+        if (isIgnoredWorkspacePath(childPath, ignore)) continue
         // A child directory is only descended into when its files can still be
         // within the depth bound (the child's entries are one level deeper).
         if (directory.depth + 1 >= maxDepth) continue
         if (isSkippedWorkspaceDirectory(entry.name)) continue
         pending.push({
-          path: joinWorkspacePath(directory.path, entry.name),
+          path: childPath,
           depth: directory.depth + 1,
         })
         continue
       }
       const path = joinWorkspacePath(directory.path, entry.name)
-      if (!isIndexableWorkspaceFile(path)) {
+      if (!isIndexableWorkspaceFile(path, { manifestNames, ignore })) {
         skipped += 1
         continue
       }

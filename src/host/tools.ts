@@ -1,20 +1,26 @@
 /**
  * Model-facing coordination tools (v23 §18.2, v24 §3 + §2.5).
  *
- * The plugin exposes seven tools to the model:
+ * The plugin exposes eleven tools to the model:
  *
  *  - `coordination_selection`, `coordination_profession`,
  *    `coordination_professionlock` — the composer surface (v0.7/v0.8);
  *  - `coordination_parse`, `coordination_describe`, `coordination_chain`,
  *    `coordination_read` — the file layer wired in v0.9 (the P0 parser, the
  *    `NodeCard` projection, the host-only `Chain` projection and the single
- *    authorized content path).
+ *    authorized content path);
+ *  - `coordination_file`, `coordination_outline`, `coordination_importation`,
+ *    `coordination_exportation` — four **read-only** workspace-graph tools that
+ *    project the persisted graph: a bounded directory tree, the structure
+ *    outline, and the import/export rows.
  *
- * Names stay English and stable. All seven tools take their description and
- * parameter copy from the shared tables (`src/shared/i18n.ts`): the composer
- * tools from `copy.tools`, the file layer from `copy.fileTools`. Switching the
- * host locale therefore changes what the model sees without forking the tool
- * surface or keeping a second inline copy table.
+ * Names stay English and stable. The seven composer/file tools take their
+ * description and parameter copy from the shared tables (`src/shared/i18n.ts`):
+ * the composer tools from `copy.tools`, the file layer from `copy.fileTools`.
+ * The four graph tools keep their EN + zh-CN copy **inline** in this module
+ * ({@link GRAPH_TOOL_COPY}) so the shared locale table needed no new keys.
+ * Switching the host locale therefore changes what the model sees without
+ * forking the tool surface.
  *
  * The definitions are authored in the registry's canonical `ToolDefinition`
  * shape: a JSON-Schema `parameters` object, an `output` with its own schema and
@@ -55,7 +61,7 @@ import {
   ValidationValues,
   isOneOf,
 } from '../shared/enum.js'
-import { InvalidArgumentError, InvalidStateError } from '../shared/error.js'
+import { InvalidArgumentError, InvalidStateError, NotFoundError } from '../shared/error.js'
 import { copyFor, normaliseLocale, type FileToolName, type Locale, type ToolCopy, type ToolName } from '../shared/i18n.js'
 import type { SelectionLockView, SelectionPatch, SelectionState } from '../shared/selection.js'
 import { assertProfession } from './profession.js'
@@ -80,6 +86,25 @@ import type {
 } from './parse-service.js'
 import { GraphStore } from './graph-store.js'
 import type { CoordinationDatabase } from './database.js'
+import {
+  buildImports,
+  buildTree,
+  createGraphQuery,
+  familyOf,
+  graphVersionOf,
+  isManifestPath,
+  MAX_IMPORT_ROWS,
+  MAX_TREE_DEPTH,
+  normaliseGraphPath,
+  type GraphEdge,
+  type GraphFamily,
+  type GraphNode,
+  type GraphQuery,
+  type GraphScope,
+  type ImportRow,
+  type OutlineNode,
+  type TreeNode,
+} from './graph-view.js'
 import { stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 
@@ -102,8 +127,15 @@ export interface CoordinationToolOutput<T = unknown> {
 /** File-layer tool names added by the v0.9 wiring. */
 export type CoordinationFileToolName = FileToolName
 
+/** The four read-only workspace-graph tool names added by the graph surface. */
+export type CoordinationGraphToolName =
+  | 'coordination_file'
+  | 'coordination_outline'
+  | 'coordination_importation'
+  | 'coordination_exportation'
+
 /** Every tool name this module can register. */
-export type CoordinationAnyToolName = ToolName | CoordinationFileToolName
+export type CoordinationAnyToolName = ToolName | CoordinationFileToolName | CoordinationGraphToolName
 
 /** The registry's definition shape, narrowed to the fields this plugin uses. */
 export interface CoordinationToolDefinition<T = unknown> {
@@ -197,6 +229,19 @@ export interface CoordinationToolOptions {
   chainCacheCapacity?: number
   /** Node registry capacity (tests use a small value). */
   registryCapacity?: number
+  /**
+   * The Cordis context, read structurally by the request-scoped workspace-root
+   * resolver. `src/index.ts` passes its apply-time context so a graph tool call
+   * resolves the same session workspace the `/graph/*` routes use. Tests omit it
+   * and pass `workspaceRoot` instead.
+   */
+  context?: unknown
+  /**
+   * Source of the body-free graph snapshot the four graph tools read. The host
+   * default reads the persisted `GraphStore` of `service.db`; tests inject a
+   * stub so the projection is exercised without a database.
+   */
+  graphSnapshot?: CoordinationGraphSnapshotProvider
 }
 
 /* ------------------------------------------------------------------------- *
@@ -376,6 +421,10 @@ export function coordinationToolDefinitions(
  * real host gets all seven. `parser.enabled` is read at registration time;
  * toggling it live takes effect on the next tool re-registration (locale
  * switch) because the tool set itself changes.
+ *
+ * The four read-only graph tools are registered separately by
+ * {@link registerCoordinationGraphTools}: the documented seven-tool file surface
+ * stays unchanged, while the host installs both sets in one effect.
  */
 export function registerCoordinationTools(
   registry: CoordinationToolRegistry,
@@ -1823,6 +1872,1000 @@ function parseValue(
 }
 
 /* ------------------------------------------------------------------------- *
+ * Workspace-graph tools (`coordination_file` / `_outline` / `_importation` /
+ * `_exportation`)
+ *
+ * Read-only projections of the graph the file layer already persisted. They
+ * never parse, write, execute or read file content: a call resolves the
+ * workspace root through the same request-scoped resolver as the `/graph/*`
+ * routes, loads one body-free `GraphStore` snapshot, and projects it through
+ * the pure builders in `graph-view.ts` (`buildTree`, `buildImports`) plus the
+ * small adapters below. Every successful value is paths/names/kinds only.
+ *
+ * Invalid user input never throws: each `execute` catches the typed error and
+ * returns `{ error: { code: 'INVALID_ARGUMENT', message } }`, which is part of
+ * the tool's declared `oneOf` output schema.
+ * ------------------------------------------------------------------------- */
+
+/** One body-free snapshot of the persisted workspace graph a graph tool reads. */
+export interface CoordinationGraphSnapshot {
+  /** Absolute workspace root the snapshot's paths are relative to. */
+  root: string
+  /** Changes whenever the graph changes; keys the graph-view L2 cache. */
+  version: string
+  nodes: readonly GraphNode[]
+  edges: readonly GraphEdge[]
+}
+
+/**
+ * Read the persisted graph for one resolved workspace root.
+ *
+ * The host default ({@link graphSnapshotOf}) reads the `GraphStore` the file
+ * tools already wrote: no parse, no write, no file read. Tests pass a stub.
+ */
+export type CoordinationGraphSnapshotProvider = (
+  root: string,
+) => CoordinationGraphSnapshot | Promise<CoordinationGraphSnapshot>
+
+/** Typed, non-throwing failure every graph tool returns for invalid input. */
+export interface CoordinationGraphToolError {
+  error: { code: 'INVALID_ARGUMENT'; message: string }
+}
+
+/** One entry of `coordination_file`. */
+export interface WorkspaceTreeEntry {
+  /** Workspace-relative path. */
+  path: string
+  /** Last path segment. */
+  name: string
+  kind: 'directory' | 'file'
+  /** Present only when the entry is a directory with returned children. */
+  children?: WorkspaceTreeEntry[]
+}
+
+/** Value of `coordination_file`. */
+export interface CoordinationFileValue {
+  /** Resolved absolute workspace root the tree describes. */
+  root: string
+  entries: WorkspaceTreeEntry[]
+  /** True when the depth, entry or graph-tree cap cut the result. */
+  truncated: boolean
+}
+
+/** One structure-outline node (path/name/kind metadata only, never a body). */
+export type StructureOutlineNode = OutlineNode
+
+/** Value of `coordination_outline` with `path` (one file). */
+export interface CoordinationFileOutlineValue {
+  scope: 'file'
+  path: string
+  family: GraphFamily
+  nodes: StructureOutlineNode[]
+  /** True when `limit` cut the node list. */
+  truncated: boolean
+}
+
+/** One workspace-scope outline group. */
+export interface CoordinationOutlineGroupValue {
+  path: string
+  family: GraphFamily
+  nodes: StructureOutlineNode[]
+}
+
+/** Value of `coordination_outline` without `path` (the whole workspace). */
+export interface CoordinationWorkspaceOutlineValue {
+  scope: 'workspace'
+  groups: CoordinationOutlineGroupValue[]
+  /** True when the node budget cut the workspace view. */
+  truncated: boolean
+}
+
+export type CoordinationOutlineValue = CoordinationFileOutlineValue | CoordinationWorkspaceOutlineValue
+
+/** One `coordination_importation` row. */
+export interface CoordinationImportationRow {
+  path: string
+  imported: string[]
+  /** Present only when the file participates in a `depends` cycle. */
+  cyclic?: boolean
+}
+
+/** Value of `coordination_importation`. */
+export interface CoordinationImportationValue {
+  rows: CoordinationImportationRow[]
+  /** True when `limit` or the route projection's 2,000-row cap cut the rows. */
+  truncated: boolean
+}
+
+/** One `coordination_exportation` row. */
+export interface CoordinationExportationRow {
+  path: string
+  exported: string[]
+  /** Present only when the file participates in a `depends` cycle. */
+  cyclic?: boolean
+}
+
+/** Value of `coordination_exportation`. */
+export interface CoordinationExportationValue {
+  rows: CoordinationExportationRow[]
+  /** True when `limit` or the route projection's 2,000-row cap cut the rows. */
+  truncated: boolean
+}
+
+/** Deepest directory level `coordination_file` returns (root children = 1). */
+export const MAX_FILE_TOOL_DEPTH = 4
+/** Hard entry cap of `coordination_file`. */
+export const MAX_FILE_TOOL_ENTRIES = 500
+/** Default entry budget of `coordination_file`. */
+export const DEFAULT_FILE_TOOL_ENTRIES = 200
+/** Hard node cap of `coordination_outline`. */
+export const MAX_OUTLINE_TOOL_NODES = 500
+/** Default node budget of `coordination_outline`. */
+export const DEFAULT_OUTLINE_TOOL_NODES = 200
+/** Hard row cap of the import/export tools. */
+export const MAX_RELATION_TOOL_ROWS = 2_000
+/** Default row budget of the import/export tools. */
+export const DEFAULT_RELATION_TOOL_ROWS = 500
+
+/** File-backed node kinds `buildTree` accepts as file entries. */
+const FILE_TREE_NODE_KINDS: ReadonlySet<string> = new Set(['module', 'document', 'book', 'article', 'file'])
+
+/**
+ * Structure-only depth order per family; the array index is `depth`.
+ *
+ * Document structure plus module/class/interface/type/enumeration/namespace/
+ * method/function. Leaf and symbol noise (`line`, `sentence`, `property`,
+ * `variable`, `static`, `importation`, `exportation`) has no slot, so it can
+ * never appear. `enumeration` and `namespace` are included here even though the
+ * `/graph/outline` route omits them: its project order has no slot for either,
+ * while the model-facing structure outline must report both.
+ */
+const STRUCTURE_KIND_ORDERS: Readonly<Record<Exclude<GraphFamily, 'unknown'>, readonly string[]>> = {
+  book: ['book', 'chapter', 'page', 'paragraph'],
+  article: ['article', 'chapter', 'page', 'paragraph'],
+  tex: ['document', 'chapter', 'preface', 'preamble', 'part', 'section', 'paragraph'],
+  document: ['document', 'heading', 'paragraph'],
+  project: ['module', 'class', 'interface', 'type', 'enumeration', 'namespace', 'method', 'function'],
+}
+
+/** One inline copy block; EN and zh-CN live side by side in this module. */
+interface GraphToolCopy {
+  description: string
+  parameters: Readonly<Record<string, string>>
+}
+
+/**
+ * Inline EN + zh-CN copy for the four graph tools.
+ *
+ * Deliberately not in `src/shared/i18n.ts`: the shared table is owned by the
+ * locale surface and this read-only tool set must not force new keys into it.
+ */
+const GRAPH_TOOL_COPY: Readonly<Record<Locale, Readonly<Record<CoordinationGraphToolName, GraphToolCopy>>>> = {
+  'en-US': {
+    coordination_file: {
+      description:
+        'Read-only directory tree of the persisted workspace graph: workspace-relative paths, names and directory/file kinds only, never file content. Omit path for the workspace root; absolute paths, UNC paths and ".." are refused with INVALID_ARGUMENT.',
+      parameters: {
+        path: 'Workspace-relative directory; omit for the workspace root. Absolute/UNC paths and ".." are refused.',
+        depth: 'Directory depth to return, 1-4 (default 2).',
+        limit: 'Maximum tree entries, 1-500 (default 200).',
+      },
+    },
+    coordination_outline: {
+      description:
+        'Read-only structure outline of the indexed workspace: document headings/sections and code module/class/function/method/interface/type/enumeration/namespace nodes with handle, name, depth and line. Variables, properties, statics, imports/exports, lines and sentences are filtered out. With path one file; without it every indexed file, grouped by path. Never file content.',
+      parameters: {
+        path: 'Workspace-relative file; omit for the whole workspace.',
+        limit: 'Maximum outline nodes, 1-500 (default 200).',
+      },
+    },
+    coordination_importation: {
+      description:
+        'Read-only import relationships of the indexed workspace: each file\'s imported module specifiers in source order, never the imported module body. With path only that file\'s row. A file in a dependency cycle carries cyclic: true.',
+      parameters: {
+        path: 'Workspace-relative file; omit for every indexed file.',
+        limit: 'Maximum rows, 1-2000 (default 500).',
+      },
+    },
+    coordination_exportation: {
+      description:
+        'Read-only export relationships of the indexed workspace: each file\'s exported names in source order, never the exported declaration body. With path only that file\'s row. A file in a dependency cycle carries cyclic: true.',
+      parameters: {
+        path: 'Workspace-relative file; omit for every indexed file.',
+        limit: 'Maximum rows, 1-2000 (default 500).',
+      },
+    },
+  },
+  'zh-CN': {
+    coordination_file: {
+      description:
+        '以只读目录树列出已持久化的工作区图：仅返回工作区相对路径、名称以及目录/文件类型，绝不返回文件内容。省略 path 表示工作区根目录；绝对路径、UNC 路径和 ".." 一律以 INVALID_ARGUMENT 拒绝。',
+      parameters: {
+        path: '工作区相对目录；省略表示工作区根目录。拒绝绝对路径、UNC 路径和 ".."。',
+        depth: '返回的目录深度，1-4（默认 2）。',
+        limit: '最大目录树条目数，1-500（默认 200）。',
+      },
+    },
+    coordination_outline: {
+      description:
+        '以只读结构大纲列出已索引的工作区：文档标题/章节，以及代码的 module/class/function/method/interface/type/enumeration/namespace 节点，含 handle、名称、深度和行号。变量、属性、静态成员、导入/导出、行与句子会被过滤。提供 path 时只看一个文件；省略时按路径分组列出所有已索引文件。绝不返回文件内容。',
+      parameters: {
+        path: '工作区相对文件；省略表示整个工作区。',
+        limit: '最大大纲节点数，1-500（默认 200）。',
+      },
+    },
+    coordination_importation: {
+      description:
+        '以只读方式列出已索引工作区的导入关系：每个文件按源码顺序返回导入的模块说明符，绝不返回被导入模块的内容。提供 path 时只返回该文件的一行。处于依赖环中的文件带有 cyclic: true。',
+      parameters: {
+        path: '工作区相对文件；省略表示所有已索引文件。',
+        limit: '最大行数，1-2000（默认 500）。',
+      },
+    },
+    coordination_exportation: {
+      description:
+        '以只读方式列出已索引工作区的导出关系：每个文件按源码顺序返回导出的名称，绝不返回被导出声明的内容。提供 path 时只返回该文件的一行。处于依赖环中的文件带有 cyclic: true。',
+      parameters: {
+        path: '工作区相对文件；省略表示所有已索引文件。',
+        limit: '最大行数，1-2000（默认 500）。',
+      },
+    },
+  },
+}
+
+/**
+ * Build the four graph definitions for one locale. Pure: the snapshot is only
+ * read when `execute` runs, so a definition is just schema plus closures.
+ */
+export function coordinationGraphToolDefinitions(
+  service: CoordinationToolService,
+  locale: Locale = normaliseLocale(service.locale),
+  options: CoordinationToolOptions = {},
+): CoordinationToolDefinition[] {
+  const copy = GRAPH_TOOL_COPY[normaliseLocale(locale)]
+  return [
+    fileTreeTool(service, copy.coordination_file, options),
+    outlineTool(service, copy.coordination_outline, options),
+    importationTool(service, copy.coordination_importation, options),
+    exportationTool(service, copy.coordination_exportation, options),
+  ]
+}
+
+/**
+ * Register the four graph tools and return one disposer for the set.
+ *
+ * Kept separate from {@link registerCoordinationTools} so the documented
+ * seven-tool file surface is unchanged: `src/index.ts` installs both sets in
+ * the same effect and disposes them together.
+ */
+export function registerCoordinationGraphTools(
+  registry: CoordinationToolRegistry,
+  service: CoordinationToolService,
+  locale: Locale = normaliseLocale(service.locale),
+  options: CoordinationToolOptions = {},
+): () => void {
+  const disposers: Array<() => void> = []
+  try {
+    for (const definition of coordinationGraphToolDefinitions(service, locale, options)) {
+      disposers.push(registry.register(definition))
+    }
+  } catch (error) {
+    for (const dispose of disposers.reverse()) dispose()
+    throw error
+  }
+  return () => {
+    for (const dispose of disposers.reverse()) dispose()
+    disposers.length = 0
+  }
+}
+
+function fileTreeTool(
+  service: CoordinationToolService,
+  copy: GraphToolCopy,
+  options: CoordinationToolOptions,
+): CoordinationToolDefinition<CoordinationFileValue | CoordinationGraphToolError> {
+  return {
+    name: 'coordination_file',
+    description: copy.description,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        path: { type: 'string', description: graphParameter(copy, 'path') },
+        depth: { type: 'integer', description: graphParameter(copy, 'depth') },
+        limit: { type: 'integer', description: graphParameter(copy, 'limit') },
+      },
+    },
+    output: {
+      schema: FILE_TOOL_SCHEMA,
+      render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
+    },
+    async execute(rawArgs) {
+      try {
+        const args = asArguments(rawArgs)
+        const depth = boundedGraphInteger(args, 'depth', 2, MAX_FILE_TOOL_DEPTH)
+        const limit = boundedGraphInteger(args, 'limit', DEFAULT_FILE_TOOL_ENTRIES, MAX_FILE_TOOL_ENTRIES)
+        const requested = optionalGraphPath(args)
+        const scope = requested === undefined ? undefined : normaliseGraphPath(requested)
+        if (requested !== undefined && scope === undefined) {
+          throw new InvalidArgumentError(
+            'path must be a workspace-relative directory without absolute paths or ".."',
+            { path: requested },
+          )
+        }
+        const read = await graphReadOf(service, options)
+        return fileTreeValue(read.snapshot, read.root, scope, depth, limit)
+      } catch (error) {
+        return graphToolFailure(error)
+      }
+    },
+  }
+}
+
+function outlineTool(
+  service: CoordinationToolService,
+  copy: GraphToolCopy,
+  options: CoordinationToolOptions,
+): CoordinationToolDefinition<CoordinationOutlineValue | CoordinationGraphToolError> {
+  return {
+    name: 'coordination_outline',
+    description: copy.description,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        path: { type: 'string', description: graphParameter(copy, 'path') },
+        limit: { type: 'integer', description: graphParameter(copy, 'limit') },
+      },
+    },
+    output: {
+      schema: OUTLINE_TOOL_SCHEMA,
+      render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
+    },
+    async execute(rawArgs) {
+      try {
+        const args = asArguments(rawArgs)
+        const limit = boundedGraphInteger(args, 'limit', DEFAULT_OUTLINE_TOOL_NODES, MAX_OUTLINE_TOOL_NODES)
+        const requested = optionalGraphPath(args)
+        const read = await graphReadOf(service, options)
+        const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
+        return structureOutlineValue(query, requested, limit)
+      } catch (error) {
+        return graphToolFailure(error)
+      }
+    },
+  }
+}
+
+function importationTool(
+  service: CoordinationToolService,
+  copy: GraphToolCopy,
+  options: CoordinationToolOptions,
+): CoordinationToolDefinition<CoordinationImportationValue | CoordinationGraphToolError> {
+  return {
+    name: 'coordination_importation',
+    description: copy.description,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        path: { type: 'string', description: graphParameter(copy, 'path') },
+        limit: { type: 'integer', description: graphParameter(copy, 'limit') },
+      },
+    },
+    output: {
+      schema: IMPORTATION_TOOL_SCHEMA,
+      render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
+    },
+    async execute(rawArgs) {
+      try {
+        const args = asArguments(rawArgs)
+        const limit = boundedGraphInteger(args, 'limit', DEFAULT_RELATION_TOOL_ROWS, MAX_RELATION_TOOL_ROWS)
+        const requested = optionalGraphPath(args)
+        const read = await graphReadOf(service, options)
+        const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
+        return importationValue(query, requested, limit)
+      } catch (error) {
+        return graphToolFailure(error)
+      }
+    },
+  }
+}
+
+function exportationTool(
+  service: CoordinationToolService,
+  copy: GraphToolCopy,
+  options: CoordinationToolOptions,
+): CoordinationToolDefinition<CoordinationExportationValue | CoordinationGraphToolError> {
+  return {
+    name: 'coordination_exportation',
+    description: copy.description,
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        path: { type: 'string', description: graphParameter(copy, 'path') },
+        limit: { type: 'integer', description: graphParameter(copy, 'limit') },
+      },
+    },
+    output: {
+      schema: EXPORTATION_TOOL_SCHEMA,
+      render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
+    },
+    async execute(rawArgs) {
+      try {
+        const args = asArguments(rawArgs)
+        const limit = boundedGraphInteger(args, 'limit', DEFAULT_RELATION_TOOL_ROWS, MAX_RELATION_TOOL_ROWS)
+        const requested = optionalGraphPath(args)
+        const read = await graphReadOf(service, options)
+        const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
+        return exportationValue(query, requested, limit)
+      } catch (error) {
+        return graphToolFailure(error)
+      }
+    },
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Workspace-graph tool internals
+ * ------------------------------------------------------------------------- */
+
+/** One resolved graph read: the workspace root plus its body-free snapshot. */
+interface GraphRead {
+  root: string
+  snapshot: CoordinationGraphSnapshot
+}
+
+/**
+ * Resolve the workspace root with the same request-scoped resolver the
+ * `/graph/*` routes use. The registration-time Cordis context lets the resolver
+ * ask the sandbox policy / working directory / session projection, so a model
+ * call inside a session resolves that session's workspace instead of the
+ * process cwd. An explicit `options.workspaceRoot` (tests, profiles) wins.
+ */
+async function graphWorkspaceRootOf(
+  service: CoordinationToolService,
+  options: CoordinationToolOptions,
+): Promise<string> {
+  const resolver = createToolWorkspaceRootResolver(
+    service,
+    options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot },
+    options.context === undefined ? {} : { context: options.context },
+  )
+  return resolver.resolve()
+}
+
+/** Resolve the root and load one body-free snapshot for it. */
+async function graphReadOf(
+  service: CoordinationToolService,
+  options: CoordinationToolOptions,
+): Promise<GraphRead> {
+  const root = await graphWorkspaceRootOf(service, options)
+  return { root, snapshot: await graphSnapshotOf(service, options, root) }
+}
+
+/**
+ * Load one graph snapshot, or the injected stub.
+ *
+ * The default path is the read half of `GraphStore` only: no parse is
+ * triggered, no snapshot is written and no file is opened. An absent/foreign
+ * `db` (a narrow test facade) yields the empty graph, never a fabricated one.
+ */
+async function graphSnapshotOf(
+  service: CoordinationToolService,
+  options: CoordinationToolOptions,
+  root: string,
+): Promise<CoordinationGraphSnapshot> {
+  if (options.graphSnapshot !== undefined) {
+    const snapshot = await options.graphSnapshot(root)
+    const snapshotRoot = nonEmptyRoot(snapshot.root) ?? root
+    return {
+      root: snapshotRoot,
+      version: nonEmptyRoot(snapshot.version) ?? graphVersionOf(snapshot.nodes, snapshot.edges),
+      nodes: snapshot.nodes,
+      edges: snapshot.edges,
+    }
+  }
+  const database = coordinationDatabaseOf(service.db)
+  if (database === undefined) {
+    return { root, version: graphVersionOf([], []), nodes: [], edges: [] }
+  }
+  const store = new GraphStore(database, { workspaceRoot: root })
+  const nodes: GraphNode[] = store.loadNodes().map((record) => ({
+    handle: record.handle,
+    kind: record.kind,
+    ...(record.name === undefined ? {} : { name: record.name }),
+    ...(record.label === undefined ? {} : { label: record.label }),
+    ...(record.path === undefined ? {} : { path: record.path }),
+    ...(record.lineStart === undefined ? {} : { line: record.lineStart }),
+    ...(record.ordinal === undefined ? {} : { ordinal: record.ordinal }),
+    ...(record.changed === undefined ? {} : { changed: record.changed }),
+  }))
+  const edges: GraphEdge[] = store.loadEdges().map((edge) => ({
+    relation: edge.relation,
+    from: edge.from,
+    to: edge.to,
+    changed: edge.changed,
+  }))
+  return { root, version: graphVersionOf(nodes, edges), nodes, edges }
+}
+
+/** One scoped graph query over a snapshot; the scope is part of the L2 key. */
+function graphQueryOf(snapshot: CoordinationGraphSnapshot, fallbackRoot: string, scope: GraphScope): GraphQuery {
+  return createGraphQuery({
+    version: snapshot.version,
+    scope,
+    workspaceRoot: nonEmptyRoot(snapshot.root) ?? fallbackRoot,
+    nodes: snapshot.nodes,
+    edges: snapshot.edges,
+  })
+}
+
+/**
+ * Project the persisted tree into `coordination_file`'s value.
+ *
+ * Reuses `buildTree` on the nodes below the requested directory, locates that
+ * directory in the built tree, then bounds its subtree by `depth`/`limit`.
+ * `truncated` is true when the local depth/entry cap cut the result **or** the
+ * graph tree itself was capped (`MAX_TREE_ENTRIES`/`MAX_TREE_DEPTH`), detected
+ * by comparing the returned entry count with the count the snapshot implies.
+ */
+function fileTreeValue(
+  snapshot: CoordinationGraphSnapshot,
+  fallbackRoot: string,
+  scope: string | undefined,
+  depth: number,
+  limit: number,
+): CoordinationFileValue {
+  const root = nonEmptyRoot(snapshot.root) ?? fallbackRoot
+  const scopedNodes = treeNodesWithin(snapshot.nodes, scope)
+  const tree = buildTree(scopedNodes, root)
+  const entries = scopedTreeChildren(tree.entries, scope)
+  const expected = expectedTreeEntryCount(scopedNodes, scope)
+  const actual = countTreeEntries(entries)
+  const bounded = boundTreeEntries(entries, depth, limit)
+  return {
+    root: tree.root,
+    entries: bounded.entries,
+    truncated: bounded.truncated || actual < expected,
+  }
+}
+
+/** Nodes under one workspace-relative directory (the whole graph when absent). */
+function treeNodesWithin(nodes: readonly GraphNode[], scope: string | undefined): GraphNode[] {
+  if (scope === undefined) return [...nodes]
+  const prefix = `${scope}/`
+  return nodes.filter((node) => {
+    if (node.path === undefined) return false
+    const path = normaliseGraphPath(node.path)
+    return path !== undefined && (path === scope || path.startsWith(prefix))
+  })
+}
+
+/** Children of one directory in a tree built by `buildTree`. */
+function scopedTreeChildren(entries: readonly TreeNode[], scope: string | undefined): TreeNode[] {
+  if (scope === undefined) return [...entries]
+  let level: readonly TreeNode[] = entries
+  let prefix = ''
+  for (const segment of scope.split('/')) {
+    prefix = prefix.length === 0 ? segment : `${prefix}/${segment}`
+    const directory = level.find((entry) => entry.kind === 'directory' && entry.path === prefix)
+    if (directory === undefined) {
+      throw new InvalidArgumentError('path must name an indexed workspace directory', { path: scope })
+    }
+    level = directory.children ?? []
+  }
+  return [...level]
+}
+
+/**
+ * Entry count the snapshot implies for one scope, capped by the builder's own
+ * `MAX_TREE_DEPTH`. `buildTree` reports no truncation flag, so comparing this
+ * count with the returned subtree detects an entry/depth cap honestly.
+ */
+function expectedTreeEntryCount(nodes: readonly GraphNode[], scope: string | undefined): number {
+  const depthBase = scope === undefined ? 0 : scope.split('/').length
+  const prefix = scope === undefined ? undefined : `${scope}/`
+  const expected = new Set<string>()
+  for (const node of nodes) {
+    if (node.path === undefined) continue
+    const path = normaliseGraphPath(node.path)
+    if (path === undefined) continue
+    if (prefix !== undefined && path !== scope && !path.startsWith(prefix)) continue
+    const kind = node.kind.trim().toLowerCase()
+    if (kind !== 'directory' && !FILE_TREE_NODE_KINDS.has(kind) && !isManifestPath(path)) continue
+    const segments = path.split('/')
+    const limit = Math.min(segments.length, MAX_TREE_DEPTH)
+    for (let index = depthBase + 1; index <= limit; index += 1) {
+      expected.add(segments.slice(0, index).join('/'))
+    }
+  }
+  return expected.size
+}
+
+/** Number of directory/file entries in one built subtree. */
+function countTreeEntries(entries: readonly TreeNode[]): number {
+  let total = 0
+  const stack: Array<readonly TreeNode[]> = [entries]
+  while (stack.length > 0) {
+    const level = stack.pop() as readonly TreeNode[]
+    for (const entry of level) {
+      total += 1
+      if (entry.children !== undefined) stack.push(entry.children)
+    }
+  }
+  return total
+}
+
+/**
+ * Bound a built subtree by depth (root children = 1) and total entries.
+ *
+ * Ordering is `buildTree`'s (directories first, then code-point name), so the
+ * cap always keeps the same deterministic prefix. Dropping a deeper child or
+ * stopping at the entry budget sets `truncated`.
+ */
+function boundTreeEntries(
+  entries: readonly TreeNode[],
+  depth: number,
+  limit: number,
+): { entries: WorkspaceTreeEntry[]; truncated: boolean } {
+  let budget = limit
+  let truncated = false
+  const take = (level: readonly TreeNode[], levelDepth: number): WorkspaceTreeEntry[] => {
+    const kept: WorkspaceTreeEntry[] = []
+    for (const entry of level) {
+      if (budget <= 0) {
+        truncated = true
+        break
+      }
+      budget -= 1
+      const value: WorkspaceTreeEntry = { path: entry.path, name: entry.name, kind: entry.kind }
+      const children = entry.children ?? []
+      if (children.length === 0) {
+        kept.push(value)
+        continue
+      }
+      if (levelDepth >= depth) {
+        truncated = true
+        kept.push(value)
+        continue
+      }
+      const bounded = take(children, levelDepth + 1)
+      if (bounded.length > 0) value.children = bounded
+      kept.push(value)
+    }
+    return kept
+  }
+  return { entries: take(entries, 1), truncated }
+}
+
+/**
+ * Project the structure-only outline.
+ *
+ * Uses `familyOf` (the same classifier as `/graph/outline`) with the
+ * structure-only order in {@link STRUCTURE_KIND_ORDERS}. A file without any
+ * structure node contributes no group; groups are path-sorted, and the node
+ * budget applies across groups in that order.
+ */
+function structureOutlineValue(
+  query: GraphQuery,
+  requestPath: string | undefined,
+  limit: number,
+): CoordinationOutlineValue {
+  if (requestPath !== undefined) {
+    const path = normaliseGraphPath(requestPath)
+    if (path === undefined) {
+      throw new InvalidArgumentError('path must be a workspace-relative path without ".."', { path: requestPath })
+    }
+    if (!query.paths.includes(path)) throw new NotFoundError('file', path)
+    const outline = structureOutlineOfPath(path, graphNodesOfPath(query.nodes, path))
+    const nodes = outline.nodes.slice(0, limit)
+    return {
+      scope: 'file',
+      path,
+      family: outline.family,
+      nodes,
+      truncated: nodes.length < outline.nodes.length,
+    }
+  }
+
+  const byPath = graphNodesByPath(query.nodes)
+  const groups: CoordinationOutlineGroupValue[] = []
+  for (const path of query.paths) {
+    const outline = structureOutlineOfPath(path, byPath.get(path) ?? [])
+    if (outline.nodes.length === 0) continue
+    groups.push({ path, family: outline.family, nodes: outline.nodes })
+  }
+  const bounded: CoordinationOutlineGroupValue[] = []
+  let remaining = limit
+  let truncated = false
+  for (const group of groups) {
+    if (remaining <= 0) {
+      truncated = true
+      break
+    }
+    const nodes = group.nodes.slice(0, remaining)
+    if (nodes.length < group.nodes.length) truncated = true
+    bounded.push({ path: group.path, family: group.family, nodes })
+    remaining -= nodes.length
+  }
+  return { scope: 'workspace', groups: bounded, truncated }
+}
+
+/** Group every path-bearing graph node by its normalized workspace path. */
+function graphNodesByPath(nodes: readonly GraphNode[]): Map<string, GraphNode[]> {
+  const byPath = new Map<string, GraphNode[]>()
+  for (const node of nodes) {
+    if (node.path === undefined) continue
+    const path = normaliseGraphPath(node.path)
+    if (path === undefined) continue
+    const list = byPath.get(path)
+    if (list === undefined) byPath.set(path, [node])
+    else list.push(node)
+  }
+  return byPath
+}
+
+/** All nodes of one already-normalized workspace path. */
+function graphNodesOfPath(nodes: readonly GraphNode[], path: string): GraphNode[] {
+  return nodes.filter((node) => node.path !== undefined && normaliseGraphPath(node.path) === path)
+}
+
+/** Structure family + depth-ordered nodes of one already-resolved path. */
+function structureOutlineOfPath(
+  path: string,
+  fileNodes: readonly GraphNode[],
+): { family: GraphFamily; nodes: OutlineNode[] } {
+  const kinds = new Set(fileNodes.map((node) => node.kind.trim().toLowerCase()))
+  const family = familyOf(path, kinds)
+  if (family === 'unknown') return { family, nodes: [] }
+  const depthOf = new Map(STRUCTURE_KIND_ORDERS[family].map((kind, index): [string, number] => [kind, index]))
+  const nodes: OutlineNode[] = []
+  for (const node of fileNodes) {
+    const kind = node.kind.trim().toLowerCase()
+    const depth = depthOf.get(kind)
+    if (depth === undefined) continue
+    nodes.push({
+      handle: node.handle,
+      kind: node.kind,
+      name: node.name ?? node.label ?? '',
+      depth,
+      line: node.line ?? 0,
+    })
+  }
+  nodes.sort(
+    (left, right) =>
+      left.line - right.line ||
+      left.depth - right.depth ||
+      compareGraphText(left.name, right.name) ||
+      compareGraphText(left.handle, right.handle),
+  )
+  return { family, nodes }
+}
+
+/** Code-point ordering; locale-independent, so output is stable everywhere. */
+function compareGraphText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/**
+ * Project the import relationships.
+ *
+ * `buildImports` is the route's own projection (deduplicated, source-ordered
+ * and capped specifier lists). The tool then filters to rows that actually
+ * import something, applies its row budget and adds the cycle flag derived from
+ * the workspace `depends` graph.
+ */
+function importationValue(
+  query: GraphQuery,
+  requestPath: string | undefined,
+  limit: number,
+): CoordinationImportationValue {
+  const view = buildImports(query, requestPath)
+  const cyclic = cyclicFilePathsOf(query)
+  if (requestPath !== undefined) {
+    const row = view.rows[0]
+    return {
+      rows: row === undefined ? [] : [importationRowValue(row, cyclic)],
+      truncated: false,
+    }
+  }
+  const rows = view.rows.filter((row) => row.imported.length > 0)
+  const bounded = rows.slice(0, limit)
+  return {
+    rows: bounded.map((row) => importationRowValue(row, cyclic)),
+    truncated: bounded.length < rows.length || view.rows.length >= MAX_IMPORT_ROWS,
+  }
+}
+
+/** Project the export relationships (the exportation mirror of the above). */
+function exportationValue(
+  query: GraphQuery,
+  requestPath: string | undefined,
+  limit: number,
+): CoordinationExportationValue {
+  const view = buildImports(query, requestPath)
+  const cyclic = cyclicFilePathsOf(query)
+  if (requestPath !== undefined) {
+    const row = view.rows[0]
+    return {
+      rows: row === undefined ? [] : [exportationRowValue(row, cyclic)],
+      truncated: false,
+    }
+  }
+  const rows = view.rows.filter((row) => row.exported.length > 0)
+  const bounded = rows.slice(0, limit)
+  return {
+    rows: bounded.map((row) => exportationRowValue(row, cyclic)),
+    truncated: bounded.length < rows.length || view.rows.length >= MAX_IMPORT_ROWS,
+  }
+}
+
+function importationRowValue(row: ImportRow, cyclic: ReadonlySet<string>): CoordinationImportationRow {
+  return {
+    path: row.path,
+    imported: [...row.imported],
+    ...(cyclic.has(row.path) ? { cyclic: true } : {}),
+  }
+}
+
+function exportationRowValue(row: ImportRow, cyclic: ReadonlySet<string>): CoordinationExportationRow {
+  return {
+    path: row.path,
+    exported: [...row.exported],
+    ...(cyclic.has(row.path) ? { cyclic: true } : {}),
+  }
+}
+
+/**
+ * Files that participate in a `depends` cycle (SCC-derived).
+ *
+ * Iterative Kosaraju over the workspace-relative file dependency graph: a file
+ * is cyclic when its strongly connected component has more than one vertex, or
+ * when it declares a self-dependency. Iterative on purpose — a deep dependency
+ * chain must not overflow the stack — and identical in rule to the
+ * `cyclic` flag `/graph/dependencies` derives.
+ */
+function cyclicFilePathsOf(query: GraphQuery): ReadonlySet<string> {
+  const adjacency = new Map<string, string[]>()
+  const known = new Set<string>()
+  for (const path of query.paths) {
+    known.add(path)
+    const deps = query.factsOf(path).deps
+    if (deps.length === 0) continue
+    adjacency.set(path, [...deps])
+    for (const dependency of deps) known.add(dependency)
+  }
+  const nodes = [...known].sort()
+
+  const color = new Map<string, 0 | 1 | 2>()
+  const finish: string[] = []
+  for (const start of nodes) {
+    if (color.has(start)) continue
+    color.set(start, 1)
+    const stack: Array<{ node: string; index: number }> = [{ node: start, index: 0 }]
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1] as { node: string; index: number }
+      const neighbours = adjacency.get(frame.node) ?? []
+      if (frame.index < neighbours.length) {
+        const next = neighbours[frame.index] as string
+        frame.index += 1
+        if (!color.has(next)) {
+          color.set(next, 1)
+          stack.push({ node: next, index: 0 })
+        }
+        continue
+      }
+      color.set(frame.node, 2)
+      finish.push(frame.node)
+      stack.pop()
+    }
+  }
+
+  const reverse = new Map<string, string[]>()
+  for (const [from, targets] of adjacency) {
+    for (const to of targets) {
+      const list = reverse.get(to)
+      if (list === undefined) reverse.set(to, [from])
+      else list.push(from)
+    }
+  }
+
+  const component = new Map<string, number>()
+  const sizes: number[] = []
+  for (let index = finish.length - 1; index >= 0; index -= 1) {
+    const start = finish[index] as string
+    if (component.has(start)) continue
+    const identity = sizes.length
+    let size = 0
+    const stack = [start]
+    component.set(start, identity)
+    while (stack.length > 0) {
+      const node = stack.pop() as string
+      size += 1
+      for (const previous of reverse.get(node) ?? []) {
+        if (component.has(previous)) continue
+        component.set(previous, identity)
+        stack.push(previous)
+      }
+    }
+    sizes.push(size)
+  }
+
+  const cyclic = new Set<string>()
+  for (const [from, targets] of adjacency) {
+    for (const to of targets) {
+      if (from === to) {
+        cyclic.add(from)
+        continue
+      }
+      const identity = component.get(from)
+      if (identity === undefined || identity !== component.get(to)) continue
+      if ((sizes[identity] ?? 0) > 1) {
+        cyclic.add(from)
+        cyclic.add(to)
+      }
+    }
+  }
+  return cyclic
+}
+
+/** Read one non-empty path argument (normalization happens in the builder). */
+function optionalGraphPath(args: Record<string, unknown>): string | undefined {
+  const value = args.path
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new InvalidArgumentError('path must be a non-empty workspace-relative string', { path: value })
+  }
+  return value.trim()
+}
+
+/** Read one bounded integer argument; an out-of-range value is INVALID_ARGUMENT. */
+function boundedGraphInteger(
+  args: Record<string, unknown>,
+  name: string,
+  fallback: number,
+  maximum: number,
+): number {
+  const value = args[name]
+  if (value === undefined) return fallback
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > maximum) {
+    throw new InvalidArgumentError(`${name} must be an integer between 1 and ${maximum}`, { [name]: value })
+  }
+  return value
+}
+
+/** Parameter copy lookup; a missing entry is a copy bug, not user input. */
+function graphParameter(copy: GraphToolCopy, name: string): string {
+  const description = copy.parameters[name]
+  if (typeof description !== 'string' || description.length === 0) {
+    throw new Error(`missing graph-tool parameter copy for "${name}"`)
+  }
+  return description
+}
+
+/**
+ * Typed failure → tool value. Every user-input failure (bad/unknown/escaping
+ * path, out-of-range budget) becomes `INVALID_ARGUMENT`; an unexpected internal
+ * failure still throws so it is never disguised as user error.
+ */
+function graphToolFailure(error: unknown): CoordinationGraphToolError {
+  if (error instanceof NotFoundError) {
+    return {
+      error: {
+        code: 'INVALID_ARGUMENT',
+        message: `${error.message}; the path must be an indexed workspace file`,
+      },
+    }
+  }
+  if (error instanceof InvalidArgumentError) {
+    return { error: { code: 'INVALID_ARGUMENT', message: error.message } }
+  }
+  throw error
+}
+
+/* ------------------------------------------------------------------------- *
  * File-layer argument parsing
  * ------------------------------------------------------------------------- */
 
@@ -2078,4 +3121,183 @@ const READ_TOOL_SCHEMA: Record<string, unknown> = {
     nextStart: { type: 'number' },
     nextLine: { type: 'number' },
   },
+}
+
+/* ------------------------------------------------------------------------- *
+ * Workspace-graph output schemas (the registry's enforced subset: no $ref)
+ *
+ * Every graph tool is a `oneOf` of its success value and the typed
+ * `INVALID_ARGUMENT` value, because invalid input must come back as data
+ * instead of a thrown tool error. The tree entry schema is depth-bounded:
+ * `coordination_file` never returns deeper than four levels, so no recursive
+ * schema (which the enforced subset cannot express) is needed.
+ * ------------------------------------------------------------------------- */
+
+const GRAPH_TOOL_ERROR_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['error'],
+  properties: {
+    error: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['code', 'message'],
+      properties: {
+        code: { type: 'string', const: 'INVALID_ARGUMENT' },
+        message: { type: 'string' },
+      },
+    },
+  },
+}
+
+const GRAPH_FAMILY_ENUM: readonly string[] = ['book', 'article', 'tex', 'project', 'document', 'unknown']
+
+const FILE_TREE_LEAF_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['path', 'name', 'kind'],
+  properties: {
+    path: { type: 'string' },
+    name: { type: 'string' },
+    kind: { type: 'string', enum: ['directory', 'file'] },
+  },
+}
+
+/** Deepest entry (depth 4) up to the root entry (depth 1), built bottom-up. */
+const FILE_TREE_ENTRY_SCHEMA: Record<string, unknown> = (() => {
+  let schema = FILE_TREE_LEAF_SCHEMA
+  for (let level = 0; level < 3; level += 1) {
+    schema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path', 'name', 'kind'],
+      properties: {
+        path: { type: 'string' },
+        name: { type: 'string' },
+        kind: { type: 'string', enum: ['directory', 'file'] },
+        children: { type: 'array', items: schema },
+      },
+    }
+  }
+  return schema
+})()
+
+const FILE_TOOL_SCHEMA: Record<string, unknown> = {
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['root', 'entries', 'truncated'],
+      properties: {
+        root: { type: 'string' },
+        entries: { type: 'array', items: FILE_TREE_ENTRY_SCHEMA },
+        truncated: { type: 'boolean' },
+      },
+    },
+    GRAPH_TOOL_ERROR_SCHEMA,
+  ],
+}
+
+const STRUCTURE_OUTLINE_NODE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['handle', 'kind', 'name', 'depth', 'line'],
+  properties: {
+    handle: { type: 'string' },
+    kind: { type: 'string' },
+    name: { type: 'string' },
+    depth: { type: 'number' },
+    line: { type: 'number' },
+  },
+}
+
+const STRUCTURE_OUTLINE_GROUP_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['path', 'family', 'nodes'],
+  properties: {
+    path: { type: 'string' },
+    family: { type: 'string', enum: GRAPH_FAMILY_ENUM },
+    nodes: { type: 'array', items: STRUCTURE_OUTLINE_NODE_SCHEMA },
+  },
+}
+
+const OUTLINE_TOOL_SCHEMA: Record<string, unknown> = {
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['scope', 'path', 'family', 'nodes', 'truncated'],
+      properties: {
+        scope: { type: 'string', const: 'file' },
+        path: { type: 'string' },
+        family: { type: 'string', enum: GRAPH_FAMILY_ENUM },
+        nodes: { type: 'array', items: STRUCTURE_OUTLINE_NODE_SCHEMA },
+        truncated: { type: 'boolean' },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['scope', 'groups', 'truncated'],
+      properties: {
+        scope: { type: 'string', const: 'workspace' },
+        groups: { type: 'array', items: STRUCTURE_OUTLINE_GROUP_SCHEMA },
+        truncated: { type: 'boolean' },
+      },
+    },
+    GRAPH_TOOL_ERROR_SCHEMA,
+  ],
+}
+
+const IMPORTATION_ROW_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['path', 'imported'],
+  properties: {
+    path: { type: 'string' },
+    imported: { type: 'array', items: { type: 'string' } },
+    cyclic: { type: 'boolean' },
+  },
+}
+
+const EXPORTATION_ROW_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['path', 'exported'],
+  properties: {
+    path: { type: 'string' },
+    exported: { type: 'array', items: { type: 'string' } },
+    cyclic: { type: 'boolean' },
+  },
+}
+
+const IMPORTATION_TOOL_SCHEMA: Record<string, unknown> = {
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['rows', 'truncated'],
+      properties: {
+        rows: { type: 'array', items: IMPORTATION_ROW_SCHEMA },
+        truncated: { type: 'boolean' },
+      },
+    },
+    GRAPH_TOOL_ERROR_SCHEMA,
+  ],
+}
+
+const EXPORTATION_TOOL_SCHEMA: Record<string, unknown> = {
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['rows', 'truncated'],
+      properties: {
+        rows: { type: 'array', items: EXPORTATION_ROW_SCHEMA },
+        truncated: { type: 'boolean' },
+      },
+    },
+    GRAPH_TOOL_ERROR_SCHEMA,
+  ],
 }

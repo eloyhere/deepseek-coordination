@@ -11,12 +11,16 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createTestHost, insertGoal, insertPlan, insertSession, insertTurn } from './helpers.js'
 import type { TestHostOptions } from './helpers.js'
 import { resolveConfig } from '../src/host/config.js'
 import { ChainEngine } from '../src/host/chain.js'
 import { fileHandleFor, nodeHandleFor } from '../src/host/node-registry.js'
 import type { ParsedFile } from '../src/host/parse-service.js'
+import type { GraphEdge, GraphNode } from '../src/host/graph-view.js'
 import { ProfessionModule } from '../src/host/profession.js'
 import {
   SelectionModule,
@@ -26,13 +30,21 @@ import {
 } from '../src/host/selection.js'
 import {
   coordinationFileToolDefinitions,
+  coordinationGraphToolDefinitions,
   coordinationToolDefinitions,
+  registerCoordinationGraphTools,
   registerCoordinationTools,
 } from '../src/host/tools.js'
 import type {
+  CoordinationExportationValue,
+  CoordinationFileOutlineValue,
+  CoordinationFileValue,
+  CoordinationGraphSnapshot,
+  CoordinationImportationValue,
   CoordinationToolDefinition,
   CoordinationToolRegistry,
   CoordinationToolService,
+  CoordinationWorkspaceOutlineValue,
   ProfessionLockToolValue,
   ProfessionToolValue,
 } from '../src/host/tools.js'
@@ -1022,4 +1034,395 @@ test('coordination_chain exposes the kind parameter in both locales', () => {
   } finally {
     fixture.close()
   }
+})
+
+/* ------------------------------------------------------------------------- *
+ * Workspace-graph tools (coordination_file / _outline / _importation /
+ * _exportation)
+ *
+ * Every case uses one stub graph snapshot: the tools are pure projections of
+ * the persisted graph, so a real database/parse is not needed to prove the
+ * shape, ordering, caps, filtering and typed errors.
+ * ------------------------------------------------------------------------- */
+
+/** One minimal graph fixture: two cyclic TS files, a plain TS file, docs. */
+interface GraphFixture {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
+function graphNode(
+  handle: string,
+  kind: string,
+  path: string,
+  name: string,
+  line?: number,
+  ordinal?: number,
+): GraphNode {
+  return {
+    handle,
+    kind,
+    path,
+    name,
+    ...(line === undefined ? {} : { line }),
+    ...(ordinal === undefined ? {} : { ordinal }),
+  }
+}
+
+function graphFixture(): GraphFixture {
+  return {
+    nodes: [
+      // Directories are explicit `directory` nodes, exactly like the chain.
+      graphNode('dir-src', 'directory', 'src', 'src'),
+      graphNode('dir-util', 'directory', 'src/util', 'util'),
+      graphNode('dir-deep', 'directory', 'src/util/deep', 'deep'),
+      graphNode('dir-docs', 'directory', 'docs', 'docs'),
+      // File-backed nodes (`module`/`document`) make a path part of query.paths.
+      graphNode('file-a', 'module', 'src/a.ts', 'a', 1),
+      graphNode('file-b', 'module', 'src/b.ts', 'b', 1),
+      graphNode('file-c', 'module', 'src/util/c.ts', 'c', 1),
+      graphNode('file-d', 'module', 'src/util/deep/d.ts', 'd', 1),
+      graphNode('file-guide', 'document', 'docs/guide.md', 'guide.md', 1),
+      // Structure kinds: kept (module/class/function/interface/type/enum/ns).
+      graphNode('a-class', 'class', 'src/a.ts', 'Alpha', 2),
+      graphNode('a-function', 'function', 'src/a.ts', 'boot', 3),
+      graphNode('a-interface', 'interface', 'src/a.ts', 'Options', 4),
+      graphNode('a-type', 'type', 'src/a.ts', 'Mode', 5),
+      graphNode('a-enum', 'enumeration', 'src/a.ts', 'State', 6),
+      graphNode('a-namespace', 'namespace', 'src/a.ts', 'Ns', 7),
+      // Non-structure kinds: filtered out of the outline.
+      graphNode('a-property', 'property', 'src/a.ts', 'label', 8),
+      graphNode('a-variable', 'variable', 'src/a.ts', 'count', 9),
+      graphNode('a-static', 'static', 'src/a.ts', 'shared', 10),
+      graphNode('a-line', 'line', 'src/a.ts', 'const alpha = 1', 14),
+      graphNode('a-sentence', 'sentence', 'src/a.ts', 'alpha', 15),
+      // Import/export rows (ordinal keeps the source order).
+      graphNode('a-import-b', 'importation', 'src/a.ts', './b', 11, 0),
+      graphNode('a-import-c', 'importation', 'src/a.ts', './util/c', 12, 1),
+      graphNode('a-export', 'exportation', 'src/a.ts', 'alpha', 13, 0),
+      graphNode('b-import-a', 'importation', 'src/b.ts', './a', 2, 0),
+      graphNode('c-export', 'exportation', 'src/util/c.ts', 'gamma', 2, 0),
+      // Document structure: document/heading/paragraph kept, leaf kinds dropped.
+      graphNode('g-heading', 'heading', 'docs/guide.md', 'Intro', 2),
+      graphNode('g-paragraph', 'paragraph', 'docs/guide.md', 'First paragraph', 3),
+      graphNode('g-sentence', 'sentence', 'docs/guide.md', 'A sentence', 4),
+      graphNode('g-line', 'line', 'docs/guide.md', 'A line', 5),
+    ],
+    edges: [
+      // a <-> b is a dependency cycle; c depends on a without returning.
+      { relation: 'depends', from: 'file-a', to: 'file-b' },
+      { relation: 'depends', from: 'file-b', to: 'file-a' },
+      { relation: 'depends', from: 'file-c', to: 'file-a' },
+    ],
+  }
+}
+
+let graphSnapshotSerial = 0
+
+/** One stub snapshot; the version is unique so the view L2 cache misses. */
+function stubGraphSnapshot(fixture: GraphFixture): CoordinationGraphSnapshot {
+  graphSnapshotSerial += 1
+  return {
+    root: '',
+    version: `integration-graph-${graphSnapshotSerial}`,
+    nodes: fixture.nodes,
+    edges: fixture.edges,
+  }
+}
+
+interface GraphWorkspace {
+  root: string
+  close(): void
+}
+
+function graphWorkspace(): GraphWorkspace {
+  const root = mkdtempSync(join(tmpdir(), 'coordination-graph-'))
+  return {
+    root,
+    close(): void {
+      rmSync(root, { recursive: true, force: true })
+    },
+  }
+}
+
+/**
+ * A narrow service is enough: the graph tools read `service.locale`/`db` only
+ * and never touch the selection/profession surface.
+ */
+function graphToolService(locale: Locale = 'en-US'): CoordinationToolService {
+  return {
+    get locale(): string {
+      return locale
+    },
+    state: () => {
+      throw new Error('graph tools do not read the selection')
+    },
+    setSelection: () => {
+      throw new Error('graph tools never write the selection')
+    },
+    activeTurn: () => undefined,
+    getProfessionRecord: () => {
+      throw new Error('graph tools do not read professions')
+    },
+    turnByOrdinal: () => undefined,
+  }
+}
+
+function graphToolsOf(
+  snapshot: CoordinationGraphSnapshot,
+  workspaceRoot: string,
+  locale: Locale = 'en-US',
+): CoordinationToolDefinition[] {
+  return coordinationGraphToolDefinitions(graphToolService(locale), locale, {
+    workspaceRoot,
+    graphSnapshot: () => snapshot,
+  })
+}
+
+/** Flatten a returned tree in pre-order (the order the tools emit). */
+function flattenTree(entries: readonly { path: string; children?: unknown }[]): string[] {
+  const paths: string[] = []
+  const visit = (level: readonly { path: string; children?: unknown }[]): void => {
+    for (const entry of level) {
+      paths.push(entry.path)
+      const children = entry.children as readonly { path: string; children?: unknown }[] | undefined
+      if (children !== undefined) visit(children)
+    }
+  }
+  visit(entries)
+  return paths
+}
+
+test('coordination_file returns a deterministic, depth-bounded tree', async () => {
+  const workspace = graphWorkspace()
+  try {
+    const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_file')
+
+    const root = (await tool.execute({})) as CoordinationFileValue
+    assert.equal(root.root, workspace.root)
+    assert.deepEqual(
+      root.entries.map((entry) => [entry.name, entry.kind]),
+      [['docs', 'directory'], ['src', 'directory']],
+      'directories come first, then code-point name order',
+    )
+    // The default depth 2 stops at src/util, whose children exist below it.
+    assert.equal(root.truncated, true)
+
+    const src = (await tool.execute({ path: 'src', depth: 3 })) as CoordinationFileValue
+    assert.deepEqual(flattenTree(src.entries), [
+      'src/util',
+      'src/util/deep',
+      'src/util/deep/d.ts',
+      'src/util/c.ts',
+      'src/a.ts',
+      'src/b.ts',
+    ])
+    assert.equal(src.truncated, false)
+
+    const docs = (await tool.execute({ path: 'docs', depth: 4 })) as CoordinationFileValue
+    assert.deepEqual(docs.entries.map((entry) => entry.path), ['docs/guide.md'])
+    assert.equal(docs.entries[0]?.children, undefined)
+    assert.equal(docs.truncated, false)
+  } finally {
+    workspace.close()
+  }
+})
+
+test('coordination_file bounds entries and returns INVALID_ARGUMENT for bad paths', async () => {
+  const workspace = graphWorkspace()
+  try {
+    const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_file')
+
+    const capped = (await tool.execute({ path: 'src', depth: 3, limit: 2 })) as CoordinationFileValue
+    assert.equal(flattenTree(capped.entries).length, 2)
+    assert.equal(capped.truncated, true)
+
+    for (const path of ['../secret', 'C:\\secret', '/etc', '\\\\server\\share', 'src/a.ts', 'src/nope']) {
+      const value = (await tool.execute({ path })) as { error?: { code: string; message: string } }
+      assert.equal(value.error?.code, 'INVALID_ARGUMENT', `${path} must be a typed error, not a throw`)
+      assert.equal(typeof value.error?.message, 'string')
+    }
+
+    for (const args of [{ depth: 0 }, { depth: 5 }, { limit: 0 }, { limit: 501 }, { limit: 1.5 }, { depth: '2' }]) {
+      const value = (await tool.execute(args)) as { error?: { code: string } }
+      assert.equal(value.error?.code, 'INVALID_ARGUMENT', `${JSON.stringify(args)} must be rejected`)
+    }
+  } finally {
+    workspace.close()
+  }
+})
+
+test('coordination_outline file scope keeps structure kinds only', async () => {
+  const workspace = graphWorkspace()
+  try {
+    const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_outline')
+    const value = (await tool.execute({ path: 'src/a.ts' })) as CoordinationFileOutlineValue
+
+    assert.equal(value.scope, 'file')
+    assert.equal(value.path, 'src/a.ts')
+    assert.equal(value.family, 'project')
+    assert.equal('groups' in value, false)
+    assert.equal(value.truncated, false)
+    // Sorted by source line; depth is the structure-rank of the kind.
+    assert.deepEqual(
+      value.nodes.map((node) => node.kind),
+      ['module', 'class', 'function', 'interface', 'type', 'enumeration', 'namespace'],
+    )
+    assert.deepEqual(value.nodes.map((node) => node.depth), [0, 1, 7, 2, 3, 4, 5])
+    for (const kind of ['variable', 'property', 'static', 'importation', 'exportation', 'line', 'sentence']) {
+      assert.equal(value.nodes.some((node) => node.kind === kind), false, `${kind} must be filtered out`)
+    }
+
+    const capped = (await tool.execute({ path: 'src/a.ts', limit: 2 })) as CoordinationFileOutlineValue
+    assert.equal(capped.nodes.length, 2)
+    assert.equal(capped.truncated, true)
+
+    for (const path of ['../escape', 'C:\\secret', '/etc', 'src/nope.ts']) {
+      const bad = (await tool.execute({ path })) as { error?: { code: string } }
+      assert.equal(bad.error?.code, 'INVALID_ARGUMENT', `${path} must be a typed error`)
+    }
+  } finally {
+    workspace.close()
+  }
+})
+
+test('coordination_outline workspace scope groups files and honours the node budget', async () => {
+  const workspace = graphWorkspace()
+  try {
+    const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_outline')
+    const value = (await tool.execute({})) as CoordinationWorkspaceOutlineValue
+
+    assert.equal(value.scope, 'workspace')
+    assert.equal('path' in value, false)
+    assert.equal(value.truncated, false)
+    assert.deepEqual(
+      value.groups.map((group) => group.path),
+      ['docs/guide.md', 'src/a.ts', 'src/b.ts', 'src/util/c.ts', 'src/util/deep/d.ts'],
+    )
+    assert.deepEqual(value.groups[0]?.nodes.map((node) => node.kind), ['document', 'heading', 'paragraph'])
+    assert.equal(value.groups.every((group) => group.nodes.length > 0), true)
+
+    const limited = (await tool.execute({ limit: 2 })) as CoordinationWorkspaceOutlineValue
+    assert.equal(limited.groups.length, 1)
+    assert.equal(limited.groups[0]?.nodes.length, 2)
+    assert.equal(limited.truncated, true)
+  } finally {
+    workspace.close()
+  }
+})
+
+test('coordination_importation reports per-file import rows with cycle flags', async () => {
+  const workspace = graphWorkspace()
+  try {
+    const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_importation')
+
+    const value = (await tool.execute({})) as CoordinationImportationValue
+    assert.deepEqual(value.rows, [
+      { path: 'src/a.ts', imported: ['./b', './util/c'], cyclic: true },
+      { path: 'src/b.ts', imported: ['./a'], cyclic: true },
+    ])
+    assert.equal(value.truncated, false)
+
+    const file = (await tool.execute({ path: 'src/util/c.ts' })) as CoordinationImportationValue
+    assert.deepEqual(file.rows, [{ path: 'src/util/c.ts', imported: [] }], 'a file row exists even with no imports')
+
+    const capped = (await tool.execute({ limit: 1 })) as CoordinationImportationValue
+    assert.equal(capped.rows.length, 1)
+    assert.equal(capped.truncated, true)
+
+    for (const path of ['../secret', 'C:\\secret', '/etc', 'src/nope.ts']) {
+      const bad = (await tool.execute({ path })) as { error?: { code: string } }
+      assert.equal(bad.error?.code, 'INVALID_ARGUMENT', `${path} must be a typed error`)
+    }
+  } finally {
+    workspace.close()
+  }
+})
+
+test('coordination_exportation reports per-file export rows with cycle flags', async () => {
+  const workspace = graphWorkspace()
+  try {
+    const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_exportation')
+
+    const value = (await tool.execute({})) as CoordinationExportationValue
+    assert.deepEqual(value.rows, [
+      { path: 'src/a.ts', exported: ['alpha'], cyclic: true },
+      { path: 'src/util/c.ts', exported: ['gamma'] },
+    ])
+    assert.equal(value.truncated, false)
+
+    const file = (await tool.execute({ path: 'src/b.ts' })) as CoordinationExportationValue
+    assert.deepEqual(file.rows, [{ path: 'src/b.ts', exported: [], cyclic: true }])
+
+    const capped = (await tool.execute({ limit: 1 })) as CoordinationExportationValue
+    assert.equal(capped.rows.length, 1)
+    assert.equal(capped.truncated, true)
+
+    const invalid = (await tool.execute({ path: '../secret' })) as { error?: { code: string } }
+    assert.equal(invalid.error?.code, 'INVALID_ARGUMENT')
+  } finally {
+    workspace.close()
+  }
+})
+
+test('the four graph tools are registered with the documented names and schemas', () => {
+  const registry = new MemoryRegistry()
+  const dispose = registerCoordinationGraphTools(registry, graphToolService(), 'en-US', {
+    workspaceRoot: process.cwd(),
+    graphSnapshot: () => stubGraphSnapshot(graphFixture()),
+  })
+  try {
+    assert.deepEqual([...registry.definitions.keys()].sort(), [
+      'coordination_exportation',
+      'coordination_file',
+      'coordination_importation',
+      'coordination_outline',
+    ])
+
+    const expectedParameters: Record<string, string[]> = {
+      coordination_file: ['depth', 'limit', 'path'],
+      coordination_outline: ['limit', 'path'],
+      coordination_importation: ['limit', 'path'],
+      coordination_exportation: ['limit', 'path'],
+    }
+    for (const [name, keys] of Object.entries(expectedParameters)) {
+      const definition = registry.definitions.get(name) as CoordinationToolDefinition
+      assert.equal(typeof definition.description, 'string')
+      assert.ok(definition.description.length > 0)
+      assert.deepEqual(Object.keys(definition.parameters.properties as object).sort(), keys)
+      const schema = definition.output.schema as { oneOf?: unknown[] }
+      assert.equal(Array.isArray(schema.oneOf), true, `${name} declares a oneOf output`)
+      assert.ok((schema.oneOf?.length ?? 0) >= 2)
+    }
+  } finally {
+    dispose()
+    assert.equal(registry.definitions.size, 0)
+  }
+})
+
+test('the graph-tool copy is inline EN + zh-CN and locale-selected', () => {
+  const en = coordinationGraphToolDefinitions(graphToolService('en-US'), 'en-US', {})
+  const zh = coordinationGraphToolDefinitions(graphToolService('zh-CN'), 'zh-CN', {})
+  assert.equal(en.length, 4)
+  assert.equal(zh.length, 4)
+
+  const enFile = toolOf(en, 'coordination_file')
+  const zhFile = toolOf(zh, 'coordination_file')
+  assert.match(enFile.description, /Read-only/)
+  assert.match(zhFile.description, /只读/)
+  const enPath = (enFile.parameters.properties as Record<string, { description: string }>).path
+  const zhPath = (zhFile.parameters.properties as Record<string, { description: string }>).path
+  assert.match(enPath?.description ?? '', /Workspace-relative/)
+  assert.match(zhPath?.description ?? '', /工作区相对/)
+  assert.notEqual(enFile.description, zhFile.description)
+})
+
+test('graph tools project an empty graph when nothing has been indexed', async () => {
+  const tool = toolOf(
+    coordinationGraphToolDefinitions(graphToolService(), 'en-US', { workspaceRoot: process.cwd() }),
+    'coordination_file',
+  )
+  const value = (await tool.execute({})) as CoordinationFileValue
+  assert.deepEqual(value.entries, [])
+  assert.equal(value.truncated, false)
 })

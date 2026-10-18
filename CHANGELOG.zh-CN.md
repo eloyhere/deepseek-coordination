@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.14.8 | 2026-10-18 | `—` | 面板虚拟化、路由页签、大纲/预览页、四个图工具 |
 | 0.14.7 | 2026-10-18 | `d5f80c6` | 预览保留选择并解析工作区 |
 | 0.14.6 | 2026-10-18 | `f4549a7` | WebGL2 关系画布、优先级渲染队列 |
 | 0.14.5 | 2026-10-18 | `3927d61` | 语义缩放、可折叠树、密集图自动适配 |
@@ -53,6 +54,26 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.14.8] — 2026-10-18
+
+### 新增
+
+- **面板虚拟化。** `visibleTreeRows()` + `VirtualTree`（slot `(depth, index, value)`）与 `VirtualList`（slot `(index, value)`），各自独立 Adapter 与工厂。文件、大纲、职能、依赖行按固定 48px 渲染，2000 文件的工作区不再挂 2000 个 DOM 行。
+- **MUI List 行样式。** `ListItemButton` dense + `ListItemIcon`/`ListItemText`，`action.hover`/`action.selected`、内嵌焦点环、ripple；树行 `role="treeitem"`/`aria-level`/`aria-expanded`，列表行 `role="option"`/`aria-selected`；`prefers-reduced-motion` 关闭过渡但保留 ripple。
+- **每个页签都是路由页。** 底部：`files/outline/dependencies/imports/exports`；顶部：`files/agents/dependencies/imports/exports`。导入/导出在两个面板都是 WebGL canvas 页；`right/preview?path=…` 与 `left/agent?id=…` 是可深链、但不进导航的路由。
+- **预览改为路由页。** 移除预览页签与所有眼睛按钮；预览在面板内整页打开，带返回按钮与 `Esc`，复用现有净化后的 Markdown/HTML/代码/xlsx/pptx 管线。
+- **两级大纲。** 全局大纲以工作区为根、按**最外层** manifest 项目分组；局部分大纲（`outline?path=…`）以文件为根、只列结构节点，支持返回/Esc，并保留滚动与折叠状态。
+- **职能详情页。** `left/agent?id=…` 只读虚拟化聊天：Markdown 经共享懒加载管线 → `renderToStaticMarkup` → DOMPurify + 二次 scrub；失败降级纯文本。无输入框、无发送/重试。
+- **四个只读工具。** `coordination_file`、`coordination_outline`、`coordination_importation`、`coordination_exportation`：有界、确定性、body-free，带 `truncated` 与结构化 `INVALID_ARGUMENT`。
+- **工作区树与项目作用域。** `buildTree` 原样回显解析出的工作区根（绝不用公共前缀），并返回 `projects` 与 `nestedManifests`；`projectScopeOf()` 取**最外层** manifest，否则回退工作区根。`DEFAULT_MANIFEST_NAMES` 覆盖 package.json、pom.xml、Cargo.toml、go.mod、pyproject.toml、build.gradle、settings.gradle、composer.json、Gemfile、mix.exs、dune-project；忽略名单仍优先。
+- **任务队列单例。** `Task` 三个队列：high 每个 `requestAnimationFrame` 执行一个，medium/low 每个 `requestIdleCallback` 执行一个（剩余 <4ms 让出），无 rAF/rIC 时回退 `setTimeout(16)`；单任务异常隔离，空闲零回调。
+
+### 修复
+
+- **面板不再溢出。** 列容器夹在 `top:72 / bottom:120 / max-height:calc(100dvh - 192px)`；移除 320px 最小高度；`splitPanelHeights()` 保证两个面板都在容器内（空间不足时都折叠为 48px）。
+- **搜索框从右侧展开。** 标题栏搜索用 220ms 横向 MUI `Collapse`（向左生长），再次点击/点外部/`Esc` 关闭并清空查询；reduced-motion 下瞬时切换。
+- **`panel.agentInfo.id` 两语言不再相同**（`代理 ID` / `Agent ID`），由文案一致性测试发现。
 
 ## [0.14.7] — 2026-10-18
 

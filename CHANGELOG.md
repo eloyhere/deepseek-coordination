@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.8 | 2026-10-18 | `—` | Virtualized panels, routed tabs, outline/preview pages, four graph tools |
 | 0.14.7 | 2026-10-18 | `d5f80c6` | Preview keeps the selection and resolves the workspace |
 | 0.14.6 | 2026-10-18 | `f4549a7` | WebGL2 relationship canvas, priority render queue |
 | 0.14.5 | 2026-10-18 | `3927d61` | Semantic canvas zoom, collapsible tree, auto-fit for dense graphs |
@@ -56,6 +57,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.8] — 2026-10-18
+
+### Added
+
+- **Virtualized panel surfaces.** `visibleTreeRows()` plus `VirtualTree` (`slot(depth, index, value)`) and `VirtualList` (`slot(index, value)`) with separate `VirtualTreeAdapter`/`VirtualListAdapter` factories. Files, outline, agents and dependency rows render through them at a fixed 48 px row height, so a 2000-file workspace no longer mounts 2000 DOM rows.
+- **MUI List rows.** Dense `ListItemButton` with `ListItemIcon` + `ListItemText`, `action.hover`/`action.selected`, inset focus ring, ripple, `role="treeitem"`/`aria-level`/`aria-expanded` for trees and `role="option"`/`aria-selected` for lists; `prefers-reduced-motion` drops the transitions and keeps the ripple.
+- **Route pages per tab.** Bottom panel: `files`, `outline`, `dependencies`, `imports`, `exports`; top panel: `files`, `agents`, `dependencies`, `imports`, `exports`. Imports and exports are WebGL canvas pages on both panels. `right/preview?path=…` and `left/agent?id=…` are deep-linkable routes that are not tabs.
+- **Preview as a routed page.** The preview tab and every eye button are gone; the preview opens inside the panel as a full page with a back button and `Esc`, reusing the existing sanitized Markdown/HTML/code/xlsx/pptx pipeline.
+- **Two-level outline.** Global outline roots at the workspace and groups by the **outermost** manifest project; local outline (`outline?path=…`) roots at the file and lists structure nodes only, with back/Esc and preserved scroll and collapse state.
+- **Agent detail page.** `left/agent?id=…` renders a read-only virtualized transcript: Markdown → HTML through the shared lazy pipeline, `renderToStaticMarkup`, then DOMPurify plus a second scrub pass; failures degrade to plain text. No composer, no send/retry.
+- **Four read-only tools.** `coordination_file`, `coordination_outline`, `coordination_importation`, `coordination_exportation` — bounded, deterministic, body-free, with `truncated` flags and typed `INVALID_ARGUMENT` errors.
+- **Workspace tree and project scopes.** `buildTree` echoes the resolved workspace root (never a common prefix) and reports `projects` with `nestedManifests`; `projectScopeOf()` resolves the **outermost** manifest and falls back to the workspace root. `DEFAULT_MANIFEST_NAMES` covers package.json, pom.xml, Cargo.toml, go.mod, pyproject.toml, build.gradle, settings.gradle, composer.json, Gemfile, mix.exs, dune-project; the ignore list still wins.
+- **Singleton task queue.** `Task` keeps three queues and drains them one task per `requestAnimationFrame` (high) or `requestIdleCallback` (medium/low, yielding under 4 ms), with `setTimeout(16)` fallbacks, per-task error isolation and zero callbacks while idle.
+
+### Fixed
+
+- **Panels no longer overflow.** The docked column is clamped to `top:72 / bottom:120 / max-height:calc(100dvh - 192px)`; the 320 px minimum height is gone; `splitPanelHeights()` keeps both panels inside the column (both collapse to 48 px when space is short).
+- **Search expands from the right.** The title-bar search field opens with a 220 ms horizontal MUI `Collapse` (growing leftwards), closes on the same button, outside click or `Esc`, and clears the query; reduced motion switches instantly.
+- **`panel.agentInfo.id` no longer identical across locales** (`代理 ID` / `Agent ID`), which the copy-parity test caught.
 
 ## [0.14.7] — 2026-10-18
 

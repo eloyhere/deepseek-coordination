@@ -292,6 +292,8 @@ export interface PanelImportsCopy {
 export interface PanelTipCopy {
   readonly menu: string
   readonly search: string
+  /** Same button while the search field is open (it closes and clears). */
+  readonly closeSearch: string
   readonly minimize: string
   readonly close: string
   readonly refresh: string
@@ -304,6 +306,9 @@ export interface PanelTipCopy {
   readonly tabImports: string
   readonly tabPreview: string
   readonly tabExports: string
+  /** Import/export tabs both open a relationship canvas, not a list. */
+  readonly tabImportsGraph: string
+  readonly tabExportsGraph: string
   readonly previewFile: string
   readonly scope: string
   readonly scopeWorkspace: string
@@ -407,6 +412,53 @@ export interface PanelCopy {
   readonly agentObjectiveEmpty: string
   readonly agentMessages: string
   readonly agentBack: string
+  /** Read-only transcript bubble labels and the per-message expand toggle. */
+  readonly messageRoles: Readonly<Record<'user' | 'assistant' | 'tool' | 'system', string>>
+  readonly messageExpand: string
+  readonly messageCollapse: string
+  /** Preview is a routed panel page: back label and outline type tooltip. */
+  readonly previewBack: string
+  readonly outlineKind: string
+  /** Global/local outline: back to the workspace tree, group counts, toggle. */
+  readonly outlineBack: string
+  readonly outlineNodeCount: string
+  readonly outlineExpand: string
+  readonly outlineCollapse: string
+  /** Right-click menus; every action is read-only. */
+  readonly contextMenu: {
+    readonly label: string
+    readonly preview: string
+    readonly locate: string
+    readonly copyPath: string
+    readonly expand: string
+    readonly collapse: string
+    readonly jumpToFile: string
+    readonly previewFile: string
+    readonly copyTitle: string
+    readonly viewMessages: string
+    readonly copyId: string
+    readonly info: string
+    readonly objective: string
+    readonly plan: string
+    readonly sendMessage: string
+    readonly stop: string
+    readonly hostUnavailable: string
+  }
+  /** Read-only agent information dialog. */
+  readonly agentInfo: {
+    readonly title: string
+    readonly info: string
+    readonly objective: string
+    readonly plan: string
+    readonly id: string
+    readonly status: string
+    readonly parent: string
+    readonly created: string
+    readonly completed: string
+    readonly progress: string
+    readonly close: string
+    readonly empty: string
+  }
   readonly agentTruncated: string
   readonly agentEmpty: string
   /** Estimated agent progress: `progress` carries `{value}`, `runningCount`
@@ -1174,6 +1226,53 @@ const ZH_PANEL: PanelCopy = {
   agentObjectiveEmpty: '暂无任务目标',
   agentMessages: '消息',
   agentBack: '返回代理列表',
+  messageRoles: {
+    user: '用户',
+    assistant: '助手',
+    tool: '工具',
+    system: '系统',
+  },
+  messageExpand: '展开全文',
+  messageCollapse: '收起',
+  previewBack: '返回',
+  outlineKind: '类型：{kind}',
+  outlineBack: '返回全局大纲',
+  outlineNodeCount: '{count} 个结构节点',
+  outlineExpand: '展开文件大纲',
+  outlineCollapse: '收起文件大纲',
+  contextMenu: {
+    label: '操作菜单',
+    preview: '预览',
+    locate: '在文件树中定位',
+    copyPath: '复制路径',
+    expand: '展开',
+    collapse: '折叠',
+    jumpToFile: '跳转到文件',
+    previewFile: '预览所在文件',
+    copyTitle: '复制标题',
+    viewMessages: '查看消息',
+    copyId: '复制 ID',
+    info: '信息',
+    objective: '目标',
+    plan: '计划',
+    sendMessage: '发送消息',
+    stop: '停止',
+    hostUnavailable: '宿主命令未接入（只读）',
+  },
+  agentInfo: {
+    title: '代理信息',
+    info: '信息',
+    objective: '目标',
+    plan: '计划',
+    id: '代理 ID',
+    status: '状态',
+    parent: '上级',
+    created: '创建时间',
+    completed: '完成时间',
+    progress: '进度',
+    close: '关闭',
+    empty: '暂无数据',
+  },
   agentTruncated: '仅显示最近 200 条 / 64 KiB',
   agentEmpty: '本会话暂无代理',
   estimated: '预计',
@@ -1185,6 +1284,7 @@ const ZH_PANEL: PanelCopy = {
   tip: {
     menu: '面板菜单',
     search: '搜索工作区',
+    closeSearch: '关闭搜索',
     minimize: '最小化面板',
     close: '收起面板',
     refresh: '重新加载当前视图',
@@ -1197,6 +1297,8 @@ const ZH_PANEL: PanelCopy = {
     tabImports: '查看导入与导出',
     tabPreview: '只读预览文件内容',
     tabExports: '以关系图查看导出关系',
+    tabImportsGraph: '以关系图查看导入关系',
+    tabExportsGraph: '以关系图查看导出关系',
     previewFile: '预览此文件',
     scope: '当前作用域：{path}，点击切换',
     scopeWorkspace: '当前作用域：全工作区，点击切换',
@@ -2153,6 +2255,53 @@ const EN_PANEL: PanelCopy = {
   agentObjectiveEmpty: 'No objective recorded',
   agentMessages: 'Messages',
   agentBack: 'Back to agents',
+  messageRoles: {
+    user: 'User',
+    assistant: 'Assistant',
+    tool: 'Tool',
+    system: 'System',
+  },
+  messageExpand: 'Expand full text',
+  messageCollapse: 'Collapse',
+  previewBack: 'Back',
+  outlineKind: 'Type: {kind}',
+  outlineBack: 'Back to workspace outline',
+  outlineNodeCount: '{count} structure nodes',
+  outlineExpand: 'Expand file outline',
+  outlineCollapse: 'Collapse file outline',
+  contextMenu: {
+    label: 'Actions',
+    preview: 'Preview',
+    locate: 'Locate in file tree',
+    copyPath: 'Copy path',
+    expand: 'Expand',
+    collapse: 'Collapse',
+    jumpToFile: 'Go to file',
+    previewFile: 'Preview file',
+    copyTitle: 'Copy title',
+    viewMessages: 'View messages',
+    copyId: 'Copy ID',
+    info: 'Information',
+    objective: 'Objective',
+    plan: 'Plan',
+    sendMessage: 'Send message',
+    stop: 'Stop',
+    hostUnavailable: 'Host command not wired (read-only)',
+  },
+  agentInfo: {
+    title: 'Agent information',
+    info: 'Information',
+    objective: 'Objective',
+    plan: 'Plan',
+    id: 'Agent ID',
+    status: 'Status',
+    parent: 'Parent',
+    created: 'Created',
+    completed: 'Completed',
+    progress: 'Progress',
+    close: 'Close',
+    empty: 'No data',
+  },
   agentTruncated: 'Only the latest 200 messages / 64 KiB are shown',
   agentEmpty: 'No agents in this session',
   estimated: 'Estimated',
@@ -2164,6 +2313,7 @@ const EN_PANEL: PanelCopy = {
   tip: {
     menu: 'Panel menu',
     search: 'Search the workspace',
+    closeSearch: 'Close search',
     minimize: 'Minimize the panel',
     close: 'Collapse the panel',
     refresh: 'Reload the current view',
@@ -2176,6 +2326,8 @@ const EN_PANEL: PanelCopy = {
     tabImports: 'View imports and exports',
     tabPreview: 'Preview file content (read-only)',
     tabExports: 'View export relationships as a graph',
+    tabImportsGraph: 'View import relationships as a graph',
+    tabExportsGraph: 'View export relationships as a graph',
     previewFile: 'Preview this file',
     scope: 'Current scope: {path}; click to switch',
     scopeWorkspace: 'Current scope: whole workspace; click to switch',

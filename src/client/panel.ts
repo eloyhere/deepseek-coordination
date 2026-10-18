@@ -19,31 +19,55 @@
  * # Title bar and search
  *
  * The 48 px title bar is the plugin's blue `primary.main` bar with contrast
- * text. While search is open, the title is replaced by a MUI `Autocomplete`
- * combobox: typing runs the existing `/graph/search` endpoint (debounced), the
- * listbox renders the host's hits, Enter selects the highlighted hit (or runs
- * the search immediately), and `Esc` closes the search. Errors keep a retry
- * action inside the listbox. The listbox hides its native scrollbar and uses
- * the local {@link ScrollBar} React component instead: a transparent groove
- * with a light-grey, draggable thumb (MUI `sx` only, no CSS file, no new
- * dependency).
+ * text. Clicking the search button grows a MUI `Autocomplete` combobox out of
+ * the right edge (width 0 → 240 px, leftwards, 220 ms MUI standard easing);
+ * the title stays on the left and ellipsizes instead of wrapping or pushing the
+ * buttons. Clicking the button again, the title area, or `Esc` shrinks the field
+ * back to zero and unmounts it (query and hits cleared); `prefers-reduced-motion`
+ * makes the open/close instant. Typing runs the existing `/graph/search`
+ * endpoint (debounced), the listbox renders the host's hits, Enter selects the
+ * highlighted hit (or runs the search immediately), and `Esc` closes the search.
+ * Errors keep a retry action inside the listbox. The listbox hides its native
+ * scrollbar and uses the local {@link ScrollBar} React component instead: a
+ * transparent groove with a light-grey, draggable thumb (MUI `sx` only, no CSS
+ * file, no new dependency).
  *
  * # Routing and scope
  *
- * Both panels are always routed. Component state is the source of truth for a
- * panel's view/selection; the URL only carries a deep link:
+ * Both panels are always routed, and each tab (plus each detail page) is its
+ * own hash route. Component state is the source of truth for a panel's
+ * view/selection; the URL only carries a deep link:
  *
  *   #coordination/panel/right/files
  *   #coordination/panel/right/outline?path=src%2Fa.ts
  *   #coordination/panel/right/dependencies?path=src%2Fa.ts
  *   #coordination/panel/right/imports?path=src%2Fa.ts
+ *   #coordination/panel/right/exports?path=src%2Fa.ts
  *   #coordination/panel/right/preview?path=src%2Fa.ts
  *   #coordination/panel/left/files
  *   #coordination/panel/left/agents
  *   #coordination/panel/left/agent?id=…
  *   #coordination/panel/left/dependencies?path=src%2Fa.ts
- *   #coordination/panel/left/imports
- *   #coordination/panel/left/exports
+ *   #coordination/panel/left/imports?path=src%2Fa.ts
+ *   #coordination/panel/left/exports?path=src%2Fa.ts
+ *
+ * The two panels route different sets: the bottom panel's tabs are Files,
+ * Outline, Dependencies, Imports and Exports, and `preview` is a routed detail
+ * page that is not a tab; the top panel's tabs are Files, Agents,
+ * Dependencies, Imports and Exports, and `agent` is its routed detail page.
+ * Imports and Exports render the WebGL relationship canvas on both sides, so
+ * the same `?path=` file/workspace scope applies everywhere. Only `tabs` are
+ * mounted in the BottomNavigation; `routes` additionally validates deep links,
+ * which is what makes `right/preview?path=…` and `left/agent?id=…` work
+ * without listing them as tabs.
+ *
+ * The Outline route is itself two modes: no `path` shows the workspace-wide
+ * outline grouped by file (collapsed, with structure-node counts; clicking a
+ * group opens that file), and `?path=…` shows only that file's structure tree
+ * with a scope-bar back button. The view stays mounted across the flip so the
+ * global collapse state and scroll offset survive; Escape returns as well.
+ * The agent detail route (`left/agent?id=…`) is a read-only, virtualized
+ * Markdown transcript with a back button and no composer.
  *
  * Each panel reads `location.hash` exactly once, when it mounts, then keeps its
  * own `useReducer` navigation state. A click changes that state directly and
@@ -113,15 +137,20 @@
  *
  * Each panel is a non-modal `role="dialog"`; every control carries an
  * `aria-label` and a `Tip` tooltip; the title is a toggle button with
- * `aria-expanded`. `Esc` clears a live search first, leaves a preview, clears a
- * canvas selection, and otherwise minimizes. Height changes are animated as one
- * Material transition: the panel's `flex-grow`/`flex-basis` use MUI's
- * `theme.transitions.create` timing (220 ms, MUI standard easing), the body is
- * a MUI `Collapse` (same 220 ms/easing) and its content fades with MUI `Fade`;
- * the header icon cross-fades (150 ms). The flex transition is what produces
- * the push-up, never a transform. Everything collapses to `timeout={0}` and no
- * flex transition when `prefers-reduced-motion` is set. The canvas animation
- * loop stops when the graph is static or hidden.
+ * `aria-expanded`. `Esc` clears a live search first, leaves a preview, returns
+ * from the local outline to the global one, returns from an agent detail page
+ * to the roster, clears a canvas selection, and otherwise minimizes. Height
+ * changes are animated as one Material transition: the panel's
+ * `flex-grow`/`flex-basis` use MUI's `theme.transitions.create` timing (220 ms,
+ * MUI standard easing), the body is a MUI `Collapse` (same 220 ms/easing) and
+ * its content fades with MUI `Fade`; the header icon cross-fades (150 ms). The
+ * flex transition is what produces the push-up, never a transform. Everything
+ * collapses to `timeout={0}` and no flex transition when
+ * `prefers-reduced-motion` is set. Panel heights are clamped by
+ * {@link splitPanelHeights}: below 200 px of column height both panels are
+ * forced to their 48 px title bars. Canvas repaints are scheduled on the
+ * plugin-wide three-queue {@link Task} pump (high = interaction, medium =
+ * animation, low = layout) and an idle canvas schedules no callback at all.
  */
 import * as React from 'react'
 import IconButton from '@mui/material/IconButton'
@@ -135,7 +164,6 @@ import BottomNavigation from '@mui/material/BottomNavigation'
 import BottomNavigationAction from '@mui/material/BottomNavigationAction'
 import Box from '@mui/material/Box'
 import Typography from '@mui/material/Typography'
-import List from '@mui/material/List'
 import ListItemButton from '@mui/material/ListItemButton'
 import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
@@ -176,7 +204,7 @@ import WarningAmberIcon from '@mui/icons-material/WarningAmber'
 import ArticleIcon from '@mui/icons-material/Article'
 import AccountTreeIcon from '@mui/icons-material/AccountTree'
 import CallSplitIcon from '@mui/icons-material/CallSplit'
-import SwapVertIcon from '@mui/icons-material/SwapVert'
+import CallReceivedIcon from '@mui/icons-material/CallReceived'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import CallMadeIcon from '@mui/icons-material/CallMade'
 import AddIcon from '@mui/icons-material/Add'
@@ -186,7 +214,7 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import PeopleIcon from '@mui/icons-material/People'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import OpenInFullIcon from '@mui/icons-material/OpenInFull'
-import { ThemeProvider, useTheme } from '@mui/material/styles'
+import { alpha, ThemeProvider, useTheme } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
 import type { PrismTheme, RenderProps } from 'prism-react-renderer'
 import { theme } from './theme.js'
@@ -208,7 +236,6 @@ const MuiBottomNavigation = BottomNavigation as unknown as Loose
 const MuiBottomNavigationAction = BottomNavigationAction as unknown as Loose
 const MuiBox = Box as unknown as Loose
 const MuiTypography = Typography as unknown as Loose
-const MuiList = List as unknown as Loose
 const MuiListItemButton = ListItemButton as unknown as Loose
 const MuiChip = Chip as unknown as Loose
 const MuiCircularProgress = CircularProgress as unknown as Loose
@@ -251,7 +278,7 @@ const IconWarning = WarningAmberIcon as unknown as Loose
 const IconArticle = ArticleIcon as unknown as Loose
 const IconOutline = AccountTreeIcon as unknown as Loose
 const IconDependencies = CallSplitIcon as unknown as Loose
-const IconImports = SwapVertIcon as unknown as Loose
+const IconImports = CallReceivedIcon as unknown as Loose
 const IconExports = CallMadeIcon as unknown as Loose
 const IconPreview = VisibilityIcon as unknown as Loose
 const IconZoomIn = AddIcon as unknown as Loose
@@ -278,17 +305,23 @@ const COLUMN_MIN_WIDTH = 320
 const COLUMN_MAX_WIDTH = 720
 const COLUMN_GAP = 8
 const COLUMN_TOP = 72
-const COLUMN_BOTTOM = 96
+/** Clear the composer/bottom bar: the column must never cover it. */
+const COLUMN_BOTTOM = 120
 const COLUMN_RIGHT = 16
 const HEADER_HEIGHT = 48
 const NAV_HEIGHT = 56
+/** Below this the two title bars no longer both fit; force both collapsed. */
+const PANEL_MIN_CONTAINER_HEIGHT = 200
+/** Column height budget: top 72 + bottom 120. */
+const COLUMN_HEIGHT_OFFSET = COLUMN_TOP + COLUMN_BOTTOM
 
 /**
- * Expanded panels all use the same zero flex-basis and grow factor, so two
- * expanded panels split the column's height exactly in half; a collapsed panel
- * is pinned to its 48 px title bar instead.
+ * Expanded panels all use zero flex-basis and grow, so two expanded panels
+ * split the remaining column height exactly in half (minus the 8 px gap); a
+ * collapsed panel is pinned to its 48 px title bar instead. `minHeight: 0` on
+ * the item lets flex shrink them below their content height.
  */
-export const PANEL_EXPANDED_FLEX = '1 1 0px'
+export const PANEL_EXPANDED_FLEX = '1 1 0'
 export const PANEL_COLLAPSED_FLEX = `0 0 ${HEADER_HEIGHT}px`
 
 /**
@@ -394,11 +427,35 @@ export class PanelErrorBoundary extends React.Component<
   }
 }
 
-/** The two panels' routed views, in BottomNavigation order. */
-const RIGHT_VIEWS: readonly PanelView[] = ['files', 'outline', 'dependencies', 'imports', 'preview']
-const LEFT_VIEWS: readonly PanelView[] = ['files', 'agents', 'dependencies', 'imports', 'exports']
-/** The left panel's tab set plus its detail view (`agent` is not a tab). */
-const LEFT_ROUTED_VIEWS: readonly PanelView[] = [...LEFT_VIEWS, 'agent']
+/**
+ * The bottom (workspace) panel: its BottomNavigation tabs and its routed pages.
+ *
+ * `preview` is a routed detail page reachable from a file/outline row and from
+ * search, never a tab, so `#coordination/panel/right/preview?path=…` deep-links
+ * without adding a sixth tab.
+ */
+export const RIGHT_PANEL_TABS: readonly PanelView[] = [
+  'files',
+  'outline',
+  'dependencies',
+  'imports',
+  'exports',
+]
+export const RIGHT_PANEL_ROUTES: readonly PanelView[] = [...RIGHT_PANEL_TABS, 'preview']
+
+/**
+ * The top (relationship) panel: its own tab set and routed pages.
+ *
+ * `agent` is the detail page of the Agents tab (`id` parameter), not a tab.
+ */
+export const LEFT_PANEL_TABS: readonly PanelView[] = [
+  'files',
+  'agents',
+  'dependencies',
+  'imports',
+  'exports',
+]
+export const LEFT_PANEL_ROUTES: readonly PanelView[] = [...LEFT_PANEL_TABS, 'agent']
 
 /** Cycle paths rendered in a warning block before the overflow line. */
 const MAX_CYCLE_LINES = 5
@@ -474,11 +531,11 @@ function tabTip(view: PanelView, copy: PanelCopy): string {
     case 'dependencies':
       return copy.tip.tabDependencies
     case 'imports':
-      return copy.tip.tabImports
+      return copy.tip.tabImportsGraph
     case 'preview':
       return copy.tip.tabPreview
     case 'exports':
-      return copy.tip.tabExports
+      return copy.tip.tabExportsGraph
     default:
       return copy.tip.tabAgents
   }
@@ -501,6 +558,7 @@ export const PANEL_ITEM_SX = {
   flexDirection: 'column',
   minHeight: 0,
   minWidth: 0,
+  maxHeight: '100%',
   overflow: 'hidden',
   backgroundColor: 'background.paper',
   border: '1px solid',
@@ -596,7 +654,36 @@ const HEADER_TITLE_SX = {
   '&:focus-visible': { boxShadow: 'inset 0 0 0 2px currentColor' },
 }
 
-/** The header search is a combobox; it takes the title's place while open. */
+/** The header search expands from the right, left of the search button. */
+const SEARCH_INPUT_ID = 'coordination-panel-search'
+/** Final width of the expanded search field (the design budget). */
+const SEARCH_SLOT_WIDTH = 240
+/** 220 ms MUI-standard open/close; reduced motion makes it instant. */
+const SEARCH_ANIMATION_MS = 220
+
+/**
+ * Horizontal MUI Collapse wrapper. `flex: 0 0 auto` and `minWidth: 0` keep the
+ * field from squeezing the title bar's buttons out while it grows/shrinks;
+ * the title keeps its `flex: 1; minWidth: 0` slot and ellipsizes instead.
+ */
+const SEARCH_COLLAPSE_SX = {
+  flex: '0 0 auto',
+  minWidth: 0,
+  maxWidth: '100%',
+  overflow: 'hidden',
+  alignSelf: 'center',
+  '& .MuiCollapse-wrapper, & .MuiCollapse-wrapperInner': { minWidth: 0 },
+}
+
+/** Fixed-width field inside the Collapse; never shrinks below its budget. */
+const SEARCH_SLOT_SX = {
+  width: SEARCH_SLOT_WIDTH,
+  maxWidth: '100%',
+  minWidth: 0,
+  flex: '0 0 auto',
+}
+
+/** The header search is a combobox; it grows leftwards beside the title. */
 const SEARCH_AUTOCOMPLETE_SX = {
   flex: 1,
   minWidth: 0,
@@ -748,6 +835,551 @@ const INDEX_ACTION_SX = { marginTop: 0.5 }
 
 const LIST_SX = { width: '100%' }
 
+/* ------------------------------------------------------------------------- *
+ * Virtual list plumbing
+ *
+ * Every list-shaped panel view renders only the rows inside the panel's scroll
+ * viewport (plus a small overscan) and replaces the rest with two exact-height
+ * spacers, so the scrollbar, total height and scroll position stay identical
+ * while a 2,000-entry tree keeps only ~20 rows in the DOM.
+ * ------------------------------------------------------------------------- */
+
+/** Fixed height of one virtualized panel row (icon + two-line label). */
+export const PANEL_ROW_HEIGHT = 48
+/** Rows kept mounted above/below the viewport while scrolling. */
+const VIRTUAL_OVERSCAN = 8
+
+/** Pin one virtual row to the exact height the window arithmetic assumes. */
+const VIRTUAL_ROW_SX = {
+  height: PANEL_ROW_HEIGHT,
+  minHeight: PANEL_ROW_HEIGHT,
+  maxHeight: PANEL_ROW_HEIGHT,
+  overflow: 'hidden',
+  boxSizing: 'border-box',
+}
+
+/**
+ * Visual root of every panel list/tree row: MUI's dense `ListItemButton`.
+ *
+ * The row is a fixed 48 px flex line, hover/selected colours come from the
+ * button (`action.hover` / `action.selected`), focus-visible gets the 2 px
+ * primary ring inset by -2, and the opacity transition of the trailing action
+ * lives here so hovering the row reveals it. Reduced motion keeps the same
+ * states but drops both transitions; the MUI ripple is deliberately untouched.
+ */
+export const PANEL_ROW_SX = {
+  height: PANEL_ROW_HEIGHT,
+  minHeight: PANEL_ROW_HEIGHT,
+  maxHeight: PANEL_ROW_HEIGHT,
+  padding: '4px 8px',
+  borderRadius: theme.shape.borderRadius,
+  display: 'flex',
+  alignItems: 'center',
+  width: '100%',
+  boxSizing: 'border-box',
+  transition: 'background-color 150ms',
+  '&:hover': { backgroundColor: 'action.hover' },
+  '&.Mui-selected': { backgroundColor: 'action.selected' },
+  '&.Mui-selected:hover': { backgroundColor: 'action.selected' },
+  '&:focus-visible': {
+    outline: '2px solid',
+    outlineColor: 'primary.main',
+    outlineOffset: -2,
+  },
+  '&:hover .coordination-row-action, &:focus-within .coordination-row-action': {
+    opacity: 1,
+  },
+  '@media (prefers-reduced-motion: reduce)': {
+    transition: 'none',
+  },
+}
+
+/** Leading icon column of a row: 32 px, with an 18–20 px glyph. */
+export const PANEL_ROW_ICON_SX = {
+  minWidth: 32,
+  color: 'text.secondary',
+  '& svg': { fontSize: 20 },
+}
+
+/** `secondaryAction` position: pinned right, revealed by the row's hover. */
+export const PANEL_ROW_ACTION_SX = {
+  position: 'absolute',
+  right: 8,
+  top: '50%',
+  transform: 'translateY(-50%)',
+  opacity: 0,
+  transition: 'opacity 120ms',
+  '@media (prefers-reduced-motion: reduce)': {
+    transition: 'none',
+  },
+}
+
+/** Primary row line: the item name, one line, body2. */
+export const PANEL_ROW_PRIMARY_PROPS = { variant: 'body2', noWrap: true }
+
+/** Secondary row line: path/kind/count, one line, caption. */
+export const PANEL_ROW_SECONDARY_PROPS = {
+  variant: 'caption',
+  noWrap: true,
+  color: 'text.secondary',
+}
+
+/** Relative shell that owns the absolutely positioned trailing action. */
+const PANEL_ROW_SHELL_SX = {
+  position: 'relative',
+  height: PANEL_ROW_HEIGHT,
+  minHeight: PANEL_ROW_HEIGHT,
+  maxHeight: PANEL_ROW_HEIGHT,
+}
+
+interface PanelScrollState {
+  readonly top: number
+  readonly height: number
+  /** The measured scroller; virtualized views offset themselves against it. */
+  readonly element: HTMLElement | null
+}
+
+/** The panel card's single scroll surface, shared with virtualized views. */
+const PanelScrollContext = React.createContext<PanelScrollState>({
+  top: 0,
+  height: 0,
+  element: null,
+})
+
+function PanelScrollProvider(props: {
+  target: { readonly current: HTMLElement | null }
+  children?: React.ReactNode
+}): React.ReactElement {
+  const [scroller, setScroller] = React.useState<PanelScrollState>({
+    top: 0,
+    height: 0,
+    element: null,
+  })
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return
+    const element = props.target.current
+    if (element === null) return
+    let frame = 0
+    const read = (): void => {
+      frame = 0
+      setScroller((previous) => {
+        const next = { top: element.scrollTop, height: element.clientHeight, element }
+        return previous.top === next.top &&
+          previous.height === next.height &&
+          previous.element === next.element
+          ? previous
+          : next
+      })
+    }
+    const schedule = (): void => {
+      if (frame !== 0) return
+      frame = window.requestAnimationFrame(read)
+    }
+    read()
+    element.addEventListener('scroll', schedule, { passive: true })
+    let observer: ResizeObserver | undefined
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(schedule)
+      observer.observe(element)
+    }
+    return () => {
+      element.removeEventListener('scroll', schedule)
+      if (observer !== undefined) observer.disconnect()
+      if (frame !== 0) window.cancelAnimationFrame(frame)
+    }
+  }, [props.target])
+  return h(PanelScrollContext.Provider, { value: scroller }, props.children)
+}
+
+/**
+ * Distance from the scroller's content top to a virtualized list's own top.
+ *
+ * A view may render fixed content above its list (the dependencies cycle
+ * banner), so the window arithmetic must start at the list, not at the
+ * scroller. Measuring the live rects keeps the offset right across a panel
+ * resize and the banner's Collapse transition.
+ */
+function useVirtualOffset(ref: React.RefObject<HTMLElement | null>): number {
+  const viewport = React.useContext(PanelScrollContext)
+  const [offset, setOffset] = React.useState(0)
+  // No dependency array: the offset is re-read after every render (a scroll
+  // frame, a scope change or a resized banner), and a stable read bails out.
+  React.useLayoutEffect(() => {
+    const scroller = viewport.element
+    const node = ref.current
+    if (scroller === null || node === null) return
+    const next = node.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop
+    setOffset((previous) => (Math.abs(previous - next) < 0.5 ? previous : next))
+  })
+  return offset
+}
+
+/**
+ * Window one fixed-height row list into the panel scroller.
+ *
+ * `offset` is the height of any fixed content rendered above the list inside
+ * the same scroller, so the first visible row is computed from the list's own
+ * top. Returns the slice to render plus the heights of the unrendered leading
+ * and trailing rows. Before the scroller is measured (first paint) a small
+ * initial window is returned; the measuring effect immediately corrects it.
+ */
+function useVirtualRange(
+  rowCount: number,
+  rowHeight: number = PANEL_ROW_HEIGHT,
+  overscan: number = VIRTUAL_OVERSCAN,
+  offset: number = 0,
+): {
+  start: number
+  end: number
+  topPad: number
+  bottomPad: number
+} {
+  const viewport = React.useContext(PanelScrollContext)
+  const height = Math.max(1, rowHeight)
+  const pad = Math.max(0, Math.floor(overscan))
+  if (rowCount <= 0) return { start: 0, end: 0, topPad: 0, bottomPad: 0 }
+  const visible = viewport.height > 0
+    ? Math.ceil(viewport.height / height)
+    : 16
+  const scrolled = Math.max(0, viewport.top - Math.max(0, offset))
+  const first = Math.max(0, Math.floor(scrolled / height))
+  const start = Math.max(0, first - pad)
+  const end = Math.min(rowCount, first + visible + pad)
+  return {
+    start,
+    end,
+    topPad: start * height,
+    bottomPad: (rowCount - end) * height,
+  }
+}
+
+/** Zero-height spacer that preserves the height of unrendered rows. */
+function virtualSpacer(height: number, key: string): React.ReactElement | null {
+  return height > 0 ? h(MuiBox, { key, sx: { height, flex: 'none' } }) : null
+}
+
+/* ------------------------------------------------------------------------- *
+ * VirtualList / VirtualTree + adapters
+ *
+ * Both primitives are data-shape agnostic: a view supplies a small adapter
+ * (count/key/read access, or roots/key/children) plus an item slot. Only the
+ * rows inside the panel viewport are mounted. A tree slot receives the row's
+ * depth and the adapter's node value; a flat list slot receives the row index
+ * and the value. Leading/trailing spacers keep the scroll height exact.
+ * ------------------------------------------------------------------------- */
+
+/** One tree node handed to {@link VirtualTree}; `value` is the caller's item. */
+export interface VirtualTreeEntry<T> {
+  /** Stable identity across renders (also the expansion-state key). */
+  key: string
+  value: T
+  children?: readonly VirtualTreeEntry<T>[]
+}
+
+/** Adapter for {@link VirtualList}: a random-access, keyed flat sequence. */
+export interface VirtualListAdapter<T> {
+  readonly size: number
+  key(index: number): string
+  at(index: number): T
+}
+
+/** Adapter for {@link VirtualTree}: roots plus the node key/children accessors. */
+export interface VirtualTreeAdapter<T> {
+  readonly roots: readonly T[]
+  key(value: T): string
+  /** Always returns an array, so a leaf is simply empty. */
+  children(value: T): readonly T[]
+}
+
+/** One flattened, currently visible tree row. `index` is its array position. */
+export interface VirtualTreeRow<T> {
+  readonly depth: number
+  readonly index: number
+  readonly value: T
+}
+
+/** Adapt any array to the flat list; keys default to the row index. */
+export function createVirtualListAdapter<T>(
+  items: readonly T[],
+  key?: (value: T, index: number) => string,
+): VirtualListAdapter<T> {
+  return {
+    size: items.length,
+    key: (index) => key?.(items[index] as T, index) ?? String(index),
+    at: (index) => items[index] as T,
+  }
+}
+
+/** Adapt roots + accessors to the virtual tree; leaves need no children callback. */
+export function createVirtualTreeAdapter<T>(
+  roots: readonly T[],
+  key: (value: T) => string,
+  children?: (value: T) => readonly T[],
+): VirtualTreeAdapter<T> {
+  return { roots, key, children: children ?? (() => []) }
+}
+
+/** Adapter for the `{ key, value, children }` tree shape used by views. */
+export function entryTreeAdapter<T>(
+  entries: readonly VirtualTreeEntry<T>[],
+): VirtualTreeAdapter<VirtualTreeEntry<T>> {
+  return {
+    roots: entries,
+    key: (entry) => entry.key,
+    children: (entry) => entry.children ?? [],
+  }
+}
+
+/**
+ * Flatten a tree to its visible rows in pre-order.
+ *
+ * Pure: an adapter plus a collapsed-key set always yields the same rows. A
+ * collapsed node is still emitted (as its branch's row) but its children are
+ * skipped; `index` is always the row's own array index, continuous across
+ * depths and exactly what the window arithmetic and the row slot use.
+ */
+export function visibleTreeRows<T>(
+  adapter: VirtualTreeAdapter<T>,
+  collapsed: ReadonlySet<string>,
+): VirtualTreeRow<T>[] {
+  const rows: VirtualTreeRow<T>[] = []
+  const walk = (nodes: readonly T[], depth: number): void => {
+    for (const value of nodes) {
+      const key = adapter.key(value)
+      rows.push({ depth, index: rows.length, value })
+      if (collapsed.has(key)) continue
+      const children = adapter.children(value)
+      if (children.length > 0) walk(children, depth + 1)
+    }
+  }
+  walk(adapter.roots, 0)
+  return rows
+}
+
+export interface VirtualTreeProps<T> {
+  adapter: VirtualTreeAdapter<T>
+  /** Controlled expansion state, owned by the view (not the component). */
+  collapsed: ReadonlySet<string>
+  /** Toggle one branch; `key` comes from `adapter.key(value)`. */
+  onToggle: (key: string) => void
+  /** Row slot: (depth, flattened row index, adapter value). */
+  slot: (depth: number, index: number, value: T) => React.ReactNode
+  /** Accessible name for the virtualized tree surface. */
+  'aria-label'?: string
+}
+
+/**
+ * Row-height strategy for {@link VirtualList}.
+ *
+ * A number keeps the strict fixed-row window (48 px by default, used by every
+ * tree/flat panel list). A function opts into estimated variable rows, which is
+ * what the agent transcript needs: a bubble's height depends on its Markdown
+ * content. Estimates are cumulative and the scroll offset is mapped onto that
+ * cumulative height, so the scrollbar still represents the whole transcript.
+ */
+export type VirtualRowHeight<T> = number | ((index: number, value: T) => number)
+
+interface VariableRowLayout {
+  readonly tops: readonly number[]
+  readonly sizes: readonly number[]
+  readonly total: number
+}
+
+const EMPTY_ROW_LAYOUT: VariableRowLayout = { tops: [], sizes: [], total: 0 }
+
+function clampRowHeight(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1
+}
+
+/** Cumulative top offsets for estimated rows; pure and deterministic. */
+function variableRowLayout<T>(
+  adapter: VirtualListAdapter<T>,
+  estimate: (index: number, value: T) => number,
+): VariableRowLayout {
+  const tops = new Array<number>(adapter.size)
+  const sizes = new Array<number>(adapter.size)
+  let top = 0
+  for (let index = 0; index < adapter.size; index += 1) {
+    const height = clampRowHeight(estimate(index, adapter.at(index)))
+    tops[index] = top
+    sizes[index] = height
+    top += height
+  }
+  return { tops, sizes, total: top }
+}
+
+/** First index whose cumulative top is >= target (array is non-decreasing). */
+function lowerBound(values: readonly number[], target: number): number {
+  let low = 0
+  let high = values.length
+  while (low < high) {
+    const middle = (low + high) >> 1
+    if ((values[middle] as number) < target) low = middle + 1
+    else high = middle
+  }
+  return low
+}
+
+/**
+ * Window variable-height rows: binary-search the cumulative offsets for the
+ * first/last row intersecting the visible band, then add the overscan.
+ */
+function useVariableRange(
+  layout: VariableRowLayout,
+  offset: number,
+): { start: number; end: number } {
+  const viewport = React.useContext(PanelScrollContext)
+  const count = layout.tops.length
+  if (count === 0) return { start: 0, end: 0 }
+  const top = Math.max(0, viewport.top - Math.max(0, offset))
+  const height = viewport.height > 0 ? viewport.height : 720
+  const first = Math.max(0, lowerBound(layout.tops, top) - 1)
+  const last = Math.min(count - 1, lowerBound(layout.tops, top + height))
+  return {
+    start: Math.max(0, first - VIRTUAL_OVERSCAN),
+    end: Math.min(count, last + VIRTUAL_OVERSCAN + 1),
+  }
+}
+
+export interface VirtualListProps<T> {
+  adapter: VirtualListAdapter<T>
+  /** Row slot: (row index, adapter value). */
+  slot: (index: number, value: T) => React.ReactNode
+  /** Fixed row height (default 48), or an estimated height per row. */
+  rowHeight?: VirtualRowHeight<T>
+  /** Accessible name for the virtualized list surface. */
+  'aria-label'?: string
+}
+
+/** Virtualized flat list: the slot receives (index, value). */
+export function VirtualList<T>(props: VirtualListProps<T>): React.ReactElement {
+  const containerRef = React.useRef<HTMLElement | null>(null)
+  const offset = useVirtualOffset(containerRef)
+  const rowHeight = props.rowHeight
+  const variable = typeof rowHeight === 'function'
+  const layout = React.useMemo(
+    () => (typeof rowHeight === 'function'
+      ? variableRowLayout(props.adapter, rowHeight)
+      : EMPTY_ROW_LAYOUT),
+    [props.adapter, rowHeight],
+  )
+  // Both windows are computed unconditionally (hooks order); only the one the
+  // row-height strategy selects is rendered.
+  const range = useVirtualRange(
+    variable ? 0 : props.adapter.size,
+    PANEL_ROW_HEIGHT,
+    VIRTUAL_OVERSCAN,
+    offset,
+  )
+  const variableRange = useVariableRange(layout, offset)
+  if (variable) {
+    return h(
+      MuiBox,
+      {
+        ref: containerRef,
+        role: 'listbox',
+        'aria-label': props['aria-label'],
+        sx: { ...LIST_SX, position: 'relative', height: layout.total },
+      },
+      ...Array.from({ length: variableRange.end - variableRange.start }, (_unused, position) => {
+        const index = variableRange.start + position
+        return h(
+          MuiBox,
+          {
+            key: props.adapter.key(index),
+            style: {
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: layout.tops[index],
+              height: layout.sizes[index],
+              overflow: 'hidden',
+            },
+          },
+          props.slot(index, props.adapter.at(index)),
+        )
+      }),
+    )
+  }
+  return h(
+    MuiBox,
+    {
+      ref: containerRef,
+      role: 'listbox',
+      'aria-label': props['aria-label'],
+      sx: LIST_SX,
+    },
+    virtualSpacer(range.topPad, 'virtual-list-top'),
+    ...Array.from({ length: range.end - range.start }, (_unused, position) => {
+      const index = range.start + position
+      return h(
+        MuiBox,
+        { key: props.adapter.key(index), sx: VIRTUAL_ROW_SX },
+        props.slot(index, props.adapter.at(index)),
+      )
+    }),
+    virtualSpacer(range.bottomPad, 'virtual-list-bottom'),
+  )
+}
+
+/** Virtualized tree: the slot receives (depth, flattened index, value). */
+export function VirtualTree<T>(props: VirtualTreeProps<T>): React.ReactElement {
+  // Expansion is controlled by the view; the component only flattens, windows
+  // rows and provides keyboard collapse/expand through `onToggle`.
+  const rows = React.useMemo(
+    () => visibleTreeRows(props.adapter, props.collapsed),
+    [props.adapter, props.collapsed],
+  )
+  const containerRef = React.useRef<HTMLElement | null>(null)
+  const offset = useVirtualOffset(containerRef)
+  const range = useVirtualRange(rows.length, PANEL_ROW_HEIGHT, VIRTUAL_OVERSCAN, offset)
+  const rowInfo = React.useMemo(() => {
+    const info = new Map<string, boolean>()
+    for (const row of rows) info.set(props.adapter.key(row.value), props.adapter.children(row.value).length > 0)
+    return info
+  }, [props.adapter, rows])
+  const onKeyDown = (event: React.KeyboardEvent<HTMLElement>): void => {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    const target = event.target as unknown as {
+      closest?: (selector: string) => HTMLElement | null
+    } | null
+    const row = target?.closest?.('[data-coordination-tree-key]') ?? null
+    const key = row?.dataset.coordinationTreeKey
+    if (key === undefined || rowInfo.get(key) !== true) return
+    const expanded = !props.collapsed.has(key)
+    if (event.key === 'ArrowLeft' ? expanded : !expanded) {
+      event.preventDefault()
+      props.onToggle(key)
+    }
+  }
+  return h(
+    MuiBox,
+    {
+      ref: containerRef,
+      role: 'tree',
+      'aria-label': props['aria-label'],
+      onKeyDown,
+      sx: LIST_SX,
+    },
+    virtualSpacer(range.topPad, 'virtual-tree-top'),
+    ...rows.slice(range.start, range.end).map(({ depth, index, value }) => {
+      const key = props.adapter.key(value)
+      return h(
+        MuiBox,
+        {
+          key,
+          'data-coordination-tree-key': key,
+          sx: VIRTUAL_ROW_SX,
+        },
+        props.slot(depth, index, value),
+      )
+    }),
+    virtualSpacer(range.bottomPad, 'virtual-tree-bottom'),
+  )
+}
+
 /** Scope bar: fixed row under the title bar. */
 export const SCOPE_BAR_SX = {
   display: 'flex',
@@ -773,62 +1405,6 @@ const SCOPE_CHIP_SX = {
   '& .MuiChip-deleteIcon': { marginLeft: 0.5, marginRight: 0.5 },
 }
 
-const FILE_WRAPPER_SX = {
-  display: 'flex',
-  alignItems: 'center',
-  minWidth: 0,
-  borderRadius: 0.5,
-}
-
-const FILE_ROW_SX = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 0.75,
-  flex: 1,
-  minWidth: 0,
-  minHeight: 34,
-  paddingTop: 0.25,
-  paddingBottom: 0.25,
-  paddingRight: 0.5,
-  borderRadius: 0.5,
-}
-
-const PREVIEW_BUTTON_SX = { flex: 'none', marginRight: 0.5 }
-
-const TREE_ICON_SX = {
-  display: 'inline-flex',
-  flex: 'none',
-  color: 'text.secondary',
-}
-
-const TREE_TEXT_SX = { minWidth: 0, flex: 1 }
-
-const TREE_DIR_LABEL_SX = { fontWeight: 600 }
-
-const OUTLINE_GROUP_SX = { marginBottom: 1 }
-
-const GROUP_HEADER_SX = {
-  display: 'block',
-  paddingLeft: 1,
-  paddingTop: 0.5,
-  letterSpacing: 1,
-  color: 'text.secondary',
-}
-
-const OUTLINE_ROW_SX = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 1,
-  minHeight: 26,
-  paddingTop: 0.25,
-  paddingBottom: 0.25,
-  paddingRight: 1,
-}
-
-const OUTLINE_NAME_SX = { minWidth: 0, flex: 1 }
-
-const OUTLINE_KIND_SX = { flex: 'none', fontFamily: 'monospace' }
-
 const ALERT_SX = { marginBottom: 1.5, alignItems: 'flex-start' }
 const ALERT_TITLE_SX = { fontWeight: 600 }
 const CYCLE_BOX_SX = { marginTop: 0.5 }
@@ -841,24 +1417,6 @@ const MONO_SX = {
 }
 
 const MORE_SX = { display: 'block', marginTop: 0.25 }
-
-const DEP_ROW_SX = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 1,
-  minHeight: 34,
-  paddingTop: 0.5,
-  paddingBottom: 0.5,
-  paddingLeft: 1,
-  paddingRight: 1,
-  borderBottom: '1px solid',
-  borderColor: 'divider',
-}
-
-const DEP_ROW_SELECTED_SX = {
-  ...DEP_ROW_SX,
-  backgroundColor: 'action.selected',
-}
 
 const DEP_LABEL_SX = {
   display: 'flex',
@@ -878,34 +1436,6 @@ const DEP_CHIPS_SX = {
   gap: 0.5,
   flex: 'none',
 }
-
-const ACCORDION_SX = {
-  border: '1px solid',
-  borderColor: 'divider',
-  borderRadius: 1,
-  marginBottom: 1,
-  '&:before': { display: 'none' },
-}
-
-const SUMMARY_SX = { minHeight: 40, paddingLeft: 1, paddingRight: 1 }
-
-const SUMMARY_CONTENT_SX = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 1,
-  minWidth: 0,
-  width: '100%',
-}
-
-const SUMMARY_PATH_SX = { flex: 1, minWidth: 0, fontFamily: 'monospace', fontSize: 12 }
-
-const DETAILS_SX = { paddingLeft: 1, paddingRight: 1, paddingTop: 0, paddingBottom: 1 }
-
-const IMPORT_GROUP_SX = { marginTop: 1 }
-
-const IMPORT_LABEL_SX = { display: 'block', marginBottom: 0.5 }
-
-const CHIP_WRAP_SX = { display: 'flex', flexWrap: 'wrap', gap: 0.5 }
 
 /** One hit inside the header combobox's result listbox. */
 const SEARCH_HIT_TOP_SX = {
@@ -1000,7 +1530,7 @@ const AGENTS_VIEW_SX = {
   display: 'flex',
   flexDirection: 'column',
   height: '100%',
-  minHeight: 320,
+  minHeight: 0,
 }
 
 const AGENTS_LIST_SX = {
@@ -1079,8 +1609,7 @@ const AGENT_SKELETON_ROW_SX = { display: 'flex', alignItems: 'center', gap: 1, p
 const MESSAGES_VIEW_SX = {
   display: 'flex',
   flexDirection: 'column',
-  height: '100%',
-  minHeight: 320,
+  minHeight: 0,
 }
 
 const MESSAGES_HEADER_SX = {
@@ -1096,10 +1625,7 @@ const MESSAGES_HEADER_SX = {
 
 const MESSAGES_TITLE_SX = { minWidth: 0, flex: 1 }
 
-const MESSAGES_BODY_SX = {
-  flex: 1,
-  minHeight: 0,
-  overflowY: 'auto',
+const MESSAGES_SKELETON_SX = {
   display: 'flex',
   flexDirection: 'column',
   gap: 0.75,
@@ -1107,6 +1633,20 @@ const MESSAGES_BODY_SX = {
   paddingBottom: 1,
 }
 
+/** One chat row: a full-width flex line that aligns its bubble. */
+const MESSAGE_ROW_SX = {
+  display: 'flex',
+  width: '100%',
+  paddingLeft: 0.5,
+  paddingRight: 0.5,
+  boxSizing: 'border-box',
+}
+
+/**
+ * Bubble shell. `textAlign`/alignment is supplied per role; the body Markdown
+ * uses {@link MESSAGE_PROSE_SX}. The estimated virtual row height is enforced
+ * by the list; long text scrolls inside an expanded bubble.
+ */
 const MESSAGE_BUBBLE_SX = {
   maxWidth: '88%',
   borderRadius: 1,
@@ -1116,25 +1656,61 @@ const MESSAGE_BUBBLE_SX = {
   paddingRight: 1,
   fontSize: 12,
   lineHeight: 1.5,
-  whiteSpace: 'pre-wrap',
   overflowWrap: 'anywhere',
+  border: '1px solid',
+  borderColor: 'divider',
+  boxSizing: 'border-box',
 }
 
-const MESSAGE_TIME_SX = {
-  display: 'block',
-  fontSize: 10,
-  opacity: 0.7,
-  marginTop: 0.25,
-  textAlign: 'right',
+/** User: right aligned, light `primary.main` tint. */
+const MESSAGE_USER_SX = {
+  ...MESSAGE_BUBBLE_SX,
+  marginLeft: 'auto',
+  backgroundColor: alpha(theme.palette.primary.main, 0.12),
+  borderColor: alpha(theme.palette.primary.main, 0.35),
+  color: 'text.primary',
 }
 
-const MESSAGE_SYSTEM_SX = {
-  alignSelf: 'center',
-  maxWidth: '95%',
+/** Assistant: left aligned on the paper background. */
+const MESSAGE_ASSISTANT_SX = {
+  ...MESSAGE_BUBBLE_SX,
+  marginRight: 'auto',
+  backgroundColor: 'background.paper',
+}
+
+/** Tool / system: centred, small grey notice with no bubble chrome. */
+const MESSAGE_NOTICE_SX = {
+  ...MESSAGE_BUBBLE_SX,
+  marginLeft: 'auto',
+  marginRight: 'auto',
+  maxWidth: '100%',
   backgroundColor: 'transparent',
+  borderColor: 'transparent',
   color: 'text.secondary',
-  fontStyle: 'italic',
-  textAlign: 'center',
+  fontSize: 11,
+}
+
+const MESSAGE_META_SX = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 0.75,
+  flexWrap: 'wrap',
+  marginBottom: 0.25,
+  fontSize: 10,
+  lineHeight: 1.2,
+  color: 'text.secondary',
+}
+
+const MESSAGE_META_USER_SX = { justifyContent: 'flex-end' }
+const MESSAGE_ROLE_SX = { fontWeight: 600, fontSize: 10 }
+const MESSAGE_TIME_SX = { fontSize: 10, opacity: 0.75 }
+const MESSAGE_NOTICE_TEXT_SX = { fontStyle: 'italic', textAlign: 'center' }
+
+/** Expanded bubble body: capped at the virtual row's max estimated height. */
+const MESSAGE_BODY_SX = {
+  maxHeight: 216,
+  overflowY: 'auto',
+  overflowX: 'hidden',
 }
 
 /* Canvas view */
@@ -1556,6 +2132,14 @@ interface TreeEntry {
   name: string
   directory: boolean
   depth: number
+  /** Synthetic project-root rows carry the manifest caption. */
+  manifest?: string
+}
+
+/** One outermost manifest project of `/graph/tree` (host roots are absolute). */
+export interface TreeProject {
+  root: string
+  manifest: string
 }
 
 /**
@@ -1563,11 +2147,13 @@ interface TreeEntry {
  *
  * `root` is the absolute workspace root the host actually scanned; the empty
  * state shows it so a wrong root (a desktop install directory, say) is visible
- * instead of looking like an ordinary empty workspace.
+ * instead of looking like an ordinary empty workspace. `projects` are the
+ * outermost manifest scopes only; a nested manifest never appears separately.
  */
 interface TreeData {
   root: string
   entries: TreeEntry[]
+  projects: TreeProject[]
 }
 
 function parseTree(value: unknown): TreeData {
@@ -1628,7 +2214,22 @@ function parseTree(value: unknown): TreeData {
       entry.depth = Math.max(0, pathSegmentCount(entry.path) - baseDepth)
     }
   }
-  return { root: asString(record?.root) ?? '', entries }
+  const rawProjects = Array.isArray(record?.projects) ? record.projects : []
+  const projects: TreeProject[] = []
+  for (const rawProject of rawProjects) {
+    const projectRecord = asRecord(rawProject)
+    const root = projectRecord === undefined
+      ? undefined
+      : asString(projectRecord.root) ?? asString(projectRecord.path)
+    if (root === undefined || root.trim().length === 0) continue
+    projects.push({
+      root,
+      manifest: projectRecord === undefined
+        ? ''
+        : asString(projectRecord.manifest) ?? asString(projectRecord.manifestFile) ?? '',
+    })
+  }
+  return { root: asString(record?.root) ?? '', entries, projects }
 }
 
 interface OutlineNode {
@@ -1638,18 +2239,45 @@ interface OutlineNode {
   path: string | null
 }
 
-/** One file's outline in workspace mode, or one family in file mode. */
-interface OutlineFileGroup {
+/** One file outline group (workspace mode) or family group (legacy file mode). */
+export interface OutlineFileGroup {
   path: string | null
   family: string
   nodes: OutlineNode[]
+  /** Outermost manifest scope that claims this file, when the host echoes one. */
+  project?: OutlineProject
+}
+
+/**
+ * Optional npm/maven project scope of a workspace outline.
+ *
+ * The host may report `projects: [{ root, name?, files? }]`; when it does not,
+ * every file group is a direct child of the workspace root. `files` is the
+ * explicit membership list when the host can provide one (a file can belong to
+ * a project without living under its root).
+ */
+export interface OutlineProject {
+  root: string
+  name: string
+  /** Manifest filename reported by the host (`package.json`, `pom.xml`, …). */
+  manifest: string
+  files: string[]
 }
 
 type Scope = 'file' | 'workspace'
 
 interface OutlineData {
   scope: Scope
+  /** Workspace root when the host includes it (otherwise fetched separately). */
+  root: string
+  /** The requested file of a file-scope response. */
+  path: string | null
+  /** Project scopes of a workspace response; empty when none are reported. */
+  projects: OutlineProject[]
+  /** Workspace file groups; empty for a file-scope response. */
   groups: OutlineFileGroup[]
+  /** The structure nodes of the one requested file (file scope only). */
+  nodes: OutlineNode[]
 }
 
 function parseOutlineNode(value: unknown): OutlineNode | null {
@@ -1676,10 +2304,36 @@ function parseOutlineNodes(value: unknown): OutlineNode[] {
     .filter((node): node is OutlineNode => node !== null)
 }
 
+/** Parse the optional project scopes of a workspace outline. */
+function parseOutlineProjects(value: unknown): OutlineProject[] {
+  if (!Array.isArray(value)) return []
+  const projects: OutlineProject[] = []
+  for (const raw of value) {
+    const record = asRecord(raw)
+    if (record === undefined) continue
+    const root = asString(record.root) ?? asString(record.path) ?? asString(record.dir)
+    if (root === undefined || root.trim().length === 0) continue
+    projects.push({
+      root: canonicalPath(root),
+      name: asString(record.name) ?? baseName(root),
+      manifest: asString(record.manifest) ?? asString(record.manifestFile) ?? asString(record.file) ?? '',
+      files: stringList(record.files ?? record.paths).map(canonicalPath),
+    })
+  }
+  return projects
+}
+
 /**
- * File mode groups by family (`nodes`); workspace mode groups by file
- * (`groups`). The explicit `scope` field wins; otherwise the presence of
- * `groups` selects workspace mode.
+ * File scope and workspace scope are different payloads:
+ *
+ *  - `{ scope: 'file', path, family, nodes }` — the one file's structure; this
+ *    is the only thing the local outline may render.
+ *  - `{ scope: 'workspace', groups, projects?, root? }` — per-file groups; only
+ *    the global outline may render these.
+ *
+ * A file response that (defensively) contains `groups` instead of `nodes` is
+ * flattened into this file's nodes; a workspace response never leaks into the
+ * local mode (`OutlineView` rejects a non-`file` scope explicitly).
  */
 function parseOutline(value: unknown): OutlineData {
   const record = asRecord(value)
@@ -1688,6 +2342,7 @@ function parseOutline(value: unknown): OutlineData {
   const scope: Scope = scopeValue === 'workspace' || (scopeValue === undefined && Array.isArray(rawGroups))
     ? 'workspace'
     : 'file'
+  const root = asString(record?.root) ?? ''
 
   if (scope === 'workspace') {
     const groups: OutlineFileGroup[] = []
@@ -1697,44 +2352,70 @@ function parseOutline(value: unknown): OutlineData {
         if (groupRecord === undefined) continue
         const nodes = parseOutlineNodes(groupRecord.nodes)
         if (nodes.length === 0) continue
-        groups.push({
+        const projectRecord = asRecord(groupRecord.project)
+        const projectRoot = projectRecord === undefined
+          ? undefined
+          : asString(projectRecord.root) ?? asString(projectRecord.path)
+        const group: OutlineFileGroup = {
           path: asString(groupRecord.path) ?? asString(groupRecord.file) ?? null,
           family: asString(groupRecord.family) ?? asString(groupRecord.kind) ?? '',
           nodes,
-        })
+        }
+        if (projectRoot !== undefined && projectRoot.trim().length > 0) {
+          group.project = {
+            root: projectRoot,
+            name: projectRecord === undefined
+              ? baseName(projectRoot)
+              : asString(projectRecord.name) ?? baseName(projectRoot),
+            manifest: projectRecord === undefined
+              ? ''
+              : asString(projectRecord.manifest) ?? asString(projectRecord.manifestFile) ?? '',
+            files: [],
+          }
+        }
+        groups.push(group)
       }
-      return { scope, groups }
-    }
-    // No `groups` array: group a flat node list by each node's own path.
-    for (const node of parseOutlineNodes(firstArray(record, ['nodes', 'outline', 'entries', 'items']))) {
-      const previous = groups[groups.length - 1]
-      if (previous !== undefined && previous.path === node.path) {
-        previous.nodes.push(node)
-      } else {
-        groups.push({ path: node.path, family: '', nodes: [node] })
+    } else {
+      // No `groups` array: group a flat node list by each node's own path.
+      for (const node of parseOutlineNodes(firstArray(record, ['nodes', 'outline', 'entries', 'items']))) {
+        const previous = groups[groups.length - 1]
+        if (previous !== undefined && previous.path === node.path) {
+          previous.nodes.push(node)
+        } else {
+          groups.push({ path: node.path, family: '', nodes: [node] })
+        }
       }
     }
-    return { scope, groups }
+    return {
+      scope,
+      root,
+      path: null,
+      projects: parseOutlineProjects(record?.projects),
+      groups,
+      nodes: [],
+    }
   }
 
-  const rawNodes = Array.isArray(value)
-    ? value
-    : firstArray(record, ['nodes', 'outline', 'entries', 'items'])
-  const fallbackFamily = asString(record?.family) ?? ''
-  const groups: OutlineFileGroup[] = []
-  let current: OutlineFileGroup | null = null
-  for (const rawNode of rawNodes ?? []) {
-    const node = parseOutlineNode(rawNode)
-    if (node === null) continue
-    const nodeRecord = asRecord(rawNode)
-    const family = (nodeRecord === undefined ? undefined : asString(nodeRecord.family)) ?? fallbackFamily
-    if (current === null || current.family !== family) {
-      current = { path: null, family, nodes: [] }
-      groups.push(current)
+  let nodes: OutlineNode[] = []
+  if (Array.isArray(record?.nodes)) nodes = parseOutlineNodes(record?.nodes)
+  else if (Array.isArray(rawGroups)) {
+    // Defensive: some hosts spell the file response with `groups`.
+    for (const rawGroup of rawGroups) {
+      const groupRecord = asRecord(rawGroup)
+      if (groupRecord === undefined) continue
+      nodes = nodes.concat(parseOutlineNodes(groupRecord.nodes))
     }
-    current.nodes.push(node)
+  } else {
+    nodes = parseOutlineNodes(firstArray(record, ['outline', 'entries', 'items']))
   }
-  return { scope, groups }
+  return {
+    scope,
+    root,
+    path: asString(record?.path) ?? null,
+    projects: [],
+    groups: [],
+    nodes,
+  }
 }
 
 interface DependencyLink {
@@ -2048,6 +2729,42 @@ interface AgentMessageData {
   text: string
 }
 
+/** The four roles the transcript maps to a bubble layout. */
+export type MessageRoleKind = 'user' | 'assistant' | 'tool' | 'system'
+
+/**
+ * Normalise a transcript role. Unknown/missing roles become `assistant` so a
+ * message is never dropped or rendered as a system notice by accident.
+ */
+export function messageRoleKind(role: string): MessageRoleKind {
+  const value = role.trim().toLowerCase()
+  if (value === 'user') return 'user'
+  if (value === 'tool') return 'tool'
+  if (value === 'system') return 'system'
+  return 'assistant'
+}
+
+/**
+ * Bubble alignment: the user sits right, the assistant left, and tool/system
+ * messages are centred notices. Pure, so the chat layout is directly testable.
+ */
+export function messageAlignment(role: string): 'flex-end' | 'flex-start' | 'center' {
+  const kind = messageRoleKind(role)
+  if (kind === 'user') return 'flex-end'
+  if (kind === 'assistant') return 'flex-start'
+  return 'center'
+}
+
+/** ISO (host) or epoch-millisecond timestamps both become epoch milliseconds. */
+function messageTimestamp(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Date.parse(value)
+    return Number.isNaN(parsed) ? null : parsed
+  }
+  return null
+}
+
 interface AgentMessagesData {
   id: string
   messages: AgentMessageData[]
@@ -2121,7 +2838,7 @@ function parseAgentMessages(value: unknown): AgentMessagesData {
     if (messageRecord === undefined) continue
     const text = typeof messageRecord.text === 'string' ? messageRecord.text : ''
     const role = (asString(messageRecord.role) ?? 'system').toLowerCase()
-    const at = finiteNumber(messageRecord.at) ?? null
+    const at = messageTimestamp(messageRecord.at) ?? messageTimestamp(messageRecord.time)
     if (text.length === 0) continue
     messages.push({ role, at, text })
   }
@@ -2311,27 +3028,6 @@ function CycleAlert(props: { copy: PanelCopy; cycles: readonly string[][] }): Re
   )
 }
 
-function ImportGroup(props: {
-  copy: PanelCopy
-  label: string
-  items: readonly string[]
-}): React.ReactElement {
-  return h(
-    MuiBox,
-    { sx: IMPORT_GROUP_SX },
-    h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: IMPORT_LABEL_SX }, props.label),
-    props.items.length === 0
-      ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, props.copy.states.empty)
-      : h(
-        MuiBox,
-        { sx: CHIP_WRAP_SX },
-        ...props.items.map((item, index) =>
-          h(MuiChip, { key: `${item}#${index}`, size: 'small', label: item }),
-        ),
-      ),
-  )
-}
-
 /* ------------------------------------------------------------------------- *
  * Routed views
  * ------------------------------------------------------------------------- */
@@ -2351,22 +3047,93 @@ interface ViewProps {
   onIndexWorkspace?: () => void
 }
 
+/** Build the virtual tree from `parseTree`'s depth-ordered flat entries. */
+function buildFileTree(entries: readonly TreeEntry[]): VirtualTreeEntry<TreeEntry>[] {
+  const roots: VirtualTreeEntry<TreeEntry>[] = []
+  const open: Array<{ depth: number; children: VirtualTreeEntry<TreeEntry>[] }> = [
+    { depth: -1, children: roots },
+  ]
+  entries.forEach((entry, index) => {
+    while (open.length > 1 && (open[open.length - 1] as { depth: number }).depth >= entry.depth) open.pop()
+    const parent = open[open.length - 1] as { children: VirtualTreeEntry<TreeEntry>[] }
+    const node: VirtualTreeEntry<TreeEntry> = {
+      key: `${index}:${entry.path}`,
+      value: entry,
+      children: [],
+    }
+    parent.children.push(node)
+    open.push({ depth: entry.depth, children: node.children as VirtualTreeEntry<TreeEntry>[] })
+  })
+  return roots
+}
+
 function FilesView(props: ViewProps): React.ReactElement {
   const { state, retry } = useGraph('/graph/tree', parseTree, props.refresh, props.onSettled)
-  /** Directories whose descendants are hidden (expanded by default). */
-  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(() => new Set<string>())
-  // A different workspace is a different tree: its stored directory paths must
-  // not inherit the previous tree's collapsed state. An ordinary refresh keeps
-  // the same root, so the operator's collapse state survives it.
-  const treeRoot = state.status === 'ready' ? state.value.root : ''
-  const previousRoot = React.useRef(treeRoot)
-  React.useEffect(() => {
-    if (treeRoot.length === 0) return
-    if (previousRoot.current.length > 0 && previousRoot.current !== treeRoot) {
-      setCollapsed(new Set<string>())
+  // The file tree's root is the workspace root the host actually scanned; the
+  // entries below it are never re-rooted on a common path prefix such as `src`.
+  // Outermost manifest projects (when the host reports them) become one-level
+  // project rows; every other file stays directly under the workspace root.
+  const entries = React.useMemo(() => {
+    if (state.status !== 'ready') return []
+    const raw = state.value.entries
+    if (raw.length === 0) return []
+    const root = state.value.root
+    const inside = (path: string, projectRoot: string): boolean =>
+      projectRoot.length > 0 &&
+      (path === projectRoot || path.startsWith(`${projectRoot}/`))
+    const converted = state.value.projects
+      .map((project) => ({
+        root: workspaceRelativeRoot(project.root, root),
+        manifest: project.manifest,
+      }))
+      .filter((project) => project.root.length > 0)
+    // One project level only: drop a project nested inside another project.
+    const projects = converted.filter((project) => !converted.some((other) =>
+      other.root.length < project.root.length && inside(project.root, other.root)))
+    const projectRows: Array<VirtualTreeEntry<TreeEntry>> = []
+    let loose = raw
+    for (const [index, project] of projects.entries()) {
+      const owned = raw.filter((entry) => inside(entry.path, project.root))
+      loose = loose.filter((entry) => !inside(entry.path, project.root))
+      if (owned.length === 0) continue
+      const rootDepth = project.root.split('/').length
+      const relative = owned
+        .filter((entry) => entry.path !== project.root)
+        .map((entry) => ({ ...entry, depth: Math.max(0, entry.depth - rootDepth) }))
+      projectRows.push({
+        key: `project-root:${index}:${project.root}`,
+        value: {
+          path: project.root,
+          name: project.root,
+          directory: true,
+          depth: -1,
+          manifest: project.manifest,
+        },
+        children: buildFileTree(relative),
+      })
     }
-    previousRoot.current = treeRoot
-  }, [treeRoot])
+    return [{
+      key: `workspace-root:${root}`,
+      value: {
+        path: root,
+        name: root.length > 0 ? root : props.copy.scopeWorkspace,
+        directory: true,
+        depth: -1,
+      },
+      children: [...projectRows, ...buildFileTree(loose)],
+    }]
+  }, [state, props.copy])
+  const adapter = React.useMemo(() => entryTreeAdapter(entries), [entries])
+  // The Files view owns the tree's expansion state; `VirtualTree` is controlled.
+  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(() => new Set())
+  const onToggle = React.useCallback((key: string): void => {
+    setCollapsed((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
   if (state.status === 'loading' || state.status === 'idle') {
     return h(LoadingState, { copy: props.copy })
   }
@@ -2380,106 +3147,119 @@ function FilesView(props: ViewProps): React.ReactElement {
     })
   }
 
-  const toggleDirectory = (path: string): void => {
-    setCollapsed((current) => {
-      const next = new Set(current)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
-  }
-
-  /** True when one of this row's ancestors is collapsed (its own row stays). */
-  const hiddenByCollapsed = (path: string): boolean => {
-    let separator = path.lastIndexOf('/')
-    while (separator > 0) {
-      const ancestor = path.slice(0, separator)
-      if (collapsed.has(ancestor)) return true
-      separator = ancestor.lastIndexOf('/')
-    }
-    return false
-  }
-
-  return h(
-    MuiList,
-    { dense: true, disablePadding: true, sx: LIST_SX },
-    ...state.value.entries
-      .filter((entry) => !hiddenByCollapsed(entry.path))
-      .map((entry, index) => {
-        const selected = props.path === entry.path
-        const isCollapsed = entry.directory && collapsed.has(entry.path)
+  return h(VirtualTree<VirtualTreeEntry<TreeEntry>>, {
+    adapter,
+    collapsed,
+    onToggle,
+    'aria-label': props.copy.tabs.files,
+    slot: (depth, _index, node) => {
+      const entry = node.value
+      const hasChildren = (node.children ?? []).length > 0
+      const expanded = !collapsed.has(node.key)
+      const projectRoot = node.key.startsWith('project-root:')
+      if (node.key.startsWith('workspace-root:') || projectRoot) {
+        // Workspace/project root headings: fold, never navigate or select.
         return h(
           MuiBox,
-          {
-            key: `${entry.path}#${index}`,
-            sx: FILE_WRAPPER_SX,
-            style: { paddingLeft: 8 + entry.depth * 14 },
-          },
+          { sx: PANEL_ROW_SHELL_SX },
           h(
             MuiListItemButton,
             {
-              selected,
-              'aria-expanded': entry.directory ? !isCollapsed : undefined,
-              onClick: entry.directory
-                ? (): void => { toggleDirectory(entry.path) }
-                : (): void => {
-                  // Clicking the selected file again clears the selection. The
-                  // right panel opens the outline; the left panel only selects.
-                  if (selected) {
-                    navigate(props.side, 'files')
-                    return
-                  }
-                  navigate(props.side, props.side === 'right' ? 'outline' : 'files', { path: entry.path })
-                },
-              sx: FILE_ROW_SX,
+              role: 'treeitem',
+              'aria-level': depth + 1,
+              'aria-expanded': hasChildren ? expanded : undefined,
+              sx: PANEL_ROW_SX,
+              style: { paddingLeft: 8 + depth * 16 },
               title: entry.path,
+              onClick: hasChildren ? (): void => { onToggle(node.key) } : undefined,
             },
             h(
-              MuiBox,
-              { component: 'span', sx: TREE_ICON_SX },
-              h(
-                entry.directory
-                  ? isCollapsed ? IconChevron : IconExpand
-                  : IconArticle,
-                { fontSize: 'small' },
-              ),
+              MuiListItemIcon,
+              { sx: PANEL_ROW_ICON_SX },
+              h(projectRoot ? IconArticle : IconOutline, { fontSize: 'small' }),
             ),
-            h(
-              MuiBox,
-              { sx: TREE_TEXT_SX },
-              h(
-                MuiTypography,
-                { variant: 'body2', noWrap: true, sx: entry.directory ? TREE_DIR_LABEL_SX : undefined },
-                entry.name,
-              ),
-              h(
-                MuiTypography,
-                { variant: 'caption', color: 'text.secondary', component: 'div', noWrap: true },
-                entry.path,
-              ),
-            ),
+            h(MuiListItemText, {
+              primary: entry.name,
+              secondary: entry.manifest ?? (projectRoot ? undefined : props.copy.scopeWorkspace),
+              primaryTypographyProps: {
+                ...PANEL_ROW_PRIMARY_PROPS,
+                sx: { fontWeight: projectRoot ? 500 : 600 },
+              },
+              secondaryTypographyProps: PANEL_ROW_SECONDARY_PROPS,
+            }),
           ),
-          entry.directory || props.side !== 'right'
-            ? null
-            : h(
-              Tip,
-              { label: props.copy.tip.previewFile },
-              h(
-                MuiIconButton,
-                {
-                  size: 'small',
-                  sx: PREVIEW_BUTTON_SX,
-                  'aria-label': props.copy.tip.previewFile,
-                  onClick: (): void => {
-                    navigate(props.side, 'preview', { path: entry.path })
-                  },
-                },
-                h(IconPreview, { fontSize: 'small' }),
-              ),
-            ),
         )
-      }),
-  )
+      }
+      const selected = props.path === entry.path
+      const preview = entry.directory || props.side !== 'right'
+        ? null
+        : h(
+          Tip,
+          { label: props.copy.tip.previewFile },
+          h(
+            MuiIconButton,
+            {
+              size: 'small',
+              className: 'coordination-row-action',
+              sx: PANEL_ROW_ACTION_SX,
+              'aria-label': props.copy.tip.previewFile,
+              onClick: (event: React.MouseEvent): void => {
+                event.stopPropagation()
+                navigate(props.side, 'preview', { path: entry.path })
+              },
+            },
+            h(IconPreview, { fontSize: 'small' }),
+          ),
+        )
+      return h(
+        MuiBox,
+        { sx: PANEL_ROW_SHELL_SX },
+        h(
+          MuiListItemButton,
+          {
+            selected,
+            role: 'treeitem',
+            'aria-level': depth + 1,
+            'aria-expanded': hasChildren ? expanded : undefined,
+            sx: PANEL_ROW_SX,
+            style: {
+              paddingLeft: 8 + depth * 16,
+              paddingRight: preview === null ? undefined : 40,
+            },
+            title: entry.path,
+            onClick: hasChildren
+              ? (): void => { onToggle(node.key) }
+              : (): void => {
+                // Clicking the selected file again clears the selection. The
+                // right panel opens the outline; the left panel only selects.
+                if (selected) {
+                  navigate(props.side, 'files')
+                  return
+                }
+                navigate(props.side, props.side === 'right' ? 'outline' : 'files', { path: entry.path })
+              },
+          },
+          h(
+            MuiListItemIcon,
+            { sx: PANEL_ROW_ICON_SX },
+            h(hasChildren ? (expanded ? IconExpand : IconChevron) : IconArticle, {
+              fontSize: 'small',
+            }),
+          ),
+          h(MuiListItemText, {
+            primary: entry.name,
+            secondary: entry.path,
+            primaryTypographyProps: {
+              ...PANEL_ROW_PRIMARY_PROPS,
+              sx: hasChildren ? { fontWeight: 500 } : undefined,
+            },
+            secondaryTypographyProps: PANEL_ROW_SECONDARY_PROPS,
+          }),
+        ),
+        preview,
+      )
+    },
+  })
 }
 
 function familyLabel(family: string, copy: PanelCopy): string {
@@ -2487,136 +3267,612 @@ function familyLabel(family: string, copy: PanelCopy): string {
   return isPanelFamily(family) ? copy.families[family] : family
 }
 
-/** Outline nodes of one family or one file, each with a preview affordance. */
-function OutlineRows(props: {
-  side: PanelSide
-  copy: PanelCopy
-  nodes: readonly OutlineNode[]
-  fallbackPath: string | null
-}): React.ReactElement {
-  return h(
-    MuiBox,
-    null,
-    ...props.nodes.map((node, index) => {
-      const previewPath = node.path ?? props.fallbackPath
-      return h(
-        MuiBox,
-        {
-          key: `${node.name}#${index}`,
-          sx: OUTLINE_ROW_SX,
-          style: { paddingLeft: 8 + node.depth * 16 },
-        },
-        h(MuiTypography, { variant: 'body2', noWrap: true, sx: OUTLINE_NAME_SX }, node.name),
-        node.kind.length > 0
-          ? h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: OUTLINE_KIND_SX }, node.kind)
-          : null,
-        previewPath === null
-          ? null
-          : h(
-            Tip,
-            { label: props.copy.tip.previewFile },
-            h(
-              MuiIconButton,
-              {
-                size: 'small',
-                sx: PREVIEW_BUTTON_SX,
-                'aria-label': props.copy.tip.previewFile,
-                onClick: (): void => {
-                  navigate(props.side, 'preview', { path: previewPath })
-                },
-              },
-              h(IconPreview, { fontSize: 'small' }),
-            ),
-          ),
-      )
-    }),
-  )
+/** One row value handed to the outline's virtual tree slot. */
+type OutlineRowValue =
+  | { kind: 'root'; title: string; subtitle: string | null }
+  | { kind: 'project'; title: string; manifest: string }
+  | { kind: 'group'; group: OutlineFileGroup; title: string; nodeCount: number }
+  | { kind: 'node'; node: OutlineNode; fallbackPath: string | null }
+
+/**
+ * Node kinds kept out of the local (file) outline.
+ *
+ * The local page is a document-structure tree: modules, classes, functions,
+ * methods, interfaces, types, enumerations and namespaces. Variable/property/
+ * static members, imports/exports and line/sentence leaves are noise there and
+ * are filtered out. The global outline counts the same structure-only set.
+ */
+const OUTLINE_EXCLUDED_KINDS: readonly string[] = [
+  'variable',
+  'property',
+  'static',
+  'import',
+  'export',
+  'line',
+  'sentence',
+]
+
+/** Pure structure filter, shared by both outline modes and the tests. */
+export function isOutlineStructureKind(kind: string): boolean {
+  return OUTLINE_EXCLUDED_KINDS.indexOf(kind.trim().toLowerCase()) === -1
 }
 
+function structureNodes(nodes: readonly OutlineNode[]): OutlineNode[] {
+  return nodes.filter((node) => isOutlineStructureKind(node.kind))
+}
+
+const EMPTY_OUTLINE_NODES: readonly OutlineNode[] = []
+const EMPTY_OUTLINE_GROUPS: readonly OutlineFileGroup[] = []
+const EMPTY_OUTLINE_PROJECTS: readonly OutlineProject[] = []
+const EMPTY_TREE_PROJECTS: readonly TreeProject[] = []
+
+/** True when `path` is `root` itself or lives under it; `''` is the workspace. */
+function isOutlinePathInside(path: string, root: string): boolean {
+  if (root.length === 0) return true
+  return path === root || path.startsWith(`${root}/`)
+}
+
+/**
+ * Convert an absolute host project root to a workspace-relative one.
+ *
+ * Group titles and prefix matching are relative; the workspace root itself
+ * becomes `''`. Paths that are already relative (or outside the workspace) are
+ * returned unchanged.
+ */
+export function workspaceRelativeRoot(root: string, workspaceRoot: string): string {
+  const path = canonicalPath(root)
+  const base = canonicalPath(workspaceRoot)
+  if (base.length === 0) return path
+  const lowerPath = path.toLowerCase()
+  const lowerBase = base.toLowerCase()
+  if (lowerPath === lowerBase) return ''
+  if (lowerPath.startsWith(`${lowerBase}/`)) return path.slice(base.length + 1)
+  return path
+}
+
+/**
+ * Only the outermost manifest project of a subtree survives.
+ *
+ * The document tree has exactly one project level: a nested `package.json` /
+ * `pom.xml` inside an outer project never creates a child project or a nested
+ * group. Projects whose root sits under another project's root are folded into
+ * that outer project. The workspace root (`''`) is the outermost of all.
+ */
+export function outermostOutlineProjects(
+  projects: readonly OutlineProject[],
+): OutlineProject[] {
+  const visible: OutlineProject[] = []
+  const seen = new Set<string>()
+  for (const project of projects) {
+    const key = canonicalPath(project.root).toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    // Keep the caller's object identity: `groupOutlineByProject` buckets by it.
+    visible.push(project)
+  }
+  return visible.filter((project) => {
+    const root = canonicalPath(project.root)
+    return !visible.some((other) => {
+      if (other === project) return false
+      const otherRoot = canonicalPath(other.root)
+      return otherRoot.length < root.length && isOutlinePathInside(root, otherRoot)
+    })
+  })
+}
+
+/**
+ * The outer project that owns `path`, or `undefined` for workspace-root files.
+ *
+ * The shallowest matching root wins, so a file under a nested manifest is
+ * attributed to the outer project rather than to the nested one.
+ */
+export function outlineProjectOf(
+  path: string | null,
+  projects: readonly OutlineProject[],
+): OutlineProject | undefined {
+  const target = path === null ? '' : canonicalPath(path)
+  if (target.length === 0) return undefined
+  let best: OutlineProject | undefined
+  let bestLength = Number.POSITIVE_INFINITY
+  for (const project of outermostOutlineProjects(projects)) {
+    const root = canonicalPath(project.root)
+    const explicit = project.files.some((file) => canonicalPath(file) === target)
+    if (!explicit && !isOutlinePathInside(target, root)) continue
+    if (root.length < bestLength) {
+      best = project
+      bestLength = root.length
+    }
+  }
+  return best
+}
+
+/** One project bucket plus the file groups that belong to it. */
+export interface OutlineProjectGroups {
+  readonly project: OutlineProject
+  readonly groups: OutlineFileGroup[]
+}
+
+/**
+ * Bucket file groups by outermost manifest project.
+ *
+ * `loose` holds every file with no manifest owner; those are rendered directly
+ * under the workspace root. When `projects` is empty every group is `loose`, so
+ * the UI shows the workspace root plus file groups and never invents a project.
+ */
+export function groupOutlineByProject(
+  groups: readonly OutlineFileGroup[],
+  projects: readonly OutlineProject[],
+): { readonly projects: OutlineProjectGroups[]; readonly loose: OutlineFileGroup[] } {
+  const visible = outermostOutlineProjects(projects)
+  const buckets: OutlineProjectGroups[] = visible.map((project) => ({
+    project,
+    groups: [],
+  }))
+  const loose: OutlineFileGroup[] = []
+  for (const group of groups) {
+    const owner = outlineProjectOf(group.path, visible)
+    const bucket = owner === undefined
+      ? undefined
+      : buckets.find((entry) => entry.project === owner)
+    if (bucket === undefined) loose.push(group)
+    else bucket.groups.push(group)
+  }
+  return { projects: buckets, loose }
+}
+
+/**
+ * Turn one outline group's depth-ordered nodes into a virtual tree.
+ *
+ * `depth` is the family nesting order, so the host list is already a pre-order
+ * traversal: a node belongs to the last deeper node and a same/shallower node
+ * closes the branch.
+ */
+function buildOutlineNodeTree(
+  nodes: readonly OutlineNode[],
+  prefix: string,
+): VirtualTreeEntry<OutlineRowValue>[] {
+  const roots: VirtualTreeEntry<OutlineRowValue>[] = []
+  const open: Array<{ depth: number; key: string; children: VirtualTreeEntry<OutlineRowValue>[] }> = [
+    { depth: -1, key: prefix, children: roots },
+  ]
+  nodes.forEach((node, index) => {
+    while (open.length > 1 && (open[open.length - 1] as { depth: number }).depth >= node.depth) open.pop()
+    const parent = open[open.length - 1] as { key: string; children: VirtualTreeEntry<OutlineRowValue>[] }
+    const key = `${parent.key}.${index}`
+    const entry: VirtualTreeEntry<OutlineRowValue> = {
+      key,
+      value: { kind: 'node', node, fallbackPath: null },
+      children: [],
+    }
+    parent.children.push(entry)
+    open.push({ depth: node.depth, key, children: entry.children as VirtualTreeEntry<OutlineRowValue>[] })
+  })
+  return roots
+}
+
+interface OutlineGroupContext {
+  readonly fallbackPath: string | null
+  readonly keyPrefix: string
+}
+
+/** One file group row: path title, family chip and structure-node count. */
+function outlineGroupEntry(
+  group: OutlineFileGroup,
+  index: number,
+  context: OutlineGroupContext,
+): VirtualTreeEntry<OutlineRowValue> {
+  const nodes = structureNodes(group.nodes)
+  const key = `${context.keyPrefix}:file:${index}:${group.path ?? group.family}`
+  const fill = (entry: VirtualTreeEntry<OutlineRowValue>): VirtualTreeEntry<OutlineRowValue> => {
+    if (entry.value.kind !== 'node') return entry
+    return {
+      ...entry,
+      value: { kind: 'node', node: entry.value.node, fallbackPath: context.fallbackPath },
+      children: (entry.children ?? []).map(fill),
+    }
+  }
+  return {
+    key,
+    value: { kind: 'group', group, title: group.path ?? group.family, nodeCount: nodes.length },
+    children: buildOutlineNodeTree(nodes, key).map(fill),
+  }
+}
+
+/**
+ * The Outline tab is two routed modes under one hash route.
+ *
+ *  - `right/outline` (no `path`): one workspace-root row, then either outermost
+ *    manifest projects (project root + manifest caption) or the file groups
+ *    directly. Groups default collapsed; clicking a group opens that file.
+ *  - `right/outline?path=…`: one root row for the current file (name + relative
+ *    path) and only its structure nodes. A response that is not file-scoped is
+ *    treated as an error state, never rendered as the global group list.
+ *
+ * Both modes render the same controlled {@link VirtualTree}; the component
+ * stays mounted across `path` changes (see DockedPanel's Fade key), so the
+ * global collapse state survives the round trip.
+ */
 function OutlineView(props: ViewProps): React.ReactElement {
+  const local = props.path !== null
   const { state, retry } = useGraph(withPath('/graph/outline', props.path), parseOutline, props.refresh, props.onSettled)
+  // The workspace root is part of the global tree only; the tree route is the
+  // authoritative fallback when the outline payload does not include `root`.
+  const treeGraph = useGraph(local ? null : '/graph/tree', parseTree, props.refresh)
+  const data = state.status === 'ready' ? state.value : null
+  const scope = data?.scope ?? 'workspace'
+  const groups = data !== null && data.scope === 'workspace' ? data.groups : EMPTY_OUTLINE_GROUPS
+  const declaredProjects = data !== null && data.scope === 'workspace' ? data.projects : EMPTY_OUTLINE_PROJECTS
+  const treeProjects = treeGraph.state.status === 'ready'
+    ? treeGraph.state.value.projects
+    : EMPTY_TREE_PROJECTS
+  const fileNodes = data !== null && data.scope === 'file' ? structureNodes(data.nodes) : EMPTY_OUTLINE_NODES
+  const workspaceRoot = (data?.root ?? '').length > 0
+    ? (data?.root ?? '')
+    : treeGraph.state.status === 'ready'
+      ? treeGraph.state.value.root
+      : ''
+  /**
+   * The effective project list for the global outline.
+   *
+   * 1. `/graph/tree.projects` is authoritative (outermost manifests only): its
+   *    absolute roots are converted to workspace-relative titles.
+   * 2. If the tree has no manifest projects, a future outline-level `projects`
+   *    array is honoured.
+   * 3. Otherwise the `project` echoed on each outline group is used.
+   *
+   * Empty means "no manifest": every file group hangs directly off the single
+   * workspace root, and no project row is invented.
+   */
+  const effectiveProjects = React.useMemo(() => {
+    const collected: OutlineProject[] = []
+    for (const project of treeProjects) {
+      const root = workspaceRelativeRoot(project.root, workspaceRoot)
+      collected.push({
+        root,
+        name: root.length > 0 ? baseName(root) : props.copy.scopeWorkspace,
+        manifest: project.manifest,
+        files: [],
+      })
+    }
+    if (collected.length === 0) {
+      for (const project of declaredProjects) {
+        collected.push({
+          ...project,
+          root: workspaceRelativeRoot(project.root, workspaceRoot),
+        })
+      }
+    }
+    if (collected.length === 0) {
+      for (const group of groups) {
+        if (group.project === undefined) continue
+        collected.push({
+          ...group.project,
+          root: workspaceRelativeRoot(group.project.root, workspaceRoot),
+        })
+      }
+    }
+    const byRoot = new Map<string, OutlineProject>()
+    for (const project of collected) {
+      const key = project.root.toLowerCase()
+      if (!byRoot.has(key)) byRoot.set(key, project)
+    }
+    return [...byRoot.values()]
+  }, [treeProjects, declaredProjects, groups, workspaceRoot, props.copy.scopeWorkspace])
+  const entries = React.useMemo(() => {
+    if (local) {
+      const path = props.path
+      if (path === null || fileNodes.length === 0) return []
+      const key = `outline-file:${path}`
+      const fill = (entry: VirtualTreeEntry<OutlineRowValue>): VirtualTreeEntry<OutlineRowValue> => {
+        if (entry.value.kind !== 'node') return entry
+        return {
+          ...entry,
+          value: { kind: 'node', node: entry.value.node, fallbackPath: path },
+          children: (entry.children ?? []).map(fill),
+        }
+      }
+      const children = buildOutlineNodeTree(fileNodes, key).map(fill)
+      return [{
+        key: `file-root:${path}`,
+        value: { kind: 'root' as const, title: baseName(path), subtitle: path },
+        children,
+      }]
+    }
+    const rootTitle = workspaceRoot.length > 0 ? workspaceRoot : props.copy.scopeWorkspace
+    const bucketed = groupOutlineByProject(groups, effectiveProjects)
+    const projectEntries: Array<VirtualTreeEntry<OutlineRowValue>> = bucketed.projects.map((bucket, index) => ({
+      key: `project:${index}:${bucket.project.root}`,
+      value: { kind: 'project', title: bucket.project.root, manifest: bucket.project.manifest },
+      children: bucket.groups.map((group, groupIndex) => outlineGroupEntry(group, groupIndex, {
+        fallbackPath: group.path,
+        keyPrefix: `root:${rootTitle}:project:${index}:${bucket.project.root}`,
+      })),
+    }))
+    const looseEntries = bucketed.loose.map((group, index) => outlineGroupEntry(group, index, {
+      fallbackPath: group.path,
+      keyPrefix: `root:${rootTitle}:loose`,
+    }))
+    // Exactly one workspace-root grouping; files without a manifest stay
+    // directly under it and nested manifests never create a second level.
+    return [{
+      key: `workspace-root:${rootTitle}`,
+      value: { kind: 'root' as const, title: rootTitle, subtitle: null },
+      children: [...projectEntries, ...looseEntries],
+    }]
+  }, [local, fileNodes, groups, effectiveProjects, workspaceRoot, props.path, props.copy])
+  const adapter = React.useMemo(() => entryTreeAdapter(entries), [entries])
+  // The Outline view owns the tree's expansion state. The global mode starts
+  // with every file group collapsed; the state is not reset when the route
+  // flips to the local mode and back.
+  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(() => new Set())
+  const collapsedWorkspace = React.useRef(false)
+  const groupKeys = React.useMemo(() => {
+    const keys: string[] = []
+    const walk = (items: readonly VirtualTreeEntry<OutlineRowValue>[]): void => {
+      for (const item of items) {
+        if (item.value.kind === 'group') keys.push(item.key)
+        walk(item.children ?? [])
+      }
+    }
+    walk(entries)
+    return keys
+  }, [entries])
+  React.useEffect(() => {
+    if (scope !== 'workspace' || collapsedWorkspace.current || groupKeys.length === 0) return
+    collapsedWorkspace.current = true
+    setCollapsed(new Set(groupKeys))
+  }, [groupKeys, scope])
+  const onToggle = React.useCallback((key: string): void => {
+    setCollapsed((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
   if (state.status === 'loading' || state.status === 'idle') {
     return h(LoadingState, { copy: props.copy })
   }
   if (state.status === 'error') return h(ErrorState, { copy: props.copy, onRetry: retry })
-
-  const groups = state.value.groups
-  const total = groups.reduce((sum, group) => sum + group.nodes.length, 0)
+  // A local outline must be file-scoped. Never fall back to the workspace list.
+  if (local && state.value.scope !== 'file') {
+    return h(EmptyState, { message: props.copy.outline.empty })
+  }
+  const total = local
+    ? fileNodes.length
+    : groups.reduce((sum, group) => sum + structureNodes(group.nodes).length, 0)
   if (total === 0) return h(EmptyState, { message: props.copy.outline.empty })
 
-  if (state.value.scope === 'workspace') {
-    return h(
-      MuiBox,
-      null,
-      ...groups.map((group, index) => {
-        const title = group.path ?? (familyLabel(group.family, props.copy) || props.copy.scopeWorkspace)
+  return h(VirtualTree<VirtualTreeEntry<OutlineRowValue>>, {
+    adapter,
+    collapsed,
+    onToggle,
+    'aria-label': props.copy.tabs.outline,
+    slot: (depth, _index, node) => {
+      const value = node.value
+      const hasChildren = (node.children ?? []).length > 0
+      const expanded = !collapsed.has(node.key)
+      if (value.kind === 'root' || value.kind === 'project') {
+        // Root and project rows are section headings: clicking them folds the
+        // section, they never navigate away.
+        const heading = value.title.length > 0 ? value.title : props.copy.scopeWorkspace
+        const caption = value.kind === 'project' ? value.manifest : ''
         return h(
-          MuiAccordion,
-          { key: `${group.path ?? group.family}#${index}`, disableGutters: true, sx: ACCORDION_SX },
+          MuiBox,
+          { sx: PANEL_ROW_SHELL_SX },
           h(
-            MuiAccordionSummary,
-            { expandIcon: h(IconExpand, { fontSize: 'small' }), sx: SUMMARY_SX },
+            MuiListItemButton,
+            {
+              role: 'treeitem',
+              'aria-level': depth + 1,
+              'aria-expanded': hasChildren ? expanded : undefined,
+              sx: PANEL_ROW_SX,
+              style: { paddingLeft: 8 + depth * 16 },
+              title: heading,
+              onClick: hasChildren ? (): void => { onToggle(node.key) } : undefined,
+            },
             h(
-              MuiBox,
-              { sx: SUMMARY_CONTENT_SX },
-              h(
-                MuiTypography,
-                { variant: 'body2', noWrap: true, sx: SUMMARY_PATH_SX, title: group.path ?? undefined },
-                title,
-              ),
-              group.family.length > 0 && group.family !== 'unknown' && group.path !== null
-                ? h(MuiChip, {
-                  size: 'small',
-                  variant: 'outlined',
-                  label: familyLabel(group.family, props.copy),
-                })
-                : null,
+              MuiListItemIcon,
+              { sx: PANEL_ROW_ICON_SX },
+              h(value.kind === 'root' ? IconOutline : IconArticle, { fontSize: 'small' }),
             ),
-          ),
-          h(
-            MuiAccordionDetails,
-            { sx: DETAILS_SX },
-            h(OutlineRows, {
-              side: props.side,
-              copy: props.copy,
-              nodes: group.nodes,
-              fallbackPath: group.path,
+            h(MuiListItemText, {
+              primary: h(
+                MuiBox,
+                { component: 'span', sx: { display: 'flex', alignItems: 'baseline', gap: 1, minWidth: 0 } },
+                h(
+                  MuiTypography,
+                  {
+                    component: 'span',
+                    variant: 'body2',
+                    noWrap: true,
+                    sx: { fontWeight: value.kind === 'root' ? 600 : 500 },
+                  },
+                  heading,
+                ),
+                caption.length > 0
+                  ? h(
+                    MuiTypography,
+                    { component: 'span', variant: 'caption', noWrap: true, color: 'text.secondary' },
+                    caption,
+                  )
+                  : null,
+              ),
+              primaryTypographyProps: { component: 'div' },
             }),
           ),
         )
-      }),
-    )
-  }
-
-  return h(
-    MuiBox,
-    { sx: LIST_SX },
-    ...groups.map((group, groupIndex) => {
-      const label = familyLabel(group.family, props.copy)
+      }
+      if (value.kind === 'group') {
+        const family = familyLabel(value.group.family, props.copy)
+        const title = value.title.length > 0 ? value.title : (family.length > 0 ? family : props.copy.scopeWorkspace)
+        // Global mode: click opens the file's local outline; the trailing
+        // chevron is the separate expand/collapse affordance.
+        const toggleAction = hasChildren
+          ? h(
+            Tip,
+            { label: expanded ? props.copy.outlineCollapse : props.copy.outlineExpand },
+            h(
+              MuiIconButton,
+              {
+                size: 'small',
+                className: 'coordination-row-action',
+                sx: PANEL_ROW_ACTION_SX,
+                'aria-label': expanded ? props.copy.outlineCollapse : props.copy.outlineExpand,
+                onClick: (event: React.MouseEvent): void => {
+                  event.stopPropagation()
+                  onToggle(node.key)
+                },
+              },
+              h(expanded ? IconExpand : IconChevron, { fontSize: 'small' }),
+            ),
+          )
+          : null
+        return h(
+          MuiBox,
+          { sx: PANEL_ROW_SHELL_SX },
+          h(
+            MuiListItemButton,
+            {
+              role: 'treeitem',
+              'aria-level': depth + 1,
+              'aria-expanded': hasChildren ? expanded : undefined,
+              sx: PANEL_ROW_SX,
+              style: {
+                paddingLeft: 8 + depth * 16,
+                paddingRight: toggleAction === null ? undefined : 40,
+              },
+              title,
+              onClick: value.group.path === null
+                ? undefined
+                : (): void => { navigate(props.side, 'outline', { path: value.group.path }) },
+            },
+            h(MuiListItemIcon, { sx: PANEL_ROW_ICON_SX }, h(IconArticle, { fontSize: 'small' })),
+            h(MuiListItemText, {
+              primary: title,
+              secondary: h(
+                MuiBox,
+                {
+                  component: 'span',
+                  sx: { display: 'inline-flex', alignItems: 'center', gap: 0.5, minWidth: 0 },
+                },
+                family.length > 0
+                  ? h(MuiChip, {
+                    size: 'small',
+                    variant: 'outlined',
+                    label: family,
+                    sx: { height: 18, fontSize: 10 },
+                  })
+                  : null,
+                h(
+                  MuiTypography,
+                  { component: 'span', variant: 'caption', noWrap: true, color: 'text.secondary' },
+                  fillTemplate(props.copy.outlineNodeCount, { count: String(value.nodeCount) }),
+                ),
+              ),
+              primaryTypographyProps: {
+                ...PANEL_ROW_PRIMARY_PROPS,
+                sx: { fontWeight: 500 },
+              },
+              secondaryTypographyProps: { component: 'div' },
+            }),
+          ),
+          toggleAction,
+        )
+      }
+      const target = value.node.path ?? value.fallbackPath
+      const kindLabel = value.node.kind.length > 0
+        ? fillTemplate(props.copy.outlineKind, { kind: value.node.kind })
+        : value.node.name
+      const preview = props.side !== 'right' || target === null
+        ? null
+        : h(
+          Tip,
+          { label: props.copy.tip.previewFile },
+          h(
+            MuiIconButton,
+            {
+              size: 'small',
+              className: 'coordination-row-action',
+              sx: PANEL_ROW_ACTION_SX,
+              'aria-label': props.copy.tip.previewFile,
+              onClick: (event: React.MouseEvent): void => {
+                event.stopPropagation()
+                navigate(props.side, 'preview', { path: target })
+              },
+            },
+            h(IconPreview, { fontSize: 'small' }),
+          ),
+        )
       return h(
         MuiBox,
-        { key: `${group.family}#${groupIndex}`, sx: OUTLINE_GROUP_SX },
-        label.length > 0
-          ? h(MuiTypography, { variant: 'overline', sx: GROUP_HEADER_SX }, label)
-          : null,
-        h(OutlineRows, {
-          side: props.side,
-          copy: props.copy,
-          nodes: group.nodes,
-          fallbackPath: props.path,
-        }),
+        { sx: PANEL_ROW_SHELL_SX },
+        h(
+          MuiListItemButton,
+          {
+            role: 'treeitem',
+            'aria-level': depth + 1,
+            'aria-expanded': hasChildren ? expanded : undefined,
+            sx: PANEL_ROW_SX,
+            style: {
+              paddingLeft: 8 + depth * 16,
+              paddingRight: preview === null ? undefined : 40,
+            },
+            title: kindLabel,
+            onClick: hasChildren
+              ? (): void => { onToggle(node.key) }
+              : target === null
+                ? undefined
+                : (): void => { navigate(props.side, 'files', { path: target }) },
+          },
+          h(
+            MuiListItemIcon,
+            { sx: PANEL_ROW_ICON_SX },
+            h(hasChildren ? (expanded ? IconExpand : IconChevron) : IconArticle, {
+              fontSize: 'small',
+            }),
+          ),
+          h(MuiListItemText, {
+            primary: value.node.name,
+            secondary: value.node.kind.length > 0 ? value.node.kind : undefined,
+            primaryTypographyProps: PANEL_ROW_PRIMARY_PROPS,
+            secondaryTypographyProps: PANEL_ROW_SECONDARY_PROPS,
+          }),
+        ),
+        preview,
       )
-    }),
-  )
+    },
+  })
 }
 
+/** Adapter input while the dependencies request is loading or failed. */
+const EMPTY_DEPENDENCY_LINKS: readonly DependencyLink[] = []
+
+/**
+ * Dependency list (bottom panel).
+ *
+ * The cycle warning is the list's header: it stays above the virtual list in
+ * the same panel scroller, and {@link useVirtualOffset} measures the list's own
+ * top so the window arithmetic starts below it. `collapseTick` remounts the
+ * list after the banner's Collapse transition so that offset is re-measured at
+ * its final height, not mid-animation.
+ */
 function DependenciesView(props: ViewProps): React.ReactElement {
   const { state, retry } = useGraph(withPath('/graph/dependencies', props.path), parseDependencies, props.refresh, props.onSettled)
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
+  const [collapseTick, setCollapseTick] = React.useState(0)
   // Keep the last non-empty cycle list so the Collapse has content to animate
   // out when a refresh reports no cycles.
   const lastCycles = React.useRef<readonly string[][]>([])
   if (state.status === 'ready' && state.value.cycles.length > 0) lastCycles.current = state.value.cycles
+  const links = state.status === 'ready' ? state.value.links : EMPTY_DEPENDENCY_LINKS
+  const adapter = React.useMemo(
+    () => createVirtualListAdapter(
+      links,
+      (link, index) => `${link.from}->${link.to}#${index}`,
+    ),
+    [links],
+  )
 
   if (state.status === 'loading' || state.status === 'idle') {
     return h(LoadingState, { copy: props.copy })
@@ -2632,103 +3888,66 @@ function DependenciesView(props: ViewProps): React.ReactElement {
     null,
     h(
       MuiCollapse,
-      { in: state.value.cycles.length > 0, timeout: reducedMotion ? 0 : 'auto', unmountOnExit: true },
+      {
+        in: state.value.cycles.length > 0,
+        timeout: reducedMotion ? 0 : 'auto',
+        unmountOnExit: true,
+        onEntered: (): void => { setCollapseTick((tick) => tick + 1) },
+        onExited: (): void => { setCollapseTick((tick) => tick + 1) },
+      },
       visibleCycles.length > 0 ? h(CycleAlert, { copy: props.copy, cycles: visibleCycles }) : null,
     ),
-    ...state.value.links.map((link, index) => {
-      const selected = props.path !== null && (samePath(link.from, props.path) || samePath(link.to, props.path))
-      return h(
-        MuiBox,
-        {
-          key: `${link.from}->${link.to}#${index}`,
-          sx: selected ? DEP_ROW_SELECTED_SX : DEP_ROW_SX,
-          title: `${link.from} → ${link.to}`,
-        },
-        h(
-          MuiBox,
-          { sx: DEP_LABEL_SX },
-          h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.from),
-          h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: DEP_ARROW_SX }, '→'),
-          h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.to),
-        ),
-        h(
-          MuiBox,
-          { sx: DEP_CHIPS_SX },
-          link.relation.length > 0
-            ? h(MuiChip, { size: 'small', variant: 'outlined', label: link.relation })
-            : null,
-          link.cyclic
-            ? h(MuiChip, {
-              size: 'small',
-              color: 'warning',
-              icon: h(IconWarning, { fontSize: 'small' }),
-              label: props.copy.cycle,
-            })
-            : null,
-        ),
-      )
-    }),
-  )
-}
-
-function ImportsView(props: ViewProps): React.ReactElement {
-  const { state, retry } = useGraph(withPath('/graph/imports', props.path), parseImports, props.refresh, props.onSettled)
-  if (state.status === 'loading' || state.status === 'idle') {
-    return h(LoadingState, { copy: props.copy })
-  }
-  if (state.status === 'error') return h(ErrorState, { copy: props.copy, onRetry: retry })
-  if (state.value.rows.length === 0) return h(EmptyState, { message: props.copy.imports.empty })
-
-  return h(
-    MuiBox,
-    null,
-    ...state.value.rows.map((row, index) => {
-      const related = row.cycles.length > 0
-        ? row.cycles
-        : state.value.cycles.filter((cycle) => cycle.some((entry) => samePath(entry, row.path)))
-      return h(
-        MuiAccordion,
-        { key: `${row.path}#${index}`, disableGutters: true, sx: ACCORDION_SX },
-        h(
-          MuiAccordionSummary,
+    h(VirtualList<DependencyLink>, {
+      key: `dependencies:${collapseTick}`,
+      adapter,
+      'aria-label': props.copy.tabs.dependencies,
+      slot: (_index, link) => {
+        const selected = props.path !== null &&
+          (samePath(link.from, props.path) || samePath(link.to, props.path))
+        return h(
+          MuiListItemButton,
           {
-            expandIcon: h(IconExpand, { fontSize: 'small' }),
-            sx: SUMMARY_SX,
+            role: 'option',
+            'aria-selected': selected,
+            selected,
+            sx: PANEL_ROW_SX,
+            title: `${link.from} → ${link.to}`,
           },
           h(
-            MuiBox,
-            { sx: SUMMARY_CONTENT_SX },
-            h(
-              MuiTypography,
-              { variant: 'body2', noWrap: true, sx: SUMMARY_PATH_SX, title: row.path },
-              row.path,
-            ),
-            row.cyclic
-              ? h(MuiChip, {
-                size: 'small',
-                color: 'warning',
-                icon: h(IconWarning, { fontSize: 'small' }),
-                label: props.copy.cycle,
-              })
-              : null,
+            MuiListItemIcon,
+            { sx: PANEL_ROW_ICON_SX },
+            h(IconDependencies, { fontSize: 'small' }),
           ),
-        ),
-        h(
-          MuiAccordionDetails,
-          { sx: DETAILS_SX },
-          row.cyclic ? h(CycleLines, { copy: props.copy, cycles: related }) : null,
-          h(ImportGroup, {
-            copy: props.copy,
-            label: props.copy.imports.imported,
-            items: row.imported,
+          h(MuiListItemText, {
+            primary: h(
+              MuiBox,
+              { component: 'span', sx: DEP_LABEL_SX },
+              h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.from),
+              h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: DEP_ARROW_SX }, '→'),
+              h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.to),
+            ),
+            secondary: link.relation.length > 0 || link.cyclic
+              ? h(
+                MuiBox,
+                { component: 'span', sx: DEP_CHIPS_SX },
+                link.relation.length > 0
+                  ? h(MuiChip, { size: 'small', variant: 'outlined', label: link.relation })
+                  : null,
+                link.cyclic
+                  ? h(MuiChip, {
+                    size: 'small',
+                    color: 'warning',
+                    icon: h(IconWarning, { fontSize: 'small' }),
+                    label: props.copy.cycle,
+                  })
+                  : null,
+              )
+              : undefined,
+            primaryTypographyProps: { component: 'div' },
+            secondaryTypographyProps: { component: 'div' },
           }),
-          h(ImportGroup, {
-            copy: props.copy,
-            label: props.copy.imports.exported,
-            items: row.exported,
-          }),
-        ),
-      )
+        )
+      },
     }),
   )
 }
@@ -2770,6 +3989,75 @@ const HTML_SANITIZE_CONFIG = {
   USE_PROFILES: { html: true },
   FORBID_TAGS: FORBIDDEN_HTML_TAGS,
   FORBID_ATTR: FORBIDDEN_HTML_ATTRS,
+}
+
+/**
+ * DOMPurify whitelist for rendered transcript messages.
+ *
+ * Same deny lists as every other sanitized surface, plus the two attributes the
+ * link renderer sets (`target="_blank"`, `rel="noreferrer"`). Inline `style` is
+ * still forbidden: Prism token colours are expressed as classes instead.
+ */
+export const MESSAGE_SANITIZE_CONFIG = {
+  ...HTML_SANITIZE_CONFIG,
+  ADD_ATTR: ['target', 'rel'],
+}
+
+/** The small DOMPurify surface the transcript renderer needs. */
+export interface MessageHtmlSanitizer {
+  sanitize(html: string, config?: Record<string, unknown>): unknown
+}
+
+/** Elements whose whole subtree is removed before the string reaches the DOM. */
+const SCRUBBED_HTML_TAGS = FORBIDDEN_HTML_TAGS.filter((tag) => tag !== 'link' && tag !== 'meta')
+
+/**
+ * Defence-in-depth string scrub applied after DOMPurify (and on its own in the
+ * DOM-less unit-test environment).
+ *
+ * DOMPurify is the primary sanitizer. This pass exists so a sanitizer failure
+ * or a future config regression cannot let a script/event handler/`javascript:`
+ * URL through: every forbidden element is removed with its content, every
+ * `on*`/`style`/`srcset`/`contenteditable` attribute is stripped, and
+ * `javascript:`/`data:`/`vbscript:` URLs are dropped. It is intentionally
+ * conservative — losing a styling attribute beats executing one.
+ */
+export function scrubMessageHtml(html: string): string {
+  let clean = html
+  for (const tag of SCRUBBED_HTML_TAGS) {
+    clean = clean.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi'), '')
+    clean = clean.replace(new RegExp(`<${tag}\\b[^>]*\\/?>`, 'gi'), '')
+  }
+  clean = clean.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+  clean = clean.replace(
+    /\s+(?:style|srcset|contenteditable|srcdoc)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
+    '',
+  )
+  clean = clean.replace(
+    /\s+(?:href|src|xlink:href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi,
+    (match: string, doubleQuoted: string | undefined, singleQuoted: string | undefined) => {
+      const value = doubleQuoted ?? singleQuoted ?? ''
+      return /^\s*(?:javascript|data|vbscript):/i.test(value) ? '' : match
+    },
+  )
+  clean = clean.replace(
+    /\s+(?:href|src|xlink:href)\s*=\s*([^\s"'>]+)/gi,
+    (match: string, value: string) =>
+      /^\s*(?:javascript|data|vbscript):/i.test(value) ? '' : match,
+  )
+  return clean
+}
+
+/**
+ * Sanitize one rendered message before `dangerouslySetInnerHTML`.
+ *
+ * The runtime always passes the lazily loaded DOMPurify instance; the tests
+ * omit it and exercise the DOM-free scrub, so the policy is verifiable without
+ * a browser DOM. Output is always a fresh string.
+ */
+export function sanitizeMessageHtml(html: string, purify?: MessageHtmlSanitizer): string {
+  const purified = purify === undefined ? html : String(purify.sanitize(html, MESSAGE_SANITIZE_CONFIG))
+  return scrubMessageHtml(purified)
 }
 
 function SheetsPreview(props: {
@@ -2883,62 +4171,302 @@ interface PreviewRendererProps {
  * any failure in those libraries; the boundary around this subtree contains a
  * failed load or render.
  */
-const LazyPreviewRenderer = React.lazy(async (): Promise<{
-  default: React.ComponentType<PreviewRendererProps>
-}> => {
-  const [
-    markdownModule,
-    remarkGfmModule,
-    remarkMathModule,
-    rehypeKatexModule,
-    purifyModule,
-    prismModule,
-  ] = await Promise.all([
-    import('react-markdown'),
-    import('remark-gfm'),
-    import('remark-math'),
-    import('rehype-katex'),
-    import('dompurify'),
-    import('prism-react-renderer'),
-  ])
 
-  const MarkdownView = markdownModule.default as unknown as Loose
-  const remarkGfm = remarkGfmModule.default
-  const remarkMath = remarkMathModule.default
-  const rehypeKatex = rehypeKatexModule.default
-  const DOMPurify = purifyModule.default
-  const MuiHighlight = prismModule.Highlight as unknown as Loose
+/* ------------------------------------------------------------------------- *
+ * Markdown pipeline shared by the file preview and the agent transcript
+ * ------------------------------------------------------------------------- */
 
-  // DOMPurify's attribute allowlist already drops `on*`; this hook makes the
-  // guarantee explicit for every future attribute name as well. The factory
-  // export used outside a browser has no hooks, so guard the registration.
-  if (typeof DOMPurify.addHook === 'function') {
-    DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
-      const name = data.attrName.toLowerCase()
-      if (name.startsWith('on') || name === 'contenteditable' || name === 'style' || name === 'srcset') {
-        data.keepAttr = false
+interface MarkdownModules {
+  MarkdownView: Loose
+  remarkGfm: unknown
+  remarkMath: unknown
+  rehypeKatex: (options: { readonly output: 'mathml' }) => unknown
+  DOMPurify: {
+    sanitize(html: string, config?: Record<string, unknown>): unknown
+    addHook?: (
+      hook: string,
+      callback: (node: unknown, data: { attrName: string; keepAttr: boolean }) => void,
+    ) => void
+  }
+}
+
+/** KaTeX renders MathML only: the panel ships no stylesheet/font assets. */
+const KATEX_OPTIONS = { output: 'mathml' as const }
+
+let markdownModulesPromise: Promise<MarkdownModules> | null = null
+
+/**
+ * Lazily load the Markdown stack exactly once and share it between the preview
+ * and the transcript. A failed load rejects the shared promise; both callers
+ * degrade to a skeleton/plain text instead of taking the panel down.
+ */
+function loadMarkdownModules(): Promise<MarkdownModules> {
+  if (markdownModulesPromise === null) {
+    markdownModulesPromise = (async (): Promise<MarkdownModules> => {
+      const [markdownModule, remarkGfmModule, remarkMathModule, rehypeKatexModule, purifyModule] =
+        await Promise.all([
+          import('react-markdown'),
+          import('remark-gfm'),
+          import('remark-math'),
+          import('rehype-katex'),
+          import('dompurify'),
+        ])
+      const DOMPurify = purifyModule.default as unknown as MarkdownModules['DOMPurify']
+      // DOMPurify's attribute allowlist already drops `on*`; this hook makes the
+      // guarantee explicit for every future attribute name as well. The factory
+      // export used outside a browser has no hooks, so guard the registration.
+      if (typeof DOMPurify.addHook === 'function') {
+        DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+          const name = data.attrName.toLowerCase()
+          if (
+            name.startsWith('on') ||
+            name === 'contenteditable' ||
+            name === 'style' ||
+            name === 'srcset'
+          ) {
+            data.keepAttr = false
+          }
+        })
       }
+      return {
+        MarkdownView: markdownModule.default as unknown as Loose,
+        remarkGfm: remarkGfmModule.default,
+        remarkMath: remarkMathModule.default,
+        rehypeKatex: rehypeKatexModule.default as unknown as MarkdownModules['rehypeKatex'],
+        DOMPurify,
+      }
+    })()
+  }
+  return markdownModulesPromise
+}
+
+/** GFM task-list checkboxes become static glyphs (no `<input>` in the DOM). */
+function MarkdownTaskCheckbox(props: { checked?: boolean }): React.ReactElement {
+  const checked = props.checked === true
+  return h(
+    'span',
+    { role: 'img', 'aria-label': checked ? '☑' : '☐', 'data-task': checked ? 'done' : 'open' },
+    checked ? '☑' : '☐',
+  )
+}
+
+/** Two high-contrast token sets derived from the MUI palette. */
+function prismThemeFor(muiTheme: Theme): PrismTheme {
+  const palette = muiTheme.palette
+  const dark = palette.mode === 'dark'
+  return {
+    plain: { color: palette.text.primary, backgroundColor: 'transparent' },
+    styles: [
+      {
+        types: ['comment', 'prolog', 'doctype', 'cdata'],
+        style: { color: palette.text.disabled, fontStyle: 'italic' },
+      },
+      {
+        types: ['punctuation', 'operator'],
+        style: { color: dark ? palette.grey[400] : palette.grey[700] },
+      },
+      {
+        types: ['keyword', 'builtin', 'tag', 'important', 'atrule'],
+        style: { color: palette.primary.main, fontWeight: '600' },
+      },
+      {
+        types: ['string', 'char', 'attr-value', 'regex', 'url'],
+        style: { color: palette.success.main },
+      },
+      {
+        types: ['number', 'boolean', 'constant', 'symbol', 'deleted'],
+        style: { color: palette.warning.main },
+      },
+      {
+        types: ['function', 'class-name', 'function-variable'],
+        style: { color: palette.info.main },
+      },
+      {
+        types: ['variable', 'parameter', 'property', 'attr-name'],
+        style: { color: palette.text.primary },
+      },
+      {
+        types: ['selector', 'rule'],
+        style: { color: palette.secondary.main },
+      },
+    ],
+  }
+}
+
+/** Prefix a token type's theme entry as an emotion selector for sanitized HTML. */
+function messageTokenSelectors(): Record<string, Record<string, unknown>> {
+  const selectors: Record<string, Record<string, unknown>> = {}
+  for (const entry of prismThemeFor(theme).styles) {
+    for (const type of entry.types) {
+      selectors[`& .token.${type}`] = { ...entry.style }
+    }
+  }
+  return selectors
+}
+
+/** Rendered Markdown prose inside a chat bubble, Prism token classes included. */
+const MESSAGE_PROSE_SX = {
+  ...PREVIEW_PROSE_SX,
+  fontSize: 12,
+  lineHeight: 1.55,
+  '& p:last-of-type': { marginBottom: 0 },
+  '& pre': {
+    margin: '0 0 6px',
+    padding: 0.75,
+    borderRadius: 1,
+    backgroundColor: 'action.hover',
+    overflowX: 'auto',
+    fontSize: 11,
+  },
+  '& .coordination-code-line': { minHeight: '1.4em', whiteSpace: 'pre' },
+  ...messageTokenSelectors(),
+}
+
+/* ------------------------------------------------------------------------- *
+ * Markdown → sanitized HTML (agent transcript bubbles)
+ * ------------------------------------------------------------------------- */
+
+type MessageHtmlRenderer = (markdown: string) => string
+
+let messageHtmlRendererPromise: Promise<MessageHtmlRenderer> | null = null
+
+/** Concatenate the text content of a React node tree. */
+function reactNodeText(node: React.ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(reactNodeText).join('')
+  if (React.isValidElement(node)) {
+    return reactNodeText((node.props as { children?: React.ReactNode }).children)
+  }
+  return ''
+}
+
+/** The prism-react-renderer `Highlight` shape used for transcript code fences. */
+type HighlightComponent = (props: {
+  code: string
+  language: string
+  theme: PrismTheme
+  children: (props: RenderProps) => React.ReactElement
+}) => React.ReactElement
+
+/**
+ * Components applied inside every transcript message.
+ *
+ * Links always open a new tab with `noreferrer`; fenced code goes through Prism
+ * with class-based token spans (the message sanitizer strips inline `style`, so
+ * token colours come from {@link MESSAGE_PROSE_SX} instead).
+ */
+function messageMarkdownComponents(
+  Highlight: HighlightComponent,
+  prismTheme: PrismTheme,
+): Record<string, Loose> {
+  function MessagePre(props: { children?: React.ReactNode }): React.ReactElement {
+    const child = React.Children.toArray(props.children)[0]
+    if (!React.isValidElement(child)) return h('pre', null, props.children)
+    const childProps = child.props as { className?: string; children?: React.ReactNode }
+    const code = reactNodeText(childProps.children)
+    const language = /language-([\w-]+)/.exec(childProps.className ?? '')?.[1] ?? 'plain'
+    return h(Highlight, {
+      code,
+      language,
+      theme: prismTheme,
+      children: (renderProps: RenderProps): React.ReactElement =>
+        h(
+          'pre',
+          { className: 'coordination-code' },
+          ...renderProps.tokens.map((line, lineIndex) =>
+            h(
+              'div',
+              { className: 'coordination-code-line', key: `line:${lineIndex}` },
+              ...line.map((token, tokenIndex) =>
+                h(
+                  'span',
+                  {
+                    className: `token ${token.types.join(' ')}`,
+                    key: `token:${tokenIndex}`,
+                  },
+                  token.content,
+                ),
+              ),
+            ),
+          ),
+        ),
     })
   }
 
-  /** GFM task-list checkboxes become static glyphs (no `<input>` in previews). */
-  function MarkdownTaskCheckbox(props: { checked?: boolean }): React.ReactElement {
-    const checked = props.checked === true
+  function MessageLink(props: { href?: string; children?: React.ReactNode }): React.ReactElement {
     return h(
-      'span',
-      { role: 'img', 'aria-label': checked ? '☑' : '☐', 'data-task': checked ? 'done' : 'open' },
-      checked ? '☑' : '☐',
+      'a',
+      { href: props.href, target: '_blank', rel: 'noreferrer' },
+      props.children,
     )
   }
 
-  const MARKDOWN_COMPONENTS = { input: MarkdownTaskCheckbox }
+  return {
+    pre: MessagePre as unknown as Loose,
+    a: MessageLink as unknown as Loose,
+    input: MarkdownTaskCheckbox as unknown as Loose,
+  }
+}
 
-  /**
-   * KaTeX renders MathML only: the panel ships no stylesheet/font assets, so the
-   * browser's native math rendering is the honest fallback (raw HTML is never
-   * enabled in the Markdown pipeline).
-   */
-  const KATEX_OPTIONS = { output: 'mathml' as const }
+/**
+ * Lazily build the Markdown → sanitized-HTML renderer used by every bubble.
+ *
+ * `react-markdown` produces React nodes, so they are serialised with
+ * `renderToStaticMarkup`; the resulting fragment then goes through DOMPurify's
+ * whitelist before it may be inserted with `dangerouslySetInnerHTML`. Any
+ * load/render/sanitize failure rejects or throws and the bubble falls back to
+ * plain text (the caller catches and logs with the `[coordination]` prefix).
+ */
+function loadMessageHtmlRenderer(): Promise<MessageHtmlRenderer> {
+  if (messageHtmlRendererPromise === null) {
+    messageHtmlRendererPromise = (async (): Promise<MessageHtmlRenderer> => {
+      const [markdown, prismModule, serverModule] = await Promise.all([
+        loadMarkdownModules(),
+        import('prism-react-renderer'),
+        // The explicit browser entry keeps Node's `stream`/`util` out of the
+        // browser bundle (the bare `react-dom/server` specifier resolves to the
+        // node build under this bundler even with platform: 'browser').
+        // @ts-ignore react-dom 18 ships no declarations for its server entry.
+        import('react-dom/server.browser'),
+      ])
+      const renderToStaticMarkup = serverModule.renderToStaticMarkup as (
+        node: React.ReactElement,
+      ) => string
+      const components = messageMarkdownComponents(
+        prismModule.Highlight as unknown as HighlightComponent,
+        prismThemeFor(theme),
+      )
+      return (source: string): string => {
+        const element = h(
+          markdown.MarkdownView,
+          {
+            remarkPlugins: [markdown.remarkGfm, markdown.remarkMath],
+            rehypePlugins: [markdown.rehypeKatex(KATEX_OPTIONS)],
+            components,
+          },
+          source,
+        )
+        return sanitizeMessageHtml(
+          renderToStaticMarkup(element),
+          markdown.DOMPurify as unknown as MessageHtmlSanitizer,
+        )
+      }
+    })()
+  }
+  return messageHtmlRendererPromise
+}
+
+const LazyPreviewRenderer = React.lazy(async (): Promise<{
+  default: React.ComponentType<PreviewRendererProps>
+}> => {
+  const [markdown, prismModule] = await Promise.all([
+    loadMarkdownModules(),
+    import('prism-react-renderer'),
+  ])
+  const { MarkdownView, remarkGfm, remarkMath, rehypeKatex, DOMPurify } = markdown
+  const MuiHighlight = prismModule.Highlight as unknown as Loose
+
+  const MARKDOWN_COMPONENTS = { input: MarkdownTaskCheckbox }
 
   function MarkdownPreview(props: {
     copy: PanelCopy
@@ -3250,30 +4778,37 @@ const CANVAS_RADIUS_PER_SQRT_NODE = 40
 const CANVAS_RADIUS_CAP = 640
 
 /* ------------------------------------------------------------------------- *
- * Render scheduling: one priority queue on a single requestAnimationFrame pump
+ * Render scheduling: one plugin-wide, three-queue task pump
  *
- * The canvas never runs a free-running frame loop. Every visual change schedules
- * one coalesced `paint` task: interaction feedback runs first, continuous dash /
- * pulse animation second, layout/data redraws last. An idle canvas therefore
- * costs zero frames, and a burst of pointer events produces one paint.
+ * The canvas never runs a free-running frame loop. Interaction redraws go to
+ * `high`, decorative animation frames (dash flow, ring pulse, ripple) to
+ * `medium`, and layout/data redraws (fit, relayout, post-load paint) to `low`.
+ * High runs one task per animation frame; medium and low drain one task per
+ * idle callback. An idle plugin therefore schedules zero callbacks.
  * ------------------------------------------------------------------------- */
 
-/** Interaction feedback (hover, drag, zoom) runs before every other task. */
-export const RENDER_PRIORITY_INTERACTIVE = 0
-/** Continuous dash/pulse animation, skipped while the panel is hidden. */
-export const RENDER_PRIORITY_ANIMATION = 1
-/** Layout, resize and data-load redraws, which may wait one frame. */
-export const RENDER_PRIORITY_LAYOUT = 2
+/** User-visible priority of one scheduled task. */
+export type Priority = 'high' | 'medium' | 'low'
+
+interface Entry {
+  key: string
+  run: () => void
+}
+
+interface IdleDeadlineLike {
+  readonly didTimeout: boolean
+  timeRemaining(): number
+}
+
+/** Higher rank wins when the same key is scheduled again. */
+const PRIORITY_RANK: Readonly<Record<Priority, number>> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+}
 
 /** Continuous animation is capped at ~30 fps; interaction still paints at once. */
 const CANVAS_ANIMATION_INTERVAL_MS = 30
-
-interface QueuedRenderTask {
-  key: string
-  priority: number
-  order: number
-  run: (time: number, priority: number) => void
-}
 
 /** `performance.now` with a Node-safe fallback (module evaluation stays inert). */
 function renderNow(): number {
@@ -3281,78 +4816,227 @@ function renderNow(): number {
 }
 
 /**
- * Coalescing priority queue driven by one `requestAnimationFrame` pump.
+ * Three independent priority queues on one lazily started pump.
  *
- * Scheduling the same `key` again keeps a single pending task and upgrades it
- * to the highest priority requested (a hover during an animation frame runs at
- * interactive priority). The pump drains tasks by priority then insertion
- * order until its frame budget is spent, and requests the next frame only when
- * work remains. A throwing task never stops the pump.
+ * Drain rules:
+ *  - each `requestAnimationFrame` callback runs exactly one `high` task; if
+ *    `high` is empty it may run one `medium` task in that same frame;
+ *  - each `requestIdleCallback` callback runs exactly one `medium` (then `low`)
+ *    task and yields when the deadline has less than 4 ms left;
+ *  - `medium` is never touched until `high` is empty and `low` never until
+ *    `medium` is empty, so ordering is strict across priorities;
+ *  - one throwing task is logged and the pump continues.
+ *
+ * A queue empty everywhere cancels the pending callback, so an idle plugin has
+ * no timers/frames outstanding. `dispose()` only marks the queue unusable;
+ * `reset()` (tests) restores it.
  */
-export class RenderTaskQueue {
-  private readonly tasks = new Map<string, QueuedRenderTask>()
-  private readonly budgetMs: number
-  private frame: number | null = null
-  private order = 0
-  private disposed = false
+export class Task {
+  readonly #queues: { high: Entry[]; medium: Entry[]; low: Entry[] } = {
+    high: [],
+    medium: [],
+    low: [],
+  }
+  /** key -> current queue, used for the same-key merge/upgrade rule. */
+  readonly #index = new Map<string, Priority>()
+  #handle: number | ReturnType<typeof setTimeout> | null = null
+  #handleKind: 'frame' | 'idle' | 'timeout' | null = null
+  #disposed = false
+  #warned = false
 
-  constructor(options: { budgetMs?: number } = {}) {
-    this.budgetMs = Math.max(1, options.budgetMs ?? 8)
+  /** Number of tasks currently waiting in all three queues. */
+  get pending(): number {
+    return this.#queues.high.length + this.#queues.medium.length + this.#queues.low.length
   }
 
-  /** Queue (or upgrade) one task; the latest callback wins. */
-  schedule(key: string, priority: number, run: (time: number, priority: number) => void): void {
-    if (this.disposed) return
-    const existing = this.tasks.get(key)
-    if (existing !== undefined) {
-      existing.priority = Math.min(existing.priority, priority)
-      existing.run = run
+  /**
+   * Queue (or upgrade) one task.
+   *
+   * Scheduling an existing key only takes effect when the new priority is
+   * strictly higher: the entry moves to the higher queue; otherwise the call is
+   * ignored. The pump starts lazily, never from module evaluation.
+   */
+  schedule(priority: Priority, key: string, run: () => void): void {
+    if (this.#disposed) {
+      if (!this.#warned) {
+        this.#warned = true
+        console.warn('[coordination] task queue disposed')
+      }
       return
     }
-    this.tasks.set(key, { key, priority, order: this.order, run })
-    this.order += 1
-    this.ensureFrame()
+    const current = this.#index.get(key)
+    if (current !== undefined) {
+      if (PRIORITY_RANK[priority] <= PRIORITY_RANK[current]) return
+      this.#remove(current, key)
+    }
+    this.#queues[priority].push({ key, run })
+    this.#index.set(key, priority)
+    this.#ensurePump()
   }
 
+  /** Drop one queued task; the pending callback stops if nothing remains. */
   cancel(key: string): void {
-    this.tasks.delete(key)
+    const priority = this.#index.get(key)
+    if (priority === undefined) return
+    this.#remove(priority, key)
+    if (this.pending === 0) this.#cancelHandle()
   }
 
+  /**
+   * Permanently stop this queue: pending callbacks are cancelled and the three
+   * queues cleared. Later `schedule()` calls are no-ops (one warning) instead
+   * of throwing, which keeps a hot-reloaded component harmless.
+   */
   dispose(): void {
-    this.disposed = true
-    this.tasks.clear()
-    if (this.frame !== null) {
-      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.frame)
-      this.frame = null
+    this.#disposed = true
+    this.#clearQueues()
+    this.#cancelHandle()
+  }
+
+  /** Test-only re-arm: cancel callbacks, clear queues, allow scheduling again. */
+  reset(): void {
+    this.#cancelHandle()
+    this.#clearQueues()
+    this.#disposed = false
+    this.#warned = false
+  }
+
+  #clearQueues(): void {
+    this.#queues.high.length = 0
+    this.#queues.medium.length = 0
+    this.#queues.low.length = 0
+    this.#index.clear()
+  }
+
+  #remove(priority: Priority, key: string): void {
+    const queue = this.#queues[priority]
+    const index = queue.findIndex((entry) => entry.key === key)
+    if (index !== -1) queue.splice(index, 1)
+    this.#index.delete(key)
+  }
+
+  #run(entry: Entry): void {
+    try {
+      entry.run()
+    } catch (error) {
+      // One failed render task must never stop the other tasks' pump.
+      console.error('[coordination] task failed', error)
     }
   }
 
-  private ensureFrame(): void {
-    if (this.frame !== null || this.disposed) return
-    if (typeof requestAnimationFrame !== 'function') return
-    this.frame = requestAnimationFrame(this.onFrame)
-  }
-
-  private readonly onFrame = (time: number): void => {
-    this.frame = null
-    if (this.disposed) return
-    const started = renderNow()
-    const ordered = [...this.tasks.values()].sort(
-      (left, right) => left.priority - right.priority || left.order - right.order,
-    )
-    for (const task of ordered) {
-      // A task may have been cancelled or replaced while an earlier one ran.
-      if (this.tasks.get(task.key) !== task) continue
-      this.tasks.delete(task.key)
-      try {
-        task.run(time, task.priority)
-      } catch {
-        // One failing render task must never stop the other tasks' pump.
+  /** Schedule the next callback only when work actually remains. */
+  #ensurePump(): void {
+    if (this.#disposed) return
+    if (this.pending === 0) {
+      this.#cancelHandle()
+      return
+    }
+    if (this.#handle !== null) {
+      // A higher-priority arrival preempts a pending idle pump with a frame;
+      // an already pending frame stays as it is.
+      if (this.#queues.high.length > 0 && this.#handleKind !== 'frame') {
+        this.#cancelHandle()
+      } else {
+        return
       }
-      if (renderNow() - started >= this.budgetMs) break
     }
-    if (this.tasks.size > 0) this.ensureFrame()
+    if (this.#queues.high.length > 0) this.#scheduleFrame()
+    else this.#scheduleIdle()
   }
+
+  #scheduleFrame(): void {
+    if (typeof requestAnimationFrame === 'function') {
+      this.#handleKind = 'frame'
+      this.#handle = requestAnimationFrame(this.#onFrame)
+      return
+    }
+    this.#handleKind = 'timeout'
+    this.#handle = setTimeout(() => {
+      this.#handle = null
+      this.#handleKind = null
+      this.#onFrame()
+    }, 16)
+  }
+
+  #scheduleIdle(): void {
+    if (typeof requestIdleCallback === 'function') {
+      this.#handleKind = 'idle'
+      this.#handle = requestIdleCallback(this.#onIdle, { timeout: 100 })
+      return
+    }
+    this.#handleKind = 'timeout'
+    this.#handle = setTimeout(() => {
+      this.#handle = null
+      this.#handleKind = null
+      // A timeout has no idle budget; run one task so the queue cannot starve.
+      this.#onIdle({ didTimeout: true, timeRemaining: () => 0 })
+    }, 16)
+  }
+
+  #cancelHandle(): void {
+    if (this.#handle === null) return
+    const handle = this.#handle
+    if (this.#handleKind === 'frame' && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(handle as number)
+    } else if (this.#handleKind === 'idle' && typeof cancelIdleCallback === 'function') {
+      cancelIdleCallback(handle as number)
+    } else {
+      clearTimeout(handle as ReturnType<typeof setTimeout>)
+    }
+    this.#handle = null
+    this.#handleKind = null
+  }
+
+  /** One high task per frame; the transition frame may run one medium task. */
+  readonly #onFrame = (): void => {
+    this.#handle = null
+    this.#handleKind = null
+    if (this.#disposed) return
+    const high = this.#queues.high.shift()
+    if (high !== undefined) {
+      this.#index.delete(high.key)
+      this.#run(high)
+    } else {
+      const medium = this.#queues.medium.shift()
+      if (medium !== undefined) {
+        this.#index.delete(medium.key)
+        this.#run(medium)
+      }
+    }
+    this.#ensurePump()
+  }
+
+  /** One medium (else low) task per idle callback, strictly after `high`. */
+  readonly #onIdle = (deadline: IdleDeadlineLike): void => {
+    this.#handle = null
+    this.#handleKind = null
+    if (this.#disposed) return
+    if (this.#queues.high.length > 0) {
+      this.#ensurePump()
+      return
+    }
+    if (!deadline.didTimeout && deadline.timeRemaining() < 4) {
+      this.#scheduleIdle()
+      return
+    }
+    const next = this.#queues.medium.shift() ?? this.#queues.low.shift()
+    if (next !== undefined) {
+      this.#index.delete(next.key)
+      this.#run(next)
+    }
+    this.#ensurePump()
+  }
+}
+
+/**
+ * The plugin-wide queue. Module evaluation is inert: it allocates three empty
+ * arrays and starts no frame/idle callback until the first `schedule()`.
+ */
+export const taskQueue = new Task()
+
+/** The single queue every panel task schedules through (tests included). */
+export function getTaskQueue(): Task {
+  return taskQueue
 }
 
 /* ------------------------------------------------------------------------- *
@@ -4553,10 +6237,8 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   const rippleRef = React.useRef<{ x: number; y: number; start: number } | null>(null)
   /** WebGL2 accelerator; `null` means the 2D renderer is in use. */
   const painterRef = React.useRef<WebGlCanvasPainter | null>(null)
-  /** One coalesced paint task on the priority queue (single RAF pump). */
-  const queueRef = React.useRef<RenderTaskQueue | null>(null)
   const paintRef = React.useRef<(time: number) => void>(() => {})
-  const schedulePaintRef = React.useRef<(priority: number) => void>(() => {})
+  const schedulePaintRef = React.useRef<(priority: Priority) => void>(() => {})
   /** True while the dash/pulse animation should keep requesting frames. */
   const animateRef = React.useRef(false)
   const lastPaintRef = React.useRef(0)
@@ -4634,26 +6316,31 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     }
   }, [])
 
-  // One coalescing paint task on a single RAF pump. The canvas never runs a
-  // free-running frame loop: interaction upgrades a pending animation/layout
-  // paint, and an idle canvas costs zero frames.
+  // One plugin-wide queue; this canvas owns a stable key so two canvases in the
+  // two panels never merge each other's paint. The pump stops when both idle.
+  const paintTaskKey = `canvas:paint:${React.useId()}`
+  const paintPriorityRef = React.useRef<Priority>('high')
   React.useEffect(() => {
-    const queue = new RenderTaskQueue({ budgetMs: 8 })
-    queueRef.current = queue
+    const queue = getTaskQueue()
     return () => {
-      queueRef.current = null
-      queue.dispose()
+      queue.cancel(paintTaskKey)
     }
-  }, [])
+  }, [paintTaskKey])
 
-  schedulePaintRef.current = (priority: number): void => {
-    const queue = queueRef.current
-    if (queue === null) return
-    queue.schedule('paint', priority, (time, taskPriority) => {
+  schedulePaintRef.current = (priority: Priority): void => {
+    // Remember the highest request since the last paint even when the queue
+    // merges the schedule into an already-pending entry.
+    if (PRIORITY_RANK[priority] > PRIORITY_RANK[paintPriorityRef.current]) {
+      paintPriorityRef.current = priority
+    }
+    getTaskQueue().schedule(priority, paintTaskKey, () => {
+      const effective = paintPriorityRef.current
+      paintPriorityRef.current = 'high'
+      const time = renderNow()
       // Interaction feedback paints immediately; dashboard-style animation is
       // capped at ~30 fps so the label overlay never runs twice per display
       // frame for a purely decorative dash phase.
-      const interactive = taskPriority <= RENDER_PRIORITY_INTERACTIVE
+      const interactive = effective === 'high'
       if (interactive || time - lastPaintRef.current >= CANVAS_ANIMATION_INTERVAL_MS) {
         lastPaintRef.current = time
         paintRef.current(time)
@@ -4661,13 +6348,13 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       // The dash/pulse animation and an unexpired click ripple keep the pump
       // alive; every other change is a one-shot paint.
       if (animateRef.current || rippleRef.current !== null) {
-        schedulePaintRef.current(RENDER_PRIORITY_ANIMATION)
+        schedulePaintRef.current('medium')
       }
     })
   }
 
   /** Request one paint at a queue priority (interaction feedback by default). */
-  const requestPaint = (priority: number = RENDER_PRIORITY_INTERACTIVE): void => {
+  const requestPaint = (priority: Priority = 'high'): void => {
     schedulePaintRef.current(priority)
   }
 
@@ -4677,7 +6364,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   React.useEffect(() => {
     if (webglBlockedRef.current) {
       // A remounted canvas after a WebGL failure: paint the 2D fallback.
-      schedulePaintRef.current(RENDER_PRIORITY_INTERACTIVE)
+      schedulePaintRef.current('high')
       return
     }
     const canvas = canvasRef.current
@@ -4695,7 +6382,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     painter.setScene(props.graph, positionsRef.current)
     labelKeyRef.current = ''
     setWebglReady(true)
-    schedulePaintRef.current(RENDER_PRIORITY_INTERACTIVE)
+    schedulePaintRef.current('high')
     return () => {
       painterRef.current = null
       setWebglReady(false)
@@ -4737,7 +6424,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     if (viewChanged || !userAdjustedRef.current) fitViewport()
     painterRef.current?.setScene(props.graph, positionsRef.current)
     sceneRevisionRef.current += 1
-    requestPaint(RENDER_PRIORITY_LAYOUT)
+    requestPaint('low')
   }, [props.graph, props.layoutMode, props.centerId, size.width, size.height])
 
   const palette = muiTheme.palette
@@ -5052,7 +6739,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   // paint task requeues itself while the animation/ripple is active.
   React.useEffect(() => {
     if (typeof window === 'undefined') return
-    requestPaint(visible ? RENDER_PRIORITY_ANIMATION : RENDER_PRIORITY_LAYOUT)
+    requestPaint(visible ? 'medium' : 'low')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, reducedMotion, props.graph, size.width, size.height])
 
@@ -5177,7 +6864,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     fitViewport()
     painterRef.current?.setScene(props.graph, positionsRef.current)
     sceneRevisionRef.current += 1
-    requestPaint(RENDER_PRIORITY_LAYOUT)
+    requestPaint('low')
   }
 
   const selected = selectedEdge === null
@@ -5670,6 +7357,8 @@ function AgentsView(props: ViewProps): React.ReactElement {
         MuiListItemButton,
         {
           sx: AGENT_BUTTON_SX,
+          role: 'option',
+          'aria-selected': false,
           onClick: (): void => {
             navigate(props.side, 'agent', { id: agent.id })
           },
@@ -5731,6 +7420,13 @@ function AgentsView(props: ViewProps): React.ReactElement {
     )
   }
 
+  const flatRows: Array<{ agent: AgentInfoData; child: boolean }> = []
+  for (const root of roots) {
+    flatRows.push({ agent: root, child: false })
+    if (collapsed.has(root.id)) continue
+    for (const child of childrenOf.get(root.id) ?? []) flatRows.push({ agent: child, child: true })
+  }
+
   const total = state.value.progress
   const totalUnknown = total.basis === 'unknown'
   const totalText = [
@@ -5748,21 +7444,15 @@ function AgentsView(props: ViewProps): React.ReactElement {
     h(
       MuiBox,
       { sx: AGENTS_LIST_SX },
-      h(
-        MuiList,
-        { dense: true, disablePadding: true },
-        ...roots.map((root) => {
-          const children = childrenOf.get(root.id) ?? []
-          return h(
-            React.Fragment,
-            { key: root.id },
-            row(root, false),
-            children.length === 0 || collapsed.has(root.id)
-              ? null
-              : h(React.Fragment, null, ...children.map((child) => row(child, true))),
-          )
-        }),
-      ),
+      h(VirtualList<{ agent: AgentInfoData; child: boolean }>, {
+        adapter: createVirtualListAdapter(flatRows, (value) => `${value.agent.id}:${value.child ? 'child' : 'root'}`),
+        'aria-label': props.copy.agents,
+        slot: (_index, value) => h(
+          MuiBox,
+          { sx: { height: '100%' } },
+          row(value.agent, value.child),
+        ),
+      }),
     ),
     h(
       MuiBox,
@@ -5798,9 +7488,161 @@ function formatAgentTime(at: number | null): string {
   })
 }
 
+/** Stable transcript row identity; role is part of the key, not the text. */
+function agentMessageKey(index: number, message: AgentMessageData): string {
+  return `${index}:${message.role}`
+}
+
+/**
+ * Estimated height of one transcript row (48–240 px).
+ *
+ * The transcript uses {@link VirtualList}'s variable-row mode: the estimate is
+ * derived from the source length (≈72 characters per line, 18 px per line plus
+ * padding), collapsed to two lines and expanded to the full text. The estimate
+ * decides the cumulative scroll geometry; the row itself stays exact because
+ * the bubble clips/scrolls inside the row.
+ */
+export function estimateMessageHeight(
+  message: Pick<AgentMessageData, 'text'>,
+  expanded: boolean,
+): number {
+  const lines = Math.max(1, Math.ceil(message.text.length / 72))
+  const shown = expanded ? Math.min(lines, 12) : Math.min(lines, 2)
+  return Math.max(48, Math.min(240, 48 + shown * 18))
+}
+
+/** True when the collapsed transcript row hides part of the message. */
+export function messageCanExpand(message: Pick<AgentMessageData, 'text'>): boolean {
+  return estimateMessageHeight(message, true) > estimateMessageHeight(message, false)
+}
+
+/** Read-only chat bubble: provenance meta, sanitized Markdown, no composer. */
+function MessageBubble(props: {
+  copy: PanelCopy
+  message: AgentMessageData
+  index: number
+  renderer: MessageHtmlRenderer | null
+  expanded: boolean
+  onToggle: (key: string) => void
+}): React.ReactElement {
+  const kind = messageRoleKind(props.message.role)
+  // The sanitized HTML is produced once per message text / renderer generation.
+  const html = React.useMemo(() => {
+    if (props.renderer === null) return null
+    try {
+      return props.renderer(props.message.text)
+    } catch (error) {
+      // A Markdown/sanitize failure degrades to plain text; never a white screen.
+      console.error('[coordination] message markdown failed', error)
+      return null
+    }
+  }, [props.renderer, props.message.text])
+  const bubble = kind === 'user'
+    ? MESSAGE_USER_SX
+    : kind === 'assistant'
+      ? MESSAGE_ASSISTANT_SX
+      : MESSAGE_NOTICE_SX
+  const canExpand = messageCanExpand(props.message)
+  const key = agentMessageKey(props.index, props.message)
+  const time = formatAgentTime(props.message.at) || '—'
+  const toggle = (): void => {
+    props.onToggle(key)
+  }
+  const body = html === null
+    ? h(
+      MuiTypography,
+      {
+        component: 'span',
+        variant: 'inherit',
+        sx: kind === 'tool'
+          ? { fontFamily: 'monospace', whiteSpace: 'pre-wrap' }
+          : { whiteSpace: 'pre-wrap' },
+      },
+      props.message.text,
+    )
+    : h(MuiBox, {
+      // Sanitized by DOMPurify + scrubMessageHtml before it reaches this point.
+      dangerouslySetInnerHTML: { __html: html },
+      sx: {
+        ...MESSAGE_PROSE_SX,
+        ...(kind === 'tool' ? { fontFamily: 'monospace' } : {}),
+        ...(kind === 'tool' || kind === 'system' ? MESSAGE_NOTICE_TEXT_SX : {}),
+      },
+    })
+  return h(
+    MuiBox,
+    {
+      sx: { ...MESSAGE_ROW_SX, justifyContent: messageAlignment(props.message.role) },
+      'data-message-role': kind,
+    },
+    h(
+      MuiBox,
+      {
+        sx: { ...bubble, cursor: canExpand ? 'pointer' : 'auto' },
+        onClick: (event: React.MouseEvent): void => {
+          // Links inside the sanitized HTML keep their own navigation.
+          const target = event.target as unknown as {
+            closest?: (selector: string) => unknown
+          } | null
+          const link = target?.closest?.('a')
+          if (link !== null && link !== undefined) return
+          if (canExpand) toggle()
+        },
+      },
+      h(
+        MuiBox,
+        {
+          sx: {
+            ...MESSAGE_META_SX,
+            ...(kind === 'assistant'
+              ? {}
+              : kind === 'user'
+                ? MESSAGE_META_USER_SX
+                : { justifyContent: 'center' }),
+          },
+        },
+        h(MuiTypography, { component: 'span', sx: MESSAGE_ROLE_SX }, props.copy.messageRoles[kind]),
+        h(MuiTypography, { component: 'span', sx: MESSAGE_TIME_SX }, time),
+      ),
+      h(MuiBox, { sx: props.expanded ? MESSAGE_BODY_SX : undefined }, body),
+      canExpand
+        ? h(
+          MuiButton,
+          {
+            size: 'small',
+            variant: 'text',
+            'aria-expanded': props.expanded,
+            sx: {
+              minWidth: 0,
+              padding: '0 4px',
+              fontSize: 10,
+              marginTop: 0.25,
+              alignSelf: kind === 'user' ? 'flex-end' : 'flex-start',
+            },
+            onClick: (event: React.MouseEvent): void => {
+              event.stopPropagation()
+              toggle()
+            },
+          },
+          props.expanded ? props.copy.messageCollapse : props.copy.messageExpand,
+        )
+        : null,
+    ),
+  )
+}
+
+const EMPTY_AGENT_MESSAGES: readonly AgentMessageData[] = []
+
+/**
+ * Agent (profession) detail page: a read-only, virtualized Markdown transcript.
+ *
+ * There is deliberately no composer, retry or send control. Each message is
+ * rendered once through the shared lazy Markdown pipeline, sanitized, and only
+ * then inserted; until the pipeline resolves (or if it fails) bubbles show the
+ * raw text. Expansion is per message and drives the variable row height.
+ */
 function AgentMessagesView(props: ViewProps): React.ReactElement {
   const id = props.id ?? ''
-  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const messagesGraph = useGraph(
     id.length === 0 ? null : `/graph/agents/messages?id=${encodeURIComponent(id)}`,
     parseAgentMessages,
@@ -5811,6 +7653,44 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
   const agent = agentsGraph.state.status === 'ready'
     ? agentsGraph.state.value.agents.find((entry) => entry.id === id) ?? null
     : null
+  const messages = messagesGraph.state.status === 'ready'
+    ? messagesGraph.state.value.messages
+    : EMPTY_AGENT_MESSAGES
+  const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set())
+  const [renderer, setRenderer] = React.useState<MessageHtmlRenderer | null>(null)
+  const adapter = React.useMemo(
+    () => createVirtualListAdapter(
+      messages,
+      (message, index) => agentMessageKey(index, message),
+    ),
+    [messages],
+  )
+  const rowHeight = React.useMemo(
+    () => (index: number, message: AgentMessageData): number =>
+      estimateMessageHeight(message, expanded.has(agentMessageKey(index, message))),
+    [expanded],
+  )
+  const toggleExpanded = React.useCallback((key: string): void => {
+    setExpanded((previous) => {
+      const next = new Set(previous)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+  React.useEffect(() => {
+    let active = true
+    void loadMessageHtmlRenderer()
+      .then((render) => {
+        if (active) setRenderer(() => render)
+      })
+      .catch((error: unknown) => {
+        console.error('[coordination] message markdown pipeline failed', error)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
 
   const header = h(
     MuiBox,
@@ -5865,7 +7745,7 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
       header,
       h(
         MuiBox,
-        { sx: MESSAGES_BODY_SX },
+        { sx: MESSAGES_SKELETON_SX },
         ...Array.from({ length: 4 }, (_entry, index) =>
           h(
             MuiBox,
@@ -5898,46 +7778,19 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
     ),
     data.messages.length === 0
       ? h(EmptyState, { message: props.copy.states.empty })
-      : h(
-        MuiBox,
-        { sx: MESSAGES_BODY_SX },
-        ...data.messages.map((message, index) => {
-          const role = message.role
-          const bubble = role === 'user'
-            ? { ...MESSAGE_BUBBLE_SX, alignSelf: 'flex-end', backgroundColor: 'primary.main', color: 'primary.contrastText' }
-            : role === 'tool'
-              ? {
-                ...MESSAGE_BUBBLE_SX,
-                alignSelf: 'stretch',
-                maxWidth: '100%',
-                backgroundColor: 'action.selected',
-                color: 'text.secondary',
-                fontFamily: 'monospace',
-              }
-              : role === 'system'
-                ? { ...MESSAGE_BUBBLE_SX, ...MESSAGE_SYSTEM_SX }
-                : { ...MESSAGE_BUBBLE_SX, alignSelf: 'flex-start', backgroundColor: 'action.hover' }
-          const time = formatAgentTime(message.at)
-          return h(
-            MuiFade,
-            {
-              key: `${role}#${index}`,
-              in: true,
-              appear: true,
-              timeout: { enter: reducedMotion ? 0 : 180 },
-              style: { transitionDelay: `${reducedMotion ? 0 : Math.min(index, 10) * 30}ms` },
-            },
-            h(
-              MuiBox,
-              { sx: bubble },
-              message.text,
-              time.length > 0
-                ? h(MuiTypography, { component: 'span', sx: MESSAGE_TIME_SX }, time)
-                : null,
-            ),
-          )
+      : h(VirtualList<AgentMessageData>, {
+        adapter,
+        rowHeight,
+        'aria-label': props.copy.agentMessages,
+        slot: (index, message) => h(MessageBubble, {
+          copy: props.copy,
+          message,
+          index,
+          renderer,
+          expanded: expanded.has(agentMessageKey(index, message)),
+          onToggle: toggleExpanded,
         }),
-      ),
+      }),
   )
 }
 
@@ -5945,7 +7798,9 @@ const RIGHT_VIEW_REGISTRY: Readonly<Partial<Record<PanelView, React.ComponentTyp
   files: FilesView,
   outline: OutlineView,
   dependencies: DependenciesView,
-  imports: ImportsView,
+  // Imports and exports are independent WebGL canvas pages on both sides.
+  imports: ImportsCanvasView,
+  exports: ExportsCanvasView,
   preview: PreviewView,
 }
 
@@ -5988,6 +7843,7 @@ function renderSearchInput(
       ...(slots ?? {}),
       htmlInput: {
         ...(htmlInput ?? {}),
+        id: SEARCH_INPUT_ID,
         'aria-label': copy.search.label,
       },
     },
@@ -6342,7 +8198,10 @@ interface Notice {
 /** One docked panel inside the fixed right-hand column. */
 interface DockedPanelProps {
   side: PanelSide
-  views: readonly PanelView[]
+  /** Tabs rendered in the BottomNavigation, in order. */
+  tabs: readonly PanelView[]
+  /** Every routable page for this side: `tabs` plus detail routes. */
+  routes: readonly PanelView[]
   title: string
   expanded: boolean
   reducedMotion: boolean
@@ -6365,16 +8224,18 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const highlightedHitRef = React.useRef<SearchHit | null>(null)
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const pendingScrollRef = React.useRef<number | null>(null)
-  const lastViewRef = React.useRef<PanelView>(props.views[0] ?? 'files')
+  /** Global-outline scroll offset, restored after returning from local mode. */
+  const outlineScrollRef = React.useRef(0)
+  const lastViewRef = React.useRef<PanelView>(props.tabs[0] ?? 'files')
   const lastPathRef = React.useRef<string | null>(null)
 
-  const routedViews = props.side === 'left' ? LEFT_ROUTED_VIEWS : RIGHT_VIEWS
   // Component state is authoritative; the hash is read exactly once, here.
+  // Only `routes` is validated: `preview` / `agent` deep-link without being tabs.
   const [navigation, dispatchNavigation] = React.useReducer(
     panelNavigationReducer,
-    routedViews,
-    (views: readonly PanelView[]): PanelNavigationState =>
-      initialPanelNavigation(readHash(), props.side, views, props.views[0] ?? 'files'),
+    props.routes,
+    (routes: readonly PanelView[]): PanelNavigationState =>
+      initialPanelNavigation(readHash(), props.side, routes, props.tabs[0] ?? 'files'),
   )
   const view = navigation.view
   const path = navigation.path
@@ -6389,6 +8250,11 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const viewPath = view === 'preview' ? previewPath : path
 
   const go = React.useCallback((next: PanelView, params?: RouteParams): void => {
+    // The global outline must keep its scroll position across the local-mode
+    // round trip; capture it before this navigation replaces the content.
+    if (view === 'outline' && path === null) {
+      outlineScrollRef.current = scrollRef.current?.scrollTop ?? 0
+    }
     dispatchNavigation({
       type: 'navigate',
       view: next,
@@ -6396,7 +8262,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
       id: params?.id ?? null,
     })
     mirrorHash(props.side, next, params)
-  }, [props.side])
+  }, [props.side, view, path])
 
   // Child views (tree rows, canvas, agents) navigate through this panel entry.
   React.useEffect(() => {
@@ -6431,16 +8297,6 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     clearSearch()
   }, [props.expanded, clearSearch])
 
-  React.useEffect(() => {
-    if (!searchOpen || !props.expanded || typeof window === 'undefined') return
-    const frame = window.requestAnimationFrame(() => {
-      searchRef.current?.focus()
-    })
-    return () => {
-      window.cancelAnimationFrame(frame)
-    }
-  }, [searchOpen, props.expanded])
-
   const togglePanel = (): void => {
     setMenuAnchor(null)
     props.onToggle()
@@ -6467,6 +8323,15 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const leavePreview = (): void => {
     const target = lastViewRef.current === 'preview' ? 'files' : lastViewRef.current
     go(target, lastPathRef.current !== null ? { path: lastPathRef.current } : undefined)
+  }
+
+  /**
+   * Leave the local outline: drop `path` (mirrored through replaceState) and
+   * queue the remembered global scroll offset for the settle handler.
+   */
+  const leaveOutlineLocal = (): void => {
+    pendingScrollRef.current = outlineScrollRef.current
+    go('outline')
   }
 
   /** One request for one term; `searchSeq` drops stale answers. */
@@ -6521,7 +8386,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   }, [query, searchOpen, props.expanded, requestSearch])
 
   const activateHit = (hit: SearchHit): void => {
-    const target = hitTarget(hit, props.views)
+    const target = hitTarget(hit, props.routes)
     go(target.view, target.params)
     clearSearch()
   }
@@ -6674,6 +8539,17 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
       leavePreview()
       return
     }
+    // The agent detail page keeps the title bar and its back button; Escape is
+    // the keyboard path back to the roster (deep-linked pages included).
+    if (view === 'agent') {
+      go('agents')
+      return
+    }
+    // Local outline → global outline (the scope-bar back button's keyboard twin).
+    if (view === 'outline' && path !== null) {
+      leaveOutlineLocal()
+      return
+    }
     if (props.expanded) props.onToggle()
   }
 
@@ -6686,6 +8562,22 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     : fillTemplate(copy.tip.scope, { path: viewPath })
   const titleTip = fillTemplate(copy.expandTitle, { title: props.title })
   const errorTip = panelError === null ? '' : panelErrorTooltip(panelError)
+  /** Local outline: the scope bar starts with the way back to the global tree. */
+  const outlineBack = view === 'outline' && viewPath !== null
+    ? h(
+      Tip,
+      { label: copy.outlineBack },
+      h(
+        MuiIconButton,
+        {
+          size: 'small',
+          'aria-label': copy.outlineBack,
+          onClick: leaveOutlineLocal,
+        },
+        h(IconBack, { fontSize: 'small' }),
+      ),
+    )
+    : null
 
   const scopeChip = h(
     MuiGrow,
@@ -6782,65 +8674,97 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
         h(IconMenu),
       ),
     ),
-    searchOpen && props.expanded
-      ? h(
-        Tip,
-        { label: copy.tip.search },
-        h(MuiAutocomplete, {
-          freeSolo: false,
-          options: search.status === 'ready' ? search.hits : [],
-          value: null,
-          inputValue: query,
-          loading: search.status === 'loading',
-          loadingText: copy.states.loading,
-          noOptionsText: searchNoOptionsText(search, copy, submitSearch),
-          // The host already searched: never filter its hits locally.
-          filterOptions: (options: SearchHit[]): SearchHit[] => options,
-          getOptionLabel: (option: SearchHit): string => option.name,
-          isOptionEqualToValue: (option: SearchHit, candidate: SearchHit): boolean =>
-            option === candidate,
-          onInputChange: handleSearchInput,
-          onChange: handleSearchSelect,
-          onHighlightChange: (_event: unknown, option: unknown): void => {
-            highlightedHitRef.current = option === null || typeof option !== 'object'
-              ? null
-              : (option as SearchHit)
+    h(
+      Tip,
+      { label: titleTip },
+      h(
+        MuiBox,
+        {
+          role: 'button',
+          tabIndex: 0,
+          'aria-expanded': props.expanded,
+          'aria-label': titleTip,
+          onClick: (): void => {
+            // While search is open, the title area is the "click outside" target:
+            // it closes/clears the search before it would toggle the panel.
+            if (searchOpen) {
+              setSearchOpen(false)
+              clearSearch()
+              return
+            }
+            togglePanel()
           },
-          onKeyDown: onSearchKeyDown,
-          renderInput: (params: Record<string, unknown>): React.ReactElement =>
-            renderSearchInput(params, copy, searchRef),
-          renderOption: renderSearchOption,
-          // The listbox owns the custom scrollbar; the popup must out-rank the
-          // fixed panel column (it is portaled to <body>).
-          slots: { listbox: AutocompleteScrollListbox },
-          slotProps: { popper: { sx: SEARCH_POPPER_SX } },
-          sx: SEARCH_AUTOCOMPLETE_SX,
-        }),
-      )
-      : h(
-        Tip,
-        { label: titleTip },
-        h(
-          MuiBox,
-          {
-            role: 'button',
-            tabIndex: 0,
-            'aria-expanded': props.expanded,
-            'aria-label': titleTip,
-            onClick: (): void => {
-              togglePanel()
-            },
-            onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>): void => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault()
-                togglePanel()
+          onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>): void => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              if (searchOpen) {
+                setSearchOpen(false)
+                clearSearch()
+                return
               }
-            },
-            sx: HEADER_TITLE_SX,
+              togglePanel()
+            }
           },
-          h(MuiTypography, { variant: 'subtitle2', noWrap: true }, props.title),
+          sx: HEADER_TITLE_SX,
+        },
+        h(MuiTypography, { variant: 'subtitle2', noWrap: true }, props.title),
+      ),
+    ),
+    h(
+      MuiCollapse,
+      {
+        in: searchOpen && props.expanded,
+        orientation: 'horizontal',
+        collapsedSize: 0,
+        timeout: props.reducedMotion ? 0 : SEARCH_ANIMATION_MS,
+        easing: PANEL_EASING,
+        unmountOnExit: true,
+        onEntered: (): void => {
+          // Focus only once the field has finished expanding; a collapse in
+          // progress never steals focus from the title bar.
+          searchRef.current?.focus()
+        },
+        sx: SEARCH_COLLAPSE_SX,
+      },
+      h(
+        MuiBox,
+        { sx: SEARCH_SLOT_SX },
+        h(
+          Tip,
+          { label: copy.tip.search },
+          h(MuiAutocomplete, {
+            freeSolo: false,
+            options: search.status === 'ready' ? search.hits : [],
+            value: null,
+            inputValue: query,
+            loading: search.status === 'loading',
+            loadingText: copy.states.loading,
+            noOptionsText: searchNoOptionsText(search, copy, submitSearch),
+            // The host already searched: never filter its hits locally.
+            filterOptions: (options: SearchHit[]): SearchHit[] => options,
+            getOptionLabel: (option: SearchHit): string => option.name,
+            isOptionEqualToValue: (option: SearchHit, candidate: SearchHit): boolean =>
+              option === candidate,
+            onInputChange: handleSearchInput,
+            onChange: handleSearchSelect,
+            onHighlightChange: (_event: unknown, option: unknown): void => {
+              highlightedHitRef.current = option === null || typeof option !== 'object'
+                ? null
+                : (option as SearchHit)
+            },
+            onKeyDown: onSearchKeyDown,
+            renderInput: (params: Record<string, unknown>): React.ReactElement =>
+              renderSearchInput(params, copy, searchRef),
+            renderOption: renderSearchOption,
+            // The listbox owns the custom scrollbar; the popup must out-rank the
+            // fixed panel column (it is portaled to <body>).
+            slots: { listbox: AutocompleteScrollListbox },
+            slotProps: { popper: { sx: SEARCH_POPPER_SX } },
+            sx: SEARCH_AUTOCOMPLETE_SX,
+          }),
         ),
       ),
+    ),
     panelError === null
       ? null
       : h(
@@ -6859,12 +8783,14 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     props.expanded
       ? h(
         Tip,
-        { label: copy.tip.search },
+        { label: searchOpen ? copy.tip.closeSearch : copy.tip.search },
         h(
           MuiIconButton,
           {
             size: 'small',
-            'aria-label': copy.search.label,
+            'aria-label': searchOpen ? copy.tip.closeSearch : copy.search.label,
+            'aria-expanded': searchOpen,
+            'aria-controls': SEARCH_INPUT_ID,
             onClick: (): void => {
               if (searchOpen) {
                 setSearchOpen(false)
@@ -6916,6 +8842,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
       h(
         MuiBox,
         { sx: SCOPE_BAR_SX },
+        outlineBack,
         scopeChip,
         h(
           MuiTypography,
@@ -6932,12 +8859,15 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           h(
             MuiFade,
             {
-              key: `view:${view}:${viewPath ?? ''}:${id ?? ''}`,
+              // The Outline view stays mounted across its global/local path
+              // change so the global collapse state and scroll survive the trip;
+              // every other view remounts per selection for its fade.
+              key: view === 'outline' ? 'view:outline' : `view:${view}:${viewPath ?? ''}:${id ?? ''}`,
               in: true,
               appear: true,
               timeout: props.reducedMotion ? 0 : VIEW_FADE_MS,
             },
-            h(MuiBox, null, h(ActiveView, {
+            h(PanelScrollProvider, { target: scrollRef }, h(MuiBox, null, h(ActiveView, {
               side: props.side,
               copy,
               path: viewPath,
@@ -6946,7 +8876,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
               onSettled: handleSettled,
               indexBusy: actionBusy === 'index',
               onIndexWorkspace: indexWorkspace,
-            })),
+            }))),
           ),
         ),
       ),
@@ -6954,10 +8884,16 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
         MuiBottomNavigation,
         {
           showLabels: true,
-          value: view === 'agent' ? 'agents' : view,
+          // `agent` belongs to the Agents tab; detail pages such as `preview`
+          // are routed but deliberately not tabs, so no tab is selected.
+          value: view === 'agent' && props.tabs.includes('agents')
+            ? 'agents'
+            : props.tabs.includes(view)
+              ? view
+              : false,
           sx: NAV_SX,
           onChange: (_event: React.SyntheticEvent, value: string): void => {
-            if (!isPanelView(value) || !props.views.includes(value)) return
+            if (!isPanelView(value) || !props.tabs.includes(value)) return
             // A tab switch keeps the panel's file selection. Preview additionally
             // falls back to the last picked file, so "select, then Preview"
             // never lands on an empty preview.
@@ -6965,7 +8901,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
             go(value, carryPath !== null ? { path: carryPath } : undefined)
           },
         },
-        ...props.views.map((entry) =>
+        ...props.tabs.map((entry) =>
           h(MuiBottomNavigationAction, {
             key: entry,
             value: entry,
@@ -7150,18 +9086,71 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
 }
 
 /**
+ * Deterministic height split for the two docked panels.
+ *
+ * The two panels plus the 8 px gap must always fit in `containerHeight`:
+ *  - below 200 px (or below two title bars) both collapse to 48 px;
+ *  - only one expanded: it gets everything except the gap and the other bar;
+ *  - both expanded: each gets `(containerHeight - gap) / 2`.
+ * Every returned height is at least 48 px, and the sum never exceeds the
+ * container. Pure, so the resize/rotation clamp is directly testable.
+ */
+export interface PanelHeights {
+  readonly left: number
+  readonly right: number
+}
+
+export function splitPanelHeights(
+  containerHeight: number,
+  collapsedLeft: boolean,
+  collapsedRight: boolean,
+): PanelHeights {
+  const height = Number.isFinite(containerHeight) ? Math.max(0, containerHeight) : 0
+  if (height < PANEL_MIN_CONTAINER_HEIGHT) {
+    return { left: HEADER_HEIGHT, right: HEADER_HEIGHT }
+  }
+  const available = Math.max(0, height - COLUMN_GAP)
+  if (collapsedLeft && collapsedRight) {
+    return { left: HEADER_HEIGHT, right: HEADER_HEIGHT }
+  }
+  if (collapsedLeft) {
+    return {
+      left: HEADER_HEIGHT,
+      right: Math.max(HEADER_HEIGHT, available - HEADER_HEIGHT),
+    }
+  }
+  if (collapsedRight) {
+    return {
+      left: Math.max(HEADER_HEIGHT, available - HEADER_HEIGHT),
+      right: HEADER_HEIGHT,
+    }
+  }
+  const each = Math.max(HEADER_HEIGHT, available / 2)
+  return { left: each, right: each }
+}
+
+/**
  * The fixed right-hand column.
  *
  * `justifyContent: 'flex-end'` anchors the stack to the bottom: the workspace
  * panel (second child) sits at the bottom and, when it expands, pushes the
  * relationship panel up; when the relationship panel expands it grows back
  * downward into the space. The motion is pure flex layout — no transforms.
+ *
+ * `top` + `bottom` keep the column clear of the host title bar and the composer
+ * row; `maxHeight` (100dvh with a 100vh fallback) and `overflow: hidden` are a
+ * second guard against a rotation/resize ever growing it. Both panels plus the
+ * gap therefore always fit inside the column's own box.
  */
 export const COLUMN_SX = {
   position: 'fixed',
   top: COLUMN_TOP,
   right: COLUMN_RIGHT,
   bottom: COLUMN_BOTTOM,
+  maxHeight: `calc(100dvh - ${COLUMN_HEIGHT_OFFSET}px)`,
+  '@supports not (height: 100dvh)': {
+    maxHeight: `calc(100vh - ${COLUMN_HEIGHT_OFFSET}px)`,
+  },
   zIndex: theme.zIndex.tooltip - 1,
   display: 'flex',
   flexDirection: 'column',
@@ -7177,10 +9166,30 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const narrow = useMediaQuery('(max-width:899.95px)')
   const [column, setColumn] = React.useState<ColumnState>(readColumnState)
+  const columnRef = React.useRef<HTMLElement | null>(null)
+  const [columnHeight, setColumnHeight] = React.useState(0)
 
   React.useEffect(() => {
     writeColumnState(column)
   }, [column])
+
+  // Re-clamp on every resize/rotation: a column too short for two title bars
+  // forces both panels collapsed rather than showing half content.
+  React.useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return
+    const element = columnRef.current
+    if (element === null) return
+    const update = (): void => {
+      setColumnHeight(element.clientHeight)
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => {
+      observer.disconnect()
+    }
+  }, [])
+  const spaceConstrained = columnHeight > 0 && columnHeight < PANEL_MIN_CONTAINER_HEIGHT
 
   const toggle = (key: 'openLeft' | 'openRight'): void => {
     setColumn((previous) => ({ ...previous, [key]: !previous[key] }))
@@ -7196,6 +9205,7 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
     h(
       MuiBox,
       {
+        ref: columnRef,
         sx: {
           ...COLUMN_SX,
           width: narrow ? 'calc(100vw - 32px)' : `${column.width}px`,
@@ -7206,9 +9216,10 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
         null,
         h(DockedPanel, {
           side: 'left',
-          views: LEFT_VIEWS,
+          tabs: LEFT_PANEL_TABS,
+          routes: LEFT_PANEL_ROUTES,
           title: copy.leftTitle,
-          expanded: column.openLeft,
+          expanded: column.openLeft && !spaceConstrained,
           reducedMotion,
           onToggle: (): void => {
             toggle('openLeft')
@@ -7221,9 +9232,10 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
         null,
         h(DockedPanel, {
           side: 'right',
-          views: RIGHT_VIEWS,
+          tabs: RIGHT_PANEL_TABS,
+          routes: RIGHT_PANEL_ROUTES,
           title: copy.rightTitle,
-          expanded: column.openRight,
+          expanded: column.openRight && !spaceConstrained,
           reducedMotion,
           onToggle: (): void => {
             toggle('openRight')

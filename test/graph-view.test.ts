@@ -41,7 +41,10 @@ import { join, resolve, sep } from 'node:path'
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  DEFAULT_MANIFEST_NAMES,
+  INDEX_DEFAULT_IGNORE,
   INDEX_SKIP_DIRECTORIES,
+  MANIFEST_ROOTS,
   MAX_AGENT_MESSAGES,
   MAX_AGENT_MESSAGE_BYTES,
   MAX_AGENT_ROSTER,
@@ -82,9 +85,12 @@ import {
   createGraphQuery,
   graphCacheStats,
   indexWorkspaceFiles,
+  isIgnoredWorkspacePath,
   isIndexableWorkspaceFile,
   normaliseGraphPath,
+  outlineRootOf,
   previewKindOf,
+  projectScopeOf,
   resetGraphCache,
   resolveAgentSessionEvents,
   sanitizePreviewHtml,
@@ -97,6 +103,8 @@ import {
   type GraphNode,
   type GraphQuery,
   type GraphScope,
+  type Manifest,
+  type ProjectScope,
   type WorkspaceIndexEntry,
   type WorkspaceIndexIo,
 } from '../src/host/graph-view.js'
@@ -126,8 +134,9 @@ function query(
   edges: readonly GraphEdge[] = [],
   version = 'fixture',
   scope: GraphScope = 'workspace',
+  workspaceRoot = 'C:\\workspace',
 ): GraphQuery {
-  return createGraphQuery({ version, scope, nodes, edges })
+  return createGraphQuery({ version, scope, workspaceRoot, nodes, edges })
 }
 
 function names(entries: ReadonlyArray<{ name: string }>): string[] {
@@ -185,7 +194,142 @@ test('tree caps depth at 8 and returns no entries for an empty graph', () => {
   assert.ok(!flattened.includes('a/b/c/d/e/f/g/h/i'))
   assert.ok(flattened.includes('a/b/c/d/e/f/g/h'))
 
-  assert.deepEqual(buildTree([], '.'), { root: '.', entries: [] })
+  assert.deepEqual(buildTree([], '.'), { root: '.', entries: [], projects: [] })
+})
+
+test('tree root is the resolved workspace root, never the indexed files’ common prefix', () => {
+  const root = 'C:\\workspace'
+  const nodes: GraphNode[] = [
+    node('f-a', 'document', 'src/a.ts', { name: 'a.ts' }),
+    node('f-b', 'module', 'src/lib/b.ts', { name: 'b.ts' }),
+  ]
+
+  const tree = buildTree(nodes, root)
+  assert.equal(tree.root, root)
+  // `src` is a directory under the root even though every indexed file lives
+  // below it: the root is never derived from the paths.
+  assert.deepEqual(names(tree.entries), ['src'])
+  assert.equal(tree.entries[0]?.path, 'src')
+  assert.deepEqual(tree.projects, [])
+})
+
+test('tree indexes manifests and reports only the outermost project with nested manifests', () => {
+  const root = 'C:\\workspace'
+  const nodes: GraphNode[] = [
+    node('m-root', 'document', 'package.json', { name: 'package.json' }),
+    node('m-web', 'document', 'packages/web/package.json', { name: 'package.json' }),
+    node('f-web', 'module', 'packages/web/src/a.ts', { name: 'a.ts' }),
+    node('m-npm-child', 'project', 'packages/web/package.json', { name: 'web' }),
+  ]
+
+  const tree = buildTree(nodes, root)
+  assert.equal(tree.root, root)
+  // Manifests are file entries even though `.json` is not on the extension
+  // allowlist; parser child kinds such as `project` are not separate entries.
+  assert.deepEqual(names(tree.entries), ['packages', 'package.json'])
+  assert.deepEqual(
+    tree.projects,
+    [{
+      kind: 'npm',
+      root: 'C:\\workspace',
+      manifest: 'package.json',
+      nestedManifests: ['packages/web/package.json'],
+    }],
+  )
+})
+
+test('tree reports a nested manifest as the outermost project when it is alone', () => {
+  const root = 'C:\\workspace'
+  const nodes: GraphNode[] = [
+    node('m-web', 'document', 'packages/web/package.json', { name: 'package.json' }),
+    node('f-web', 'module', 'packages/web/src/a.ts', { name: 'a.ts' }),
+  ]
+
+  const tree = buildTree(nodes, root)
+  assert.deepEqual(tree.projects, [{
+    kind: 'npm',
+    root: 'C:\\workspace\\packages\\web',
+    manifest: 'package.json',
+    nestedManifests: [],
+  }])
+})
+
+test('projectScopeOf returns the outermost manifest project and the workspace fallback', () => {
+  const root = 'C:\\workspace'
+  const manifests: Manifest[] = [
+    { kind: 'npm', path: 'package.json' },
+    { kind: 'npm', path: 'packages/web/package.json' },
+  ]
+
+  assert.deepEqual(projectScopeOf('packages/web/src/a.ts', manifests, root), {
+    kind: 'npm',
+    root: 'C:\\workspace',
+    manifest: 'package.json',
+  })
+  assert.deepEqual(projectScopeOf('src/a.ts', manifests, root), {
+    kind: 'npm',
+    root: 'C:\\workspace',
+    manifest: 'package.json',
+  })
+  assert.deepEqual(projectScopeOf('src/a.ts', [], root), {
+    kind: 'workspace',
+    root,
+    manifest: null,
+  })
+  // A sibling directory whose name merely shares the project prefix is not
+  // inside the project.
+  const webOnly: Manifest[] = [{ kind: 'npm', path: 'packages/web/package.json' }]
+  assert.deepEqual(projectScopeOf('packages/web-other/a.ts', webOnly, root), {
+    kind: 'workspace',
+    root,
+    manifest: null,
+  })
+
+  // Tree projects are valid manifest inputs too: their `manifest` is a file
+  // name beside their absolute `root`.
+  const tree = buildTree([
+    node('m-root', 'document', 'package.json', { name: 'package.json' }),
+    node('m-web', 'document', 'packages/web/package.json', { name: 'package.json' }),
+    node('f-web', 'module', 'packages/web/src/a.ts', { name: 'a.ts' }),
+  ], root)
+  assert.deepEqual(projectScopeOf('packages/web/src/a.ts', tree.projects, root), {
+    kind: 'npm',
+    root,
+    manifest: 'package.json',
+  })
+})
+
+test('outlineRootOf never returns a path prefix; it returns the workspace or outermost project root', () => {
+  const root = 'C:\\workspace'
+  assert.equal(outlineRootOf(root, []), root)
+  assert.equal(
+    outlineRootOf(root, [{ kind: 'workspace', root, manifest: null }]),
+    root,
+  )
+  // Only `src` has files: no project, so the resolved workspace root stays.
+  assert.equal(outlineRootOf(root, []), root)
+  assert.notEqual(outlineRootOf(root, []), 'C:\\workspace\\src')
+
+  const nested: ProjectScope = {
+    kind: 'npm',
+    root: 'C:\\workspace\\packages\\web',
+    manifest: 'package.json',
+  }
+  assert.equal(outlineRootOf(root, [nested]), 'C:\\workspace\\packages\\web')
+
+  const outer: ProjectScope = { kind: 'npm', root, manifest: 'package.json' }
+  assert.equal(outlineRootOf(root, [nested, outer]), root)
+  // Never the longest common prefix of the two projects.
+  assert.notEqual(outlineRootOf(root, [nested, outer]), 'C:\\workspace\\packages')
+
+  // Sibling projects have no single outermost project root.
+  assert.equal(
+    outlineRootOf(root, [
+      { kind: 'npm', root: 'C:\\workspace\\packages\\a', manifest: 'package.json' },
+      { kind: 'npm', root: 'C:\\workspace\\packages\\b', manifest: 'package.json' },
+    ]),
+    root,
+  )
 })
 
 /* ------------------------------------------------------------------------- *
@@ -307,6 +451,41 @@ test('outline: workspace scope caps files at 200 and nodes per group at 500', ()
   assert.equal(outline.groups.length, MAX_OUTLINE_FILES)
   assert.equal(outline.groups[0]?.path, 'f0.md')
   assert.equal(outline.groups[0]?.nodes.length, MAX_OUTLINE_NODES)
+})
+
+test('outline: file scope returns only that file’s nodes and never groups', () => {
+  const nodes: GraphNode[] = [
+    node('f-a', 'document', 'docs/a.md', { name: 'a.md' }),
+    node('h-a', 'heading', 'docs/a.md', { name: 'A heading', line: 2 }),
+    node('f-b', 'document', 'docs/b.md', { name: 'b.md' }),
+    node('h-b', 'heading', 'docs/b.md', { name: 'B heading', line: 2 }),
+  ]
+  const outline = buildOutline(query(nodes), 'docs/a.md')
+  assert.equal(outline.scope, 'file')
+  assert.equal('groups' in outline, false)
+  assert.deepEqual(outline.nodes.map((entry) => entry.name), ['a.md', 'A heading'])
+})
+
+test('outline: workspace groups carry the outermost manifest project only when one claims them', () => {
+  const root = 'C:\\workspace'
+  const nodes: GraphNode[] = [
+    node('m-web', 'document', 'packages/web/package.json', { name: 'package.json' }),
+    node('f-web', 'document', 'packages/web/src/a.ts', { name: 'a.ts' }),
+    node('h-web', 'heading', 'packages/web/src/a.ts', { name: 'A', line: 2 }),
+    node('f-root', 'document', 'src/root.ts', { name: 'root.ts' }),
+  ]
+  const workspace = buildOutline(query(nodes, [], 'outline-projects', 'workspace', root))
+  assert.equal(workspace.scope, 'workspace')
+  const web = workspace.groups.find((group) => group.path === 'packages/web/src/a.ts')
+  assert.deepEqual(web?.project, { kind: 'npm', root: 'C:\\workspace\\packages\\web' })
+  const plain = workspace.groups.find((group) => group.path === 'src/root.ts')
+  assert.equal(plain?.project, undefined)
+  // A manifest never turns a sibling directory into a project.
+  assert.ok(workspace.groups.every((group) => group.project?.root !== 'C:\\workspace\\src'))
+
+  // No manifest at all: every group is a direct workspace-root child.
+  const bare = buildOutline(query([node('f', 'document', 'src/a.ts')], [], 'outline-bare'))
+  assert.ok(bare.groups.every((group) => group.project === undefined))
 })
 
 test('outline rejects invalid paths and returns NOT_FOUND for unindexed files', () => {
@@ -1690,6 +1869,15 @@ test('index scan: extension allowlist and skipped directories are explicit', () 
     'x.TS',
     'a/b/c.css',
     'book.csv',
+    // Structural manifests are accepted by exact file name, not extension.
+    'package.json',
+    'pom.xml',
+    'Cargo.toml',
+    'go.mod',
+    'PACKAGE.JSON',
+    'Pom.XML',
+    'packages/web/package.json',
+    'services/api/pom.xml',
   ]) {
     assert.equal(isIndexableWorkspaceFile(path), true, path)
   }
@@ -1698,7 +1886,12 @@ test('index scan: extension allowlist and skipped directories are explicit', () 
     'report.docx',
     'setup.exe',
     'archive.zip',
+    // Unrelated `.json`/`.xml` files stay out: only the exact manifests are
+    // exempt from the extension allowlist.
     'notes.json',
+    'package-lock.json',
+    'other.xml',
+    'my-package.json',
     'data.yaml',
     'page.html.bak',
     '.gitignore',
@@ -1711,6 +1904,126 @@ test('index scan: extension allowlist and skipped directories are explicit', () 
     [...INDEX_SKIP_DIRECTORIES].sort(),
     ['.git', '.tmp', 'dist', 'node_modules'],
   )
+  // The default ignore list never hides a structural manifest.
+  assert.deepEqual(INDEX_DEFAULT_IGNORE, [])
+  assert.deepEqual(DEFAULT_MANIFEST_NAMES, [
+    'package.json',
+    'pom.xml',
+    'Cargo.toml',
+    'go.mod',
+    'pyproject.toml',
+    'build.gradle',
+    'settings.gradle',
+    'composer.json',
+    'Gemfile',
+    'mix.exs',
+    'dune-project',
+  ])
+  assert.equal(MANIFEST_ROOTS['package.json'], 'npm')
+  assert.equal(MANIFEST_ROOTS['pom.xml'], 'maven')
+  assert.equal(MANIFEST_ROOTS['Cargo.toml'], 'cargo')
+})
+
+test('index scan: package.json and pom.xml are indexed, unrelated .json/.xml are skipped', async () => {
+  const tree: Record<string, WorkspaceIndexEntry[]> = {
+    '': [
+      walkFile('package.json'),
+      walkFile('pom.xml'),
+      walkFile('notes.json'),
+      walkFile('other.xml'),
+      walkDirectory('packages'),
+    ],
+    packages: [walkDirectory('web')],
+    'packages/web': [walkFile('package.json'), walkFile('src.ts')],
+  }
+  const { io, indexed } = stubWalk(tree)
+  const result = await indexWorkspaceFiles(io, { now: () => 0 })
+
+  assert.deepEqual([...indexed].sort(), [
+    'package.json',
+    'packages/web/package.json',
+    'packages/web/src.ts',
+    'pom.xml',
+  ])
+  assert.equal(result.indexed, 4)
+  assert.equal(result.skipped, 2)
+})
+
+test('index scan: a custom manifestNames list is accepted case-insensitively', async () => {
+  assert.equal(isIndexableWorkspaceFile('custom.manifest'), false)
+  assert.equal(
+    isIndexableWorkspaceFile('custom.manifest', { manifestNames: ['custom.manifest'] }),
+    true,
+  )
+  assert.equal(
+    isIndexableWorkspaceFile('CUSTOM.MANIFEST', { manifestNames: ['custom.manifest'] }),
+    true,
+  )
+  // Whitelisting one name does not widen the extension allowlist.
+  assert.equal(
+    isIndexableWorkspaceFile('other.custom', { manifestNames: ['custom.manifest'] }),
+    false,
+  )
+  // A replacement list is authoritative: the default manifests are not
+  // implicitly accepted as well.
+  assert.equal(
+    isIndexableWorkspaceFile('package.json', { manifestNames: ['custom.manifest'] }),
+    false,
+  )
+
+  const tree: Record<string, WorkspaceIndexEntry[]> = {
+    '': [walkFile('custom.manifest'), walkFile('other.custom'), walkFile('app.ts')],
+  }
+  const { io, indexed } = stubWalk(tree)
+  const result = await indexWorkspaceFiles(io, {
+    manifestNames: ['custom.manifest'],
+    now: () => 0,
+  })
+  assert.deepEqual([...indexed].sort(), ['app.ts', 'custom.manifest'])
+  assert.equal(result.skipped, 1)
+})
+
+test('index scan: the user ignore list wins over manifest acceptance', async () => {
+  assert.equal(isIndexableWorkspaceFile('package.json'), true)
+  assert.equal(
+    isIndexableWorkspaceFile('package.json', { ignore: ['package.json'] }),
+    false,
+  )
+  assert.equal(isIgnoredWorkspacePath('packages/web/package.json', ['package.json']), true)
+  assert.equal(isIgnoredWorkspacePath('src/app.ts', ['packages/web']), false)
+  assert.equal(isIgnoredWorkspacePath('packages/web/src/app.ts', ['packages/web']), true)
+
+  const tree: Record<string, WorkspaceIndexEntry[]> = {
+    '': [
+      walkFile('package.json'),
+      walkFile('pom.xml'),
+      walkFile('app.ts'),
+      walkDirectory('packages'),
+    ],
+    packages: [walkDirectory('web')],
+    'packages/web': [walkFile('package.json'), walkFile('src.ts')],
+  }
+  const { io, indexed } = stubWalk(tree)
+  const result = await indexWorkspaceFiles(io, {
+    ignore: ['package.json', 'pom.xml'],
+    now: () => 0,
+  })
+  assert.deepEqual([...indexed].sort(), ['app.ts', 'packages/web/src.ts'])
+  assert.equal(result.indexed, 2)
+  assert.equal(result.skipped, 3)
+})
+
+test('index scan: ignore entries can prune whole directories', async () => {
+  const tree: Record<string, WorkspaceIndexEntry[]> = {
+    '': [walkDirectory('vendor'), walkDirectory('src')],
+    vendor: [walkFile('dep.ts')],
+    src: [walkFile('app.ts')],
+  }
+  const { io, reads, indexed } = stubWalk(tree)
+  const result = await indexWorkspaceFiles(io, { ignore: ['vendor'], now: () => 0 })
+  assert.deepEqual([...reads].sort(), ['', 'src'])
+  assert.deepEqual(indexed, ['src/app.ts'])
+  assert.equal(result.indexed, 1)
 })
 
 test('index scan: depth ≤ 8, breadth-first deterministic order, skipped count', async () => {

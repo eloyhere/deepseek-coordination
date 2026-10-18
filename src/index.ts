@@ -36,6 +36,7 @@ import { brandProfileOf, shouldDecorate } from './host/model-brand.js'
 import type { GenerateOptionsLike } from './shared/service.js'
 import {
   createToolWorkspaceRootResolver,
+  registerCoordinationGraphTools,
   registerCoordinationTools,
   resolveToolWorkspaceRoot,
   toolRegistryOf,
@@ -232,6 +233,9 @@ function graphQueryOf(snapshot: GraphSnapshot, scope: GraphScope): GraphQuery {
   return createGraphQuery({
     version: snapshot.version,
     scope,
+    // Project scopes are resolved against the same root the snapshot was read
+    // for: the workspace root, never a prefix inferred from the file paths.
+    workspaceRoot: snapshot.root,
     nodes: snapshot.nodes,
     edges: snapshot.edges,
   })
@@ -717,7 +721,24 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
     let dispose: (() => void) | undefined
     const install = (locale: Locale): void => {
       dispose?.()
-      dispose = registerCoordinationTools(toolRegistryOf(context), service, locale)
+      const registry = toolRegistryOf(context)
+      // Two sets with independent lifetimes: the documented seven-tool file
+      // surface and the four read-only graph tools. The graph set gets the
+      // apply-time context so its per-call workspace-root resolution follows
+      // the same session workspace the `/graph/*` routes use.
+      const disposeFileTools = registerCoordinationTools(registry, service, locale)
+      let disposeGraphTools: () => void
+      try {
+        disposeGraphTools = registerCoordinationGraphTools(registry, service, locale, { context })
+      } catch (error) {
+        // Never leave the first set registered when the second one fails.
+        disposeFileTools()
+        throw error
+      }
+      dispose = () => {
+        disposeGraphTools()
+        disposeFileTools()
+      }
     }
     install(normaliseLocale(service.locale))
     refreshTools = install
@@ -988,7 +1009,7 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            * explicit root is a 400. The resolved root is part of the answer
            * where a wrong root would otherwise look like an empty workspace.
            *
-           *   GET /graph/tree                     -> { root, entries }
+           *   GET /graph/tree                     -> { root, entries, projects }
            *   GET /graph/outline[?path=<rel>]     -> file | workspace outline
            *   GET /graph/intra?path=<rel>         -> in-file symbols + edges
            *   GET /graph/dependencies[?path=<rel>][&level=file|intra]
