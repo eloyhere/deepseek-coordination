@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.12.0 | 2026-10-18 | `84af8b8` | Domain ecosystems: tex, book, markdown, html, languages, office, package managers; kind filter and directory layer |
 | 0.11.0 | 2026-10-18 | `19bfedf` | Durable settings, DSH-owned reasoning, cache proxy and brand profiles, dialog and label fixes |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | Settings catalog, durable file layer, turn pipeline, phase freeze, data structures, installable package |
 | 0.9.2 | 2026-10-18 | `73a273d` | One dropdown tooltip at a time |
@@ -46,6 +47,76 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.12.0] — 2026-10-18
+
+### Added
+
+- **A domain-concept layer, split by ecosystem.** `src/host/text/` ships one parser
+  per system, each mapping onto body-free `NodeMetadata`:
+  - **tex** — `calculation`/`computation`/`derivation` statements; an explicit
+    condition scanner (`\requires`, `\meets`, `\necessary`, `\sufficient`,
+    `\adequate`, `\invariant`, `\assumption`, `\hypothesis`, `\guard`,
+    `\constraint`, `\goal`). `relation` is set **only** by `\requires`/`\meets`.
+  - **book** — `SUMMARY.md` tables of contents (`part`/`chapter`/`section`) and
+    front matter (`type: book|article`, `author`→`person`, `venue`). `article` is
+    produced **only** here.
+  - **markdown** — `chapter` from a level-1 heading, one `link` per link/image,
+    one body-free `code` per fenced block, unconditional `document`.
+  - **html** — `link` for `a`/`img`/`link`/`script`, `code` for `pre`/`code`;
+    `<article>` is a sectioning container mapping to `section`/`document`, never
+    to the literary `article`.
+  - **javascript/typescript** — `variable` nodes (destructured bindings
+    included), `binding`/`scope` (`global|local|static`), and TS `interface`,
+    `type`, `enum`, `namespace`.
+  - **java**, **python**, **c/c++**, **rust**, **php** — one lexical parser each,
+    emitting `importation` references, types, functions/methods and file-scope
+    variables; `struct`/`trait`/`implementation`/`interface` nuance lives in
+    `label`, not in new kinds.
+  - **maven** / **npm** — `project`, `module`, `dependency`, `parent`, `script`
+    from `pom.xml` and `package.json`, matched by exact file name.
+  - **office** — bounded ZIP + OOXML readers for `docx` (`document`, `chapter`,
+    `section`, `link`), `xlsx` (`workbook`, `sheet`, `range`, `formula`),
+    `pptx` (`document`, `slide`); `pub`/`accdb` return an explicit
+    `unsupported-format` diagnostic instead of guessing.
+  - **text** — `sentence` segmentation and `line` ranges (coordinates, not nodes).
+- **`kind` filter on `coordination_chain`.** Every node-returning action accepts
+  an optional `kind` (trimmed, case-insensitive); a filter narrows traversal and
+  returns an empty list rather than an error. Copy landed in both locales.
+- **Directory layer.** Indexing `pkg/src/a.ts` creates `directory` nodes for `pkg`
+  and `pkg/src` with `contains`/`part_of` edges, idempotent by handle and derived
+  only from unambiguous workspace paths.
+- **`NodeRecord`** (`src/shared/node-record.ts`): the canonical body-free record
+  `{ path, charset, byte:{start,end}, line:{start,end}, fingerprint, dirty,
+  summary, brief, description, reference, purpose, children }`, with `number`
+  coordinates, a wire round-trip, and a caller-supplied inline depth limit.
+- **New dependencies**: `fflate` and `fast-xml-parser`, bundled into the host and
+  client artifacts (no runtime `require`).
+
+### Changed
+
+- **Direction invariant.** `part_of` (child→parent) is written only from proven
+  evidence; `contains` (parent→child) is best-effort and may be partial. Generic
+  `path`/`cycle` traversals skip directory endpoints unless a relation is named.
+- **`SUMMARY.md` resolves to the book parser** through the registry's
+  filename-first rule; `README.md` and other Markdown stay with Markdown.
+- **`TexStatementKind` is an alias of `StatementKind`**, so the parser and the
+  enum cannot drift.
+
+### Fixed
+
+- **Dynamic imports and `require` were dropped** when a declaration skipped its
+  initializer; a bounded re-scan over the skipped token range restores them.
+- **A crash in `handleDeclaration`** (raw token index used as a `sig` index) broke
+  files with enough leading whitespace; spans now use the correct position while
+  symbols keep the raw token index.
+- **`test:tsc` fixture types** (nameless permission preset, `current()` returning
+  `undefined`, `Forwarded` missing `model`/`temperature`) are corrected without
+  weakening assertions.
+- **Stale assertions across the parser suite** now match the new semantics: HTML
+  never yields `article`, Markdown `#` always yields `chapter`, and the public
+  export allowlist pins the new modules (including an intentionally empty class
+  list for `node-record.ts`).
 
 ## [0.11.0] — 2026-10-18
 

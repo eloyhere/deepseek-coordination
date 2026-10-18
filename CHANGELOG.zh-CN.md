@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.12.0 | 2026-10-18 | `84af8b8` | 领域体系：tex、book、markdown、html、各语言、office、包管理器；kind 过滤与目录层 |
 | 0.11.0 | 2026-10-18 | `19bfedf` | 设置持久化、推理交还 DSH、缓存代理与品牌策略、对话框与标签修复 |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | 设置目录、持久文件层、Turn 流水线、阶段冻结、数据结构采纳、可安装包 |
 | 0.9.2 | 2026-10-18 | `73a273d` | 同一时刻只允许一个下拉框 tooltip |
@@ -43,6 +44,60 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.12.0] — 2026-10-18
+
+### 新增
+
+- **按体系拆分的领域概念层。** `src/host/text/` 每个体系一个解析器，统一产出
+  body-free 的 `NodeMetadata`：
+  - **tex** — `calculation`/`computation`/`derivation` 语句；显式条件标记扫描
+    （`\requires`、`\meets`、`\necessary`、`\sufficient`、`\adequate`、
+    `\invariant`、`\assumption`、`\hypothesis`、`\guard`、`\constraint`、`\goal`）。
+    `relation` **只**由 `\requires`/`\meets` 设置。
+  - **book** — `SUMMARY.md` 目录（`part`/`chapter`/`section`）与 front matter
+    （`type: book|article`、`author`→`person`、`venue`）。`article` 只在这里产出。
+  - **markdown** — 一级标题 → `chapter`，每个链接/图片 → `link`，每个围栏代码块 →
+    body-free `code`，`document` 无条件产出。
+  - **html** — `a`/`img`/`link`/`script` → `link`，`pre`/`code` → `code`；
+    `<article>` 是分区容器，映射为 `section`/`document`，绝不产出文学意义的 `article`。
+  - **javascript/typescript** — `variable` 节点（含解构绑定）、`binding`/`scope`
+    （`global|local|static`），以及 TS 的 `interface`、`type`、`enum`、`namespace`。
+  - **java**、**python**、**c/c++**、**rust**、**php** — 各自一个词法解析器，产出
+    `importation` 引用、类型、函数/方法与文件级变量；`struct`/`trait`/
+    `implementation`/`interface` 等细分放在 `label`，不新增 kind。
+  - **maven** / **npm** — 从 `pom.xml` 与 `package.json` 产出 `project`、`module`、
+    `dependency`、`parent`、`script`，按精确文件名匹配。
+  - **office** — 有界 ZIP + OOXML 读取：`docx`（`document`/`chapter`/`section`/
+    `link`）、`xlsx`（`workbook`/`sheet`/`range`/`formula`）、`pptx`
+    （`document`/`slide`）；`pub`/`accdb` 返回显式 `unsupported-format` 诊断，不臆测。
+  - **text** — `sentence` 切分与 `line` 区间（坐标，不是节点）。
+- **`coordination_chain` 的 `kind` 过滤。** 所有返回节点的动作都接受可选 `kind`
+  （去空格、大小写不敏感）；过滤只收窄遍历，无匹配返回空列表而不是报错。中英文案齐备。
+- **目录层。** 索引 `pkg/src/a.ts` 会为 `pkg` 与 `pkg/src` 建立 `directory` 节点及
+  `contains`/`part_of` 边；按 handle 幂等，且只从无歧义的工作区路径派生。
+- **`NodeRecord`**（`src/shared/node-record.ts`）：规范的 body-free 记录
+  `{ path, charset, byte:{start,end}, line:{start,end}, fingerprint, dirty,
+  summary, brief, description, reference, purpose, children }`，坐标用 `number`，
+  可 JSON 往返，内联深度由调用方传入。
+- **新依赖**：`fflate` 与 `fast-xml-parser`，已内联进宿主与客户端产物，无运行时 `require`。
+
+### 变更
+
+- **方向不变量。** `part_of`（子→父）只由可证明的证据写入；`contains`（父→子）允许
+  不完整，属"尽力而为"。通用 `path`/`cycle` 遍历默认跳过目录端点，除非调用方显式指定关系。
+- **`SUMMARY.md` 由 book 解析器处理**（注册表的文件名优先规则）；`README.md` 等仍走 Markdown。
+- **`TexStatementKind` 改为 `StatementKind` 的别名**，解析器与枚举不会再漂移。
+
+### 修复
+
+- **动态 import 与 `require` 丢失**：声明跳过初始化器时未回扫，现在对跳过区间做有界重扫。
+- **`handleDeclaration` 崩溃**：把原始 token 索引当 `sig` 下标用，前置空白一多就越界；
+  现在 span 用正确位置、符号保留原始索引。
+- **`test:tsc` 夹具类型**（无名权限预设、`current()` 返回 `undefined`、`Forwarded` 缺
+  `model`/`temperature`）已修正，未削弱断言。
+- **解析器测试的过期断言**已对齐新语义：HTML 不再产出 `article`、Markdown `#` 恒为
+  `chapter`、公共导出白名单补上新模块（`node-record.ts` 用空类表钉死）。
 
 ## [0.11.0] — 2026-10-18
 

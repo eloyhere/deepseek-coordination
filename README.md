@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.11.0 (2026-10-18).** This release makes the settings page durable through the host's own override document, hands reasoning entirely to DSH, turns every numeric control into a number field, fixes the settings and takeover wiring against DSH 0.2.1, and adds the experimental cache proxy with brand-aware cache profiles. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.12.0 (2026-10-18).** This release adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -60,7 +60,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.11.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.12.0.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -187,6 +187,37 @@ The budgets live in `src/host/comprehension.ts` and the shared `ValidationBudget
 | Every 60 s | Delete ended locks older than `defaultLease`. |
 
 Terminal turn states (`done`, `failed`, `cancelled`, `abandoned`) are irreversible. The turn hook records turn metadata and an empty prompt row; it does not mirror the DSH conversation into the coordination database.
+
+## Domain ecosystems and parsers
+
+The file layer is not one parser with a bag of node kinds. Each system owns a module under `src/host/text/`, and the node kinds it may emit are bounded by that system's semantics. All output is body-free `NodeMetadata`: kind, explicit name/label, span and fragment coordinates — never a body, a cell value or a paragraph.
+
+| Ecosystem | Module | Node kinds it may emit |
+|---|---|---|
+| tex | `tex.ts` | `definition`, `lemma`, `theorem`, `proof`, `property`, `axiom`, `corollary`, `claim`, `example`, `remark`, `calculation`, `condition` (+ `requires`/`meets` edges) |
+| book | `book.ts` | `book`, `part`, `chapter`, `article`, `section`, `person`, `venue` — the only producer of `article` |
+| markdown | `markup.ts` | `document`, `chapter`, `heading`, `paragraph`, `div`, `link`, `code`, `section`, `sheet`, `cell`, `range`, `condition` |
+| html | `markup.ts` | `document`, `section` (`<article>` maps here), `chapter` (`<h1>`), `link`, `code` |
+| js/ts | `javascript.ts` | `class`, `function`, `method`, `variable`, `interface`, `type`, `enum`, `namespace`, `importation`, `exportation`, `condition` |
+| java | `java.ts` | `module`, `class`, `method`, `variable`, `importation` |
+| python | `python.ts` | `class`, `function`, `method`, `variable`, `importation` |
+| c/c++ | `c-family.ts` | `module`, `class`, `function`, `method`, `variable`, `importation` |
+| rust | `rust.ts` | `module`, `class`, `function`, `method`, `variable`, `importation` |
+| php | `php.ts` | `module`, `class`, `function`, `method`, `variable`, `importation` |
+| maven | `maven.ts` | `project`, `module`, `dependency` (parent is a dependency with `label: 'parent'`) |
+| npm | `npm.ts` | `project`, `dependency`, `script` (the command body is never stored) |
+| office | `office.ts` | docx: `document`, `chapter`, `section`, `paragraph`, `link`; xlsx: `workbook`, `sheet`, `range`, `formula`; pptx: `document`, `slide`; pub/accdb: no nodes, one `unsupported-format` diagnostic |
+| text | `sentence.ts` | `sentence` segmentation and `line` ranges (coordinates, not nodes) |
+
+Rules that hold across every ecosystem:
+
+- **Language nuance lives in `label`, not in new kinds.** Rust `impl` is `kind: 'class'` with `label: 'implementation'`; C++ `struct`/`enum` and PHP `trait` work the same way. `NodeKind` stays a small closed union.
+- **Descriptive only.** No parser writes files, builds, installs, executes macros or reaches the network. A real "create project" is a shell command behind DSH's permission model, never a plugin tool.
+- **Explicit evidence only.** A heading level is never inferred from text, a package version is never invented, and a missing relationship is reported rather than paired positionally. Malformed input returns a diagnostic and never throws.
+- **Bounded.** ZIP entries ≤ 2000, uncompressed ≤ 64 MiB per entry / 256 MiB total, XML nesting ≤ 128, nodes ≤ `MAX_METADATA_NODES` (20 000), and the parser honors the token/time budgets.
+- **`SUMMARY.md` resolves to `book`** through the registry's filename-first rule; `README.md` and other Markdown stay with the Markdown parser.
+
+The graph answers "what is in this workspace" through `coordination_parse`, `coordination_describe` and `coordination_chain`. The chain query takes an optional `kind` (trimmed, case-insensitive) on every node-returning action, so "all lemmas" or "all chapters" is one call instead of a scan. Directory nodes are derived from unambiguous workspace paths and connected with `contains`/`part_of`; the invariant is **`part_of` (child→parent) exact, `contains` (parent→child) best-effort**.
 
 ## Settings and configuration
 
@@ -348,7 +379,7 @@ There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol
 
 | Check | Result |
 |---|---|
-| `npm test` | **507 tests, 506 pass, 1 skipped (GC-only), 0 fail**, ~3 s on Node 24.21.0 |
+| `npm test` | **615 tests, 614 pass, 1 skipped (GC-only), 0 fail**, ~3 s on Node 24.21.0 |
 | `npm run typecheck` / `npm run test:tsc` | Clean |
 | `npm run build` | Host + client bundles green; MUI `"use client"` directive warnings are non-fatal |
 | `npm run pack:check` | OK: the runtime tarball carries the four shipped files |
@@ -359,7 +390,7 @@ Parser and structure numbers are guards, not promises: a 100k-character parse te
 Known limitations, stated rather than hidden:
 
 1. **Durable graph is bounded.** `node`/`edge`/`snapshot` are now schema 24 and survive a new runtime; rehydration is bounded to the newest 10k nodes / 50k edges, removed symbols are not pruned, and a handle older than the rehydration window is `NOT_FOUND`.
-2. **Domain extraction is parser-level; the chain projection is partial.** Book/Article/Part/Chapter/Section/Paragraph, Person/Venue, Condition, Sheet/Cell/Range, TeX proof status and CSV/TSV sheets are emitted and projected onto node cards. `partOf`/`condition` edges are not yet queryable through `coordination_chain`; xlsx/docx/pptx, Sign promotion, Lean/Coq/Isabelle status and cross-file Book composition remain deferred.
+2. **Domain extraction is parser-level; some projections are still partial.** Book/Article/Part/Chapter/Section/Paragraph, Person/Venue, Condition, Sheet/Cell/Range and TeX proof status are emitted and projected onto node cards; docx/xlsx/pptx now parse through a bounded ZIP+OOXML reader, while Publisher/Access stay explicitly unsupported. `partOf`/`condition` edges are queryable through `coordination_chain`; cross-file Book composition and Sign promotion remain deferred.
 3. **The core turn pipeline is wired, the wider engines are not.** Comprehension → Organization → Plan/score and required Predict rows now run for `command=none` turns, with the scene policy applied where ports exist. Standalone Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score, plan rebuild loops and decompose/dispatch/verify/synthesize remain library-only. Reasoning is DSH-owned and no longer reported as a plugin gap; `allowBash`, `maxIteration` and non-writing score thresholds are still recorded as deferred diagnostics, not faked.
 4. **Configured caps are live.** `parser.maxAstDepth`, both dependency-graph caps and `tools.maxResultBytes` are consumed; parser/chain limits retune an existing runtime, and a config change no longer leaves a stale tool runtime.
 5. **Workspace root is resolved, not hard-coded.** Tool option → service root → host root → sandbox-policy root → `process.cwd()` only as the last fallback.
@@ -371,6 +402,6 @@ Known limitations, stated rather than hidden:
 
 ## Repository history and license
 
-`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles. Earlier states remain in git history and tags.
+`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles; `0.12.0` added the per-ecosystem domain layer, the chain `kind` filter, the directory layer and `NodeRecord`. Earlier states remain in git history and tags.
 
 MIT © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).

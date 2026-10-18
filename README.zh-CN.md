@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.11.0（2026-10-18）。** 本版把设置页改为持久化（落在宿主自己的覆盖文档），把推理完全交还 DSH，把所有数值控件改成数字输入框，修好设置写入与接管在 DSH 0.2.1 上的接线，并加入带品牌策略的实验性缓存代理。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.12.0（2026-10-18）。** 本版新增按体系拆分的领域概念层——tex、book、markdown、html、五种编程语言、maven/npm 与 Office——并为 chain 查询加上 `kind` 过滤、加入目录层与规范 `NodeRecord`。它建立在 v0.11.0（持久设置、推理交还 DSH、实验性缓存代理）之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -60,7 +60,7 @@ npm pack                # 先执行 prepack，生成可安装 tarball
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.11.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.12.0.tgz
 dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 ```
 
@@ -187,6 +187,37 @@ deepseek-coordination/
 | 每 60 秒 | 删除超过 `defaultLease` 的已结束 lock 行。 |
 
 `done`、`failed`、`cancelled`、`abandoned` 是不可逆终态。Turn 钩子只记录 Turn 元数据和一条空 prompt 行，不把 DSH 对话镜像进协调库。
+
+## 领域体系与解析器
+
+文件层不是一个解析器加一堆节点类型。每个体系在 `src/host/text/` 下拥有独立模块，它能产出的节点类型由该体系的语义限定。所有输出都是 body-free 的 `NodeMetadata`：kind、显式 name/label、span 与 fragment 坐标——绝不包含正文、单元格值或段落内容。
+
+| 体系 | 模块 | 可产出的节点 |
+|---|---|---|
+| tex | `tex.ts` | `definition`、`lemma`、`theorem`、`proof`、`property`、`axiom`、`corollary`、`claim`、`example`、`remark`、`calculation`、`condition`（含 `requires`/`meets` 边） |
+| book | `book.ts` | `book`、`part`、`chapter`、`article`、`section`、`person`、`venue`——`article` 的唯一产出者 |
+| markdown | `markup.ts` | `document`、`chapter`、`heading`、`paragraph`、`div`、`link`、`code`、`section`、`sheet`、`cell`、`range`、`condition` |
+| html | `markup.ts` | `document`、`section`（`<article>` 映射于此）、`chapter`（`<h1>`）、`link`、`code` |
+| js/ts | `javascript.ts` | `class`、`function`、`method`、`variable`、`interface`、`type`、`enum`、`namespace`、`importation`、`exportation`、`condition` |
+| java | `java.ts` | `module`、`class`、`method`、`variable`、`importation` |
+| python | `python.ts` | `class`、`function`、`method`、`variable`、`importation` |
+| c/c++ | `c-family.ts` | `module`、`class`、`function`、`method`、`variable`、`importation` |
+| rust | `rust.ts` | `module`、`class`、`function`、`method`、`variable`、`importation` |
+| php | `php.ts` | `module`、`class`、`function`、`method`、`variable`、`importation` |
+| maven | `maven.ts` | `project`、`module`、`dependency`（parent 是 `label: 'parent'` 的 dependency） |
+| npm | `npm.ts` | `project`、`dependency`、`script`（命令体永不入库） |
+| office | `office.ts` | docx：`document`、`chapter`、`section`、`paragraph`、`link`；xlsx：`workbook`、`sheet`、`range`、`formula`；pptx：`document`、`slide`；pub/accdb：无节点，只出一条 `unsupported-format` 诊断 |
+| text | `sentence.ts` | `sentence` 切分与 `line` 区间（坐标，不是节点） |
+
+跨体系恒定规则：
+
+- **语言细分放 `label`，不新增 kind。** Rust 的 `impl` 是 `kind: 'class'` + `label: 'implementation'`；C++ 的 `struct`/`enum`、PHP 的 `trait` 同理。`NodeKind` 保持为小而封闭的联合。
+- **只描述、不操作。** 任何解析器都不写文件、不构建、不安装、不执行宏、不联网。"创建项目"若真需要，是 DSH 权限模型下的 shell 命令，绝不是插件工具。
+- **只认显式证据。** 不从正文推断标题层级、不编造版本号、缺失关系只报告不按位置配对；异常输入返回诊断且绝不抛异常。
+- **有界。** ZIP 条目 ≤ 2000、单条解压 ≤ 64 MiB、总计 ≤ 256 MiB、XML 嵌套 ≤ 128、节点 ≤ `MAX_METADATA_NODES`（20 000），并遵守 token/时间预算。
+- **`SUMMARY.md` 由 book 解析器处理**（文件名优先规则）；`README.md` 等仍走 Markdown。
+
+图通过 `coordination_parse`、`coordination_describe`、`coordination_chain` 回答"工作区里有什么"。chain 查询在所有返回节点的动作上支持可选 `kind`（去空格、大小写不敏感），因此"所有 lemma""所有 chapter"是一次调用而不是全量扫描。目录节点从无歧义的工作区路径派生并以 `contains`/`part_of` 连接；不变量是**`part_of`（子→父）精确、`contains`（父→子）尽力而为**。
 
 ## 设置与配置
 
@@ -348,7 +379,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 | 检查 | 结果 |
 |---|---|
-| `npm test` | **507 tests，506 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3 s |
+| `npm test` | **615 tests，614 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3 s |
 | `npm run typecheck` / `npm run test:tsc` | 通过 |
 | `npm run build` | 宿主 + 客户端 bundle 通过；MUI 的 `"use client"` directive 警告不致命 |
 | `npm run pack:check` | OK：运行时 tarball 含四个发布文件 |
@@ -359,7 +390,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 已知限制，直接列出而不是隐藏：
 
 1. **持久图有边界。** `node`/`edge`/`snapshot` 已是 schema 24，跨运行时保留；但重水化只取最新 10k 节点 / 50k 边，删除的符号不会清理，超出窗口的旧 handle 返回 `NOT_FOUND`。
-2. **领域提取在解析器层，关系链投影仍不完整。** Book/Article/Part/Chapter/Section/Paragraph、Person/Venue、Condition、Sheet/Cell/Range、TeX 证明状态和 CSV/TSV 表格已产出并投影到节点卡；`partOf`/`condition` 边还不能通过 `coordination_chain` 查询。xlsx/docx/pptx、Sign 提升、Lean/Coq/Isabelle 状态和跨文件 Book 组合仍未实现。
+2. **领域提取在解析器层，部分投影仍不完整。** Book/Article/Part/Chapter/Section/Paragraph、Person/Venue、Condition、Sheet/Cell/Range、TeX 证明状态和 CSV/TSV 表格已产出并投影到节点卡；docx/xlsx/pptx 现在通过有界 ZIP+OOXML 读取器解析，Publisher/Access 明确不支持。`partOf`/`condition` 边已可通过 `coordination_chain` 查询；跨文件 Book 组合与 Sign 提升仍未实现。
 3. **核心 Turn 流水线已接线，更宽的引擎没有。** `command=none` 的 Turn 会运行 Comprehension → Organization → Plan/score，以及需要的 Predict 行；有端口的 scene 策略会生效。独立 Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score、计划重建循环和 decompose/dispatch/verify/synthesize 仍是库级。`thinking`、`allowBash`、`maxIteration` 和非写作阈值记录为延迟诊断，不伪造。
 4. **配置上限已生效。** `parser.maxAstDepth`、两个依赖图上限和 `tools.maxResultBytes` 都有消费者；parser/chain 上限会 retune 已存在运行时，不再留下陈旧运行时。
 5. **工作区根已解析，不再硬编码。** 工具参数 → service 根 → host 根 → sandbox policy 根 → 最后才回退 `process.cwd()`。
@@ -371,6 +402,6 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 ## 仓库历史与许可
 
-`0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball；`0.11.0` 加入持久设置、推理交还 DSH，以及带品牌策略的实验性缓存代理。旧状态仍在 git 历史和 tag 中。
+`0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball；`0.11.0` 加入持久设置、推理交还 DSH，以及带品牌策略的实验性缓存代理；`0.12.0` 加入按体系拆分的领域层、chain `kind` 过滤、目录层与 `NodeRecord`。旧状态仍在 git 历史和 tag 中。
 
 MIT © 2026 Eloy Kim。见 [LICENSE](LICENSE)。源码：[github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination)。
