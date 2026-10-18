@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.14.5 (2026-10-18).** This release adds two read-only docked workspace panels with canvas relationship graphs, a preview matrix (Markdown and math, sanitized HTML, Prism code, docx/xlsx/pptx), an agent roster with estimated progress, and hardens all of it so a panel failure cannot blank the harness. It builds on the v0.12.0 domain layer and the v0.11.0 settings and cache-proxy work. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.14.6 (2026-10-18).** This release adds two read-only docked workspace panels with canvas relationship graphs, a preview matrix (Markdown and math, sanitized HTML, Prism code, docx/xlsx/pptx), an agent roster with estimated progress, and hardens all of it so a panel failure cannot blank the harness. It builds on the v0.12.0 domain layer and the v0.11.0 settings and cache-proxy work. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -60,7 +60,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.14.5.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.14.6.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 

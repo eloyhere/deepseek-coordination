@@ -1166,6 +1166,15 @@ const CANVAS_SX = {
   touchAction: 'none',
 }
 
+/** Transparent 2D overlay for labels/ripple above the WebGL geometry canvas. */
+const CANVAS_LABEL_SX = {
+  ...CANVAS_SX,
+  position: 'absolute',
+  inset: 0,
+  cursor: 'default',
+  pointerEvents: 'none',
+}
+
 const CANVAS_CONTROLS_SX = {
   position: 'absolute',
   top: 6,
@@ -3240,6 +3249,881 @@ const CANVAS_RADIUS_BASE = 48
 const CANVAS_RADIUS_PER_SQRT_NODE = 40
 const CANVAS_RADIUS_CAP = 640
 
+/* ------------------------------------------------------------------------- *
+ * Render scheduling: one priority queue on a single requestAnimationFrame pump
+ *
+ * The canvas never runs a free-running frame loop. Every visual change schedules
+ * one coalesced `paint` task: interaction feedback runs first, continuous dash /
+ * pulse animation second, layout/data redraws last. An idle canvas therefore
+ * costs zero frames, and a burst of pointer events produces one paint.
+ * ------------------------------------------------------------------------- */
+
+/** Interaction feedback (hover, drag, zoom) runs before every other task. */
+export const RENDER_PRIORITY_INTERACTIVE = 0
+/** Continuous dash/pulse animation, skipped while the panel is hidden. */
+export const RENDER_PRIORITY_ANIMATION = 1
+/** Layout, resize and data-load redraws, which may wait one frame. */
+export const RENDER_PRIORITY_LAYOUT = 2
+
+/** Continuous animation is capped at ~30 fps; interaction still paints at once. */
+const CANVAS_ANIMATION_INTERVAL_MS = 30
+
+interface QueuedRenderTask {
+  key: string
+  priority: number
+  order: number
+  run: (time: number, priority: number) => void
+}
+
+/** `performance.now` with a Node-safe fallback (module evaluation stays inert). */
+function renderNow(): number {
+  return typeof performance === 'undefined' ? Date.now() : performance.now()
+}
+
+/**
+ * Coalescing priority queue driven by one `requestAnimationFrame` pump.
+ *
+ * Scheduling the same `key` again keeps a single pending task and upgrades it
+ * to the highest priority requested (a hover during an animation frame runs at
+ * interactive priority). The pump drains tasks by priority then insertion
+ * order until its frame budget is spent, and requests the next frame only when
+ * work remains. A throwing task never stops the pump.
+ */
+export class RenderTaskQueue {
+  private readonly tasks = new Map<string, QueuedRenderTask>()
+  private readonly budgetMs: number
+  private frame: number | null = null
+  private order = 0
+  private disposed = false
+
+  constructor(options: { budgetMs?: number } = {}) {
+    this.budgetMs = Math.max(1, options.budgetMs ?? 8)
+  }
+
+  /** Queue (or upgrade) one task; the latest callback wins. */
+  schedule(key: string, priority: number, run: (time: number, priority: number) => void): void {
+    if (this.disposed) return
+    const existing = this.tasks.get(key)
+    if (existing !== undefined) {
+      existing.priority = Math.min(existing.priority, priority)
+      existing.run = run
+      return
+    }
+    this.tasks.set(key, { key, priority, order: this.order, run })
+    this.order += 1
+    this.ensureFrame()
+  }
+
+  cancel(key: string): void {
+    this.tasks.delete(key)
+  }
+
+  dispose(): void {
+    this.disposed = true
+    this.tasks.clear()
+    if (this.frame !== null) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.frame)
+      this.frame = null
+    }
+  }
+
+  private ensureFrame(): void {
+    if (this.frame !== null || this.disposed) return
+    if (typeof requestAnimationFrame !== 'function') return
+    this.frame = requestAnimationFrame(this.onFrame)
+  }
+
+  private readonly onFrame = (time: number): void => {
+    this.frame = null
+    if (this.disposed) return
+    const started = renderNow()
+    const ordered = [...this.tasks.values()].sort(
+      (left, right) => left.priority - right.priority || left.order - right.order,
+    )
+    for (const task of ordered) {
+      // A task may have been cancelled or replaced while an earlier one ran.
+      if (this.tasks.get(task.key) !== task) continue
+      this.tasks.delete(task.key)
+      try {
+        task.run(time, task.priority)
+      } catch {
+        // One failing render task must never stop the other tasks' pump.
+      }
+      if (renderNow() - started >= this.budgetMs) break
+    }
+    if (this.tasks.size > 0) this.ensureFrame()
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * WebGL canvas painter
+ *
+ * The graph geometry is the expensive part of a dense canvas (thousands of
+ * edges, hundreds of nodes, arrows and dash phases). It is drawn on a WebGL2
+ * canvas with instanced quads/triangles: node positions and edge lengths live
+ * in world space, while every mark (stroke width, node radius, arrowhead) is
+ * expanded in screen space so zoom never bloats the marks. Labels stay on a
+ * transparent 2D overlay canvas because text rendering in WebGL needs a glyph
+ * atlas and is not the bottleneck.
+ *
+ * A machine without WebGL2 keeps the original 2D renderer (the caller falls
+ * back to it), so this is an accelerator, never a hard dependency.
+ * ------------------------------------------------------------------------- */
+
+/** Parsed straight-alpha color used by the WebGL shaders. */
+type CanvasRgba = readonly [number, number, number, number]
+
+const CANVAS_SHADER_EDGE_VERTEX = `
+attribute vec2 aCorner;
+attribute vec2 aFrom;
+attribute vec2 aTo;
+attribute float aWidth;
+attribute float aDash;
+attribute float aPulse;
+attribute vec4 aColor;
+uniform vec2 uResolution;
+uniform float uScale;
+uniform vec2 uTranslate;
+varying vec4 vColor;
+varying float vDistance;
+varying float vDash;
+varying float vPulse;
+void main() {
+  vec2 delta = aTo - aFrom;
+  float lengthPx = length(delta);
+  vec2 dir = lengthPx > 0.0001 ? delta / lengthPx : vec2(1.0, 0.0);
+  vec2 normal = vec2(-dir.y, dir.x);
+  float t = aCorner.x * 0.5 + 0.5;
+  vec2 world = mix(aFrom, aTo, t) + normal * aCorner.y * (aWidth * 0.5 / uScale);
+  vec2 screen = world * uScale + uTranslate;
+  vec2 clip = (screen / uResolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  vColor = aColor;
+  vDistance = t * lengthPx * uScale;
+  vDash = aDash;
+  vPulse = aPulse;
+}
+`
+
+const CANVAS_SHADER_EDGE_FRAGMENT = `
+precision mediump float;
+varying vec4 vColor;
+varying float vDistance;
+varying float vDash;
+varying float vPulse;
+uniform float uTime;
+uniform float uAnimate;
+uniform float uPulse;
+void main() {
+  if (vDash > 0.5 && mod(vDistance - uAnimate * uTime * 30.0, 12.0) > 6.0) discard;
+  float alpha = vColor.a;
+  if (vPulse > 0.5 && uPulse > 0.5) {
+    alpha *= 0.55 + 0.45 * (0.5 + 0.5 * sin(uTime * 3.9));
+  }
+  if (alpha <= 0.004) discard;
+  gl_FragColor = vec4(vColor.rgb * alpha, alpha);
+}
+`
+
+const CANVAS_SHADER_ARROW_VERTEX = `
+attribute vec2 aCorner;
+attribute vec2 aFrom;
+attribute vec2 aTo;
+attribute vec4 aColor;
+uniform vec2 uResolution;
+uniform float uScale;
+uniform vec2 uTranslate;
+varying vec4 vColor;
+void main() {
+  vec2 fromScreen = aFrom * uScale + uTranslate;
+  vec2 toScreen = aTo * uScale + uTranslate;
+  vec2 delta = toScreen - fromScreen;
+  float lengthPx = length(delta);
+  vec2 dir = lengthPx > 0.0001 ? delta / lengthPx : vec2(1.0, 0.0);
+  vec2 normal = vec2(-dir.y, dir.x);
+  // Constant screen size: gap = node radius + 4 px, head = 7 x 3.5 px.
+  vec2 tip = toScreen - dir * 11.0;
+  vec2 point = tip - dir * (aCorner.x * 7.0) + normal * (aCorner.y * 3.5);
+  vec2 clip = (point / uResolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  vColor = aColor;
+}
+`
+
+const CANVAS_SHADER_ARROW_FRAGMENT = `
+precision mediump float;
+varying vec4 vColor;
+void main() {
+  if (vColor.a <= 0.004) discard;
+  gl_FragColor = vec4(vColor.rgb * vColor.a, vColor.a);
+}
+`
+
+const CANVAS_SHADER_NODE_VERTEX = `
+attribute vec2 aCorner;
+attribute vec2 aCenter;
+attribute float aRadius;
+attribute vec4 aFill;
+attribute vec4 aStroke;
+attribute float aSolid;
+uniform vec2 uResolution;
+uniform float uScale;
+uniform vec2 uTranslate;
+varying vec2 vCorner;
+varying vec4 vFill;
+varying vec4 vStroke;
+varying float vSolid;
+void main() {
+  vec2 world = aCenter + aCorner * (aRadius / uScale);
+  vec2 screen = world * uScale + uTranslate;
+  vec2 clip = (screen / uResolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  vCorner = aCorner;
+  vFill = aFill;
+  vStroke = aStroke;
+  vSolid = aSolid;
+}
+`
+
+const CANVAS_SHADER_NODE_FRAGMENT = `
+precision mediump float;
+varying vec2 vCorner;
+varying vec4 vFill;
+varying vec4 vStroke;
+varying float vSolid;
+void main() {
+  float distanceToCenter = length(vCorner);
+  if (distanceToCenter > 1.0) discard;
+  // smoothstep arguments must be increasing; invert for an inside-to-edge fade.
+  float edge = 1.0 - smoothstep(0.88, 1.0, distanceToCenter);
+  vec3 rgb = vFill.rgb;
+  float alpha = vFill.a;
+  if (vSolid < 0.5) {
+    float ring = smoothstep(0.74, 0.86, distanceToCenter);
+    rgb = mix(vFill.rgb, vStroke.rgb, ring);
+    alpha = mix(vFill.a, vStroke.a, ring);
+  }
+  alpha *= edge;
+  if (alpha <= 0.004) discard;
+  gl_FragColor = vec4(rgb * alpha, alpha);
+}
+`
+
+/** One frame of visual state the painter needs besides the scene geometry. */
+export interface WebGlCanvasPaintInput {
+  hover: CanvasHover | null
+  selectedEdge: string | null
+  selectedNode: string | null
+  trace: { upstream: ReadonlySet<string>; downstream: ReadonlySet<string> } | null
+  /** Nodes touched by the hovered node's trace (precomputed by the caller). */
+  tracedNodes: ReadonlySet<string>
+  viewport: { scale: number; x: number; y: number }
+  palette: {
+    primary: string
+    secondary: string
+    success: string
+    warning: string
+    paper: string
+    text: string
+  }
+  /** Milliseconds from the frame callback; drives the dash phase and pulse. */
+  time: number
+  reducedMotion: boolean
+  lowDetail: boolean
+}
+
+/** Edge instance data assembled once per layout. */
+interface WebGlEdgeItem {
+  edge: CanvasEdge
+  from: CanvasPoint
+  to: CanvasPoint
+}
+
+/** Parse the MUI palette strings (`#rgb`, `#rrggbb`, `rgb()`, `rgba()`). */
+function parseCanvasColor(value: string, alpha = 1): CanvasRgba {
+  const text = value.trim().toLowerCase()
+  if (text.startsWith('#')) {
+    const raw = text.slice(1)
+    const hex = raw.length === 3 || raw.length === 4
+      ? raw.split('').map((part) => `${part}${part}`).join('')
+      : raw
+    if (hex.length === 6 || hex.length === 8) {
+      const red = Number.parseInt(hex.slice(0, 2), 16) / 255
+      const green = Number.parseInt(hex.slice(2, 4), 16) / 255
+      const blue = Number.parseInt(hex.slice(4, 6), 16) / 255
+      const opacity = hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) / 255 : 1
+      return [red, green, blue, opacity * alpha]
+    }
+  }
+  const match = /^rgba?\(([^)]+)\)$/.exec(text)
+  if (match !== null) {
+    const parts = (match[1] as string).split(/[,\s/]+/).filter((part) => part.length > 0)
+    if (parts.length >= 3) {
+      const channel = (part: string): number => {
+        const parsed = Number.parseFloat(part)
+        if (!Number.isFinite(parsed)) return 0
+        return Math.max(0, Math.min(1, part.endsWith('%') ? parsed / 100 : parsed / 255))
+      }
+      const opacity = parts.length >= 4 ? Number.parseFloat(parts[3] as string) : 1
+      return [
+        channel(parts[0] as string),
+        channel(parts[1] as string),
+        channel(parts[2] as string),
+        (Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1) * alpha,
+      ]
+    }
+  }
+  return [0.5, 0.5, 0.5, alpha]
+}
+
+function compileCanvasShader(
+  gl: WebGL2RenderingContext,
+  type: number,
+  source: string,
+): WebGLShader {
+  const shader = gl.createShader(type)
+  if (shader === null) throw new Error('webgl: could not create a shader')
+  gl.shaderSource(shader, source)
+  gl.compileShader(shader)
+  if (gl.getShaderParameter(shader, gl.COMPILE_STATUS) !== true) {
+    const log = gl.getShaderInfoLog(shader) ?? 'unknown compile error'
+    gl.deleteShader(shader)
+    throw new Error(`webgl: shader compile failed: ${log}`)
+  }
+  return shader
+}
+
+function linkCanvasProgram(
+  gl: WebGL2RenderingContext,
+  vertexSource: string,
+  fragmentSource: string,
+): WebGLProgram {
+  const program = gl.createProgram()
+  if (program === null) throw new Error('webgl: could not create a program')
+  const vertex = compileCanvasShader(gl, gl.VERTEX_SHADER, vertexSource)
+  const fragment = compileCanvasShader(gl, gl.FRAGMENT_SHADER, fragmentSource)
+  gl.attachShader(program, vertex)
+  gl.attachShader(program, fragment)
+  gl.linkProgram(program)
+  gl.deleteShader(vertex)
+  gl.deleteShader(fragment)
+  if (gl.getProgramParameter(program, gl.LINK_STATUS) !== true) {
+    const log = gl.getProgramInfoLog(program) ?? 'unknown link error'
+    gl.deleteProgram(program)
+    throw new Error(`webgl: program link failed: ${log}`)
+  }
+  return program
+}
+
+function canvasAttribute(
+  gl: WebGL2RenderingContext,
+  program: WebGLProgram,
+  name: string,
+): number {
+  const location = gl.getAttribLocation(program, name)
+  if (location < 0) throw new Error(`webgl: missing attribute ${name}`)
+  return location
+}
+
+function canvasUniform(
+  gl: WebGL2RenderingContext,
+  program: WebGLProgram,
+  name: string,
+): WebGLUniformLocation | null {
+  return gl.getUniformLocation(program, name)
+}
+
+function setCanvasUniform1f(
+  gl: WebGL2RenderingContext,
+  location: WebGLUniformLocation | null,
+  value: number,
+): void {
+  if (location !== null) gl.uniform1f(location, value)
+}
+
+function setCanvasUniform2f(
+  gl: WebGL2RenderingContext,
+  location: WebGLUniformLocation | null,
+  x: number,
+  y: number,
+): void {
+  if (location !== null) gl.uniform2f(location, x, y)
+}
+
+/** Instanced WebGL2 painter for the relationship canvas geometry. */
+export class WebGlCanvasPainter {
+  private readonly gl: WebGL2RenderingContext
+  private readonly edgeProgram: WebGLProgram
+  private readonly arrowProgram: WebGLProgram
+  private readonly nodeProgram: WebGLProgram
+  private readonly edgeVao: WebGLVertexArrayObject
+  private readonly arrowVao: WebGLVertexArrayObject
+  private readonly nodeVao: WebGLVertexArrayObject
+  private readonly quadBuffer: WebGLBuffer
+  private readonly arrowBuffer: WebGLBuffer
+  private readonly edgeStaticBuffer: WebGLBuffer
+  private readonly edgeStyleBuffer: WebGLBuffer
+  private readonly nodeStaticBuffer: WebGLBuffer
+  private readonly nodeStyleBuffer: WebGLBuffer
+  private readonly edgeUniforms: Record<'resolution' | 'scale' | 'translate' | 'time' | 'animate' | 'pulse', WebGLUniformLocation | null>
+  private readonly arrowUniforms: Record<'resolution' | 'scale' | 'translate', WebGLUniformLocation | null>
+  private readonly nodeUniforms: Record<'resolution' | 'scale' | 'translate', WebGLUniformLocation | null>
+  private readonly colorCache = new Map<string, CanvasRgba>()
+  private edges: WebGlEdgeItem[] = []
+  private nodes: CanvasNode[] = []
+  private edgeCount = 0
+  private nodeCount = 0
+  private styleKey = ''
+  private styleDirty = true
+  private disposed = false
+  private width = 0
+  private height = 0
+
+  constructor(gl: WebGL2RenderingContext) {
+    this.gl = gl
+    this.edgeProgram = linkCanvasProgram(gl, CANVAS_SHADER_EDGE_VERTEX, CANVAS_SHADER_EDGE_FRAGMENT)
+    this.arrowProgram = linkCanvasProgram(gl, CANVAS_SHADER_ARROW_VERTEX, CANVAS_SHADER_ARROW_FRAGMENT)
+    this.nodeProgram = linkCanvasProgram(gl, CANVAS_SHADER_NODE_VERTEX, CANVAS_SHADER_NODE_FRAGMENT)
+
+    this.edgeUniforms = {
+      resolution: canvasUniform(gl, this.edgeProgram, 'uResolution'),
+      scale: canvasUniform(gl, this.edgeProgram, 'uScale'),
+      translate: canvasUniform(gl, this.edgeProgram, 'uTranslate'),
+      time: canvasUniform(gl, this.edgeProgram, 'uTime'),
+      animate: canvasUniform(gl, this.edgeProgram, 'uAnimate'),
+      pulse: canvasUniform(gl, this.edgeProgram, 'uPulse'),
+    }
+    this.arrowUniforms = {
+      resolution: canvasUniform(gl, this.arrowProgram, 'uResolution'),
+      scale: canvasUniform(gl, this.arrowProgram, 'uScale'),
+      translate: canvasUniform(gl, this.arrowProgram, 'uTranslate'),
+    }
+    this.nodeUniforms = {
+      resolution: canvasUniform(gl, this.nodeProgram, 'uResolution'),
+      scale: canvasUniform(gl, this.nodeProgram, 'uScale'),
+      translate: canvasUniform(gl, this.nodeProgram, 'uTranslate'),
+    }
+
+    this.quadBuffer = this.createBuffer(new Float32Array([
+      -1, -1, 1, -1, -1, 1,
+      -1, 1, 1, -1, 1, 1,
+    ]))
+    this.arrowBuffer = this.createBuffer(new Float32Array([
+      0, 0, 1, 1, 1, -1,
+    ]))
+    this.edgeStaticBuffer = this.createBuffer(new Float32Array(0))
+    this.edgeStyleBuffer = this.createBuffer(new Float32Array(0))
+    this.nodeStaticBuffer = this.createBuffer(new Float32Array(0))
+    this.nodeStyleBuffer = this.createBuffer(new Float32Array(0))
+    this.edgeVao = this.createEdgeVao()
+    this.arrowVao = this.createArrowVao()
+    this.nodeVao = this.createNodeVao()
+  }
+
+  /** Replace the scene geometry; called on layout/data/node-drag changes. */
+  setScene(graph: CanvasGraphData, positions: ReadonlyMap<string, CanvasPoint>): void {
+    const edges: WebGlEdgeItem[] = []
+    const edgeData: number[] = []
+    for (const edge of graph.edges) {
+      const from = positions.get(edge.from)
+      const to = positions.get(edge.to)
+      if (from === undefined || to === undefined) continue
+      edges.push({ edge, from, to })
+      edgeData.push(from.x, from.y, to.x, to.y)
+    }
+    this.edges = edges
+    this.edgeCount = edges.length
+    this.upload(this.edgeStaticBuffer, edgeData)
+
+    const nodes: CanvasNode[] = []
+    const nodeData: number[] = []
+    for (const node of graph.nodes) {
+      const point = positions.get(node.id)
+      if (point === undefined) continue
+      nodes.push(node)
+      nodeData.push(point.x, point.y)
+    }
+    this.nodes = nodes
+    this.nodeCount = nodes.length
+    this.upload(this.nodeStaticBuffer, nodeData)
+    this.styleDirty = true
+  }
+
+  resize(width: number, height: number, dpr: number): void {
+    const canvas = this.gl.canvas as HTMLCanvasElement
+    const nextWidth = Math.max(1, Math.round(width * dpr))
+    const nextHeight = Math.max(1, Math.round(height * dpr))
+    if (canvas.width !== nextWidth) canvas.width = nextWidth
+    if (canvas.height !== nextHeight) canvas.height = nextHeight
+    this.width = width
+    this.height = height
+    this.gl.viewport(0, 0, nextWidth, nextHeight)
+  }
+
+  draw(input: WebGlCanvasPaintInput): void {
+    const gl = this.gl
+    if (this.width <= 0 || this.height <= 0) return
+    gl.disable(gl.DEPTH_TEST)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    gl.clearColor(0, 0, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    if (this.edgeCount === 0 && this.nodeCount === 0) return
+    this.applyStyle(input)
+
+    const seconds = input.time / 1000
+    const scale = Math.max(0.0001, input.viewport.scale)
+    const translateX = input.viewport.x
+    const translateY = input.viewport.y
+
+    if (this.edgeCount > 0) {
+      gl.useProgram(this.edgeProgram)
+      setCanvasUniform2f(gl, this.edgeUniforms.resolution, this.width, this.height)
+      setCanvasUniform1f(gl, this.edgeUniforms.scale, scale)
+      setCanvasUniform2f(gl, this.edgeUniforms.translate, translateX, translateY)
+      setCanvasUniform1f(gl, this.edgeUniforms.time, seconds)
+      setCanvasUniform1f(gl, this.edgeUniforms.animate, input.reducedMotion ? 0 : 1)
+      setCanvasUniform1f(gl, this.edgeUniforms.pulse, input.reducedMotion ? 0 : 1)
+      gl.bindVertexArray(this.edgeVao)
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.edgeCount)
+
+      // Arrowheads are pure overdraw below the low-detail threshold.
+      if (!input.lowDetail) {
+        gl.useProgram(this.arrowProgram)
+        setCanvasUniform2f(gl, this.arrowUniforms.resolution, this.width, this.height)
+        setCanvasUniform1f(gl, this.arrowUniforms.scale, scale)
+        setCanvasUniform2f(gl, this.arrowUniforms.translate, translateX, translateY)
+        gl.bindVertexArray(this.arrowVao)
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 3, this.edgeCount)
+      }
+    }
+
+    if (this.nodeCount > 0) {
+      gl.useProgram(this.nodeProgram)
+      setCanvasUniform2f(gl, this.nodeUniforms.resolution, this.width, this.height)
+      setCanvasUniform1f(gl, this.nodeUniforms.scale, scale)
+      setCanvasUniform2f(gl, this.nodeUniforms.translate, translateX, translateY)
+      gl.bindVertexArray(this.nodeVao)
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, this.nodeCount)
+    }
+    gl.bindVertexArray(null)
+  }
+
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
+    const gl = this.gl
+    gl.deleteBuffer(this.quadBuffer)
+    gl.deleteBuffer(this.arrowBuffer)
+    gl.deleteBuffer(this.edgeStaticBuffer)
+    gl.deleteBuffer(this.edgeStyleBuffer)
+    gl.deleteBuffer(this.nodeStaticBuffer)
+    gl.deleteBuffer(this.nodeStyleBuffer)
+    gl.deleteVertexArray(this.edgeVao)
+    gl.deleteVertexArray(this.arrowVao)
+    gl.deleteVertexArray(this.nodeVao)
+    gl.deleteProgram(this.edgeProgram)
+    gl.deleteProgram(this.arrowProgram)
+    gl.deleteProgram(this.nodeProgram)
+  }
+
+  private createBuffer(data: Float32Array): WebGLBuffer {
+    const gl = this.gl
+    const buffer = gl.createBuffer()
+    if (buffer === null) throw new Error('webgl: could not create a buffer')
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW)
+    return buffer
+  }
+
+  private upload(buffer: WebGLBuffer, data: ArrayLike<number>): void {
+    const gl = this.gl
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW)
+  }
+
+  /** Enable one float attribute and mark it per-instance. */
+  private instanceAttribute(location: number, size: number, strideBytes: number, offsetBytes: number): void {
+    const gl = this.gl
+    gl.enableVertexAttribArray(location)
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, strideBytes, offsetBytes)
+    gl.vertexAttribDivisor(location, 1)
+  }
+
+  private vertexAttribute(location: number, size: number): void {
+    const gl = this.gl
+    gl.enableVertexAttribArray(location)
+    gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0)
+    gl.vertexAttribDivisor(location, 0)
+  }
+
+  private createEdgeVao(): WebGLVertexArrayObject {
+    const gl = this.gl
+    const vao = gl.createVertexArray()
+    if (vao === null) throw new Error('webgl: could not create a vertex array')
+    gl.bindVertexArray(vao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer)
+    this.vertexAttribute(canvasAttribute(gl, this.edgeProgram, 'aCorner'), 2)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeStaticBuffer)
+    this.instanceAttribute(canvasAttribute(gl, this.edgeProgram, 'aFrom'), 2, 16, 0)
+    this.instanceAttribute(canvasAttribute(gl, this.edgeProgram, 'aTo'), 2, 16, 8)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeStyleBuffer)
+    this.instanceAttribute(canvasAttribute(gl, this.edgeProgram, 'aWidth'), 1, 28, 0)
+    this.instanceAttribute(canvasAttribute(gl, this.edgeProgram, 'aDash'), 1, 28, 4)
+    this.instanceAttribute(canvasAttribute(gl, this.edgeProgram, 'aPulse'), 1, 28, 8)
+    this.instanceAttribute(canvasAttribute(gl, this.edgeProgram, 'aColor'), 4, 28, 12)
+    gl.bindVertexArray(null)
+    return vao
+  }
+
+  private createArrowVao(): WebGLVertexArrayObject {
+    const gl = this.gl
+    const vao = gl.createVertexArray()
+    if (vao === null) throw new Error('webgl: could not create a vertex array')
+    gl.bindVertexArray(vao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.arrowBuffer)
+    this.vertexAttribute(canvasAttribute(gl, this.arrowProgram, 'aCorner'), 2)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeStaticBuffer)
+    this.instanceAttribute(canvasAttribute(gl, this.arrowProgram, 'aFrom'), 2, 16, 0)
+    this.instanceAttribute(canvasAttribute(gl, this.arrowProgram, 'aTo'), 2, 16, 8)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeStyleBuffer)
+    this.instanceAttribute(canvasAttribute(gl, this.arrowProgram, 'aColor'), 4, 28, 12)
+    gl.bindVertexArray(null)
+    return vao
+  }
+
+  private createNodeVao(): WebGLVertexArrayObject {
+    const gl = this.gl
+    const vao = gl.createVertexArray()
+    if (vao === null) throw new Error('webgl: could not create a vertex array')
+    gl.bindVertexArray(vao)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer)
+    this.vertexAttribute(canvasAttribute(gl, this.nodeProgram, 'aCorner'), 2)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeStaticBuffer)
+    this.instanceAttribute(canvasAttribute(gl, this.nodeProgram, 'aCenter'), 2, 8, 0)
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeStyleBuffer)
+    this.instanceAttribute(canvasAttribute(gl, this.nodeProgram, 'aRadius'), 1, 40, 0)
+    this.instanceAttribute(canvasAttribute(gl, this.nodeProgram, 'aFill'), 4, 40, 4)
+    this.instanceAttribute(canvasAttribute(gl, this.nodeProgram, 'aStroke'), 4, 40, 20)
+    this.instanceAttribute(canvasAttribute(gl, this.nodeProgram, 'aSolid'), 1, 40, 36)
+    gl.bindVertexArray(null)
+    return vao
+  }
+
+  /** Compose the per-frame style key; a change rebuilds the style buffers. */
+  private styleKeyOf(input: WebGlCanvasPaintInput): string {
+    return [
+      input.hover === null ? '' : `${input.hover.kind}:${input.hover.id}`,
+      input.selectedEdge ?? '',
+      input.selectedNode ?? '',
+      input.lowDetail ? 'low' : 'full',
+      input.viewport.scale >= CANVAS_LABEL_SCALE ? 'label' : 'dot',
+      input.reducedMotion ? 'still' : 'motion',
+      input.palette.primary,
+      input.palette.secondary,
+      input.palette.success,
+      input.palette.warning,
+      input.palette.paper,
+      input.palette.text,
+    ].join('|')
+  }
+
+  private color(value: string, alpha = 1): CanvasRgba {
+    const key = `${value}|${alpha}`
+    const cached = this.colorCache.get(key)
+    if (cached !== undefined) return cached
+    const parsed = parseCanvasColor(value, alpha)
+    this.colorCache.set(key, parsed)
+    return parsed
+  }
+
+  private applyStyle(input: WebGlCanvasPaintInput): void {
+    const key = this.styleKeyOf(input)
+    if (!this.styleDirty && key === this.styleKey) return
+    this.styleKey = key
+    this.styleDirty = false
+
+    const gl = this.gl
+    const primary = this.color(input.palette.primary)
+    const secondary = this.color(input.palette.secondary)
+    const success = this.color(input.palette.success)
+    const warning = this.color(input.palette.warning)
+    const paper = this.color(input.palette.paper)
+    const text = this.color(input.palette.text)
+
+    const edgeStyle = new Float32Array(this.edgeCount * 7)
+    for (let index = 0; index < this.edgeCount; index += 1) {
+      const item = this.edges[index] as WebGlEdgeItem
+      const edge = item.edge
+      const isSelected = input.selectedEdge === edge.id
+      const isHovered = input.hover !== null && input.hover.kind === 'edge' && input.hover.id === edge.id
+      const isUpstream = input.trace !== null && input.trace.upstream.has(edge.id)
+      const isDownstream = input.trace !== null && input.trace.downstream.has(edge.id)
+      const isTraced = isUpstream || isDownstream
+
+      let alpha = 1
+      if (input.selectedEdge !== null) alpha = isSelected ? 1 : 0.15
+      else if (isHovered) alpha = 1
+      else if (input.hover !== null && input.hover.kind === 'edge') alpha = 0.35
+      else if (input.trace !== null) alpha = isTraced ? 1 : 0.15
+
+      let color: CanvasRgba = edge.relation === 'imports' || edge.relation === 'part_of'
+        ? secondary
+        : edge.relation === 'exports'
+          ? success
+          : primary
+      if (edge.cyclic) color = warning
+      if (isUpstream && !edge.cyclic) color = [0.149, 0.776, 0.855, 1]
+      else if (isDownstream && !edge.cyclic) color = primary
+
+      const width = input.lowDetail
+        ? 1
+        : isSelected ? 2.5 : isHovered ? 3 : 1.2
+      const offset = index * 7
+      edgeStyle[offset] = width
+      edgeStyle[offset + 1] = isSelected ? 0 : 1
+      edgeStyle[offset + 2] = edge.cyclic && !isSelected ? 1 : 0
+      edgeStyle[offset + 3] = color[0]
+      edgeStyle[offset + 4] = color[1]
+      edgeStyle[offset + 5] = color[2]
+      edgeStyle[offset + 6] = color[3] * alpha
+    }
+    this.upload(this.edgeStyleBuffer, edgeStyle)
+
+    const nodeStyle = new Float32Array(this.nodeCount * 10)
+    for (let index = 0; index < this.nodeCount; index += 1) {
+      const node = this.nodes[index] as CanvasNode
+      const isHovered = input.hover !== null && input.hover.kind === 'node' && input.hover.id === node.id
+      const isSelected = input.selectedNode === node.id
+      const onTrace = input.tracedNodes.has(node.id)
+      const active = isHovered || isSelected || onTrace
+      let alpha = 1
+      if (input.selectedEdge !== null) alpha = 0.4
+      else if (input.trace !== null && input.hover !== null && input.hover.kind === 'node' && !isHovered) {
+        alpha = onTrace ? 0.75 : 0.35
+      }
+
+      const radius = isHovered ? CANVAS_NODE_RADIUS + 3 : CANVAS_NODE_RADIUS
+      const solid = !shouldDrawLabel(input.viewport.scale, active)
+      const fill = solid || isSelected || isHovered ? primary : paper
+      const offset = index * 10
+      nodeStyle[offset] = radius
+      nodeStyle[offset + 1] = fill[0]
+      nodeStyle[offset + 2] = fill[1]
+      nodeStyle[offset + 3] = fill[2]
+      nodeStyle[offset + 4] = fill[3] * alpha
+      nodeStyle[offset + 5] = primary[0]
+      nodeStyle[offset + 6] = primary[1]
+      nodeStyle[offset + 7] = primary[2]
+      nodeStyle[offset + 8] = solid ? 0 : primary[3] * alpha
+      nodeStyle[offset + 9] = solid ? 1 : 0
+    }
+    this.upload(this.nodeStyleBuffer, nodeStyle)
+  }
+}
+
+/** Create the WebGL2 painter, or `null` when this browser has no WebGL2. */
+export function createWebGlCanvasPainter(canvas: HTMLCanvasElement): WebGlCanvasPainter | null {
+  const gl = canvas.getContext('webgl2', {
+    alpha: true,
+    antialias: true,
+    premultipliedAlpha: true,
+    desynchronized: true,
+  })
+  if (gl === null) return null
+  try {
+    return new WebGlCanvasPainter(gl)
+  } catch (error) {
+    // Release the failed context; the caller remounts the canvas for the 2D
+    // fallback because one canvas element can only ever have one context kind.
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    throw error
+  }
+}
+
+/** Everything the 2D label/ripple overlay needs; labels never live in WebGL. */
+interface CanvasLabelPaintInput {
+  graph: CanvasGraphData
+  positions: ReadonlyMap<string, CanvasPoint>
+  viewport: { scale: number; x: number; y: number }
+  hover: CanvasHover | null
+  selectedEdge: string | null
+  selectedNode: string | null
+  tracedNodes: ReadonlySet<string>
+  textColor: string
+  primaryColor: string
+  width: number
+  height: number
+  dpr: number
+  time: number
+  ripple: { x: number; y: number; start: number } | null
+}
+
+/**
+ * Paint only node labels and the click ripple on the transparent 2D overlay.
+ *
+ * Text in WebGL would need a glyph atlas and buys little: the overlay is cheap
+ * (≤200 short labels) and keeps the labels crisp and selectable-free while the
+ * heavy geometry is drawn by the GPU underneath.
+ */
+function paintCanvasLabels(canvas: HTMLCanvasElement, input: CanvasLabelPaintInput): void {
+  const context = canvas.getContext('2d')
+  if (context === null) return
+  const pixelWidth = Math.max(1, Math.round(input.width * input.dpr))
+  const pixelHeight = Math.max(1, Math.round(input.height * input.dpr))
+  if (canvas.width !== pixelWidth) canvas.width = pixelWidth
+  if (canvas.height !== pixelHeight) canvas.height = pixelHeight
+  context.setTransform(input.dpr, 0, 0, input.dpr, 0, 0)
+  context.clearRect(0, 0, input.width, input.height)
+  const scale = input.viewport.scale
+  if (!(scale > 0)) return
+
+  context.font = '10px ui-sans-serif, system-ui, sans-serif'
+  context.textBaseline = 'alphabetic'
+  for (const node of input.graph.nodes) {
+    const point = input.positions.get(node.id)
+    if (point === undefined) continue
+    const isHovered = input.hover !== null && input.hover.kind === 'node' && input.hover.id === node.id
+    const isSelected = input.selectedNode === node.id
+    const onTrace = input.tracedNodes.has(node.id)
+    if (!shouldDrawLabel(scale, isHovered || isSelected || onTrace)) continue
+    let alpha = 1
+    if (input.selectedEdge !== null) alpha = 0.4
+    else if (input.hover !== null && input.hover.kind === 'node' && !isHovered) {
+      alpha = onTrace ? 0.75 : 0.35
+    }
+    const x = point.x * scale + input.viewport.x
+    const y = point.y * scale + input.viewport.y
+    // Off-screen labels cost a full text-shaping pass for nothing.
+    if (x < -240 || y < -40 || x > input.width + 40 || y > input.height + 40) continue
+    const label = node.label.length > 28 ? `…${node.label.slice(-27)}` : node.label
+    context.globalAlpha = alpha
+    context.fillStyle = input.textColor
+    context.fillText(label, x + 11, y + 3)
+  }
+  context.globalAlpha = 1
+
+  const ripple = input.ripple
+  if (ripple !== null) {
+    const age = input.time - ripple.start
+    if (age >= 0 && age < 300) {
+      context.globalAlpha = Math.max(0, 1 - age / 300)
+      context.strokeStyle = input.primaryColor
+      context.lineWidth = 2
+      context.beginPath()
+      context.arc(
+        ripple.x * scale + input.viewport.x,
+        ripple.y * scale + input.viewport.y,
+        24 * (age / 300),
+        0,
+        Math.PI * 2,
+      )
+      context.stroke()
+      context.globalAlpha = 1
+    }
+  }
+}
+
 /** Axis-aligned bounding box of every laid-out node position. */
 export interface CanvasBBox {
   minX: number
@@ -3654,6 +4538,8 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const frameRef = React.useRef<HTMLDivElement | null>(null)
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null)
+  /** Transparent text overlay; only the WebGL path uses it. */
+  const labelCanvasRef = React.useRef<HTMLCanvasElement | null>(null)
   const positionsRef = React.useRef<Map<string, CanvasPoint>>(new Map())
   const viewportRef = React.useRef({ scale: 1, x: 0, y: 0 })
   const hoverRef = React.useRef<CanvasHover | null>(null)
@@ -3665,13 +4551,27 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   const movedRef = React.useRef(false)
   const pressRef = React.useRef({ x: 0, y: 0 })
   const rippleRef = React.useRef<{ x: number; y: number; start: number } | null>(null)
-  const drawRef = React.useRef<(time: number) => void>(() => {})
+  /** WebGL2 accelerator; `null` means the 2D renderer is in use. */
+  const painterRef = React.useRef<WebGlCanvasPainter | null>(null)
+  /** One coalesced paint task on the priority queue (single RAF pump). */
+  const queueRef = React.useRef<RenderTaskQueue | null>(null)
+  const paintRef = React.useRef<(time: number) => void>(() => {})
+  const schedulePaintRef = React.useRef<(priority: number) => void>(() => {})
+  /** True while the dash/pulse animation should keep requesting frames. */
+  const animateRef = React.useRef(false)
+  const lastPaintRef = React.useRef(0)
+  /** Bumped when node positions change, so the label overlay knows to redraw. */
+  const sceneRevisionRef = React.useRef(0)
+  const labelKeyRef = React.useRef('')
+  const webglBlockedRef = React.useRef(false)
+  const [canvasEpoch, setCanvasEpoch] = React.useState(0)
+  const [webglReady, setWebglReady] = React.useState(false)
   const [size, setSize] = React.useState({ width: 0, height: 0 })
-  const [hover, setHover] = React.useState<CanvasHover | null>(null)
   const [selectedEdge, setSelectedEdge] = React.useState<string | null>(null)
   const [selectedNode, setSelectedNode] = React.useState<string | null>(null)
   const [tooltip, setTooltip] = React.useState<{ left: number; top: number; lines: string[] } | null>(null)
   const [visible, setVisible] = React.useState(typeof document === 'undefined' ? true : !document.hidden)
+  animateRef.current = !reducedMotion && visible && props.graph.edges.length > 0
 
   /** True once the user zooms/pans; later resizes then keep their viewport. */
   const userAdjustedRef = React.useRef(false)
@@ -3703,6 +4603,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     userAdjustedRef.current = false
   }
 
+  /** The canvas element only mounts for a non-empty graph (see the JSX below). */
+  const hasGraph = props.graph.nodes.length > 0
+
   React.useEffect(() => {
     const frame = frameRef.current
     if (frame === null) return
@@ -3716,7 +4619,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     return () => {
       observer.disconnect()
     }
-  }, [])
+    // The measured frame only mounts for a non-empty graph.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasGraph])
 
   React.useEffect(() => {
     if (typeof document === 'undefined') return
@@ -3728,6 +4633,79 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
+
+  // One coalescing paint task on a single RAF pump. The canvas never runs a
+  // free-running frame loop: interaction upgrades a pending animation/layout
+  // paint, and an idle canvas costs zero frames.
+  React.useEffect(() => {
+    const queue = new RenderTaskQueue({ budgetMs: 8 })
+    queueRef.current = queue
+    return () => {
+      queueRef.current = null
+      queue.dispose()
+    }
+  }, [])
+
+  schedulePaintRef.current = (priority: number): void => {
+    const queue = queueRef.current
+    if (queue === null) return
+    queue.schedule('paint', priority, (time, taskPriority) => {
+      // Interaction feedback paints immediately; dashboard-style animation is
+      // capped at ~30 fps so the label overlay never runs twice per display
+      // frame for a purely decorative dash phase.
+      const interactive = taskPriority <= RENDER_PRIORITY_INTERACTIVE
+      if (interactive || time - lastPaintRef.current >= CANVAS_ANIMATION_INTERVAL_MS) {
+        lastPaintRef.current = time
+        paintRef.current(time)
+      }
+      // The dash/pulse animation and an unexpired click ripple keep the pump
+      // alive; every other change is a one-shot paint.
+      if (animateRef.current || rippleRef.current !== null) {
+        schedulePaintRef.current(RENDER_PRIORITY_ANIMATION)
+      }
+    })
+  }
+
+  /** Request one paint at a queue priority (interaction feedback by default). */
+  const requestPaint = (priority: number = RENDER_PRIORITY_INTERACTIVE): void => {
+    schedulePaintRef.current(priority)
+  }
+
+  // WebGL2 accelerator, created once per canvas element. A setup failure
+  // remounts the element (one canvas can only ever own one context kind) and
+  // falls back to the 2D renderer; a browser without WebGL2 keeps the element.
+  React.useEffect(() => {
+    if (webglBlockedRef.current) {
+      // A remounted canvas after a WebGL failure: paint the 2D fallback.
+      schedulePaintRef.current(RENDER_PRIORITY_INTERACTIVE)
+      return
+    }
+    const canvas = canvasRef.current
+    if (canvas === null) return
+    let painter: WebGlCanvasPainter | null = null
+    try {
+      painter = createWebGlCanvasPainter(canvas)
+    } catch {
+      webglBlockedRef.current = true
+      setCanvasEpoch((value) => value + 1)
+      return
+    }
+    if (painter === null) return
+    painterRef.current = painter
+    painter.setScene(props.graph, positionsRef.current)
+    labelKeyRef.current = ''
+    setWebglReady(true)
+    schedulePaintRef.current(RENDER_PRIORITY_INTERACTIVE)
+    return () => {
+      painterRef.current = null
+      setWebglReady(false)
+      painter.dispose()
+    }
+    // A new epoch means a fresh canvas element; hasGraph mounts/unmounts it.
+    // The scene is re-seeded from the refs above, so props.graph must not
+    // re-create the painter on every graph change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canvasEpoch, hasGraph])
 
   React.useEffect(() => {
     const previous = lastCanvasViewRef.current
@@ -3750,7 +4728,6 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     if (viewChanged) {
       userAdjustedRef.current = false
       hoverRef.current = null
-      setHover(null)
       setTooltip(null)
       setSelectedEdge(null)
       setSelectedNode(null)
@@ -3758,7 +4735,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     // A fresh data load/view refits unconditionally; a resize refits only
     // while the user has not manually zoomed or panned.
     if (viewChanged || !userAdjustedRef.current) fitViewport()
-    drawRef.current(performance.now())
+    painterRef.current?.setScene(props.graph, positionsRef.current)
+    sceneRevisionRef.current += 1
+    requestPaint(RENDER_PRIORITY_LAYOUT)
   }, [props.graph, props.layoutMode, props.centerId, size.width, size.height])
 
   const palette = muiTheme.palette
@@ -3776,21 +4755,45 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     return `${edge.from} → ${edge.to} · ${relationText(edge.relation)}${suffix}`
   }
 
-  drawRef.current = (time: number): void => {
+  /**
+   * The collapsed text alternative is up to 500 rows; rebuilding those React
+   * elements on every hover/tooltip render would dominate the frame. Its
+   * elements only change with the graph or the copy locale.
+   */
+  const graphTextRows = React.useMemo(() => {
+    const rows: React.ReactNode[] = []
+    props.graph.edges.slice(0, 300).forEach((edge, index) => {
+      rows.push(h(
+        MuiTypography,
+        { key: `edge:${edge.id}#${index}`, variant: 'caption', component: 'div', sx: MONO_SX },
+        edgeLabel(edge),
+      ))
+    })
+    props.graph.nodes.slice(0, CANVAS_MAX_NODES).forEach((node) => {
+      rows.push(h(
+        MuiTypography,
+        { key: `node:${node.id}`, variant: 'caption', component: 'div', sx: MONO_SX },
+        node.label === node.path ? node.path : `${node.label} · ${node.path}`,
+      ))
+    })
+    return rows
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.graph, copy])
+
+  /**
+   * The one paint entry point.
+   *
+   * WebGL2 draws the heavy geometry (edges, arrowheads, nodes) and the 2D
+   * overlay draws only labels and the click ripple. A browser without WebGL2
+   * falls through to the original 2D renderer below, unchanged.
+   */
+  paintRef.current = (time: number): void => {
     const canvas = canvasRef.current
     if (canvas === null) return
-    const context = canvas.getContext('2d')
-    if (context === null) return
     const width = size.width
     const height = size.height
     if (width <= 0 || height <= 0) return
     const dpr = Math.max(1, typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1)
-    const pixelWidth = Math.max(1, Math.round(width * dpr))
-    const pixelHeight = Math.max(1, Math.round(height * dpr))
-    if (canvas.width !== pixelWidth) canvas.width = pixelWidth
-    if (canvas.height !== pixelHeight) canvas.height = pixelHeight
-    context.setTransform(dpr, 0, 0, dpr, 0, 0)
-    context.clearRect(0, 0, width, height)
 
     const viewport = viewportRef.current
     const positions = positionsRef.current
@@ -3819,6 +4822,89 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     // Below the low-detail threshold the per-edge arrowheads and thicker
     // strokes are pure overdraw: one screen pixel per edge, no arrowheads.
     const lowDetail = viewport.scale < CANVAS_LOW_DETAIL_SCALE
+
+    const painter = painterRef.current
+    if (painter !== null) {
+      try {
+        painter.resize(width, height, dpr)
+        painter.draw({
+          hover: hovered,
+          selectedEdge,
+          selectedNode,
+          trace,
+          tracedNodes,
+          viewport,
+          palette: {
+            primary: palette.primary.main,
+            secondary: palette.secondary.main,
+            success: palette.success.main,
+            warning: palette.warning.main,
+            paper: palette.background.paper,
+            text: palette.text.secondary,
+          },
+          time,
+          reducedMotion,
+          lowDetail,
+        })
+      } catch {
+        // A runtime GPU/driver failure must not leave a blank canvas: retire
+        // the WebGL element and remount it for the 2D fallback.
+        webglBlockedRef.current = true
+        painterRef.current = null
+        painter.dispose()
+        setCanvasEpoch((value) => value + 1)
+        return
+      }
+      const overlay = labelCanvasRef.current
+      if (overlay !== null) {
+        // Text-shaping is the one non-GPU cost: only redraw when something the
+        // labels depend on changed. A pure dash/pulse frame therefore touches
+        // no 2D context at all.
+        const labelKey = [
+          String(width), String(height), String(dpr),
+          String(viewport.scale), String(viewport.x), String(viewport.y),
+          hovered === null ? '' : `${hovered.kind}:${hovered.id}`,
+          selectedEdge ?? '', selectedNode ?? '',
+          String(tracedNodes.size), String(sceneRevisionRef.current),
+          palette.text.secondary, palette.primary.main,
+          rippleRef.current === null ? '0' : '1',
+        ].join('|')
+        if (rippleRef.current !== null || labelKey !== labelKeyRef.current) {
+          labelKeyRef.current = labelKey
+          paintCanvasLabels(overlay, {
+            graph: props.graph,
+            positions,
+            viewport,
+            hover: hovered,
+            selectedEdge,
+            selectedNode,
+            tracedNodes,
+            textColor: palette.text.secondary,
+            primaryColor: palette.primary.main,
+            width,
+            height,
+            dpr,
+            time,
+            ripple: rippleRef.current,
+          })
+        }
+      }
+      if (rippleRef.current !== null && time - rippleRef.current.start >= 300) {
+        rippleRef.current = null
+      }
+      return
+    }
+
+    // ---- 2D fallback: the complete original renderer, used when WebGL2 is
+    // unavailable or its setup failed. ----
+    const context = canvas.getContext('2d')
+    if (context === null) return
+    const pixelWidth = Math.max(1, Math.round(width * dpr))
+    const pixelHeight = Math.max(1, Math.round(height * dpr))
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight
+    context.setTransform(dpr, 0, 0, dpr, 0, 0)
+    context.clearRect(0, 0, width, height)
 
     context.save()
     context.translate(viewport.x, viewport.y)
@@ -3961,23 +5047,14 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     context.restore()
   }
 
-  const animate = !reducedMotion && visible && props.graph.edges.length > 0
+  // The scheduler owns the frame loop: a visibility or animation-mode change
+  // only kicks one paint. `animateRef` is refreshed on every render, and the
+  // paint task requeues itself while the animation/ripple is active.
   React.useEffect(() => {
     if (typeof window === 'undefined') return
-    if (!animate) {
-      drawRef.current(performance.now())
-      return
-    }
-    let frame = 0
-    const tick = (time: number): void => {
-      drawRef.current(time)
-      frame = window.requestAnimationFrame(tick)
-    }
-    frame = window.requestAnimationFrame(tick)
-    return () => {
-      window.cancelAnimationFrame(frame)
-    }
-  }, [animate, props.graph, size.width, size.height, hover, selectedEdge, selectedNode])
+    requestPaint(visible ? RENDER_PRIORITY_ANIMATION : RENDER_PRIORITY_LAYOUT)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, reducedMotion, props.graph, size.width, size.height])
 
   const worldOf = (clientX: number, clientY: number): CanvasPoint => {
     const canvas = canvasRef.current
@@ -4035,7 +5112,6 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       || (previous !== null && target === null)
       || (previous !== null && target !== null && (previous.kind !== target.kind || previous.id !== target.id))) {
       hoverRef.current = target
-      setHover(target)
     }
     if (target === null) {
       setTooltip(null)
@@ -4062,7 +5138,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     // Wheel and +/- are manual zooms: stop auto-fit from overriding them on
     // the next resize. A data/view change clears this flag again.
     userAdjustedRef.current = true
-    drawRef.current(performance.now())
+    requestPaint()
   }
   const zoomAtRef = React.useRef(zoomAt)
   zoomAtRef.current = zoomAt
@@ -4086,7 +5162,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
     return () => {
       canvas.removeEventListener('wheel', onWheel)
     }
-  }, [props.graph])
+    // A remounted canvas (WebGL fallback) is a new DOM node with no listener.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.graph, canvasEpoch])
 
   const resetLayout = (): void => {
     positionsRef.current = layoutCanvasGraph(
@@ -4097,7 +5175,9 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       props.centerId,
     )
     fitViewport()
-    drawRef.current(performance.now())
+    painterRef.current?.setScene(props.graph, positionsRef.current)
+    sceneRevisionRef.current += 1
+    requestPaint(RENDER_PRIORITY_LAYOUT)
   }
 
   const selected = selectedEdge === null
@@ -4107,7 +5187,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
   const selectEdge = (edgeId: string | null): void => {
     setSelectedEdge(edgeId)
     setSelectedNode(null)
-    drawRef.current(performance.now())
+    requestPaint()
   }
 
   const control = (label: string, icon: Loose, onClick: () => void): React.ReactElement =>
@@ -4121,7 +5201,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
       ),
     )
 
-  const empty = props.graph.nodes.length === 0
+  const empty = !hasGraph
 
   return h(
     MuiBox,
@@ -4141,6 +5221,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
         h(
           'canvas',
           {
+            key: canvasEpoch,
             ref: canvasRef,
             tabIndex: 0,
             role: 'application',
@@ -4171,7 +5252,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
                   originY: viewport.y,
                 }
               }
-              drawRef.current(performance.now())
+              requestPaint()
             },
             onPointerMove: (event: React.PointerEvent<HTMLCanvasElement>): void => {
               const drag = dragRef.current
@@ -4185,6 +5266,10 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
                   if (position !== undefined) {
                     position.x = point.x - drag.offsetX
                     position.y = point.y - drag.offsetY
+                    // The GPU scene holds the endpoint/centre buffers: a moved
+                    // node must update them before the paint runs.
+                    painterRef.current?.setScene(props.graph, positionsRef.current)
+                    sceneRevisionRef.current += 1
                   }
                 } else {
                   const viewport = viewportRef.current
@@ -4192,14 +5277,14 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
                   viewport.y = drag.originY + (event.clientY - drag.startY)
                   userAdjustedRef.current = true
                 }
-                drawRef.current(performance.now())
+                requestPaint()
                 return
               }
               const hit = hitTest(worldOf(event.clientX, event.clientY))
               updateHover(hit, event.clientX, event.clientY)
               const canvas = event.currentTarget
               canvas.style.cursor = hit === null ? 'grab' : 'pointer'
-              drawRef.current(performance.now())
+              requestPaint()
             },
             onPointerUp: (event: React.PointerEvent<HTMLCanvasElement>): void => {
               const drag = dragRef.current
@@ -4221,13 +5306,13 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
               if (drag === null || drag.kind !== 'node') {
                 setSelectedEdge(null)
                 setSelectedNode(null)
-                drawRef.current(performance.now())
+                requestPaint()
               }
             },
             onPointerLeave: (): void => {
               if (dragRef.current !== null) return
               updateHover(null, 0, 0)
-              drawRef.current(performance.now())
+              requestPaint()
             },
             onDoubleClick: (event: React.MouseEvent<HTMLCanvasElement>): void => {
               const hit = hitTest(worldOf(event.clientX, event.clientY))
@@ -4246,13 +5331,13 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
                 const next = (current + direction + nodes.length) % nodes.length
                 setSelectedNode(nodes[next].id)
                 setSelectedEdge(null)
-                drawRef.current(performance.now())
+                requestPaint()
                 return
               }
               if (event.key === 'Enter' && selectedNode !== null) {
                 event.preventDefault()
                 setSelectedEdge(null)
-                drawRef.current(performance.now())
+                requestPaint()
                 return
               }
               if (event.key === 'Escape') {
@@ -4261,12 +5346,18 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
                   setSelectedEdge(null)
                   setSelectedNode(null)
                   setTooltip(null)
-                  drawRef.current(performance.now())
+                  requestPaint()
                 }
               }
             },
           },
         ),
+        h('canvas', {
+          ref: labelCanvasRef,
+          'aria-hidden': true,
+          tabIndex: -1,
+          style: { ...CANVAS_LABEL_SX, display: webglReady ? 'block' : 'none' },
+        }),
         h(
           MuiBox,
           { sx: CANVAS_CONTROLS_SX },
@@ -4278,7 +5369,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
           }),
           control(copy.tip.fit, IconFit, () => {
             fitViewport()
-            drawRef.current(performance.now())
+            requestPaint()
           }),
           control(copy.tip.resetLayout, IconResetLayout, resetLayout),
         ),
@@ -4308,20 +5399,7 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
         h(
           MuiAccordionDetails,
           { sx: GRAPH_TEXT_DETAILS_SX },
-          ...props.graph.edges.slice(0, 300).map((edge, index) =>
-            h(
-              MuiTypography,
-              { key: `edge:${edge.id}#${index}`, variant: 'caption', component: 'div', sx: MONO_SX },
-              edgeLabel(edge),
-            ),
-          ),
-          ...props.graph.nodes.slice(0, CANVAS_MAX_NODES).map((node) =>
-            h(
-              MuiTypography,
-              { key: `node:${node.id}`, variant: 'caption', component: 'div', sx: MONO_SX },
-              node.label === node.path ? node.path : `${node.label} · ${node.path}`,
-            ),
-          ),
+          ...graphTextRows,
         ),
       )
       : null,

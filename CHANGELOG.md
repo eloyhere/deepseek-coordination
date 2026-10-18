@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.6 | 2026-10-18 | `—` | WebGL2 relationship canvas, priority render queue |
 | 0.14.5 | 2026-10-18 | `3927d61` | Semantic canvas zoom, collapsible tree, auto-fit for dense graphs |
 | 0.14.4 | 2026-10-18 | `94aa48a` | Resolve the session workspace for graph indexing |
 | 0.14.3 | 2026-10-18 | `088e2f6` | Bottom-anchored panels, reducer navigation, workspace indexing |
@@ -54,6 +55,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.6] — 2026-10-18
+
+### Changed
+
+- **The relationship canvas renders with WebGL2.** Nodes, edges, arrowheads and dashes are instanced quads/triangles with shader-side dash phase and cycle pulse; node marks stay screen-sized while the world scales (the semantic-zoom fix is preserved). Style buffers rebuild only when hover/selection/detail/theme changes, so animation frames only move a uniform.
+- **One priority `RenderTaskQueue` replaces the free-running frame loop.** `INTERACTIVE(0) > ANIMATION(1) > LAYOUT(2)`, same-key coalescing, a single `requestAnimationFrame` pump, an 8 ms budget, throwing tasks isolated, and zero frames while idle; animation is capped near 30 fps.
+- **2D draws text only.** Labels and the click ripple live on a transparent overlay that repaints only when the viewport/hover/selection/scene/ripple changes.
+- **Cheap fallback.** Without WebGL2, or on shader setup/runtime failure, the previous 2D renderer takes over and the canvas is remounted instead of going blank.
+- **Hover no longer re-renders React.** Pointer movement updates a ref and schedules a paint; the 500-row text alternative is memoised per graph/locale.
 
 ## [0.14.5] — 2026-10-18
 
