@@ -45,8 +45,8 @@ import type { NodeStatus, ParsedFile } from './parse-service.js'
 
 /**
  * Node kinds a parsed file can carry (`heading`/`div` are P0 parser kinds;
- * `interface`/`type`/`enum`/`variable` are language-declaration kinds emitted
- * by the Python/Java/Rust/PHP/C-family parsers).
+ * `interface`/`type`/`enumeration`/`namespace`/`variable` are language-
+ * declaration kinds emitted by the Python/Java/Rust/PHP/C-family parsers).
  */
 export type NodeKind =
   | 'project'
@@ -68,9 +68,15 @@ export type NodeKind =
   | 'range'
   | 'formula'
   | 'class'
-  /** Type declarations: a language `interface` / `enum` / `type` alias. */
-  | 'interface'
+  /**
+   * Type declarations, sorted: `enumeration`, `interface`, `namespace`
+   * container and `type` alias. `enum` is a legacy spelling kept for
+   * compatibility; no parser emits it.
+   */
   | 'enum'
+  | 'enumeration'
+  | 'interface'
+  | 'namespace'
   | 'type'
   | 'function'
   | 'method'

@@ -18,8 +18,9 @@
  *    path (optionally parenthesized) → one `import` reference and one
  *    `importation` node whose `label` is the keyword. Non-literal include
  *    targets produce no reference and one `unverifiable` diagnostic;
- *  - `class`, `interface`, `trait` and `enum` → one `class` node whose
- *    `label` is the keyword; the body is scanned for methods. Anonymous
+ *  - `class`, `interface`, `trait` and `enum` → one node each, using the
+ *    precise declaration kind (`class`, `interface` or `enumeration`) with the
+ *    PHP keyword as `label`; the body is scanned for methods. Anonymous
  *    classes (`new class { ... }`) are skipped without a node;
  *  - `function name(` at top level → `function`; a direct member of a
  *    class-like body → `method`. Bodies are skipped, so closures and nested
@@ -28,11 +29,11 @@
  *    keeps the leading `$` exactly as written. Assignments inside class,
  *    function, closure and control-flow bodies are not projected.
  *
- * The taxonomy is strict: only existing `NodeKind` spellings are emitted
- * (`module`, `class`, `function`, `method`, `variable`, `importation`). PHP
- * nuance lives in `label`, never in a new kind. Bodies are never returned: a
- * node carries only a body-free span, fragment coordinates and (when a path is
- * known) a `NodeReference`.
+ * The taxonomy uses the precise `NodeKind` spellings (`module`, `class`,
+ * `interface`, `enumeration`, `function`, `method`, `variable`,
+ * `importation`). PHP nuance that has no dedicated kind lives in `label`, never
+ * in a new kind. Bodies are never returned: a node carries only a body-free
+ * span, fragment coordinates and (when a path is known) a `NodeReference`.
  *
  * Conservative gaps, documented rather than guessed:
  *
@@ -75,8 +76,15 @@ import type {
   Parser,
 } from './parser.js'
 
-/** Symbol kinds the PHP scan can prove (all are existing `NodeKind`s). */
-export type PhpSymbolKind = 'class' | 'module' | 'function' | 'method' | 'variable'
+/** Symbol kinds the PHP scan can prove (precise `NodeKind` spellings). */
+export type PhpSymbolKind =
+  | 'class'
+  | 'interface'
+  | 'enumeration'
+  | 'module'
+  | 'function'
+  | 'method'
+  | 'variable'
 
 /** One code symbol the PHP scan can prove. */
 export interface PhpSymbol extends FlatFragment {
@@ -550,7 +558,25 @@ function handlePhpInclude(
   return skipPhpToSemicolon(tokens, cursor + 1)
 }
 
-/** `class`/`interface`/`trait`/`enum`; the body is scanned for methods. */
+/** Precise node kind and label for one class-like PHP keyword. */
+interface PhpClassLikeNode {
+  kind: PhpSymbolKind
+  label: string
+}
+
+/**
+ * Map a PHP class-like keyword onto its precise node kind.
+ *
+ * `class` and `trait` stay `class` with the keyword as label; `interface` and
+ * `enum` use their dedicated kinds.
+ */
+function phpClassLikeNode(keyword: string): PhpClassLikeNode {
+  if (keyword === 'interface') return { kind: 'interface', label: keyword }
+  if (keyword === 'enum') return { kind: 'enumeration', label: keyword }
+  return { kind: 'class', label: keyword }
+}
+
+/** `class`/`trait` (`class`), `interface`, `enum`; the body is scanned for methods. */
 function handlePhpClassLike(
   ctx: ParseContext,
   tokens: readonly PhpToken[],
@@ -593,12 +619,13 @@ function handlePhpClassLike(
     return Math.min(tokens.length, position + 2)
   }
   const close = findMatching(tokens, open, '{', '}')
+  const node = phpClassLikeNode(kind)
   if (close < 0) {
     ctx.parseError(`${kind} body is unterminated`, tokenSpan(tokens[open]))
     if (!sink.addSymbol({
-      kind: 'class',
+      kind: node.kind,
       name: next.text,
-      label: kind,
+      label: node.label,
       span: tokenRangeSpan(keyword, tokens[open]),
     })) {
       return tokens.length
@@ -607,9 +634,9 @@ function handlePhpClassLike(
   }
 
   if (!sink.addSymbol({
-    kind: 'class',
+    kind: node.kind,
     name: next.text,
-    label: kind,
+    label: node.label,
     span: tokenRangeSpan(keyword, tokens[close]),
   })) {
     return tokens.length

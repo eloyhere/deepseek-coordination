@@ -108,7 +108,7 @@ test('java parser extracts package, imports, type, fields and method', () => {
   assert.ok(result.ast)
 })
 
-test('java type declarations all map to the existing class kind', () => {
+test('java type declarations use precise node kinds', () => {
   const source = `package kinds;
 
 interface Runner { void run(); }
@@ -119,16 +119,29 @@ class Box { }
 `
   const result = parseJava(source, { path: 'kinds/Kinds.java' })
 
+  // `interface` and `enum` no longer fold into `class`; `record` and
+  // `@interface` keep the closest kind and record the form in `label`.
+  const expected = [
+    { name: 'Runner', kind: 'interface', label: undefined },
+    { name: 'Mode', kind: 'enumeration', label: undefined },
+    { name: 'Point', kind: 'class', label: 'record' },
+    { name: 'Box', kind: 'class', label: undefined },
+    { name: 'Marker', kind: 'interface', label: 'annotation' },
+  ] as const
+  for (const entry of expected) {
+    const mapped = nodeOf(result, entry.kind, entry.name)
+    assert.equal(mapped.kind, entry.kind, `${entry.name} must use the ${entry.kind} kind`)
+    assert.equal(mapped.label, entry.label, `${entry.name} must carry label ${entry.label}`)
+  }
+  // Only a plain `class` or a `record` is a `class` node.
   assert.deepEqual(
     (result.nodes ?? []).filter((node) => node.kind === 'class').map((node) => node.name),
-    ['Runner', 'Mode', 'Point', 'Box', 'Marker'],
+    ['Point', 'Box'],
   )
-  for (const name of ['Runner', 'Mode', 'Point', 'Box', 'Marker']) {
-    const mapped = nodeOf(result, 'class', name)
-    assert.equal(mapped.kind, 'class', `${name} must use the class kind`)
-    // `label` is reserved for explicit facts; a type form is not a label.
-    assert.equal(mapped.label, undefined, `${name} must not carry a label`)
-  }
+  assert.deepEqual(
+    (result.nodes ?? []).filter((node) => node.kind === 'enumeration').map((node) => node.name),
+    ['Mode'],
+  )
   assert.equal(nodeOf(result, 'method', 'run').kind, 'method')
   assert.equal(nodeOf(result, 'method', 'value').kind, 'method')
   assert.deepEqual(result.diagnostics, [])

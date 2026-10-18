@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.13.0 | 2026-10-18 | `—` | TS、Java、Rust、PHP 的 `interface`/`type`/`enumeration`/`namespace` 成为一等 kind |
 | 0.12.0 | 2026-10-18 | `84af8b8` | 领域体系：tex、book、markdown、html、各语言、office、包管理器；kind 过滤与目录层 |
 | 0.11.0 | 2026-10-18 | `19bfedf` | 设置持久化、推理交还 DSH、缓存代理与品牌策略、对话框与标签修复 |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | 设置目录、持久文件层、Turn 流水线、阶段冻结、数据结构采纳、可安装包 |
@@ -44,6 +45,29 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.13.0] — 2026-10-18
+
+### 新增
+
+- **声明类 kind 一等化。** `interface`、`type`、`enumeration`、`namespace` 进入
+  `NodeKind`，解析器不再把它们折进更粗的 kind：
+  - TypeScript：`interface` → `interface`，`type` 别名 → `type`，
+    `enum`/`const enum` → `enumeration`，`namespace`/`module` → `namespace`。
+  - Java：`interface` 与 `@interface`（`label: 'annotation'`）→ `interface`，
+    `enum` → `enumeration`；`record` 仍为 `class`（`label: 'record'`）。
+  - Rust：`enum` → `enumeration`（`label: 'enum'`）；`struct`/`trait`/`impl` 仍为
+    `class` 并保留各自 label。
+  - PHP：`interface` → `interface`，`enum` → `enumeration`；`trait` 仍为 `class`
+    （`label: 'trait'`）。
+- **`enum` 作为历史拼写留在联合里**（有注释说明无解析器产出），避免旧数据与精确
+  kind 无声冲突。
+
+### 变更
+
+- 声明的 locator 与引用 target 现在由映射后的 kind 派生（如
+  `java:interface:Runner`、`java:enumeration:Mode`），因此 handle 按声明种类稳定，
+  而不是按粗分组。
 
 ## [0.12.0] — 2026-10-18
 

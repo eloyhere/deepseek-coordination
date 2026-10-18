@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.13.0 | 2026-10-18 | `—` | First-class `interface`/`type`/`enumeration`/`namespace` kinds across TS, Java, Rust and PHP |
 | 0.12.0 | 2026-10-18 | `84af8b8` | Domain ecosystems: tex, book, markdown, html, languages, office, package managers; kind filter and directory layer |
 | 0.11.0 | 2026-10-18 | `19bfedf` | Durable settings, DSH-owned reasoning, cache proxy and brand profiles, dialog and label fixes |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | Settings catalog, durable file layer, turn pipeline, phase freeze, data structures, installable package |
@@ -47,6 +48,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.13.0] — 2026-10-18
+
+### Added
+
+- **First-class declaration kinds.** `interface`, `type`, `enumeration` and
+  `namespace` join `NodeKind`, and the parsers stop folding them into broader
+  kinds:
+  - TypeScript: `interface` → `interface`, `type` alias → `type`,
+    `enum`/`const enum` → `enumeration`, `namespace`/`module` → `namespace`.
+  - Java: `interface` and `@interface` (label `annotation`) → `interface`,
+    `enum` → `enumeration`; `record` stays `class` with `label: 'record'`.
+  - Rust: `enum` → `enumeration` (label `enum`); `struct`/`trait`/`impl` keep
+    `class` with their labels.
+  - PHP: `interface` → `interface`, `enum` → `enumeration`; `trait` stays
+    `class` with `label: 'trait'`.
+- **`enum` remains in the union as a documented legacy spelling** — no parser
+  emits it, so old data cannot silently collide with the precise kind.
+
+### Changed
+
+- Declaration locators and reference targets now derive from the mapped kind
+  (for example `java:interface:Runner`, `java:enumeration:Mode`), so a handle is
+  stable per declaration kind rather than per coarse group.
 
 ## [0.12.0] — 2026-10-18
 

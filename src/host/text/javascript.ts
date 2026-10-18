@@ -34,9 +34,9 @@
  *    method/function bodies are skipped, so only direct local declarations are
  *    reported. Instance class fields are not reported (their scope has no
  *    value in the shared vocabulary);
- *  - TypeScript `interface`/`type`/`enum`/`namespace` map onto existing
- *    `NodeKind` spellings (`class`/`definition`/`module`) because the whitelist
- *    has no TS-specific kinds;
+ *  - TypeScript `interface`, `type` alias, `enum`/`const enum` and
+ *    `namespace`/`module` declarations keep their exact `NodeKind`s:
+ *    `interface`, `type`, `enumeration` and `namespace`;
  *  - doc metadata: `usage`/`purpose` come only from explicit `@usage`,
  *    `@purpose`, `Usage:` or `Purpose:` lines; `brief` only from the first
  *    doc-comment line. Missing annotations leave the fields empty and emit one
@@ -98,13 +98,11 @@ export type CodeScope = ConceptScope
 export interface CodeSymbol extends FlatFragment {
   /**
    * Symbol kind. JS uses `class`/`function`/`method`/`variable`; TypeScript
-   * declarations map onto existing `NodeKind` spellings because the whitelist
-   * has no `interface`/`type`/`enum`/`namespace`:
-   *  - `interface` -> `class` (a named, member-bearing type declaration);
-   *  - `type` alias and `enum` -> `definition` (named type/value definitions);
-   *  - `namespace`/`module` -> `module` (a declaration container).
+   * declarations keep their exact kind: `interface`, `type` alias,
+   * `enum`/`const enum` -> `enumeration`, and `namespace`/`module` ->
+   * `namespace`.
    */
-  kind: 'class' | 'function' | 'method' | 'variable' | 'definition' | 'module'
+  kind: 'class' | 'function' | 'method' | 'variable' | 'interface' | 'type' | 'enumeration' | 'namespace'
   name: string
   /** Symbol span, including the declaration keyword(s). */
   span: SourceSpan
@@ -1006,9 +1004,8 @@ interface FunctionValue {
 }
 
 /**
- * TypeScript `interface`. `NodeKind` has no `interface` spelling, so the
- * closest existing kind (`class`, a named member-bearing type declaration) is
- * used and the binding is the type name (`identifier`).
+ * TypeScript `interface`. The symbol kind is `interface`; the binding is the
+ * type name (`identifier`).
  */
 function handleInterface(
   ctx: ParseContext,
@@ -1031,7 +1028,7 @@ function handleInterface(
   const span = spanBetween(sig[declarationStartPosition(sig, position)].token, sig[endPosition].token)
   symbols.push(
     newSymbol(
-      'class',
+      'interface',
       nameToken.token.text,
       span,
       declarationStart(sig, position),
@@ -1044,8 +1041,7 @@ function handleInterface(
 }
 
 /**
- * TypeScript `type` alias. `NodeKind` has no `type` spelling; `definition` is
- * the closest existing kind for a named type/value definition.
+ * TypeScript `type` alias. The symbol kind is `type`.
  */
 function handleTypeAlias(
   ctx: ParseContext,
@@ -1069,7 +1065,7 @@ function handleTypeAlias(
   const span = spanBetween(sig[declarationStartPosition(sig, position)].token, sig[endPosition].token)
   symbols.push(
     newSymbol(
-      'definition',
+      'type',
       nameToken.token.text,
       span,
       declarationStart(sig, position),
@@ -1082,8 +1078,7 @@ function handleTypeAlias(
 }
 
 /**
- * TypeScript `enum` (including `const enum`). `NodeKind` has no `enum`
- * spelling; `definition` is the closest existing kind.
+ * TypeScript `enum` (including `const enum`). The symbol kind is `enumeration`.
  */
 function handleEnum(
   ctx: ParseContext,
@@ -1109,7 +1104,7 @@ function handleEnum(
   const span = spanBetween(sig[startPosition].token, sig[endPosition].token)
   symbols.push(
     newSymbol(
-      'definition',
+      'enumeration',
       nameToken.token.text,
       span,
       sig[startPosition].index,
@@ -1122,8 +1117,7 @@ function handleEnum(
 }
 
 /**
- * TypeScript `namespace` / `module` block. `module` is the existing `NodeKind`
- * spelling for a declaration container, so both map to it.
+ * TypeScript `namespace` / `module` block. Both map to the `namespace` kind.
  */
 function handleNamespace(
   ctx: ParseContext,
@@ -1159,7 +1153,7 @@ function handleNamespace(
   const span = spanBetween(sig[declarationStartPosition(sig, position)].token, sig[endPosition].token)
   symbols.push(
     newSymbol(
-      'module',
+      'namespace',
       name,
       span,
       declarationStart(sig, position),

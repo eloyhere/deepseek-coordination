@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.12.0（2026-10-18）。** 本版新增按体系拆分的领域概念层——tex、book、markdown、html、五种编程语言、maven/npm 与 Office——并为 chain 查询加上 `kind` 过滤、加入目录层与规范 `NodeRecord`。它建立在 v0.11.0（持久设置、推理交还 DSH、实验性缓存代理）之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.13.0（2026-10-18）。** 本版让 `interface`、`type`、`enumeration`、`namespace` 成为 TypeScript、Java、Rust、PHP 的一等声明 kind，并新增按体系拆分的领域概念层——tex、book、markdown、html、五种编程语言、maven/npm 与 Office——并为 chain 查询加上 `kind` 过滤、加入目录层与规范 `NodeRecord`。它建立在 v0.11.0（持久设置、推理交还 DSH、实验性缓存代理）之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -198,12 +198,12 @@ deepseek-coordination/
 | book | `book.ts` | `book`、`part`、`chapter`、`article`、`section`、`person`、`venue`——`article` 的唯一产出者 |
 | markdown | `markup.ts` | `document`、`chapter`、`heading`、`paragraph`、`div`、`link`、`code`、`section`、`sheet`、`cell`、`range`、`condition` |
 | html | `markup.ts` | `document`、`section`（`<article>` 映射于此）、`chapter`（`<h1>`）、`link`、`code` |
-| js/ts | `javascript.ts` | `class`、`function`、`method`、`variable`、`interface`、`type`、`enum`、`namespace`、`importation`、`exportation`、`condition` |
-| java | `java.ts` | `module`、`class`、`method`、`variable`、`importation` |
+| js/ts | `javascript.ts` | `class`、`function`、`method`、`variable`、`interface`、`type`、`enumeration`、`namespace`、`importation`、`exportation`、`condition` |
+| java | `java.ts` | `module`、`class`、`interface`、`enumeration`、`method`、`variable`、`importation` |
 | python | `python.ts` | `class`、`function`、`method`、`variable`、`importation` |
 | c/c++ | `c-family.ts` | `module`、`class`、`function`、`method`、`variable`、`importation` |
-| rust | `rust.ts` | `module`、`class`、`function`、`method`、`variable`、`importation` |
-| php | `php.ts` | `module`、`class`、`function`、`method`、`variable`、`importation` |
+| rust | `rust.ts` | `module`、`class`、`enumeration`、`function`、`method`、`variable`、`importation` |
+| php | `php.ts` | `module`、`class`、`interface`、`enumeration`、`function`、`method`、`variable`、`importation` |
 | maven | `maven.ts` | `project`、`module`、`dependency`（parent 是 `label: 'parent'` 的 dependency） |
 | npm | `npm.ts` | `project`、`dependency`、`script`（命令体永不入库） |
 | office | `office.ts` | docx：`document`、`chapter`、`section`、`paragraph`、`link`；xlsx：`workbook`、`sheet`、`range`、`formula`；pptx：`document`、`slide`；pub/accdb：无节点，只出一条 `unsupported-format` 诊断 |

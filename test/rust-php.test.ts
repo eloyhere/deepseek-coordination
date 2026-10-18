@@ -1,9 +1,9 @@
 /**
  * Rust and PHP lexical parser tests.
  *
- * The fixtures pin the strict taxonomy: existing `NodeKind` spellings only, with
- * language nuance in `label` (Rust `impl` maps to `class` +
- * `label: 'implementation'`). Malformed input must produce diagnostics, never a
+ * The fixtures pin the precise taxonomy: `enum` maps to `enumeration`, while
+ * Rust `struct`/`trait`/`impl` and PHP `class`/`trait` stay `class` with the
+ * language nuance in `label`. Malformed input must produce diagnostics, never a
  * throw, and a large generated file must stay well inside a generous bound.
  */
 import { test } from 'node:test'
@@ -109,7 +109,7 @@ const PHP_FIXTURE = [
   "$config = ['debug' => true];",
 ].join('\n')
 
-test('rust fixture maps imports and items onto existing node kinds', () => {
+test('rust fixture maps imports and items onto precise node kinds', () => {
   const result = parseRust(RUST_FIXTURE, { path: 'src/lib.rs' })
   const nodes = result.nodes ?? []
 
@@ -138,8 +138,10 @@ test('rust fixture maps imports and items onto existing node kinds', () => {
   assert.ok(implNode !== undefined, 'impl must map to class with label implementation')
   assert.equal(implNode?.name, 'Config')
 
-  const enumNode = nodes.find((node) => node.kind === 'class' && node.label === 'enum')
+  // `enum` has a dedicated kind; the Rust keyword stays in `label`.
+  const enumNode = nodes.find((node) => node.kind === 'enumeration')
   assert.equal(enumNode?.name, 'Mode')
+  assert.equal(enumNode?.label, 'enum')
   const traitNode = nodes.find((node) => node.kind === 'class' && node.label === 'trait')
   assert.equal(traitNode?.name, 'Service')
 
@@ -181,9 +183,20 @@ test('php fixture maps namespace, imports, class methods and variables', () => {
 
   const classNode = nodes.find((node) => node.kind === 'class' && node.name === 'Worker')
   assert.equal(classNode?.label, 'class')
-  assert.equal(nodes.find((node) => node.name === 'Runnable')?.label, 'interface')
-  assert.equal(nodes.find((node) => node.name === 'Logs')?.label, 'trait')
-  assert.equal(nodes.find((node) => node.name === 'Mode')?.label, 'enum')
+  // `interface`/`enum` no longer fold into `class`; `trait` still does, labelled.
+  const interfaceNode = nodes.find((node) => node.name === 'Runnable')
+  assert.equal(interfaceNode?.kind, 'interface')
+  assert.equal(interfaceNode?.label, 'interface')
+  const traitNode = nodes.find((node) => node.name === 'Logs')
+  assert.equal(traitNode?.kind, 'class')
+  assert.equal(traitNode?.label, 'trait')
+  const enumNode = nodes.find((node) => node.name === 'Mode')
+  assert.equal(enumNode?.kind, 'enumeration')
+  assert.equal(enumNode?.label, 'enum')
+  assert.deepEqual(
+    nodes.filter((node) => node.kind === 'class').map((node) => node.name),
+    ['Worker', 'Logs'],
+  )
 
   const methods = ofKind(nodes, 'method')
   assert.ok(methods.some((node) => node.name === '__construct'))

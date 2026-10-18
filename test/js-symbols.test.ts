@@ -90,36 +90,57 @@ test('destructured bindings emit one variable node per name', () => {
   assert.equal(result.symbols.some((candidate) => candidate.name === 'b'), false)
 })
 
-test('TypeScript interface maps to the class kind and binds an identifier', () => {
+test('TypeScript interface is the interface kind and binds an identifier', () => {
   const result = parseJavaScript('interface Shape { area(): number }')
   const shape = symbolNamed(result, 'Shape')
-  assert.equal(shape.kind, 'class')
+  assert.equal(shape.kind, 'interface')
   assert.equal(shape.binding, 'identifier')
   assert.equal(shape.scope, 'global')
+  assert.equal(nodeNamed(result, 'Shape').kind, 'interface')
 })
 
-test('TypeScript type alias maps to the definition kind', () => {
+test('TypeScript type alias is the type kind', () => {
   const result = parseJavaScript('type Id = string | number')
   const id = symbolNamed(result, 'Id')
-  assert.equal(id.kind, 'definition')
+  assert.equal(id.kind, 'type')
   assert.equal(id.binding, 'identifier')
   assert.equal(id.scope, 'global')
+  assert.equal(nodeNamed(result, 'Id').kind, 'type')
 })
 
-test('TypeScript enum maps to the definition kind', () => {
+test('TypeScript enum is the enumeration kind', () => {
   const result = parseJavaScript('enum Color { Red, Blue }')
   const color = symbolNamed(result, 'Color')
-  assert.equal(color.kind, 'definition')
+  assert.equal(color.kind, 'enumeration')
   assert.equal(color.binding, 'identifier')
   assert.equal(color.scope, 'global')
+  assert.equal(nodeNamed(result, 'Color').kind, 'enumeration')
 })
 
-test('TypeScript namespace maps to the module kind', () => {
+test('TypeScript const enum is an enumeration and keeps the export flag', () => {
+  const result = parseJavaScript('export const enum Mode { A, B }')
+  const mode = symbolNamed(result, 'Mode')
+  assert.equal(mode.kind, 'enumeration')
+  assert.equal(mode.exported, true)
+  assert.equal(nodeNamed(result, 'Mode').kind, 'enumeration')
+})
+
+test('TypeScript namespace is the namespace kind', () => {
   const result = parseJavaScript('namespace Util { export const x = 1 }')
   const util = symbolNamed(result, 'Util')
-  assert.equal(util.kind, 'module')
+  assert.equal(util.kind, 'namespace')
   assert.equal(util.binding, 'identifier')
   assert.equal(util.scope, 'global')
+  assert.equal(nodeNamed(result, 'Util').kind, 'namespace')
+})
+
+test('TypeScript module declaration is a namespace', () => {
+  const result = parseJavaScript('module Legacy { export const x = 1 }')
+  const legacy = symbolNamed(result, 'Legacy')
+  assert.equal(legacy.kind, 'namespace')
+  assert.equal(legacy.binding, 'identifier')
+  assert.equal(legacy.scope, 'global')
+  assert.equal(nodeNamed(result, 'Legacy').kind, 'namespace')
 })
 
 test('declare creates no node of its own and keeps declarations global', () => {
@@ -136,7 +157,8 @@ test('declare creates no node of its own and keeps declarations global', () => {
 test('declare global keeps contained declarations global', () => {
   const result = parseJavaScript('declare global { interface Window { title: string } }')
   const window = symbolNamed(result, 'Window')
-  assert.equal(window.kind, 'class')
+  assert.equal(window.kind, 'interface')
   assert.equal(window.binding, 'identifier')
   assert.equal(window.scope, 'global')
+  assert.equal(nodeNamed(result, 'Window').kind, 'interface')
 })

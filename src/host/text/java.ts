@@ -14,7 +14,8 @@
  *    `importation` node each, so the dependency layer can build `depends`
  *    edges from the same reference shape the JavaScript parser emits;
  *  - `class`, `interface`, `enum`, `record` and `@interface` declarations
- *    (including nested types) -> one `class` node each;
+ *    (including nested types) -> one node each, using the precise declaration
+ *    kind (`class`, `interface` or `enumeration`);
  *  - methods and constructors (including abstract/interface methods and
  *    compact record constructors) -> one `method` node each, with a
  *    declaration-signature span (modifiers/annotations through the body `{` or
@@ -27,9 +28,11 @@
  * |-----------------------------------|---------------------|------|
  * | `package`                         | `module`            | existing kind |
  * | `import` / `import static`        | `importation`       | existing kind |
- * | `class`                           | `class`             | exact |
- * | `interface` / `enum` / `record`   | `class`             | no dedicated NodeKind exists; `class` is the closest declaration kind |
- * | `@interface`                      | `class`             | same mapping as `interface` |
+ * | `class`                           | `class`             | exact, no label |
+ * | `interface`                       | `interface`         | exact, no label |
+ * | `enum`                            | `enumeration`       | exact, no label |
+ * | `record`                          | `class`             | `label: 'record'` (a record is a final class) |
+ * | `@interface`                      | `interface`         | `label: 'annotation'` |
  * | method / constructor              | `method`            | exact |
  * | field / constant                  | `variable`          | existing kind; `label: 'constant'` only for an explicit `static final` |
  *
@@ -832,6 +835,34 @@ function typeDeclarationAt(
   return undefined
 }
 
+/** Precise node kind and optional label for one Java type form. */
+interface JavaTypeNode {
+  kind: 'class' | 'interface' | 'enumeration'
+  label?: string
+}
+
+/**
+ * Map a Java type form onto its precise `NodeMetadata.kind`.
+ *
+ * `record` stays `class` (Java records are final classes) and `@interface`
+ * stays `interface` (an annotation type is an interface); the distinction is
+ * preserved in `label` rather than folding every declaration into `class`.
+ */
+function javaTypeNode(form: JavaTypeForm): JavaTypeNode {
+  switch (form) {
+    case 'class':
+      return { kind: 'class' }
+    case 'interface':
+      return { kind: 'interface' }
+    case 'enum':
+      return { kind: 'enumeration' }
+    case 'record':
+      return { kind: 'class', label: 'record' }
+    case '@interface':
+      return { kind: 'interface', label: 'annotation' }
+  }
+}
+
 /** Scan one type declaration and its members; returns the position after it. */
 function scanType(
   state: JavaParseState,
@@ -870,12 +901,14 @@ function scanType(
     column: startToken.span.column,
   }
 
+  const typeNode = javaTypeNode(declaration.form)
   emitNode(state, {
-    kind: 'class',
+    kind: typeNode.kind,
     name,
     span,
-    locatorKind: 'class',
-    target: `${PARSER_ID}:class:${name}`,
+    locatorKind: typeNode.kind,
+    target: `${PARSER_ID}:${typeNode.kind}:${name}`,
+    ...(typeNode.label === undefined ? {} : { label: typeNode.label }),
   })
 
   if (open < 0) {

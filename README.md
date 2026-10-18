@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.12.0 (2026-10-18).** This release adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.13.0 (2026-10-18).** This release makes `interface`, `type`, `enumeration` and `namespace` first-class declaration kinds across TypeScript, Java, Rust and PHP. It adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -60,7 +60,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.12.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.13.0.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -198,12 +198,12 @@ The file layer is not one parser with a bag of node kinds. Each system owns a mo
 | book | `book.ts` | `book`, `part`, `chapter`, `article`, `section`, `person`, `venue` — the only producer of `article` |
 | markdown | `markup.ts` | `document`, `chapter`, `heading`, `paragraph`, `div`, `link`, `code`, `section`, `sheet`, `cell`, `range`, `condition` |
 | html | `markup.ts` | `document`, `section` (`<article>` maps here), `chapter` (`<h1>`), `link`, `code` |
-| js/ts | `javascript.ts` | `class`, `function`, `method`, `variable`, `interface`, `type`, `enum`, `namespace`, `importation`, `exportation`, `condition` |
-| java | `java.ts` | `module`, `class`, `method`, `variable`, `importation` |
+| js/ts | `javascript.ts` | `class`, `function`, `method`, `variable`, `interface`, `type`, `enumeration`, `namespace`, `importation`, `exportation`, `condition` |
+| java | `java.ts` | `module`, `class`, `interface`, `enumeration`, `method`, `variable`, `importation` |
 | python | `python.ts` | `class`, `function`, `method`, `variable`, `importation` |
 | c/c++ | `c-family.ts` | `module`, `class`, `function`, `method`, `variable`, `importation` |
-| rust | `rust.ts` | `module`, `class`, `function`, `method`, `variable`, `importation` |
-| php | `php.ts` | `module`, `class`, `function`, `method`, `variable`, `importation` |
+| rust | `rust.ts` | `module`, `class`, `enumeration`, `function`, `method`, `variable`, `importation` |
+| php | `php.ts` | `module`, `class`, `interface`, `enumeration`, `function`, `method`, `variable`, `importation` |
 | maven | `maven.ts` | `project`, `module`, `dependency` (parent is a dependency with `label: 'parent'`) |
 | npm | `npm.ts` | `project`, `dependency`, `script` (the command body is never stored) |
 | office | `office.ts` | docx: `document`, `chapter`, `section`, `paragraph`, `link`; xlsx: `workbook`, `sheet`, `range`, `formula`; pptx: `document`, `slide`; pub/accdb: no nodes, one `unsupported-format` diagnostic |

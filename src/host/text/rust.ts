@@ -14,9 +14,10 @@
  *    goes through the shared lexical classifier);
  *  - `mod name;` and `mod name { ... }` → one `module` node (`label: 'mod'`);
  *    the body of an inline module is scanned for module-level items;
- *  - `struct`/`enum`/`trait` declarations → one `class` node whose `label` is
- *    the Rust keyword; the declared type name is the `name`. Bodies are
- *    skipped (fields, variants and trait signatures are not projected);
+ *  - `struct`/`trait` declarations → one `class` node whose `label` is the
+ *    Rust keyword; `enum` declarations → one `enumeration` node (`label:
+ *    'enum'`). The declared type name is the `name`. Bodies are skipped
+ *    (fields, variants and trait signatures are not projected);
  *  - `impl Type { ... }` → one `class` node with `label: 'implementation'` and
  *    `name` = the implemented type (`Type` in `impl Trait for Type`); the body
  *    is scanned for direct members only;
@@ -29,11 +30,11 @@
  *    nodes; attributes (`#[...]`, `#![...]`) and doc comments are skipped
  *    without breaking the scan; `type` aliases are skipped.
  *
- * The taxonomy is strict: only existing `NodeKind` spellings are emitted
- * (`class`, `module`, `function`, `method`, `variable`, `importation`). Rust
- * nuance lives in `label`, never in a new kind. Bodies are never returned: a
- * node carries only a body-free span, fragment coordinates and (when a path is
- * known) a `NodeReference`.
+ * The taxonomy uses the precise `NodeKind` spellings (`class`, `enumeration`,
+ * `module`, `function`, `method`, `variable`, `importation`). Rust nuance that
+ * has no dedicated kind lives in `label`, never in a new kind. Bodies are never
+ * returned: a node carries only a body-free span, fragment coordinates and
+ * (when a path is known) a `NodeReference`.
  *
  * Conservative gaps, documented rather than guessed:
  *
@@ -75,8 +76,8 @@ import type {
   Parser,
 } from './parser.js'
 
-/** Symbol kinds the Rust scan can prove (all are existing `NodeKind`s). */
-export type RustSymbolKind = 'class' | 'module' | 'function' | 'method' | 'variable'
+/** Symbol kinds the Rust scan can prove (precise `NodeKind` spellings). */
+export type RustSymbolKind = 'class' | 'enumeration' | 'module' | 'function' | 'method' | 'variable'
 
 /** One code symbol the Rust scan can prove. */
 export interface RustSymbol extends FlatFragment {
@@ -489,7 +490,25 @@ function handleRustMod(
   return position + 2
 }
 
-/** `struct`/`enum`/`trait` declarations; the body is skipped. */
+/** Precise node kind and label for one class-like Rust item keyword. */
+interface RustClassLikeNode {
+  kind: RustSymbolKind
+  label: string
+}
+
+/**
+ * Map a class-like Rust item keyword onto its precise node kind.
+ *
+ * `struct` and `trait` stay `class` with the keyword as label; `enum` has a
+ * dedicated `enumeration` kind and keeps `label: 'enum'`.
+ */
+function rustClassLikeNode(keyword: RustClassKeyword): RustClassLikeNode {
+  return keyword === 'enum'
+    ? { kind: 'enumeration', label: 'enum' }
+    : { kind: 'class', label: keyword }
+}
+
+/** `struct`/`trait` (a `class`) and `enum` (an `enumeration`); bodies are skipped. */
 function handleRustClassLike(
   ctx: ParseContext,
   tokens: readonly RustToken[],
@@ -540,10 +559,11 @@ function handleRustClassLike(
     next = Math.min(tokens.length, position + 2)
   }
 
+  const node = rustClassLikeNode(kind)
   if (!sink.addSymbol({
-    kind: 'class',
+    kind: node.kind,
     name: nameToken.text,
-    label: kind,
+    label: node.label,
     span: tokenRangeSpan(keyword, tokens[endPosition]),
   })) {
     return tokens.length
