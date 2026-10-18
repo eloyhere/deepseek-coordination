@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.14.6 | 2026-10-18 | `—` | WebGL2 relationship canvas, priority render queue |
+| 0.14.6 | 2026-10-18 | `f4549a7` | WebGL2 relationship canvas, priority render queue |
 | 0.14.5 | 2026-10-18 | `3927d61` | Semantic canvas zoom, collapsible tree, auto-fit for dense graphs |
 | 0.14.4 | 2026-10-18 | `94aa48a` | Resolve the session workspace for graph indexing |
 | 0.14.3 | 2026-10-18 | `088e2f6` | Bottom-anchored panels, reducer navigation, workspace indexing |
