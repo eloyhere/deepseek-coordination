@@ -26,7 +26,7 @@
  *    state before the notice is shown; `hostRef` is assigned only from a
  *    host-confirmed answer (load, flush, or replay), never from the optimistic
  *    click;
- *  - picking a full-access preset first opens an inline confirmation: one click
+ *  - picking a full-access preset first opens a confirmation dialog: one click
  *    never grants full access;
  *  - a `PROFESSION_LOCKED` rejection opens a plugin-owned compact dialog
  *    (current vs requested profession plus rebuild/abandon/cancel) instead of a
@@ -128,6 +128,8 @@ const MuiButton: React.ComponentType<Record<string, unknown>> =
 
 /** Stable id linking the dialog's accessible name to its title. */
 const ESCALATION_TITLE_ID = 'deepseek-coordination-escalation-title'
+/** Accessible name of the full-access confirmation dialog. */
+const FULL_ACCESS_TITLE_ID = 'deepseek-coordination-full-access-title'
 
 /** Select sentinel for "no preset applied, follow the DSH default tier". */
 const FOLLOW_DSH = ''
@@ -456,42 +458,10 @@ const LOADING_STYLE: React.CSSProperties = {
 const TITLE_LINE_STYLE: React.CSSProperties = { fontWeight: 600, marginBottom: 2 }
 const BODY_LINE_STYLE: React.CSSProperties = { opacity: 0.85 }
 const SUBTLE_LINE_STYLE: React.CSSProperties = { opacity: 0.7, marginTop: 4 }
-const CONFIRM_STYLE: React.CSSProperties = {
-  display: 'inline-flex',
-  flexDirection: 'column',
-  gap: 2,
-  maxWidth: 260,
-  padding: '4px 8px',
-  border: '1px solid #a15c00',
-  borderRadius: 4,
-  fontSize: 11,
-  lineHeight: 1.35,
-}
-const CONFIRM_TITLE_STYLE: React.CSSProperties = {
-  fontWeight: 600,
-  color: '#a15c00',
-}
-const CONFIRM_BODY_STYLE: React.CSSProperties = { opacity: 0.85 }
-const ACTIONS_STYLE: React.CSSProperties = {
-  display: 'flex',
-  gap: 6,
-  marginTop: 2,
-  flexWrap: 'wrap',
-}
 const DIALOG_TITLE_SX = { fontSize: 14, fontWeight: 600, color: '#a15c00', paddingBottom: 0.5 }
 const DIALOG_CONTENT_SX = { paddingTop: 0.5 }
 const DIALOG_TEXT_SX = { fontSize: 12, marginBottom: 0.5 }
 const DIALOG_ERROR_SX = { fontSize: 12, color: '#a15c00' }
-const ACTION_BUTTON_STYLE: React.CSSProperties = {
-  font: 'inherit',
-  fontSize: 11,
-  padding: '1px 8px',
-  cursor: 'pointer',
-  border: '1px solid var(--dsw-alias-separator, #c9c9c9)',
-  borderRadius: 4,
-  background: 'transparent',
-  color: 'inherit',
-}
 const MENU_ITEM_COMPACT_SX = { fontSize: 12, minHeight: 28 }
 const MENU_ITEM_ROOMY_SX = { fontSize: 13, minHeight: 34 }
 
@@ -959,36 +929,57 @@ function useSelection(sessionId: string, copy: Copy): SelectionHook {
  * Presentational pieces
  * ------------------------------------------------------------------------- */
 
-function actionButton(label: string, onClick: () => void, disabled: boolean): React.ReactElement {
-  return React.createElement(
-    'button',
-    { type: 'button', onClick, disabled, style: ACTION_BUTTON_STYLE },
-    label,
-  )
-}
-
-/** Inline confirmation before a full-access preset is written (v24 §16 policy). */
-function FullAccessConfirm(props: {
+/**
+ * Confirmation dialog before a full-access preset is written (v24 §16 policy).
+ *
+ * A modal, not an inline banner: the previous inline form sat inside the
+ * composer's control row, where it overlapped the tooltip layer and stole
+ * pointer events from the trigger. A dialog renders in a portal above every
+ * tooltip, traps focus, and answers `Esc`/backdrop through `onClose`.
+ */
+function FullAccessConfirmDialog(props: {
   copy: Copy
   busy: boolean
   onConfirm: () => void
   onCancel: () => void
 }): React.ReactElement {
   const { copy } = props
+  const dismiss = (): void => {
+    if (!props.busy) props.onCancel()
+  }
   return React.createElement(
-    'span',
+    MuiDialog,
     {
-      style: CONFIRM_STYLE,
-      role: 'group',
-      'aria-label': copy.composer.permissionConfirmTitle,
+      open: true,
+      onClose: dismiss,
+      maxWidth: 'xs',
+      'aria-labelledby': FULL_ACCESS_TITLE_ID,
+      // Tooltips sit at z-index 1500; a confirmation modal must stay above them.
+      sx: { zIndex: (theme: { zIndex: { tooltip: number } }) => theme.zIndex.tooltip + 1 },
     },
-    React.createElement('span', { style: CONFIRM_TITLE_STYLE }, copy.composer.permissionConfirmTitle),
-    React.createElement('span', { style: CONFIRM_BODY_STYLE }, copy.composer.permissionConfirmBody),
     React.createElement(
-      'span',
-      { style: ACTIONS_STYLE },
-      actionButton(copy.composer.permissionConfirmAccept, props.onConfirm, props.busy),
-      actionButton(copy.composer.permissionConfirmCancel, props.onCancel, props.busy),
+      MuiDialogTitle,
+      { id: FULL_ACCESS_TITLE_ID, sx: DIALOG_TITLE_SX },
+      copy.composer.permissionConfirmTitle,
+    ),
+    React.createElement(
+      MuiDialogContent,
+      { sx: DIALOG_CONTENT_SX },
+      React.createElement(MuiDialogContentText, { sx: DIALOG_TEXT_SX }, copy.composer.permissionConfirmBody),
+    ),
+    React.createElement(
+      MuiDialogActions,
+      null,
+      React.createElement(
+        MuiButton,
+        { onClick: dismiss, disabled: props.busy, size: 'small' },
+        copy.composer.permissionConfirmCancel,
+      ),
+      React.createElement(
+        MuiButton,
+        { onClick: props.onConfirm, disabled: props.busy, size: 'small', variant: 'contained', color: 'warning' },
+        copy.composer.permissionConfirmAccept,
+      ),
     ),
   )
 }
@@ -1342,7 +1333,7 @@ export const ComposerControls = React.memo(function ComposerControlsInner(
       },
     }))
     if (pendingFullAccess !== null) {
-      children.push(React.createElement(FullAccessConfirm, {
+      children.push(React.createElement(FullAccessConfirmDialog, {
         key: 'permission-confirm',
         copy,
         busy: false,

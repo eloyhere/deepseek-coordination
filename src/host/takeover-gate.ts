@@ -120,7 +120,12 @@ export class TakeoverGate {
       listener: (request: unknown, next: () => Promise<unknown>) => unknown,
     ): void => {
       try {
-        const dispose = register.call(context, name, listener)
+        // `prepend` matters: DSH's own GUI answers the same waterfall
+        // (`dsh-client-ui-approval` / `-user-questions`). A listener registered
+        // later never runs once the GUI has claimed the request, which is why
+        // the takeover dialog stayed empty. Running first lets this plugin
+        // either answer or delegate with `next()`.
+        const dispose = register.call(context, name, listener, { prepend: true })
         if (typeof dispose === 'function') disposers.push(dispose as () => void)
       } catch {
         // A context without a working event bus simply gets no takeover.

@@ -7,8 +7,9 @@
  *  - one `Accordion` per catalog group, with a `List` of rows inside;
  *  - a `Table` per scene for the eleven scene-scoped fields — there is no scene
  *    dropdown, every scene is visible as its own table;
- *  - `Checkbox` for booleans, `RadioGroup` for enums, `Slider` for ratio-like
- *    numbers and `TextField type="number"` for counts/bytes/milliseconds;
+ *  - `Checkbox` for booleans, `RadioGroup` for enums, and
+ *    `TextField type="number"` for every number — weights, ratios, counts,
+ *    bytes and milliseconds alike;
  *  - `Typography` for titles, hints, defaults and errors, and `Chip` for the
  *    `主机` / `本机` / `强制` / `只读` / `计划中` status.
  *
@@ -34,7 +35,6 @@ import List from '@mui/material/List'
 import ListItem from '@mui/material/ListItem'
 import Radio from '@mui/material/Radio'
 import RadioGroup from '@mui/material/RadioGroup'
-import Slider from '@mui/material/Slider'
 import Table from '@mui/material/Table'
 import TableBody from '@mui/material/TableBody'
 import TableCell from '@mui/material/TableCell'
@@ -61,6 +61,7 @@ import {
 import { loadConfig, saveConfig } from './bridge.js'
 import {
   SETTINGS_CATALOG_GROUPS,
+  formatConfigNumber,
   settingsControlsOf,
   settingsSceneControls,
   settingsSharedSceneControls,
@@ -94,7 +95,6 @@ const MuiList = List as unknown as Loose
 const MuiListItem = ListItem as unknown as Loose
 const MuiRadio = Radio as unknown as Loose
 const MuiRadioGroup = RadioGroup as unknown as Loose
-const MuiSlider = Slider as unknown as Loose
 const MuiTable = Table as unknown as Loose
 const MuiTableBody = TableBody as unknown as Loose
 const MuiTableCell = TableCell as unknown as Loose
@@ -184,47 +184,10 @@ function RadioControl(props: {
   )
 }
 
-/** A slider for a ratio-like number (0–1, 0.3–0.9, …); commits on release. */
-function SliderControl(props: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step: number
-  disabled: boolean
-  onCommit: (value: number) => void
-}): React.ReactElement {
-  const [draft, setDraft] = React.useState(props.value)
-  React.useEffect(() => { setDraft(props.value) }, [props.value])
-  return React.createElement(
-    'span',
-    { style: SLIDER_WRAP_STYLE },
-    React.createElement(MuiSlider, {
-      size: 'small',
-      min: props.min,
-      max: props.max,
-      step: props.step,
-      value: draft,
-      disabled: props.disabled,
-      valueLabelDisplay: 'auto',
-      sx: SLIDER_SX,
-      slotProps: { input: { 'aria-label': props.label } },
-      onChange: (_event: unknown, next: number | number[]) => {
-        setDraft(Array.isArray(next) ? (next[0] as number) : next)
-      },
-      onChangeCommitted: (_event: unknown, next: number | number[]) => {
-        const committed = Array.isArray(next) ? (next[0] as number) : next
-        if (committed !== props.value) props.onCommit(committed)
-      },
-    }),
-    React.createElement(MuiTypography, { variant: 'caption', color: 'text.secondary' }, String(draft)),
-  )
-}
-
 /**
- * A MUI number field for a non-ratio number (turns, milliseconds, bytes,
- * counts). The inline error is the local parse/min/max check; the host is still
- * the authority and its rejection lands on the row below.
+ * A MUI number field for a number (turns, milliseconds, bytes, ratios and
+ * weights). The inline error is the local parse/min/max check; the host is
+ * still the authority and its rejection lands on the row below.
  */
 function NumberFieldControl(props: {
   inputId: string
@@ -237,25 +200,25 @@ function NumberFieldControl(props: {
   onCommit: (value: number) => void
   messages: { invalid: string; range: string }
 }): React.ReactElement {
-  const [draft, setDraft] = React.useState<string>(String(props.value))
+  const [draft, setDraft] = React.useState<string>(formatConfigNumber(props.value, props.step))
   const [error, setError] = React.useState<string | null>(null)
   React.useEffect(() => {
-    setDraft(String(props.value))
+    setDraft(formatConfigNumber(props.value, props.step))
     setError(null)
-  }, [props.value])
+  }, [props.value, props.step])
   const commit = (): void => {
     const trimmed = draft.trim()
     const parsed = Number(trimmed)
     if (trimmed === '' || !Number.isFinite(parsed)) {
       setError(props.messages.invalid)
-      setDraft(String(props.value))
+      setDraft(formatConfigNumber(props.value, props.step))
       return
     }
     const below = props.min !== undefined && parsed < props.min
     const above = props.max !== undefined && parsed > props.max
     if (below || above) {
       setError(props.messages.range)
-      setDraft(String(props.value))
+      setDraft(formatConfigNumber(props.value, props.step))
       return
     }
     if (parsed !== props.value) props.onCommit(parsed)
@@ -333,7 +296,7 @@ function TextFieldControl(props: {
  * Value formatting — never invent a value
  * ------------------------------------------------------------------------- */
 
-type OptionDomain = 'profession' | 'interaction' | 'scene' | 'validation' | 'command' | 'thinking' | 'locale'
+type OptionDomain = 'profession' | 'interaction' | 'scene' | 'validation' | 'command' | 'locale'
 
 /** Which label table an enum control's options use. */
 function optionDomain(control: SettingsControl): OptionDomain {
@@ -343,9 +306,6 @@ function optionDomain(control: SettingsControl): OptionDomain {
   if (key === 'defaults.scene') return 'scene'
   if (key === 'defaults.validation') return 'validation'
   if (key === 'defaults.command') return 'command'
-  if (control.options !== undefined && control.options.length === 2 && control.options.includes('enabled')) {
-    return 'thinking'
-  }
   return 'locale'
 }
 
@@ -362,8 +322,6 @@ function optionLabel(copy: Copy, control: SettingsControl, value: string): strin
       return isOneOf(value, ValidationValues) ? copy.validations[value].label : value
     case 'command':
       return isOneOf(value, CommandValues) ? values.commandOptions[value] : value
-    case 'thinking':
-      return value === 'enabled' || value === 'disabled' ? values.thinkingOptions[value] : value
     case 'locale':
       if (value === 'auto') return copy.settings.values.followHost
       if (value === 'zh-CN') return copy.settings.values.chinese
@@ -375,7 +333,9 @@ function optionLabel(copy: Copy, control: SettingsControl, value: string): strin
 /** Human text for a value the host reported. Booleans are on/off in the copy. */
 function displayConfigValue(copy: Copy, control: SettingsControl, value: unknown): string {
   if (typeof value === 'boolean') return value ? copy.settings.values.on : copy.settings.values.off
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  // Renormalised weights carry float noise (`0.15000000000000002`); the row
+  // rounds to the control's own step, never to a hard-coded precision.
+  if (typeof value === 'number' && Number.isFinite(value)) return formatConfigNumber(value, control.step)
   if (typeof value === 'string') {
     return control.kind === 'enum' ? optionLabel(copy, control, value) : value
   }
@@ -396,14 +356,6 @@ function metaLine(copy: Copy, control: SettingsControl, defaultValue: unknown): 
     if (control.step !== undefined) parts.push(String(control.step))
   }
   return parts.join(' · ')
-}
-
-/** Ratio-like numbers get a slider; counts, bytes and milliseconds a field. */
-function isRatioControl(control: SettingsControl): boolean {
-  return control.kind === 'number'
-    && control.min !== undefined
-    && control.max !== undefined
-    && control.max - control.min <= 1
 }
 
 /* ------------------------------------------------------------------------- *
@@ -465,7 +417,6 @@ const settingsTheme = createTheme(theme, {
     MuiFormControlLabel: { styleOverrides: { label: { fontSize: 12 } } },
     MuiInputBase: { styleOverrides: { input: { fontSize: 13 } } },
     MuiTableCell: { styleOverrides: { root: { fontSize: 12 } } },
-    MuiSlider: { styleOverrides: { valueLabel: { fontSize: 12 } } },
   },
 })
 
@@ -630,17 +581,6 @@ export function CoordinationSettings(): React.ReactElement {
       })
     }
     if (control.chip === 'host' && control.kind === 'number' && typeof rawValue === 'number') {
-      if (isRatioControl(control)) {
-        return React.createElement(SliderControl, {
-          label,
-          value: rawValue,
-          min: control.min as number,
-          max: control.max as number,
-          step: control.step ?? 0.01,
-          disabled,
-          onCommit: (next: number) => { commit(control, next) },
-        })
-      }
       return React.createElement(NumberFieldControl, {
         inputId,
         label,
@@ -686,9 +626,9 @@ export function CoordinationSettings(): React.ReactElement {
       : `${copy.scenes[control.scene].label} · ${field.label}`
     const inputId = `${control.id}:input`
     const editable = control.chip === 'host' && control.keys.length > 0 && load === 'ready'
-    // A slider carries its own accessible name through `slotProps.input`; a
-    // radio group through `aria-label`. Only real inputs get a htmlFor label.
-    const labelled = editable && control.kind !== 'enum' && !isRatioControl(control)
+    // An enum renders as a radio group or a dropdown with its own `aria-label`;
+    // only real inputs get a htmlFor label.
+    const labelled = editable && control.kind !== 'enum'
     const meta = metaLine(copy, control, rawDefault)
     const notes: string[] = []
     if (control.copy === 'professionDefaultAlias') notes.push(catalog.values.alias)
@@ -1024,8 +964,6 @@ const HELP_STYLE: React.CSSProperties = {
   cursor: 'help',
   flex: 'none',
 }
-const SLIDER_WRAP_STYLE: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 140 }
-const SLIDER_SX = { width: 110, py: 0.5 }
 const NUMBER_SX = { width: 140 }
 const TEXT_SX = { width: 150 }
 const FIELD_SET_SX = { border: 0, p: 0, m: 0, minWidth: 0 }

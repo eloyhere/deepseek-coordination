@@ -81,7 +81,16 @@ function serviceOf(context: unknown, name: string): UnknownRecord | undefined {
       // `ctx.get` on an absent service throws in some Cordis versions.
     }
   }
-  return asRecord(holder[name])
+  try {
+    return asRecord(holder[name])
+  } catch {
+    // Cordis proxies throw on any service the plugin did not declare in
+    // `inject` ("cannot get property ... without inject"). The ports this
+    // helper resolves are optional — a DSH build that keeps the service in an
+    // agent-preset context instead of the profile root simply has no value
+    // here, and absence must not abort apply().
+    return undefined
+  }
 }
 
 function makeLogger(context: unknown): LoggerPort | undefined {

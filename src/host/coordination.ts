@@ -239,13 +239,10 @@ export class TurnPipeline {
     }
 
     /* ---- Scene policy knobs with no execution port --------------------- */
-    if (turn.effort === profile.reasoningEffort) policy.applied.push('effort')
-    else {
-      this.defer(policy, report, 'reasoningEffort', `turn effort "${turn.effort}" differs from the scene effort "${profile.reasoningEffort}"`)
-    }
-    // `thinking` is rendered into the provider request by DSH; the host has no
-    // model-config write port, so changing the turn row cannot toggle it.
-    this.defer(policy, report, 'thinking', 'no DSH model-config port: the pipeline records the scene but cannot toggle reasoning')
+    // Reasoning is DSH-owned: the model page sets both the thinking switch and
+    // the effort level, and this host must neither override nor report them as
+    // deferred gaps. `thinking`/`reasoningEffort` stay in the config so an
+    // existing file still parses, but no code path reads them any more.
     // Bash permission is a DSH permission-preset decision; this pipeline must
     // not silently rewrite the human's preset.
     this.defer(policy, report, 'allowBash', 'no execution-policy port: bash permission is left to the DSH permission preset')
@@ -457,6 +454,14 @@ function evidenceCount(value: string | undefined): number {
   }
 }
 
+/** The neutral effort recorded when DSH has not committed a route yet. */
+const DefaultEffort = 'medium'
+
+/** Narrow an unknown to a plain record without throwing. */
+function recordOf(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
+}
+
 function textOr(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback
 }
@@ -648,6 +653,28 @@ export class CoordinationService extends Service {
     return this.profession.listProfessionRecord(session)
   }
 
+  /**
+   * The reasoning effort DSH will send for this session.
+   *
+   * Read from the session's own request header instead of plugin config: the
+   * model page owns this choice and the plugin never overrides it. A session
+   * with no committed route yet has no header, so the row records the neutral
+   * default rather than guessing from a scene literal.
+   */
+  private observedEffort(sessionId: string): string {
+    try {
+      const raw = recordOf(this.runtime.rawSession(sessionId))
+      const read = raw?.requestHeader
+      if (typeof read !== 'function') return DefaultEffort
+      const header = recordOf(read.call(raw))
+      const config = recordOf(header?.config)
+      const effort = typeof config?.reasoningEffort === 'string' ? config.reasoningEffort.trim() : ''
+      return effort.length > 0 ? effort : DefaultEffort
+    } catch {
+      return DefaultEffort
+    }
+  }
+
   /** Open (or reuse) the coordination turn for one DSH turn. */
   async beginTurn(sessionId: string, dshTurn: number, promptText = ''): Promise<Turn> {
     const session = this.session.ensure(sessionId)
@@ -659,7 +686,6 @@ export class CoordinationService extends Service {
       this.finishQuietly(existing.identity, 'done')
     }
     const selection = this.selection.get(sessionId)
-    const scene = resolveSceneProfile(this.config, selection.scene)
     const turn = this.turn.create(session.identity, {
       content: promptText,
       profession: selection.profession,
@@ -667,9 +693,11 @@ export class CoordinationService extends Service {
       scene: selection.scene,
       validation: selection.validation,
       command: 'none',
-      // The scene's reasoning effort is seeded on the turn here; it is the only
-      // execution-shaped scene knob the host can persist (see `TurnPipeline`).
-      effort: scene.reasoningEffort,
+      // DSH owns the reasoning effort: the model page selects it and this plugin
+      // never overrides it. The row records what the session route carries so
+      // the audit stays honest, and falls back to the neutral default only when
+      // no route has been committed yet.
+      effort: this.observedEffort(sessionId),
     })
     this.dshTurns.set(sessionId, { dshTurn, identity: turn.identity })
     if (promptText.trim().length > 0) {

@@ -553,9 +553,8 @@ interface SceneFieldSpec {
 
 /** Fields whose six defaults differ, therefore one row per scene. */
 const SCENE_FIELDS: readonly SceneFieldSpec[] = [
-  // No DSH model-config write port; recorded as a deferred diagnostic.
-  { field: 'thinking', copy: 'scene.thinking', kind: 'enum', options: ['enabled', 'disabled'] },
-  { field: 'reasoningEffort', copy: 'scene.reasoningEffort', kind: 'text', wired: true },
+  // Neither `thinking` nor `reasoningEffort` is a row: the host's main page owns
+  // the model's reasoning controls, and this catalog must not duplicate them.
   { field: 'requirePlan', copy: 'scene.requirePlan', kind: 'boolean', wired: true },
   { field: 'requireScore', copy: 'scene.requireScore', kind: 'boolean', wired: true },
   { field: 'requireOutline', copy: 'scene.requireOutline', kind: 'boolean', wired: true },
@@ -848,8 +847,6 @@ export const SETTINGS_CATALOG_FIELD_IDS = [
   'chainLinks',
   'chainTokenBudget',
   'toolMaxResultBytes',
-  'scene.thinking',
-  'scene.reasoningEffort',
   'scene.requirePlan',
   'scene.requireScore',
   'scene.requireOutline',
@@ -881,6 +878,33 @@ export function settingsSharedSceneControls(): readonly SettingsControl[] {
 }
 
 /* ---- Path helpers -------------------------------------------------------- */
+
+/**
+ * Decimal places a catalog step implies.
+ *
+ * `0.01` → 2, `0.001` → 3, `1` → 0. The cap keeps a pathological step from
+ * producing a wall of digits; every real step in this catalog is ≤ 3 places.
+ */
+export function stepDecimals(step: number | undefined): number {
+  if (step === undefined || !Number.isFinite(step) || step <= 0) return 0
+  const text = step.toFixed(12).replace(/0+$/, '')
+  const dot = text.indexOf('.')
+  return dot < 0 ? 0 : Math.min(6, text.length - dot - 1)
+}
+
+/**
+ * Format one config number for display, rounded to the row's step precision.
+ *
+ * Resolvers renormalise the eight plan weights, so a stored `0.15` comes back as
+ * `0.15000000000000002`; the row must show `0.15`. Rounding happens only for
+ * display — the wire still carries the exact value the host reported, and a
+ * write sends whatever the operator typed.
+ */
+export function formatConfigNumber(value: number, step?: number): string {
+  if (!Number.isFinite(value)) return String(value)
+  // `Number` drops trailing zeros, so 0.5 with a 0.01 step shows as "0.5".
+  return String(Number(value.toFixed(stepDecimals(step))))
+}
 
 /** Read one dotted config path; `undefined` when any segment is missing. */
 export function readConfigPath(source: unknown, path: string): unknown {

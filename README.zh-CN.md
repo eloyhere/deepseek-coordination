@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.10.0（2026-10-18）。** 它在 v0.9.2 的 tooltip 修复之后，加入设置目录、持久文件层、Turn 流水线、阶段冻结和数据结构采用。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.11.0（2026-10-18）。** 本版把设置页改为持久化（落在宿主自己的覆盖文档），把推理完全交还 DSH，把所有数值控件改成数字输入框，修好设置写入与接管在 DSH 0.2.1 上的接线，并加入带品牌策略的实验性缓存代理。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -48,9 +48,11 @@ npm pack                # 先执行 prepack，生成可安装 tarball
 | Peer 包 | 范围 | 端 |
 |---|---|---|
 | `@deepseek-ai/cordis` | `^4.0.1` | 宿主运行时 |
-| `@deepseek-ai/dsh-host-webserver` | `^0.1.0-rc.7 \|\| ^0.2.0-rc.0` | 宿主路由 |
-| `@deepseek-ai/dsh-client-runtime`、`-locale`、`-ui-slots`、`-ui-settings` | `^0.1.0-rc.7 \|\| ^0.2.0-rc.0` | 浏览器模块表 |
+| `@deepseek-ai/dsh-host-webserver` | `^0.1.0-rc.7 \|\| >=0.2.1-rc.2` | 宿主路由 |
+| `@deepseek-ai/dsh-client-runtime`、`-locale`、`-ui-slots`、`-ui-settings` | `^0.1.0-rc.7 \|\| >=0.2.1-rc.2` | 浏览器模块表 |
 | `react` | `^18.2.0` | 浏览器模块表；不会被打包 |
+
+客户端半针对桌面运行时携带的 0.2.1-rc.2 客户端包（`-locale`、`-ui-settings`、`-ui-slots`、`-ui-conversation`）编译。`@deepseek-ai/dsh-client-runtime` 与 `@deepseek-ai/dsh-host-webserver` 没有发布 0.2.x，因此它们的 devDependency 仍是 0.1.0-rc.8，而 peer 范围接受宿主提供的 0.2.1+ 运行时。`>=0.2.1-rc.2` 接受之后的所有稳定版本，`^0.1.0-rc.7` 让 0.1 线仍可安装。
 
 ### 安装到 profile
 
@@ -58,7 +60,7 @@ npm pack                # 先执行 prepack，生成可安装 tarball
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.10.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.11.0.tgz
 dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 ```
 
@@ -157,16 +159,16 @@ deepseek-coordination/
 
 ### 情景与写作档
 
-| 情景 | 思考 / effort | 计划 | 大纲 | 修订 | 评分 | Bash | 联网 | 最大轮次 |
-|---|---|---|---|---|---|---|---|---|
-| 对话 | 关闭 / medium | – | – | – | – | 否 | 是 | 1 |
-| 写作 | 开启 / high | 是 | 是 | 是 | 是 | 否 | 是 | 3 |
-| 办公 | 关闭 / medium | 是 | – | – | – | 否 | 是 | 1 |
-| 研究 | 开启 / high | 是 | – | – | – | 否 | 是 | 3 |
-| 工程 | 开启 / high | 是 | – | – | – | 是 | 是 | 3 |
-| 迭代 | 开启 / high | – | – | – | 是 | 否 | 是 | 3 |
+| 情景 | 计划 | 大纲 | 修订 | 评分 | Bash | 联网 | 最大轮次 |
+|---|---|---|---|---|---|---|---|
+| 对话 | – | – | – | – | 否 | 是 | 1 |
+| 写作 | 是 | 是 | 是 | 是 | 否 | 是 | 3 |
+| 办公 | 是 | – | – | – | 否 | 是 | 1 |
+| 研究 | 是 | – | – | – | 否 | 是 | 3 |
+| 工程 | 是 | – | – | – | 是 | 是 | 3 |
+| 迭代 | – | – | – | 是 | 否 | 是 | 3 |
 
-“写作”要求大纲和至少一轮修订，必须有质量评分，不允许 bash，允许联网，最多三轮。通过阈值为 `0.6`，`plan.ts` 使用该写作阈值。Turn 流水线读取 reasoning effort、require-* 标志、引用/证据、`allowWeb` 与 `sandboxOnly`；`thinking`、`allowBash`、`maxIteration` 和非写作阈值仍是没有 DSH 端口/消费者的延迟诊断项。
+“写作”要求大纲和至少一轮修订，必须有质量评分，不允许 bash，允许联网，最多三轮。通过阈值为 `0.6`，`plan.ts` 使用该写作阈值。Turn 流水线读取 require-* 标志、引用/证据、`allowWeb` 与 `sandboxOnly`；推理（`thinking`、`reasoningEffort`）归 DSH 所有——页面没有对应行，Turn 记录的是会话自身请求头里的值，而不是情景字面量。`allowBash`、`maxIteration` 和非写作阈值仍是没有 DSH 端口/消费者的延迟诊断项。
 
 ## 职能锁定与 Turn 生命周期
 
@@ -188,7 +190,7 @@ deepseek-coordination/
 
 ## 设置与配置
 
-设置页由 `src/shared/selection.ts` 的 `SETTINGS_CONTROLS` 生成：**13 组、151 个控件、134 个可写宿主行，覆盖 155 个非秘密配置叶子**。18 个顶层配置键包含 `database` 与 `databasePath`，这两个键故意不投影、不可写。
+设置页由 `src/shared/selection.ts` 的 `SETTINGS_CONTROLS` 生成：**13 组、139 个控件、122 个可写宿主行，覆盖 155 个配置叶子**。其中 12 个情景叶子（`scenes.*.thinking`、`scenes.*.reasoningEffort`）留在 schema 里但没有对应行：推理由 DSH 的模型页负责，这里再放一套会形成两个真相来源。18 个顶层配置键包含 `database` 与 `databasePath`，这两个键故意不投影、不可写。
 
 | 组 | 默认值 / 范围 | 写入路径 |
 |---|---|---|
@@ -196,36 +198,59 @@ deepseek-coordination/
 | `profession` | enabled/lock/rebuild/abandon 强制 `true`；default 镜像 `defaults.profession`；audit/errorHint `true` | 强制项只读；audit/errorHint 为宿主行（audit 无消费者） |
 | `plan` | threshold `0.5`、maxRebuild `3`、8 个权重和为 1、8 个维度阈值 | 宿主行；保存后权重重新归一 |
 | `orchestration` | maxReject `2`、maxSubTask `32`、groundTruth `true`、timeout `5000 ms`、shell ground truth `false`、modelRouting `true` | 宿主行；`groundTruthTimeout` 无消费者 |
-| `cache` | enabled `true`、ttl `60000 ms`、fingerprintWindow `50`、effortWarning `true` | 宿主行；`fingerprintWindow` 无消费者 |
+| `cache` | enabled `true`、ttl `60000 ms`、fingerprintWindow `50`、effortWarning `true` | 宿主行；`enabled`/`effortWarning` 控制缓存代理的改写开关，`ttl` 用于模型目录缓存，`fingerprintWindow` 无消费者 |
 | `bayesian` | prior `0.5`、stopEntropy `0.05`、infoGain `0.01`、maxRoutes `12`、calibrationFloor `0.1` | 宿主行；`calibrationFloor` 无消费者 |
 | `comprehension` | stageTimeout `30000 ms`、searchEnabled `true`、maxEvidence `8`、highHistoryWindow `50` | 宿主行 |
 | `compaction` | auto `true`、soft `0.70`、hard `0.88`、reserve `2048`、recentTurns `6`、cooldown `30000 ms`、maxPerSession `20` | auto/soft/hard 为宿主行；结构字段只读 |
 | `ui` | toolbar `true`（废弃别名）、showTooltip `true`、takeover `false`、refreshInterval `5000 ms`、compact `true`、locale `auto` | 宿主行 + 两个本机开关；toolbar/locale 只读 |
-| `scenes` | 六个情景各 13 个字段；写作阈值 `0.6` | 宿主行；只有写作评分阈值被 `plan.ts` 读取 |
+| `scenes` | 六个情景各 9 个可编辑行（思考/effort 仅保留在 schema）；写作阈值 `0.6` | 宿主行；只有写作评分阈值被 `plan.ts` 读取 |
 | `parser` | enabled `true`、1 MiB、200k tokens、depth `256`、2 s、cache `256`、graph 20k/100k | enabled + 四个上限为宿主行；depth 与 graph 上限仍是计划 |
 | `chain` | depth `8`、links `50`、tokenBudget `1500` | 宿主行 |
 | `tools` | maxResultBytes `0` | 计划/只读；未被消费 |
 | `defaults` | 职能 `execution`、交互 `think`、情景 `dialogue`、验证 `medium`、命令 `none` | 宿主行 |
 
-`GET /deepseek-coordination/config` 返回 `{ values, defaults }`；`defaults` 来自 `resolveConfig(undefined)`，页面不复制默认字面量。`POST /config` 接收扁平点路径补丁（如 `{ "plan.threshold": 0.7 }`），按目录和真实 Schemastery schema 校验，写入活动配置，重新执行不变量（权重归一、别名镜像、强制开关、压缩阈值夹取），在压缩变化时重建 `TokenGovernor`，最后尽力通过 `ctx.settings.update` 持久化。
+`GET /deepseek-coordination/config` 返回 `{ values, defaults }`；`defaults` 来自 `resolveConfig(undefined)`，页面不复制默认字面量。`POST /config` 接收扁平点路径补丁（如 `{ "plan.threshold": 0.7 }`），按目录和真实 Schemastery schema 校验，写入活动配置，重新执行不变量（权重归一、别名镜像、强制开关、压缩阈值夹取），在压缩变化时重建 `TokenGovernor`，最后持久化实际写入的路径。
 
-持久化是显式的：只有 DSH 接受设置写入时 `persisted` 才为 true；否则修改只在当前进程生效，页面会如实说明。未知键、`databasePath`、`database` 会以 `INVALID_ARGUMENT` 拒绝；已知但不可写的键进入 `ignored`，绝不写入。`POST /config/compaction` 保留为旧的 auto/soft/hard 兼容小路由。
+持久化落在宿主自己的覆盖文档 `<数据库目录>/config.overrides.json`：一个扁平的 `{ "plan.threshold": 0.7 }` 映射，原子写在协调数据库旁边，下次启动时覆盖在 profile 配置之上。这里没有用 DSH 的 `ctx.settings.update`——它只接受 `.volatile()` schema，而 volatile 节点会把每个解析值变成引用包装，本宿主无法在不重写所有配置读取的前提下接受。因此 `persisted: true` 表示“已存入协调宿主自己的文档”；只命中 `ignored` 行的写入返回 `false`。未知键、`databasePath`、`database` 会以 `INVALID_ARGUMENT` 拒绝；已知但不可写的键进入 `ignored`，绝不写入。`POST /config/compaction` 保留为旧的 auto/soft/hard 兼容小路由。
 
-设置页整体使用 Material UI：每组一个默认展开的 `Accordion`，行放在 `List` 中；六个情景各一张 `Table`（页面没有情景下拉框）；布尔用 `Checkbox`，枚举用 `RadioGroup`，比例型数字用 `Slider`，计数/字节/毫秒用 `TextField type="number"`；`Chip` 只表示 `主机 / 本机 / 强制 / 只读 / 计划中` 状态和连接状态。没有保存按钮，控件在 change/blur 时提交。强制行画禁用控件，只读行显示值，计划行明确说明当前运行时尚未读取。设置导航图标是宿主 shell 的限制所致：section 只接受 `{ id, order, label }`，插件只能用 CSS mask 给导航按钮补一个 Material `sync` 图标。
+设置页整体使用 Material UI：每组一个默认展开的 `Accordion`，行放在 `List` 中；六个情景各一张 `Table`（页面没有情景下拉框）；布尔用 `Checkbox`，枚举用 `RadioGroup`，**所有数字都用 `TextField type="number"`（含权重与比例，显示时按该行 step 取整）**；`Chip` 只表示 `主机 / 本机 / 强制 / 只读 / 计划中` 状态和连接状态。完全权限确认是一个位于 tooltip 层之上的 MUI `Dialog` 模态框，不再是内联色块。没有保存按钮，控件在 change/blur 时提交。强制行画禁用控件，只读行显示值，计划行明确说明当前运行时尚未读取。设置导航图标是宿主 shell 的限制所致：section 只接受 `{ id, order, label }`，插件只能用 CSS mask 给导航按钮补一个 Material `sync` 图标。
 
 ## 服务级接管
 
 - 打开 `ui.takeover` 后，`TakeoverGate` 监听 DSH 的 `approval/request` 与 `user-questions/request` 瀑布。它写一条持久 pending 行、发出 `takeover/pending`，等待客户端路由送来人工答案。
+- 监听器用 `{ prepend: true }` 注册。DSH 自己的审批/提问 UI 监听同一个瀑布，注册晚的监听器在 GUI 认领请求后永远不会执行。注意：部署的审批策略为 `never` 时，DSH 在进入瀑布之前就直接拒绝，此时无论开关如何都不会出现对话框。
 - 超时、请求 signal 中止、显式取消或插件卸载都会调用 `next()`；闸门绝不把“没人回答”变成 `allowed-once` 或编造的问题答案。`unavailable` 是宿主 fail-closed 的结果，不作为用户决定接受。
 - 对话框只在以下条件同时成立时每 1 秒轮询 `/takeover/pending`：本机“权限接管”开关打开、session id 真实、页面可见。它渲染第一条 pending 请求；队列多于一条时显示 `1 / N` 徽标。
 - 审批提供 仅本次允许 / 拒绝 / 取消；只提交 `allowed-once` 与 `rejected`，取消/Esc/点背景走 cancel 路由。提问按单选渲染 radio、多选渲染 checkbox，并允许每题自由文本；所有问题答完前提交按钮禁用。
 - **两个开关都需要**：宿主 `ui.takeover`（默认 `false`）负责打开闸门，本机“权限接管”负责让对话框轮询。宿主开关关闭时闸门立即委托，没有窗口可显示。
 
+## 缓存代理（实验性，默认关闭）
+
+DSH 在任何 adapter 看到请求之前就把它冻结了：`buildRequest()` 深冻结消息并 `Object.freeze` 请求，而 `llm/stream` 瀑布的兜底闭包持有这个对象。唯一还能重建出站内容的位置是 adapter 边界，所以插件注册一个额外 provider 路由（`coordination-proxy`），把每个请求重建后转发给真实 provider。
+
+接线（`src/index.ts`、`src/host/proxy-adapter.ts`、`src/host/model-brand.ts`）：
+
+- `agent/request` 把路由改成 `coordination-proxy` 并记住真实路由。只有白名单内的 provider（`deepseek`、`deepseek-account`、`deepseek-official`）会被拦截，其他 provider 保持宿主选择的路由。
+- adapter 用真实 provider 调 `ctx.llm.stream` 转发，传输、重试、归因头和用量统计仍由真实 adapter 负责。
+- `ctx.llm.resolveModelInfo(provider, model)` 提供宿主的模型身份，再分类到内置缓存品牌（DeepSeek、OpenAI、Anthropic、Google、xAI、Moonshot、Qwen、Zhipu、Mistral、Meta、未知），带 `automaticPrefixCache`、`explicitCacheBreakpoints`、`minPrefixTokens`、`effortBreaksCache`、`stripVolatileHelps`。
+- 只有当该家族有自动前缀缓存**且** `cache.enabled` 打开时才改写出站内容：`CacheModule.decorate` 把固定内容前置，并把易变片段（ISO 时间戳、UUID、长 hex、"当前时间"措辞）替换为稳定占位符。显式断点家族（Anthropic）永不改写，因为那里决定复用率的是标记而不是字节。仅供 UI 的 `cacheWarning` 字段会在转发前剥掉。
+
+安全模型——代理能看到所有 prompt，因此设计成无法成为泄露通道：
+
+1. 不接触凭据（无 `ctx.credentials`、无 token、无 `Authorization`、无 API key）；
+2. 无出网能力（模块零 import，没有 `fetch`/`http`/`net`；转发是进程内调用）；
+3. 不落盘内容——`proxy.log` 只收结构化事件（`{event, provider, model, brand, messages, chars, tools, reason}`），绝无 prompt 或回答正文；
+4. 白名单在路由监听器和 adapter 双侧强制；
+5. 拒绝/失败信息只报路由名；
+6. 默认关闭、可逆。
+
+启用方式：创建 `%DSH_HOME%\coordination\proxy.enable`（或 `DSH_COORDINATION_PROXY=1`）后重启。`GET /deepseek-coordination/proxy/status` 只报告计数与标识：`available`、`enabled`、`decorate`、`upstream`、`model`（品牌与策略）、`forwards`、`refusals`。删掉开关文件重启即回到普通链路。
+
 ## 自动压缩与 Token 治理器
 
 `TokenGovernor` 估算上下文（CJK 感知的 O(n) 估算器，带 256 项有界 memo），按 `contextWindow - reserve` 规划预算，并在 `agent/pre-step` 利用率越过阈值时请求 DSH 的 `compactIfNeeded`。默认：soft `0.70`、hard `0.88`、reserve `max(2048, 窗口的 8%)` 且不超过窗口 25%、recentTurns `6`、cooldown `30 s`、maxPerSession `20`。
 
-soft 阈值可按 0.30–0.90 的比例编辑；hard 为 0.30–0.98，且必须严格高于 soft。旧界面里的 60/70/80/88% 仍是合法取值（`0.60`、`0.70`、`0.80`、`0.88`），只是目录页现在用 slider，而不是四项选择器。`compaction.auto=false` 只关闭自动压缩，不约束显式 compact 命令。
+soft 阈值可按 0.30–0.90 的比例编辑；hard 为 0.30–0.98，且必须严格高于 soft。旧界面里的 60/70/80/88% 仍是合法取值（`0.60`、`0.70`、`0.80`、`0.88`），只是目录页现在用 0.01 精度的数字输入框，而不是四项选择器。`compaction.auto=false` 只关闭自动压缩，不约束显式 compact 命令。
 
 失败封闭是刻意设计：钩子绝不阻塞 step；压缩 port 缺失、返回 `null`/`undefined`、超时、抛错、每会话额度用尽或 cooldown 未到，全部按 no-op 处理，agent 继续执行 `next()`。治理器在构造时快照策略，所以设置热更新会同时重建它。实际安全范围和替换由 DSH 负责，本插件只决定何时值得请求。
 
@@ -314,6 +339,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 - 文件路径必须是工作区相对路径；绝对路径、盘符路径、UNC、`..` 逃逸与符号链接逃逸在读取前拒绝。二进制/NUL/不可解码内容直接拒绝，不猜。
 - Turn 钩子只写 Turn 元数据和一条空 prompt 行，不镜像 DSH 对话，也不把文件内容复制进协调库。
 - 权限预设立即写给 DSH（完全权限需二次确认），从不进入离线 localStorage；离线重放只覆盖五个已存选择字段。
+- 可选的缓存代理不新增传输层和凭据面：它通过 DSH 自己的 `ctx.llm.stream` 转发，只记录结构化计数，并拒绝白名单之外的 provider。
 - 接管绝不自动批准。超时、中止、取消、卸载都以 `next()` 委托；只有通过 answer 路由送达的人工决定才会结算窗口。
 - 失败封闭是明确的：非法接管答案保持窗口；`PROFESSION_LOCKED` 不改选择；解析不确定标 `unverifiable`；解析/图溢出标 `truncated`；压缩失败是 no-op；Chain 的 `unknown` 不会自动通过。
 - 协调库保存任务/审计行（包括 `prompt` 与追踪行），不保存凭据或 provider secret。配置投影中没有 DSH 凭据、token 或 provider key。
@@ -322,10 +348,10 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 | 检查 | 结果 |
 |---|---|
-| `npm test` | **473 tests，472 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3.3 s |
+| `npm test` | **507 tests，506 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3 s |
 | `npm run typecheck` / `npm run test:tsc` | 通过 |
 | `npm run build` | 宿主 + 客户端 bundle 通过；MUI 的 `"use client"` directive 警告不致命 |
-| `npm run pack:check` | OK：`deepseek-coordination-0.10.0.tgz`（538,358 B），四个运行时文件齐全 |
+| `npm run pack:check` | OK：运行时 tarball 含四个发布文件 |
 | 发布 CI | `.github/workflows/release.yml` 运行 typecheck、test:tsc、测试、pack:check，并在 `v*` Release 附上 tarball |
 
 解析器与结构的数字是守卫，不是承诺：100k 字符解析测试保持在 3 秒内；数据结构报告记录 B+ 树 10k 插入 8.3/9.8 ms、skip list 10k 插入 6.4 ms、红黑树 10k 随机 set/delete 13.5 ms、稀疏网格 10k 单元 5.1 ms、`hashString` 100k 次 4.3 ms；复杂度审计记录 Turn 序号从 `COUNT(*)` 改为 `MAX(ordinal)`（2,000 条语句约 65–69 ms → 约 12–14 ms）以及路由排序（200 × 12 条路由的 2,400 次 posterior 查询降到 200 次）。
@@ -340,10 +366,11 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 6. **`parser.enabled` 仍需重新注册。** 其他文件层上限会即时 retune；关闭 parser 会立即失败关闭，但从工具列表增删四个工具仍要等下一次注册（重启）。
 7. **没有浏览器 E2E。** UI 由类型、构建、settings-catalog 测试以及 takeover/bridge/集成测试覆盖；视觉验证仍是人工/截图。
 8. **Node 引擎为 `>=22.13.0`。** `node:sqlite` 从 22.13.0/23.4.0 起不再需要实验开关；CI 与本次验证使用 24.21.0。
-9. **profile 里可能仍记录着旧的包 spec。** 请核对实际安装的版本（`dsh --profile <name> --dump-config` 或 profile 的 `package.json`）；安装 0.10.0 tarball 或链接已构建的 checkout，不要假定上一次安装已被升级。
+9. **profile 里可能仍记录着旧的包 spec。** 请核对实际安装的版本（`dsh --profile <name> --dump-config` 或 profile 的 `package.json`）；安装 0.11.0 tarball 或链接已构建的 checkout，不要假定上一次安装已被升级。
+10. **缓存代理是实验性的、默认关闭。** 品牌 profile 是策略默认值而不是实测值，且只对自动前缀缓存的家族改内容；在已经稳定的会话上收益可能接近零——这正是它藏在开关和状态端点后面的原因。
 
 ## 仓库历史与许可
 
-`0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball。旧状态仍在 git 历史和 tag 中。
+`0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball；`0.11.0` 加入持久设置、推理交还 DSH，以及带品牌策略的实验性缓存代理。旧状态仍在 git 历史和 tag 中。
 
 MIT © 2026 Eloy Kim。见 [LICENSE](LICENSE)。源码：[github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination)。

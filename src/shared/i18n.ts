@@ -354,7 +354,6 @@ export interface SettingsStatesCopy {
 export interface SettingsCatalogValuesCopy {
   readonly chips: Readonly<Record<SettingsControlChip, string>>
   readonly commandOptions: Readonly<Record<'none' | 'goal' | 'plan' | 'feedback' | 'compact' | 'permission', string>>
-  readonly thinkingOptions: Readonly<Record<'enabled' | 'disabled', string>>
   readonly defaultValue: string
   readonly scene: string
   readonly allScenes: string
@@ -866,7 +865,6 @@ const ZH_CATALOG_VALUES: SettingsCatalogValuesCopy = {
     compact: '压缩',
     permission: '权限',
   },
-  thinkingOptions: { enabled: '开启', disabled: '关闭' },
   defaultValue: '默认',
   scene: '情景',
   allScenes: '所有情景',
@@ -1057,14 +1055,6 @@ const ZH_CATALOG_FIELDS: Readonly<Record<SettingsCatalogFieldId, SettingsFieldCo
   toolMaxResultBytes: {
     label: '工具结果字节上限',
     hint: '工具返回给模型的字节上限；0 表示不限制。',
-  },
-  'scene.thinking': {
-    label: '思考模式',
-    hint: '是否把推理过程摊开；对话和办公默认关闭。',
-  },
-  'scene.reasoningEffort': {
-    label: '推理强度',
-    hint: '原样传给宿主模型的强度名，例如 high；本插件不改写。',
   },
   'scene.requirePlan': {
     label: '必须出计划',
@@ -1642,7 +1632,6 @@ const EN_CATALOG_VALUES: SettingsCatalogValuesCopy = {
     compact: 'Compact',
     permission: 'Permission',
   },
-  thinkingOptions: { enabled: 'On', disabled: 'Off' },
   defaultValue: 'Default',
   scene: 'Scene',
   allScenes: 'All scenes',
@@ -1833,14 +1822,6 @@ const EN_CATALOG_FIELDS: Readonly<Record<SettingsCatalogFieldId, SettingsFieldCo
   toolMaxResultBytes: {
     label: 'Tool result bytes',
     hint: 'Byte cap on a tool result returned to the model; 0 means no cap.',
-  },
-  'scene.thinking': {
-    label: 'Thinking mode',
-    hint: 'Whether reasoning is shown; off by default for dialogue and office.',
-  },
-  'scene.reasoningEffort': {
-    label: 'Reasoning effort',
-    hint: 'Effort name passed to the host model unchanged, e.g. high.',
   },
   'scene.requirePlan': {
     label: 'Plan required',

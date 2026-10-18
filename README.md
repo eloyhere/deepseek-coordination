@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.10.0 (2026-10-18).** This release follows the v0.9.2 tooltip fix and lands the settings catalog, the durable file layer, the turn pipeline, phase freezes and the data-structure adoption pass. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.11.0 (2026-10-18).** This release makes the settings page durable through the host's own override document, hands reasoning entirely to DSH, turns every numeric control into a number field, fixes the settings and takeover wiring against DSH 0.2.1, and adds the experimental cache proxy with brand-aware cache profiles. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -48,9 +48,11 @@ npm pack                # prepack builds first; produces the installable tarball
 | Peer package | Range | Side |
 |---|---|---|
 | `@deepseek-ai/cordis` | `^4.0.1` | Host runtime |
-| `@deepseek-ai/dsh-host-webserver` | `^0.1.0-rc.7 \|\| ^0.2.0-rc.0` | Host route registration |
-| `@deepseek-ai/dsh-client-runtime`, `-locale`, `-ui-slots`, `-ui-settings` | `^0.1.0-rc.7 \|\| ^0.2.0-rc.0` | Browser module table |
+| `@deepseek-ai/dsh-host-webserver` | `^0.1.0-rc.7 \|\| >=0.2.1-rc.2` | Host route registration |
+| `@deepseek-ai/dsh-client-runtime`, `-locale`, `-ui-slots`, `-ui-settings` | `^0.1.0-rc.7 \|\| >=0.2.1-rc.2` | Browser module table |
 | `react` | `^18.2.0` | Browser module table; never bundled |
+
+The client half is compiled against the 0.2.1-rc.2 client packages the desktop runtime ships (`-locale`, `-ui-settings`, `-ui-slots`, `-ui-conversation`). `@deepseek-ai/dsh-client-runtime` and `@deepseek-ai/dsh-host-webserver` publish no 0.2.x release, so their devDependencies stay on 0.1.0-rc.8 while their peer ranges accept the 0.2.1+ runtime the host provides. The open-ended `>=0.2.1-rc.2` accepts every later stable release; `^0.1.0-rc.7` keeps the 0.1 line installable.
 
 ### Install into a profile
 
@@ -58,7 +60,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.10.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.11.0.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -157,16 +159,16 @@ The budgets live in `src/host/comprehension.ts` and the shared `ValidationBudget
 
 ### Scenes and the writing profile
 
-| Scene | Thinking / effort | Plan | Outline | Revision | Score | Bash | Web | Max iterations |
-|---|---|---|---|---|---|---|---|---|
-| dialogue | disabled / medium | – | – | – | – | no | yes | 1 |
-| writing | enabled / high | yes | yes | yes | yes | no | yes | 3 |
-| office | disabled / medium | yes | – | – | – | no | yes | 1 |
-| research | enabled / high | yes | – | – | – | no | yes | 3 |
-| engineering | enabled / high | yes | – | – | – | yes | yes | 3 |
-| iterate | enabled / high | – | – | – | yes | no | yes | 3 |
+| Scene | Plan | Outline | Revision | Score | Bash | Web | Max iterations |
+|---|---|---|---|---|---|---|---|
+| dialogue | – | – | – | – | no | yes | 1 |
+| writing | yes | yes | yes | yes | no | yes | 3 |
+| office | yes | – | – | – | no | yes | 1 |
+| research | yes | – | – | – | no | yes | 3 |
+| engineering | yes | – | – | – | yes | yes | 3 |
+| iterate | – | – | – | yes | no | yes | 3 |
 
-`writing` requires an outline and at least one revision round, requires a quality score, disallows bash, allows web search and caps the loop at three iterations. The pass threshold is `0.6`; `plan.ts` uses that writing threshold. The turn pipeline reads reasoning effort, the require-* flags, citation/evidence, `allowWeb` and `sandboxOnly`; `thinking`, `allowBash`, `maxIteration` and non-writing thresholds remain deferred diagnostics because no DSH port or consumer exists yet.
+`writing` requires an outline and at least one revision round, requires a quality score, disallows bash, allows web search and caps the loop at three iterations. The pass threshold is `0.6`; `plan.ts` uses that writing threshold. The turn pipeline reads the require-* flags, citation/evidence, `allowWeb` and `sandboxOnly`; reasoning (`thinking`, `reasoningEffort`) belongs to DSH — the page has no row for it, and the turn records what the session's own request header carries rather than a scene literal. `allowBash`, `maxIteration` and non-writing thresholds remain deferred diagnostics because no DSH port or consumer exists yet.
 
 ## Profession lock and turn lifecycle
 
@@ -188,7 +190,7 @@ Terminal turn states (`done`, `failed`, `cancelled`, `abandoned`) are irreversib
 
 ## Settings and configuration
 
-The settings page is driven by `SETTINGS_CONTROLS` in `src/shared/selection.ts`: **151 controls in 13 groups, 134 writable host rows, covering 155 non-secret config leaves**. The 18 top-level config keys include `database` and `databasePath`, which are deliberately not projected or writable.
+The settings page is driven by `SETTINGS_CONTROLS` in `src/shared/selection.ts`: **139 controls in 13 groups, 122 writable host rows, covering 155 config leaves**. Twelve scene leaves (`scenes.*.thinking`, `scenes.*.reasoningEffort`) stay in the schema but have no row: DSH's model page owns reasoning, and duplicating it here would create two sources of truth. The 18 top-level config keys include `database` and `databasePath`, which are deliberately not projected or writable.
 
 | Group | Defaults / scope | Write path |
 |---|---|---|
@@ -196,36 +198,59 @@ The settings page is driven by `SETTINGS_CONTROLS` in `src/shared/selection.ts`:
 | `profession` | enabled/lock/rebuild/abandon forced `true`; default mirrors `defaults.profession`; audit/errorHint `true` | Forced flags read-only; audit/errorHint host rows (audit has no consumer) |
 | `plan` | threshold `0.5`, maxRebuild `3`, 8 weights summing to 1, 8 dimension thresholds | Host rows; weights re-normalise on save |
 | `orchestration` | maxReject `2`, maxSubTask `32`, groundTruth `true`, timeout `5000 ms`, shell ground truth `false`, modelRouting `true` | Host rows; `groundTruthTimeout` has no consumer |
-| `cache` | enabled `true`, ttl `60000 ms`, fingerprintWindow `50`, effortWarning `true` | Host rows; `fingerprintWindow` has no consumer |
+| `cache` | enabled `true`, ttl `60000 ms`, fingerprintWindow `50`, effortWarning `true` | Host rows; `enabled`/`effortWarning` gate the cache proxy decorator, `ttl` caches the model catalog, `fingerprintWindow` has no consumer |
 | `bayesian` | prior `0.5`, stopEntropy `0.05`, infoGain `0.01`, maxRoutes `12`, calibrationFloor `0.1` | Host rows; `calibrationFloor` has no consumer |
 | `comprehension` | stageTimeout `30000 ms`, searchEnabled `true`, maxEvidence `8`, highHistoryWindow `50` | Host rows |
 | `compaction` | auto `true`, soft `0.70`, hard `0.88`, reserve `2048`, recentTurns `6`, cooldown `30000 ms`, maxPerSession `20` | auto/soft/hard host rows; structural fields read-only |
 | `ui` | toolbar `true` (deprecated alias), showTooltip `true`, takeover `false`, refreshInterval `5000 ms`, compact `true`, locale `auto` | Host rows plus the two local switches; toolbar/locale read-only |
-| `scenes` | six scene profiles, 13 fields each; writing threshold `0.6` | Host rows; only the writing score threshold is read by `plan.ts` |
+| `scenes` | six scene profiles, 9 exposed rows each (thinking/effort remain schema-only) and a writing threshold of `0.6` | Host rows; only the writing score threshold is read by `plan.ts` |
 | `parser` | enabled `true`, 1 MiB, 200k tokens, depth `256`, 2 s, cache `256`, graph 20k/100k | enabled + four limits host rows; depth and graph caps planned |
 | `chain` | depth `8`, links `50`, tokenBudget `1500` | Host rows |
 | `tools` | maxResultBytes `0` | Planned/read-only; not consumed |
 | `defaults` | profession `execution`, interaction `think`, scene `dialogue`, validation `medium`, command `none` | Host rows |
 
-`GET /deepseek-coordination/config` returns `{ values, defaults }`; `defaults` is `resolveConfig(undefined)`, so the page never duplicates a default literal. `POST /config` accepts a flat dotted patch such as `{ "plan.threshold": 0.7 }`, validates it against the catalog and the real Schemastery schema, applies it to the live config, re-resolves invariants (weight normalisation, alias mirror, forced flags, compaction clamps), rebuilds `TokenGovernor` when compaction changes, and best-effort persists through `ctx.settings.update`.
+`GET /deepseek-coordination/config` returns `{ values, defaults }`; `defaults` is `resolveConfig(undefined)`, so the page never duplicates a default literal. `POST /config` accepts a flat dotted patch such as `{ "plan.threshold": 0.7 }`, validates it against the catalog and the real Schemastery schema, applies it to the live config, re-resolves invariants (weight normalisation, alias mirror, forced flags, compaction clamps), rebuilds `TokenGovernor` when compaction changes, and persists the applied paths.
 
-Persistence is explicit: `persisted: true` only when DSH accepted the settings write; otherwise the change is live for this process and the page says so. Unknown keys, `databasePath` and `database` are rejected with `INVALID_ARGUMENT`. Known but non-editable keys are reported in `ignored` and never written. `POST /config/compaction` remains as a small compatibility route for the old auto/soft/hard patch.
+Persistence is the host's own override document at `<database dir>/config.overrides.json`: a flat `{ "plan.threshold": 0.7 }` map written atomically beside the coordination database and merged over the profile config on the next start. It is not DSH's `ctx.settings.update`, which only accepts `.volatile()` schemas — and a volatile node turns every parsed value into a reference wrapper this host cannot adopt without rewriting every config reader. `persisted: true` therefore means "stored in the coordination host's own document"; a write that only touched ignored rows reports `false`. Unknown keys, `databasePath` and `database` are rejected with `INVALID_ARGUMENT`. Known but non-editable keys are reported in `ignored` and never written. `POST /config/compaction` remains as a small compatibility route for the old auto/soft/hard patch.
 
-The page is Material UI end to end: one default-expanded `Accordion` per group, a `List` of rows, six scene tables (no scene dropdown), `Checkbox` for booleans, `RadioGroup` for enums, `Slider` for ratio-like numbers, `TextField type="number"` for counts/bytes/milliseconds, and `Chip` only for the `主机 / 本机 / 强制 / 只读 / 计划中` status plus connection state. There is no save button; controls apply on change/blur. A forced row draws a disabled control, a read-only row shows a value, and a planned row says the runtime does not read it yet. The settings nav icon is a host-shell workaround: the shell accepts only `{ id, order, label }` for a section, so the plugin decorates its nav button with a CSS mask of the Material `sync` glyph.
+The page is Material UI end to end: one default-expanded `Accordion` per group, a `List` of rows, six scene tables (no scene dropdown), `Checkbox` for booleans, `RadioGroup` for enums, `TextField type="number"` for every number (weights and ratios included, rounded to the row's step for display only), and `Chip` only for the `主机 / 本机 / 强制 / 只读 / 计划中` status plus connection state. The full-access confirmation is a modal MUI `Dialog` above the tooltip layer, never an inline banner. There is no save button; controls apply on change/blur. A forced row draws a disabled control, a read-only row shows a value, and a planned row says the runtime does not read it yet. The settings nav icon is a host-shell workaround: the shell accepts only `{ id, order, label }` for a section, so the plugin decorates its nav button with a CSS mask of the Material `sync` glyph.
 
 ## Service-level takeover
 
 - With `ui.takeover` on, `TakeoverGate` listens to DSH's `approval/request` and `user-questions/request` waterfalls. It records a durable pending row, emits `takeover/pending`, and waits for a human answer delivered through the client routes.
+- The listener registers with `{ prepend: true }`. DSH's own approval and question UI listens to the same waterfalls, and a listener registered later never runs once the GUI claims the request. Note that a deployment approval policy of `never` makes DSH reject before the waterfall, so no dialog can appear regardless of this switch.
 - A timeout, an aborted request signal, an explicit cancel, or plugin unload calls `next()`; the gate never turns “nobody answered” into `allowed-once` or a fabricated answer. `unavailable` is the host's fail-closed outcome and is rejected as a user decision.
 - The dialog polls `/takeover/pending` every 1 s only while the local 权限接管 switch is on, the session id is real and the document is visible. The first pending request is rendered; a `1 / N` badge appears for a queue.
 - Approval offers 仅本次允许 / 拒绝 / 取消; only `allowed-once` and `rejected` are submitted, while cancel/Esc/backdrop use the cancel route. Questions render radios for single-select, checkboxes for multi-select and optional free text; submit stays disabled until every question is answered.
 - **Both switches are needed**: host `ui.takeover` (default `false`) opens the gate; the local 权限接管 switch makes the dialog poll. With the host switch off, the gate delegates immediately and there is nothing to show.
 
+## Cache proxy (experimental, off by default)
+
+DSH freezes a model request before any adapter sees it: `buildRequest()` deep-freezes the messages and `Object.freeze`s the request, and the `llm/stream` waterfall's fallback closes over that object. The one supported place where outgoing content can still be rebuilt is the adapter boundary, so the plugin registers an extra provider route (`coordination-proxy`) and forwards each request to the real provider after rebuilding it.
+
+Wiring (`src/index.ts`, `src/host/proxy-adapter.ts`, `src/host/model-brand.ts`):
+
+- `agent/request` rewrites the route to `coordination-proxy` and remembers the real one. Only allowlisted providers (`deepseek`, `deepseek-account`, `deepseek-official`) are intercepted; anything else keeps the route the harness chose.
+- The adapter forwards through `ctx.llm.stream` with the real provider, so transport, retries, attribution headers and usage reporting stay with the real adapter.
+- `ctx.llm.resolveModelInfo(provider, model)` supplies the host's model identity; it is classified onto a built-in cache brand (DeepSeek, OpenAI, Anthropic, Google, xAI, Moonshot, Qwen, Zhipu, Mistral, Meta, unknown) with `automaticPrefixCache`, `explicitCacheBreakpoints`, `minPrefixTokens`, `effortBreaksCache` and `stripVolatileHelps`.
+- Outgoing content is decorated only when the family has an automatic prefix cache **and** `cache.enabled` is on: `CacheModule.decorate` moves fixed content first and replaces volatile fragments (ISO timestamps, UUIDs, long hex, current-time phrases) with stable placeholders. Explicit-breakpoint families (Anthropic) are never rewritten, because markers — not bytes — decide reuse there. The advisory `cacheWarning` field is stripped before forwarding.
+
+Security model — the proxy sees every prompt, so it is built to be unable to leak:
+
+1. no credential access (no `ctx.credentials`, no token, no `Authorization`, no API key);
+2. no egress (the module has no imports and no `fetch`/`http`/`net`; forwarding is an in-process call);
+3. no content persistence — `proxy.log` receives structural events only (`{event, provider, model, brand, messages, chars, tools, reason}`), never prompt or answer text;
+4. provider allowlist enforced in both the routing listener and the adapter;
+5. refusal and failure messages name the route only;
+6. opt-in and reversible.
+
+Enable it by creating `%DSH_HOME%\coordination\proxy.enable` (or `DSH_COORDINATION_PROXY=1`) and restarting. `GET /deepseek-coordination/proxy/status` reports counts and ids only: `available`, `enabled`, `decorate`, `upstream`, `model` (brand and policy), `forwards`, `refusals`. Delete the flag file and restart to return to the normal path.
+
 ## Auto-compaction and the token governor
 
 `TokenGovernor` estimates context (CJK-aware O(n) estimator with a bounded 256-entry memo), plans a budget against `contextWindow - reserve`, and asks DSH's `compactIfNeeded` at `agent/pre-step` when utilisation crosses a threshold. Defaults: soft `0.70`, hard `0.88`, reserve `max(2048, 8% of window)` capped at 25%, recentTurns `6`, cooldown `30 s`, `maxPerSession 20`.
 
-The soft threshold is editable as a 0.30–0.90 ratio; the hard threshold as 0.30–0.98 and strictly above soft. The old 60/70/80/88% values remain valid choices (`0.60`, `0.70`, `0.80`, `0.88`) even though the catalog now uses a slider rather than a four-item picker. Auto compaction is disabled by `compaction.auto=false`, but an explicit compact command is not governed by that switch.
+The soft threshold is editable as a 0.30–0.90 ratio; the hard threshold as 0.30–0.98 and strictly above soft. The old 60/70/80/88% values remain valid choices (`0.60`, `0.70`, `0.80`, `0.88`) even though the catalog now edits it as a number field with 0.01 precision. Auto compaction is disabled by `compaction.auto=false`, but an explicit compact command is not governed by that switch.
 
 Fail-safe rules are deliberate: the hook never blocks the step; a missing compaction port, `null`/`undefined` result, timeout, throw, spent per-session allowance or unelapsed cooldown all become a no-op, and the agent proceeds to `next()`. The governor snaps the policy at construction, so a live settings change also rebuilds it. DSH owns the actual safe range and replacement; this plugin only decides when it is worth asking.
 
@@ -314,6 +339,7 @@ There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol
 - File paths are workspace-relative; absolute paths, drive-rooted paths, UNC paths, `..` escapes and symlink escapes are rejected before a read. Binary/NUL/undecodable content is refused rather than guessed.
 - The turn hook records turn metadata and an empty prompt row; it does not mirror the DSH transcript. No file content is copied into the coordination database.
 - Permission presets are written to DSH immediately (full access needs a second confirmation) and are never stored in the offline localStorage copy. Offline replay covers only the five stored selection fields.
+- The optional cache proxy adds no transport and no credential surface: it forwards through DSH's own `ctx.llm.stream`, traces structural counts only, and refuses providers outside its allowlist.
 - Takeover never auto-approves. Timeout, abort, cancel and unload delegate with `next()`; only a human decision delivered through the answer route settles a window.
 - Fail-closed behaviour is explicit: invalid takeover answers leave the window open; `PROFESSION_LOCKED` leaves the selection intact; parser uncertainty is `unverifiable`; graph/parse overflow is `truncated`; compaction failure is a no-op; chain `unknown` never auto-passes.
 - The coordination DB stores task/audit rows (including `prompt` and trace rows), not credentials or provider secrets. The config projection contains no DSH credential, token or provider key.
@@ -322,10 +348,10 @@ There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol
 
 | Check | Result |
 |---|---|
-| `npm test` | **473 tests, 472 pass, 1 skipped (GC-only), 0 fail**, ~3.3 s on Node 24.21.0 |
+| `npm test` | **507 tests, 506 pass, 1 skipped (GC-only), 0 fail**, ~3 s on Node 24.21.0 |
 | `npm run typecheck` / `npm run test:tsc` | Clean |
 | `npm run build` | Host + client bundles green; MUI `"use client"` directive warnings are non-fatal |
-| `npm run pack:check` | OK: `deepseek-coordination-0.10.0.tgz` (538,358 B); four runtime files present |
+| `npm run pack:check` | OK: the runtime tarball carries the four shipped files |
 | Release CI | `.github/workflows/release.yml` runs typecheck, test:tsc, tests, pack:check and attaches the tarball to a `v*` GitHub Release |
 
 Parser and structure numbers are guards, not promises: a 100k-character parse test stays under 3 s; the data-structure report records B+ tree 10k inserts at 8.3/9.8 ms, skip-list 10k inserts at 6.4 ms, red-black 10k random set/delete at 13.5 ms, sparse grid 10k cells at 5.1 ms, and `hashString` 100k calls at 4.3 ms on the audit machine. The complexity audit records the ordinal `COUNT(*)` → `MAX(ordinal)` change (≈65–69 ms → ≈12–14 ms for 2,000 statements) and route ranking (2,400 → 200 posterior statements for 200 × 12 routes).
@@ -334,16 +360,17 @@ Known limitations, stated rather than hidden:
 
 1. **Durable graph is bounded.** `node`/`edge`/`snapshot` are now schema 24 and survive a new runtime; rehydration is bounded to the newest 10k nodes / 50k edges, removed symbols are not pruned, and a handle older than the rehydration window is `NOT_FOUND`.
 2. **Domain extraction is parser-level; the chain projection is partial.** Book/Article/Part/Chapter/Section/Paragraph, Person/Venue, Condition, Sheet/Cell/Range, TeX proof status and CSV/TSV sheets are emitted and projected onto node cards. `partOf`/`condition` edges are not yet queryable through `coordination_chain`; xlsx/docx/pptx, Sign promotion, Lean/Coq/Isabelle status and cross-file Book composition remain deferred.
-3. **The core turn pipeline is wired, the wider engines are not.** Comprehension → Organization → Plan/score and required Predict rows now run for `command=none` turns, with the scene policy applied where ports exist. Standalone Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score, plan rebuild loops and decompose/dispatch/verify/synthesize remain library-only. `thinking`, `allowBash`, `maxIteration` and non-writing score thresholds are recorded as deferred diagnostics, not faked.
+3. **The core turn pipeline is wired, the wider engines are not.** Comprehension → Organization → Plan/score and required Predict rows now run for `command=none` turns, with the scene policy applied where ports exist. Standalone Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score, plan rebuild loops and decompose/dispatch/verify/synthesize remain library-only. Reasoning is DSH-owned and no longer reported as a plugin gap; `allowBash`, `maxIteration` and non-writing score thresholds are still recorded as deferred diagnostics, not faked.
 4. **Configured caps are live.** `parser.maxAstDepth`, both dependency-graph caps and `tools.maxResultBytes` are consumed; parser/chain limits retune an existing runtime, and a config change no longer leaves a stale tool runtime.
 5. **Workspace root is resolved, not hard-coded.** Tool option → service root → host root → sandbox-policy root → `process.cwd()` only as the last fallback.
 6. **`parser.enabled` still needs registration.** The other file-layer limits retune live; turning the parser off fails closed immediately, but adding/removing the four tools requires the next registration (restart).
 7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog tests and the takeover/bridge/integration tests; visual verification remains manual/screenshot-based.
 8. **Node engine is `>=22.13.0`.** `node:sqlite` is unflagged from 22.13.0/23.4.0; CI and this verification use 24.21.0.
-9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.10.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
+9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.11.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
+10. **The cache proxy is experimental and off by default.** Its brand profiles are policy defaults, not measurements, and it only rewrites content for families with an automatic prefix cache; the observable gain on a stable session may be near zero, which is why it ships behind a flag and a status endpoint rather than enabled.
 
 ## Repository history and license
 
-`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` adds the settings catalog, the four file tools, the second data-structure pass and the verified tarball. Earlier states remain in git history and tags.
+`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles. Earlier states remain in git history and tags.
 
 MIT © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).

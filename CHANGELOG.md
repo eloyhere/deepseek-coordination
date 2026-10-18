@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.11.0 | 2026-10-18 | `—` | Durable settings, DSH-owned reasoning, cache proxy and brand profiles, dialog and label fixes |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | Settings catalog, durable file layer, turn pipeline, phase freeze, data structures, installable package |
 | 0.9.2 | 2026-10-18 | `73a273d` | One dropdown tooltip at a time |
 | 0.9.1 | 2026-10-18 | `31f64da` | Restore working dropdown tooltips |
@@ -46,8 +47,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-10-18
+
+### Added
+
+- **Durable settings.** The page persists through the host's own override document
+  `<database dir>/config.overrides.json`: a flat `{ "plan.threshold": 0.7 }` map
+  written atomically beside the coordination database and merged over the profile
+  config on the next start. `POST /config` reports `persisted: true` only when that
+  document holds the applied paths. DSH's `ctx.settings.update` is deliberately not
+  used — it accepts only `.volatile()` schemas, and a volatile node turns every
+  parsed value into a reference wrapper this host cannot adopt.
+- **Brand-aware cache profiles.** `src/host/model-brand.ts` classifies the host's
+  `resolveModelInfo` identity (provider + model + display name + description) onto
+  DeepSeek, OpenAI, Anthropic, Google, xAI, Moonshot, Qwen, Zhipu, Mistral, Meta or
+  a conservative unknown profile. Each profile carries `automaticPrefixCache`,
+  `explicitCacheBreakpoints`, `minPrefixTokens`, `effortBreaksCache` and
+  `stripVolatileHelps`; an explicit-breakpoint family reports no local lever
+  instead of pretending one exists.
+- **Experimental cache proxy.** An opt-in provider adapter (`coordination-proxy`),
+  registered through `ctx.llm.registerAdapter`, forwards each frozen request to the
+  real provider after rebuilding it — the only point where the request is still an
+  input. `GET /proxy/status` exposes counts and identities only.
+- **Release scripts**: `upgrade.ps1` (version bump), `deprecate.ps1` (registry
+  deprecation) and `publish.ps1`.
+
 ### Changed
 
+- **Reasoning belongs to DSH.** `beginTurn` no longer seeds `scene.reasoningEffort`;
+  the turn records what the session's own `requestHeader().config.reasoningEffort`
+  carries, and the pipeline no longer reports effort/thinking as deferred gaps.
+- **Every numeric control is a number field.** `Slider` is gone; weights and ratios
+  use a `TextField type="number"`, and display is rounded to the row's `step`
+  (0.01 → two decimals) while the wire keeps exact values.
+- **The full-access confirmation is a modal.** An MUI `Dialog` above the tooltip
+  layer replaces the inline banner that fought with tooltips and stole pointer
+  events from the trigger.
 - **The package manager is npm again.** `pnpm-lock.yaml` and
   `pnpm-workspace.yaml` are replaced by `package-lock.json` (lockfile v3); the
   release workflow installs with `npm ci` and caches with `cache: npm`; the
@@ -58,12 +93,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   strict peer resolution refused to auto-install a React 19 `react-dom`
   against the React 18 `react` the module table provides. `react-dom@^18.2.0`
   is now a dependency, so the client bundle inlines the matching React 18 line.
-- **`@deepseek-ai/dsh-client-ui-slots` is pinned to the 0.1 line** in
-  `devDependencies` (`^0.1.0-rc.7`, resolving to 0.1.0-rc.8). npm would
-  otherwise build against the 0.2.0-rc.2 pre-release while every other
-  `dsh-client-*` package — and the host module table this plugin injects into —
-  is 0.1.0-rc.8.
+- **The DSH peer range tracks new releases.** `^0.1.0-rc.7 || >=0.2.1-rc.2`
+  replaces `^0.1.0-rc.7 || ^0.2.0-rc.0`, which cannot match `0.2.1-rc.2`: a
+  SemVer range admits a pre-release only when some comparator repeats its
+  `major.minor.patch` with a pre-release of its own, so `^0.2.0-rc.0` stops at
+  0.2.0. The client half now compiles against the 0.2.1-rc.2 `-locale`,
+  `-ui-settings`, `-ui-slots` and `-ui-conversation` packages the desktop
+  runtime ships; `-ui-slots` no longer sits on the 0.1 line and
+  `-ui-conversation` is no longer pinned to 0.1.0-rc.8.
+  `@deepseek-ai/dsh-client-runtime` and `@deepseek-ai/dsh-host-webserver`
+  publish no 0.2.x release, so their devDependencies stay at 0.1.0-rc.8 — a
+  0.2.1 `host-webserver` makes the 0.1-line `dsh-client-connection` peer range
+  unresolvable, so `npm ci` fails — while their peer ranges still accept the
+  0.2.1+ runtime the host provides.
 
+### Fixed
+
+- **Settings writes failed for every row.** `persistConfig` read `ctx.settings`
+  without injecting it, tripping Cordis's proxy guard; every `POST /config`
+  answered 500. The port is resolved defensively, and persistence now goes through
+  the override document.
+- **The takeover gate never saw a request.** Both waterfalls were subscribed
+  without `{ prepend: true }`, so DSH's own approval/question UI claimed them
+  first. (`approval/request` is additionally rejected before the waterfall when the
+  deployment approval policy is `never`.)
+- **Permission labels showed raw keys.** A catalog returning `name` equal to
+  `value` short-circuited the label fallback, so the dropdown showed `read-only`
+  instead of 仅可查看. A name identical to the key is now treated as "no label".
+- **The proxy adapter could not register.** The plain adapter object lacked
+  `providerRetryPolicy`, `imageRequestPricing` and `imageRequestTarget`, which
+  `registerAdapter` calls while validating a route. All four hooks are implemented
+  and covered by a regression test.
+- **Decimal noise in the settings page.** Renormalised weights printed
+  `0.15000000000000002`; numbers are now rounded per row step for display only.
+
+### Security
+
+- The cache proxy holds no transport and no credential: it forwards through
+  `ctx.llm.stream`, never reads `ctx.credentials`, and the module has no `fetch`,
+  `http`, `https`, `net` or `WebSocket` surface. Tracing is structural only
+  (provider, model, brand, counts, sizes), refusals name the route only, and only
+  `deepseek*` providers are intercepted. Static-invariant tests scan the sources
+  for forbidden surfaces.
 
 ## [0.10.0] — 2026-10-18
 

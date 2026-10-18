@@ -37,6 +37,7 @@ import {
   settingsSharedSceneControls,
 } from '../src/shared/selection.js'
 import type { ConfigScalar, SettingsControl } from '../src/shared/selection.js'
+import { formatConfigNumber, stepDecimals } from '../src/shared/selection.js'
 import { COPY_BY_LOCALE, LOCALES, settingsControlCopy } from '../src/shared/i18n.js'
 import { SceneValues } from '../src/shared/enum.js'
 import { InvalidArgumentError } from '../src/shared/error.js'
@@ -58,6 +59,18 @@ function leafPaths(value: unknown, prefix = ''): string[] {
 
 /** The `database` / `databasePath` leaves are the deliberate non-exposure. */
 const REDACTED_LEAVES = new Set(['database', 'databasePath'])
+
+/**
+ * Config leaves the page deliberately does not expose.
+ *
+ * The host's main page owns the model's reasoning controls (thinking switch and
+ * effort level), so duplicating them here would be two sources of truth. The
+ * keys stay in the schema — the turn pipeline still reads the scene defaults —
+ * they simply have no row.
+ */
+const UNEXPOSED_LEAVES = new Set(
+  SceneValues.flatMap((scene) => [`scenes.${scene}.thinking`, `scenes.${scene}.reasoningEffort`]),
+)
 
 /** The schema's own metadata for one leaf, read from the real `Config`. */
 interface SchemaLeaf {
@@ -151,11 +164,15 @@ test('every config leaf has exactly one control and no key or id repeats', () =>
     }
   }
 
-  const missing = leaves.filter((leaf) => !seenKeys.has(leaf))
-  assert.deepEqual(missing, [], 'every config leaf needs a control')
+  const missing = leaves.filter((leaf) => !seenKeys.has(leaf) && !UNEXPOSED_LEAVES.has(leaf))
+  assert.deepEqual(missing, [], 'every config leaf needs a control or an explicit exemption')
   const extra = [...seenKeys.keys()].filter((key) => !leaves.includes(key))
   assert.deepEqual(extra, [], 'the catalog must not invent a config key')
-  assert.equal(seenKeys.size, leaves.length)
+  for (const exempt of UNEXPOSED_LEAVES) {
+    assert.ok(leaves.includes(exempt), `${exempt} must still exist in the config schema`)
+    assert.equal(seenKeys.has(exempt), false, `${exempt} must stay unexposed`)
+  }
+  assert.equal(seenKeys.size, leaves.length - UNEXPOSED_LEAVES.size)
 })
 
 test('the shared test fixture mirrors the real schema defaults', () => {
@@ -176,7 +193,7 @@ test('all six scenes are covered, with shared rows only where defaults agree', (
   const seen = new Set<string>()
   for (const scene of SceneValues) {
     const rows = settingsSceneControls(scene)
-    assert.equal(rows.length, 11, `${scene} must expose the eleven differing fields`)
+    assert.equal(rows.length, 9, `${scene} must expose the nine differing fields`)
     for (const row of rows) {
       assert.equal(row.scene, scene)
       assert.equal(row.keys.length, 1)
@@ -190,7 +207,6 @@ test('all six scenes are covered, with shared rows only where defaults agree', (
       [
         'allowBash',
         'maxIteration',
-        'reasoningEffort',
         'requireCitation',
         'requireOutline',
         'requirePlan',
@@ -198,7 +214,6 @@ test('all six scenes are covered, with shared rows only where defaults agree', (
         'requireRevision',
         'requireScore',
         'sandboxOnly',
-        'thinking',
       ].sort(),
       `${scene}: field coverage`,
     )
@@ -214,7 +229,7 @@ test('all six scenes are covered, with shared rows only where defaults agree', (
     const defaults = row.keys.map((key) => readConfigPath(resolveConfig(undefined), key))
     assert.deepEqual(new Set(defaults).size, 1, `${row.id} is only shared when the six defaults agree`)
   }
-  assert.equal(seen.size + 12, 78, 'six scenes x thirteen fields')
+  assert.equal(seen.size + 12, 66, 'six scenes x nine fields plus two shared rows')
 })
 
 test('numeric rows declare min/max/step; the schema agrees', () => {
@@ -344,7 +359,7 @@ test('the patch rejects wrong types and out-of-range values', () => {
     ['plan.maxRebuild', -1],
     ['plan.weights.alignment', 1.5],
     ['bayesian.prior', 1.2],
-    ['scenes.writing.thinking', 'maybe'],
+    ['scenes.writing.requirePlan', 'maybe'],
     ['defaults.profession', 'wizard'],
     ['cache.ttl', -1],
   ]
@@ -509,5 +524,48 @@ test('Plan carries all eight weights and dimensions exactly once', () => {
   for (const dimension of PLAN_DIMENSIONS) {
     assert.ok(weighted.some((row) => row.keys[0] === `plan.weights.${dimension}`), dimension)
     assert.ok(dimensioned.some((row) => row.keys[0] === `plan.dimensions.${dimension}`), dimension)
+  }
+})
+
+/* ------------------------------------------------------------------------- *
+ * Display rounding
+ * ------------------------------------------------------------------------- */
+
+test('a step implies its decimal places, and only those', () => {
+  assert.equal(stepDecimals(0.01), 2)
+  assert.equal(stepDecimals(0.001), 3)
+  assert.equal(stepDecimals(0.1), 1)
+  assert.equal(stepDecimals(1), 0)
+  assert.equal(stepDecimals(512), 0)
+  assert.equal(stepDecimals(0.05), 2)
+  assert.equal(stepDecimals(undefined), 0)
+  assert.equal(stepDecimals(0), 0)
+  assert.equal(stepDecimals(Number.NaN), 0)
+})
+
+test('renormalised weights display without float noise', () => {
+  // Exactly the values the resolver produces for the shipped defaults.
+  assert.equal(formatConfigNumber(0.15000000000000002, 0.01), '0.15')
+  assert.equal(formatConfigNumber(0.09999999999999999, 0.01), '0.1')
+  assert.equal(formatConfigNumber(0.19999999999999998, 0.01), '0.2')
+  // A whole value keeps no trailing zeros.
+  assert.equal(formatConfigNumber(0.5, 0.01), '0.5')
+  assert.equal(formatConfigNumber(0.7, 0.01), '0.7')
+  // Integer rows are untouched.
+  assert.equal(formatConfigNumber(32, 1), '32')
+  assert.equal(formatConfigNumber(2048, 512), '2048')
+  assert.equal(formatConfigNumber(60000, 1000), '60000')
+  // Non-finite values pass through instead of inventing a number.
+  assert.equal(formatConfigNumber(Number.NaN, 0.01), 'NaN')
+  assert.equal(formatConfigNumber(Number.POSITIVE_INFINITY, 1), 'Infinity')
+})
+
+test('every numeric row rounds to at most its declared precision', () => {
+  for (const control of SETTINGS_CONTROLS) {
+    if (control.kind !== 'number') continue
+    const printed = formatConfigNumber(1 / 3, control.step)
+    const decimals = printed.includes('.') ? printed.split('.')[1]?.length ?? 0 : 0
+    assert.ok(decimals <= stepDecimals(control.step), `${control.id} printed ${printed}`)
+    assert.equal(Number(printed), Number((1 / 3).toFixed(stepDecimals(control.step))))
   }
 })

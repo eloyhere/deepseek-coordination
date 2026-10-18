@@ -473,9 +473,18 @@ export class SelectionModule {
       } catch {
         spec = {}
       }
+      // Some catalogs echo the key back as the name (`name: "read-only"`). That
+      // is a value, not a label: the dropdown must show the shipped wording,
+      // never the raw id. A genuine DSH label still wins when it differs.
+      const rawName = typeof option.name === 'string' ? option.name.trim() : ''
+      const name = rawName.length > 0 && rawName !== option.value
+        ? rawName
+        : option.value in PermissionLabel
+          ? PermissionLabel[option.value as keyof typeof PermissionLabel]
+          : option.value
       return {
         value: option.value,
-        name: option.name || PermissionLabel[option.value as keyof typeof PermissionLabel] || option.value,
+        name,
         description: option.description ?? spec.description,
         ...(spec.sandbox === undefined ? {} : { sandbox: spec.sandbox }),
         ...(spec.approval === undefined ? {} : { approval: spec.approval }),

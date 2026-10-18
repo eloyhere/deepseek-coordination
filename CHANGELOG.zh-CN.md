@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.11.0 | 2026-10-18 | `—` | 设置持久化、推理交还 DSH、缓存代理与品牌策略、对话框与标签修复 |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | 设置目录、持久文件层、Turn 流水线、阶段冻结、数据结构采纳、可安装包 |
 | 0.9.2 | 2026-10-18 | `73a273d` | 同一时刻只允许一个下拉框 tooltip |
 | 0.9.1 | 2026-10-18 | `31f64da` | 恢复可用的下拉框 tooltip，移除全局合成锚点 |
@@ -43,8 +44,36 @@
 
 ## [未发布]
 
+## [0.11.0] — 2026-10-18
+
+### 新增
+
+- **设置持久化。** 页面通过宿主自己的覆盖文档 `<数据库目录>/config.overrides.json`
+  保存：一个扁平的 `{ "plan.threshold": 0.7 }` 映射，原子写在协调数据库旁边，
+  下次启动覆盖在 profile 配置之上。`POST /config` 只有在文档确实写入时才报
+  `persisted: true`。这里刻意不用 DSH 的 `ctx.settings.update`——它只接受
+  `.volatile()` schema，而 volatile 节点会把每个解析值变成引用包装，本宿主无法接受。
+- **品牌缓存策略。** `src/host/model-brand.ts` 把宿主 `resolveModelInfo` 返回的身份
+  （provider + model + 显示名 + 描述）分类到 DeepSeek、OpenAI、Anthropic、Google、
+  xAI、Moonshot、Qwen、Zhipu、Mistral、Meta 或保守的未知档；每档带
+  `automaticPrefixCache`、`explicitCacheBreakpoints`、`minPrefixTokens`、
+  `effortBreaksCache`、`stripVolatileHelps`。显式断点家族如实报告"没有本地杠杆"，
+  而不是假装有。
+- **实验性缓存代理。** 通过 `ctx.llm.registerAdapter` 注册 `coordination-proxy`
+  路由，把每个已冻结的请求重建后转发给真实 provider——这是请求仍作为输入的
+  唯一位置。`GET /proxy/status` 只暴露计数与标识。
+- **发布脚本**：`upgrade.ps1`（版本自增）、`deprecate.ps1`（注册表弃用）、
+  `publish.ps1`。
+
 ### 变更
 
+- **推理交还 DSH。** `beginTurn` 不再用 `scene.reasoningEffort` 播种；Turn 记录会话
+  自身 `requestHeader().config.reasoningEffort` 的值，流水线也不再报告
+  effort/thinking 的延迟诊断。
+- **所有数值控件改为数字输入框。** 移除 `Slider`；权重与比例改用
+  `TextField type="number"`，显示按该行 `step` 取整（0.01 → 两位小数），线上仍传精确值。
+- **完全权限确认改为模态框。** 用位于 tooltip 层之上的 MUI `Dialog` 取代原先的内联
+  色块——后者与 tooltip 互抢层级，还会抢走触发器的点击。
 - **包管理器改回 npm。** 删除 `pnpm-lock.yaml` 与 `pnpm-workspace.yaml`，改用
   `package-lock.json`（lockfile v3）；发布工作流改为 `npm ci` 并以 `cache: npm`
   缓存；README 命令统一为 `npm ci`、`npm run build`、`npm test` 与 `npm pack`。
@@ -52,9 +81,38 @@
 - **显式声明 `react-dom`。** Material UI 对 `react-dom` 有 peer 依赖，而 npm 的
   严格 peer 解析不会为 React 18 的 `react` 自动配一个 React 19 的 `react-dom`；
   现在把 `react-dom@^18.2.0` 写成依赖，客户端 bundle 内联的就是同一代 React 18。
-- **`@deepseek-ai/dsh-client-ui-slots` 在 `devDependencies` 中锁到 0.1 线**
-  （`^0.1.0-rc.7`，解析为 0.1.0-rc.8）。否则 npm 会给构建装 0.2.0-rc.2 预发布版，
-  而其余 `dsh-client-*` 包以及本插件注入的宿主模块表都停在 0.1.0-rc.8。
+- **DSH peer 范围改为跟随新版本。** `^0.1.0-rc.7 || >=0.2.1-rc.2` 取代
+  `^0.1.0-rc.7 || ^0.2.0-rc.0`：后者匹配不到 `0.2.1-rc.2`——SemVer 范围只有在某个
+  比较器重复了该版本的 `major.minor.patch` 且自身带预发布时才会接受预发布版，
+  所以 `^0.2.0-rc.0` 到 0.2.0 为止。客户端半现在针对桌面运行时携带的
+  0.2.1-rc.2 `-locale`、`-ui-settings`、`-ui-slots`、`-ui-conversation` 包编译；
+  `-ui-slots` 不再停在 0.1 线，`-ui-conversation` 也不再固定 0.1.0-rc.8。
+  `@deepseek-ai/dsh-client-runtime` 与 `@deepseek-ai/dsh-host-webserver` 没有发布
+  0.2.x，devDependency 保持 0.1.0-rc.8——装了 0.2.1 的 `host-webserver` 会让 0.1 线
+  `dsh-client-connection` 的 peer 范围无解，`npm ci` 直接失败——而它们的 peer 范围
+  仍接受宿主提供的 0.2.1+ 运行时。
+
+### 修复
+
+- **所有设置行都写不进去。** `persistConfig` 读取 `ctx.settings` 前没有 inject，
+  触发 Cordis 代理守卫，`POST /config` 全部 500。现在防御式解析端口，持久化走
+  覆盖文档。
+- **接管控件永远收不到请求。** 两个瀑布订阅都没带 `{ prepend: true }`，DSH 自己的
+  审批/提问 UI 先认领了请求。另外部署审批策略为 `never` 时，DSH 在进入瀑布前就直接拒绝。
+- **权限标签显示原始 key。** 目录返回的 `name` 与 `value` 相同时短路了标签回退，
+  下拉里出现 `read-only` 而不是“仅可查看”。现在把"与 key 相同的 name"视为没有标签。
+- **代理 adapter 注册失败。** 普通对象缺少 `providerRetryPolicy`、
+  `imageRequestPricing`、`imageRequestTarget`，而 `registerAdapter` 校验路由时会调用
+  它们。四个钩子已补齐并有回归测试。
+- **设置页出现浮点噪声。** 归一化后的权重显示成 `0.15000000000000002`；现在按行
+  step 取整，仅影响显示。
+
+### 安全
+
+- 缓存代理没有传输层与凭据面：它通过 `ctx.llm.stream` 转发，从不读 `ctx.credentials`，
+  模块没有 `fetch`/`http`/`https`/`net`/`WebSocket`。追踪只记录结构化字段
+  （provider、model、brand、计数、大小），拒绝信息只报路由名，且只拦截 `deepseek*`。
+  静态不变量测试会扫描源码中的禁止面。
 
 ## [0.10.0] — 2026-10-18
 

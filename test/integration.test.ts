@@ -667,3 +667,37 @@ test('selection tool reads and writes the SelectionState', async () => {
     fixture.close()
   }
 })
+
+test('a preset catalog that echoes its key as the name still shows the shipped label', () => {
+  // DSH may return `{ value: 'read-only', name: 'read-only' }`. The dropdown must
+  // render a human label and keep the key as the value: label is label, value is
+  // value. A genuine DSH label still wins, and an unknown preset keeps its name.
+  const fixture = buildModules({
+    permissionPresets: {
+      catalog: () => ({
+        options: [
+          { value: 'read-only', name: 'read-only' },
+          { value: 'workspace-write' },
+          { value: 'danger-full-access', name: 'danger-full-access' },
+          { value: 'custom-tier', name: 'Custom tier' },
+        ],
+      }),
+      current: () => undefined,
+      set: () => undefined,
+    },
+  })
+  try {
+    const rows = fixture.selection.listPreset()
+    assert.deepEqual(
+      rows.map((row) => [row.value, row.name]),
+      [
+        ['read-only', '仅可查看'],
+        ['workspace-write', '工作区内修改'],
+        ['danger-full-access', '完全权限'],
+        ['custom-tier', 'Custom tier'],
+      ],
+    )
+  } finally {
+    fixture.close()
+  }
+})

@@ -134,19 +134,20 @@ function buildPipelineFixture(options: PipelineFixtureOptions = {}): PipelineFix
 
 let sessionSerial = 0
 
-/** One open turn with the scene's own effort, as the service would create it. */
+/** One open turn recording the neutral effort, as the service now creates it. */
 function createPipelineTurn(fixture: PipelineFixture, overrides: Partial<TurnRequest> = {}): Turn {
   sessionSerial += 1
   const session = fixture.turn.ensureSession(`dsh-pipeline-${sessionSerial}`)
   const scene = overrides.scene ?? 'dialogue'
-  const profile = resolveSceneProfile(fixture.host.config, scene)
   const request: TurnRequest = {
     content: 'write a short release note about the coordination pipeline',
     profession: 'execution',
     interaction: 'think',
     scene,
     validation: 'medium',
-    effort: profile.reasoningEffort,
+    // DSH owns reasoning effort; with no committed session route the row keeps
+    // the neutral default instead of a scene literal.
+    effort: 'medium',
     ...overrides,
   }
   return fixture.turn.create(session.identity, request)
@@ -309,15 +310,16 @@ test('comprehension, organization, plan and the eight score rows are persisted',
  * Scene policy
  * ------------------------------------------------------------------------- */
 
-test('writing scene policy applies effort, plan, score, outline, revision and web', async () => {
+test('writing scene policy applies plan, score, outline, revision and web', async () => {
   const fixture = buildPipelineFixture({ web: searchRecorder() })
   try {
     const turn = createPipelineTurn(fixture, { scene: 'writing' })
     const report = await fixture.pipeline.run(fixture.turn.get(turn.identity), TestPrompt, 'dsh-pipeline')
 
-    assert.equal(turn.effort, 'high')
+    // Reasoning is DSH-owned now: the turn keeps the neutral observed default
+    // and the pipeline neither claims nor defers an effort/thinking gap.
+    assert.equal(turn.effort, 'medium')
     for (const field of [
-      'effort',
       'allowWeb',
       'requirePlan',
       'requireScore',
@@ -327,10 +329,10 @@ test('writing scene policy applies effort, plan, score, outline, revision and we
     ]) {
       assert.ok(report.policy.applied.includes(field), `writing scene applies ${field}`)
     }
-    // The host has no DSH model-config port and no execution-policy port.
-    assert.ok(report.policy.deferred.some((gap) => gap.field === 'thinking'))
+    assert.equal(report.policy.applied.includes('effort'), false)
+    assert.equal(report.policy.deferred.some((gap) => gap.field === 'thinking'), false)
+    assert.equal(report.policy.deferred.some((gap) => gap.field === 'reasoningEffort'), false)
     assert.ok(report.policy.deferred.some((gap) => gap.field === 'allowBash'))
-    assert.ok(report.diagnostics.some((diagnostic) => diagnostic.code === 'scene-policy.deferred.thinking'))
   } finally {
     fixture.close()
   }
@@ -550,7 +552,9 @@ test('beginTurn carries the composer selection into the pipeline and endTurn clo
     assert.equal(turn.scene, 'writing')
     assert.equal(turn.interaction, 'orchestrate')
     assert.equal(turn.validation, 'low')
-    assert.equal(turn.effort, 'high')
+    // DSH owns the effort: with no committed session route the row records the
+    // neutral default instead of the scene's configured level.
+    assert.equal(turn.effort, 'medium')
 
     const report = await fixture.service.awaitPipeline('dsh-service-ok')
     assert.equal(report?.status, 'completed')
