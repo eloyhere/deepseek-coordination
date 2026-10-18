@@ -22,11 +22,24 @@ import * as React from 'react'
 // @ts-ignore react-dom 18 ships no declarations here and @types/react-dom is not a dependency.
 import { createRoot as createRootUntyped } from 'react-dom/client'
 import {
+  COLUMN_SX,
   CoordinationPanels,
+  HEADER_SX,
+  NAV_SX,
+  PANEL_COLLAPSED_FLEX,
+  PANEL_CONTENT_SX,
+  PANEL_EXPANDED_FLEX,
+  PANEL_ITEM_SX,
+  PANEL_RESIZE_TRANSITION,
   PanelErrorBoundary,
+  SCOPE_BAR_SX,
+  SCROLL_THUMB_SX,
+  SCROLL_TRACK_SX,
   getPanelError,
+  initialPanelNavigation,
   isPanelDisabled,
   panelErrorTooltip,
+  panelNavigationReducer,
 } from '../src/client/panel.js'
 
 interface ClientRoot {
@@ -518,4 +531,176 @@ test('index.ts lazy-loads panel.js instead of statically importing it', () => {
   )
   assert.match(source, /React\.lazy\([\s\S]*import\(['"]\.\/panel\.js['"]\)/)
   assert.match(source, /React\.Suspense/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Panel navigation: component state is the source of truth
+ * ------------------------------------------------------------------------- */
+
+const RIGHT_ROUTED_VIEWS = ['files', 'outline', 'dependencies', 'imports', 'preview'] as const
+const LEFT_ROUTED_VIEWS = ['files', 'agents', 'agent', 'dependencies', 'imports', 'exports'] as const
+
+test('view switching is reducer state; the hash is read once as a deep link', () => {
+  // The deep link seeds the named side exactly once, including its selection.
+  assert.deepEqual(
+    initialPanelNavigation(
+      '#coordination/panel/right/outline?path=src%2Fa.ts',
+      'right',
+      RIGHT_ROUTED_VIEWS,
+      'files',
+    ),
+    { view: 'outline', path: 'src/a.ts', id: null },
+  )
+  assert.deepEqual(
+    initialPanelNavigation(
+      '#coordination/panel/left/agent?id=agent-1',
+      'left',
+      LEFT_ROUTED_VIEWS,
+      'files',
+    ),
+    { view: 'agent', path: null, id: 'agent-1' },
+  )
+
+  // A hash that names the other side (or is a host route) is not consumed.
+  assert.deepEqual(
+    initialPanelNavigation(
+      '#coordination/panel/right/outline?path=src%2Fa.ts',
+      'left',
+      LEFT_ROUTED_VIEWS,
+      'files',
+    ),
+    { view: 'files', path: null, id: null },
+  )
+  assert.deepEqual(
+    initialPanelNavigation('#some/host/route', 'right', RIGHT_ROUTED_VIEWS, 'files'),
+    { view: 'files', path: null, id: null },
+  )
+
+  // A tab click is a local transition; it never consults the hash again.
+  const initial = initialPanelNavigation(
+    '#coordination/panel/right/outline?path=src%2Fa.ts',
+    'right',
+    RIGHT_ROUTED_VIEWS,
+    'files',
+  )
+  const switched = panelNavigationReducer(initial, { type: 'navigate', view: 'dependencies' })
+  assert.deepEqual(switched, { view: 'dependencies', path: null, id: null })
+
+  // Selecting a file keeps the view; dropping it returns to workspace mode.
+  const selected = panelNavigationReducer(switched, {
+    type: 'navigate',
+    view: 'dependencies',
+    path: 'src/a.ts',
+  })
+  assert.deepEqual(selected, { view: 'dependencies', path: 'src/a.ts', id: null })
+  assert.deepEqual(
+    panelNavigationReducer(selected, { type: 'navigate', view: 'dependencies' }),
+    { view: 'dependencies', path: null, id: null },
+  )
+
+  // The same action returns the same object (no needless re-render).
+  assert.equal(
+    panelNavigationReducer(selected, { type: 'navigate', view: 'dependencies', path: 'src/a.ts' }),
+    selected,
+  )
+})
+
+test('the hash cannot clobber local state: no hashchange/popstate subscription', () => {
+  const sourcePath = resolve(process.cwd(), 'src/client/panel.ts')
+  const source = readFileSync(sourcePath, 'utf8')
+
+  assert.doesNotMatch(source, /addEventListener\(\s*['"]hashchange['"]/)
+  assert.doesNotMatch(source, /addEventListener\(\s*['"]popstate['"]/)
+  assert.doesNotMatch(source, /useSyncExternalStore\(\s*subscribeRoute/)
+  // One mount-time read feeds the reducer; navigation then mirrors the hash.
+  assert.match(source, /initialPanelNavigation\(\s*readHash\(\)/)
+  assert.match(source, /history\.replaceState/)
+  // The mirror is best-effort: a throwing host router must not undo a click.
+  const mirror = /function mirrorHash[\s\S]*?\n}/.exec(source)
+  assert.ok(mirror !== null, 'mirrorHash must exist')
+  assert.match(mirror[0], /try\s*\{[\s\S]*replaceState[\s\S]*\}\s*catch/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Panel layout: bottom anchoring and a bounded internal stack
+ * ------------------------------------------------------------------------- */
+
+test('column is bottom-anchored so expansion pushes the upper panel up', () => {
+  assert.equal(COLUMN_SX.justifyContent, 'flex-end')
+  assert.equal(COLUMN_SX.flexDirection, 'column')
+  assert.equal(COLUMN_SX.display, 'flex')
+})
+
+test('two expanded panels split the column height equally', () => {
+  // Identical flex-basis/grow for every expanded panel -> 50/50 split; the
+  // collapsed panel is pinned to its 48 px title bar instead.
+  assert.equal(PANEL_EXPANDED_FLEX, '1 1 0px')
+  assert.equal(PANEL_COLLAPSED_FLEX, '0 0 48px')
+  assert.equal(PANEL_ITEM_SX.minHeight, 0)
+})
+
+test('height changes animate with the MUI collapse timing', () => {
+  assert.match(PANEL_RESIZE_TRANSITION, /flex-grow/)
+  assert.match(PANEL_RESIZE_TRANSITION, /flex-basis/)
+  assert.match(PANEL_RESIZE_TRANSITION, /220ms/)
+  assert.match(PANEL_RESIZE_TRANSITION, /cubic-bezier\(0\.4, 0, 0\.2, 1\)/)
+})
+
+test('title bar is the blue primary bar with contrast text', () => {
+  assert.equal(HEADER_SX.backgroundColor, 'primary.main')
+  assert.equal(HEADER_SX.color, 'primary.contrastText')
+  assert.equal(HEADER_SX.flex, 'none')
+  assert.equal(HEADER_SX.height, 48)
+})
+
+test('header search is a MUI Autocomplete, not the old bare TextField', () => {
+  const sourcePath = resolve(process.cwd(), 'src/client/panel.ts')
+  const source = readFileSync(sourcePath, 'utf8')
+  assert.match(source, /import Autocomplete from '@mui\/material\/Autocomplete'/)
+  assert.match(source, /h\(MuiAutocomplete, \{/)
+  assert.match(source, /renderSearchInput/)
+  assert.match(source, /filterOptions:/)
+  // The old standalone result list is gone: results live in the listbox.
+  assert.doesNotMatch(source, /function SearchResults\(/)
+})
+
+test('Autocomplete dropdown replaces the native bar with the React scrollbar', () => {
+  // Transparent groove, light-grey thumb.
+  assert.equal(SCROLL_TRACK_SX.backgroundColor, 'transparent')
+  assert.equal(SCROLL_THUMB_SX.backgroundColor, 'rgba(0, 0, 0, 0.22)')
+
+  const sourcePath = resolve(process.cwd(), 'src/client/panel.ts')
+  const source = readFileSync(sourcePath, 'utf8')
+  assert.match(source, /export function ScrollBar\(/)
+  assert.match(source, /function AutocompleteScrollListboxBase\(/)
+  assert.match(source, /const AutocompleteScrollListbox = React\.forwardRef\(/)
+  assert.match(source, /slots: \{ listbox: AutocompleteScrollListbox \}/)
+  // The native bar is hidden so only the custom thumb remains.
+  assert.match(source, /scrollbarWidth: 'none'/)
+  assert.match(source, /&::-webkit-scrollbar/)
+})
+
+test('panel internals form a bounded stack: header / scope / scroll / nav', () => {
+  // Panels may share the column, never stretch it.
+  assert.equal(PANEL_ITEM_SX.minHeight, 0)
+  assert.equal(PANEL_ITEM_SX.overflow, 'hidden')
+
+  // Fixed 48 px title bar.
+  assert.equal(HEADER_SX.flex, 'none')
+  assert.equal(HEADER_SX.height, 48)
+  assert.equal(HEADER_SX.minHeight, 48)
+  assert.equal(HEADER_SX.maxHeight, 48)
+
+  // Fixed scope bar and a content column that owns the scroll.
+  assert.equal(SCOPE_BAR_SX.flex, 'none')
+  assert.equal(PANEL_CONTENT_SX.flexDirection, 'column')
+  assert.equal(PANEL_CONTENT_SX.minHeight, 0)
+  assert.equal(PANEL_CONTENT_SX.overflow, 'hidden')
+  assert.match(String(PANEL_CONTENT_SX.flex), /^1 /)
+
+  // Fixed-height bottom navigation, separate from the scroller.
+  assert.equal(NAV_SX.flex, 'none')
+  assert.equal(typeof NAV_SX.height, 'number')
+  assert.equal(typeof NAV_SX.maxHeight, 'number')
+  assert.ok((NAV_SX.height as number) > 0)
 })

@@ -3,14 +3,35 @@
  *
  * A fixed right-hand column stacks two collapseable Material UI panels: the
  * relationship panel on top and the workspace panel below. The column is
- * mounted as a sibling of the composer row (see `./index.ts`), so neither a
- * keystroke nor a panel toggle ever re-renders the composer itself. Minimizing
- * keeps only the 48 px title bar; there is no floating button and no free
- * dragging/resizing.
+ * anchored to the bottom (`justify-content: flex-end`), so the workspace panel
+ * sits at the bottom under the relationship panel; expanding the workspace
+ * pushes the relationship panel up, while expanding the relationship panel
+ * grows downward into the freed space. That push/pull is flex layout only.
+ * When both panels are expanded they use the same zero flex-basis/grow and
+ * therefore split the column height exactly in half; a collapsed panel is
+ * pinned to its 48 px title bar. Every panel is a bounded column, so its
+ * scrolling content can never spill past the bottom-navigation divider.
+ * The column is mounted as a sibling of the composer row (see `./index.ts`), so
+ * neither a keystroke nor a panel toggle ever re-renders the composer itself.
+ * Minimizing keeps only the 48 px title bar; there is no floating button and no
+ * free dragging/resizing.
+ *
+ * # Title bar and search
+ *
+ * The 48 px title bar is the plugin's blue `primary.main` bar with contrast
+ * text. While search is open, the title is replaced by a MUI `Autocomplete`
+ * combobox: typing runs the existing `/graph/search` endpoint (debounced), the
+ * listbox renders the host's hits, Enter selects the highlighted hit (or runs
+ * the search immediately), and `Esc` closes the search. Errors keep a retry
+ * action inside the listbox. The listbox hides its native scrollbar and uses
+ * the local {@link ScrollBar} React component instead: a transparent groove
+ * with a light-grey, draggable thumb (MUI `sx` only, no CSS file, no new
+ * dependency).
  *
  * # Routing and scope
  *
- * Both panels are always routed; the URL names the focused side:
+ * Both panels are always routed. Component state is the source of truth for a
+ * panel's view/selection; the URL only carries a deep link:
  *
  *   #coordination/panel/right/files
  *   #coordination/panel/right/outline?path=src%2Fa.ts
@@ -24,19 +45,22 @@
  *   #coordination/panel/left/imports
  *   #coordination/panel/left/exports
  *
- * `useHashRoute` subscribes to `hashchange`/`popstate` with
- * `useSyncExternalStore`; each panel's BottomNavigation value comes from the
- * hash only while that side owns the URL, otherwise from its last view. The
- * `path` parameter is the selected file and survives view switches: no `path`
- * means workspace mode. Minimized content is unmounted but the route-derived
- * view/path stays, so restoring a panel returns to the same view.
+ * Each panel reads `location.hash` exactly once, when it mounts, then keeps its
+ * own `useReducer` navigation state. A click changes that state directly and
+ * only *mirrors* the hash through `history.replaceState` (best-effort, wrapped
+ * in try/catch). No `hashchange` listener feeds the hash back into a panel:
+ * DSH's own router rewrites the hash and would otherwise clobber the view.
+ * The `path` parameter is the selected file and survives view switches: no
+ * `path` means workspace mode. Minimized content is unmounted but the view/path
+ * state stays, so restoring a panel returns to the same view.
  *
  * # Persistence
  *
  * `localStorage["coordination.panel.right"]` holds exactly
  * `{ openLeft, openRight, width }`; there are no coordinates. The relationship
  * panel defaults minimized and the workspace panel defaults expanded; width
- * defaults to 420 px. Views and paths belong to the hash only.
+ * defaults to 420 px. Views and paths live in component state; the hash only
+ * mirrors the latest selection for deep links.
  *
  * # Failure containment
  *
@@ -70,6 +94,13 @@
  *       `{ path, kind, content, truncated, bytes, sheets?, slides? }`
  *   POST /graph/rebuild
  *       `{ files, nodes, durationMs, truncated }`
+ *   POST /graph/index
+ *       `{ indexed, skipped, nodes, durationMs, truncated }`
+ *
+ * A fresh profile's graph is legitimately empty (only paths the file tools have
+ * already parsed are indexed), so the Files view's empty state offers the
+ * explicit `/graph/index` scan; it re-requests the current view when it
+ * finishes. `/graph/rebuild` stays as the re-index-known-paths action.
  *
  * Every list owns its loading, empty and error state. The whole surface is
  * read-only: views navigate and select, previews render (Markdown without raw
@@ -83,15 +114,19 @@
  * Each panel is a non-modal `role="dialog"`; every control carries an
  * `aria-label` and a `Tip` tooltip; the title is a toggle button with
  * `aria-expanded`. `Esc` clears a live search first, leaves a preview, clears a
- * canvas selection, and otherwise minimizes. Expansion animates with MUI
- * `Collapse` (220 ms) plus a flex transition; the header icon cross-fades
- * (150 ms); everything collapses to `timeout={0}` and no flex transition when
- * `prefers-reduced-motion` is set. The canvas animation loop stops when the
- * graph is static or hidden.
+ * canvas selection, and otherwise minimizes. Height changes are animated as one
+ * Material transition: the panel's `flex-grow`/`flex-basis` use MUI's
+ * `theme.transitions.create` timing (220 ms, MUI standard easing), the body is
+ * a MUI `Collapse` (same 220 ms/easing) and its content fades with MUI `Fade`;
+ * the header icon cross-fades (150 ms). The flex transition is what produces
+ * the push-up, never a transform. Everything collapses to `timeout={0}` and no
+ * flex transition when `prefers-reduced-motion` is set. The canvas animation
+ * loop stops when the graph is static or hidden.
  */
 import * as React from 'react'
 import IconButton from '@mui/material/IconButton'
 import TextField from '@mui/material/TextField'
+import Autocomplete from '@mui/material/Autocomplete'
 import Menu from '@mui/material/Menu'
 import MenuItem from '@mui/material/MenuItem'
 import Card from '@mui/material/Card'
@@ -109,7 +144,6 @@ import Alert from '@mui/material/Alert'
 import Accordion from '@mui/material/Accordion'
 import AccordionSummary from '@mui/material/AccordionSummary'
 import AccordionDetails from '@mui/material/AccordionDetails'
-import Divider from '@mui/material/Divider'
 import Tooltip from '@mui/material/Tooltip'
 import Paper from '@mui/material/Paper'
 import Avatar from '@mui/material/Avatar'
@@ -157,7 +191,7 @@ import type { Theme } from '@mui/material/styles'
 import type { PrismTheme, RenderProps } from 'prism-react-renderer'
 import { theme } from './theme.js'
 import { useCopy } from './i18n.js'
-import { fetchGraph, rebuildGraph } from './bridge.js'
+import { fetchGraph, indexGraph, rebuildGraph } from './bridge.js'
 import { PANEL_FAMILIES, PANEL_VIEW_IDS, fillTemplate } from '../shared/i18n.js'
 import type { PanelCopy, PanelFamily, PanelView } from '../shared/i18n.js'
 
@@ -165,6 +199,7 @@ import type { PanelCopy, PanelFamily, PanelView } from '../shared/i18n.js'
 type Loose = React.ComponentType<Record<string, unknown>>
 const MuiIconButton = IconButton as unknown as Loose
 const MuiTextField = TextField as unknown as Loose
+const MuiAutocomplete = Autocomplete as unknown as Loose
 const MuiMenu = Menu as unknown as Loose
 const MuiMenuItem = MenuItem as unknown as Loose
 const MuiCard = Card as unknown as Loose
@@ -182,7 +217,6 @@ const MuiAlert = Alert as unknown as Loose
 const MuiAccordion = Accordion as unknown as Loose
 const MuiAccordionSummary = AccordionSummary as unknown as Loose
 const MuiAccordionDetails = AccordionDetails as unknown as Loose
-const MuiDivider = Divider as unknown as Loose
 const MuiTooltip = Tooltip as unknown as Loose
 const MuiPaper = Paper as unknown as Loose
 const MuiAvatar = Avatar as unknown as Loose
@@ -247,7 +281,15 @@ const COLUMN_TOP = 72
 const COLUMN_BOTTOM = 96
 const COLUMN_RIGHT = 16
 const HEADER_HEIGHT = 48
-const PANEL_MIN_HEIGHT = 320
+const NAV_HEIGHT = 56
+
+/**
+ * Expanded panels all use the same zero flex-basis and grow factor, so two
+ * expanded panels split the column's height exactly in half; a collapsed panel
+ * is pinned to its 48 px title bar instead.
+ */
+export const PANEL_EXPANDED_FLEX = '1 1 0px'
+export const PANEL_COLLAPSED_FLEX = `0 0 ${HEADER_HEIGHT}px`
 
 /**
  * No-restart recovery switch: `localStorage['coordination.panel.disabled']`
@@ -267,6 +309,7 @@ const CRASH_CHIP_SX = {
   flex: 'none',
   height: 22,
   maxWidth: 132,
+  backgroundColor: 'background.paper',
   '& .MuiChip-label': {
     paddingLeft: 0.75,
     paddingRight: 0.75,
@@ -364,9 +407,19 @@ const MAX_CYCLE_LINES = 5
 const PANEL_TOGGLE_MS = 220
 const VIEW_FADE_MS = 180
 const SCOPE_GROW_MS = 150
-const SEARCH_FADE_MS = 150
+const SEARCH_DEBOUNCE_MS = 250
 const PREVIEW_FADE_MS = 200
 const PANEL_EASING = 'cubic-bezier(0.4, 0, 0.2, 1)'
+
+/**
+ * The panel's height change uses the same MUI duration/easing as its Collapse,
+ * so restore/collapse reads as one Material height transition (the push-up
+ * itself is still pure flex layout, never a transform).
+ */
+export const PANEL_RESIZE_TRANSITION = theme.transitions.create(
+  ['flex-grow', 'flex-basis'],
+  { duration: PANEL_TOGGLE_MS, easing: PANEL_EASING },
+)
 
 /** Client-side cap for the syntax-highlighted code preview. */
 const MAX_CODE_LINES = 2000
@@ -438,7 +491,12 @@ function tabTip(view: PanelView, copy: PanelCopy): string {
  * Dynamic values (one item's indentation) use `style` instead of `sx`.
  * ------------------------------------------------------------------------- */
 
-const PANEL_ITEM_SX = {
+/**
+ * One docked panel: a bounded flex column. `minHeight: 0` is what keeps two
+ * expanded panels inside the fixed column instead of stretching it past its
+ * declared bottom edge. Bottom anchoring happens on {@link COLUMN_SX}.
+ */
+export const PANEL_ITEM_SX = {
   display: 'flex',
   flexDirection: 'column',
   minHeight: 0,
@@ -452,7 +510,12 @@ const PANEL_ITEM_SX = {
   pointerEvents: 'auto',
 }
 
-const HEADER_SX = {
+/**
+ * Title bar: exactly 48 px, never grows or shrinks. It is the plugin's blue bar
+ * (`primary.main`; the local MUI theme keeps the default blue primary) with
+ * contrast text, and every control inherits the bar colour.
+ */
+export const HEADER_SX = {
   display: 'flex',
   alignItems: 'center',
   gap: 0.5,
@@ -463,10 +526,59 @@ const HEADER_SX = {
   paddingLeft: 0.5,
   paddingRight: 0.5,
   borderBottom: '1px solid',
-  borderColor: 'divider',
-  backgroundColor: 'background.paper',
+  borderColor: 'primary.dark',
+  backgroundColor: 'primary.main',
+  color: 'primary.contrastText',
   borderTopLeftRadius: 4,
   borderTopRightRadius: 4,
+  '& .MuiIconButton-root': { color: 'inherit' },
+  '& .MuiTypography-root': { color: 'inherit' },
+}
+
+/**
+ * The visible body under the title bar: scope bar (fixed), scrolling content
+ * (`flex: 1` + `min-height: 0`) and bottom navigation (fixed). It must own
+ * `overflow: hidden` so the inner scroll never paints over the navigation.
+ */
+export const PANEL_CONTENT_SX = {
+  flex: '1 1 auto',
+  minHeight: 0,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+}
+
+/**
+ * Fill chain for the collapsing body.
+ *
+ * MUI `Collapse` measures the natural height of its inner wrapper while the
+ * transition runs, so the wrapper must stay auto-sized during `entering`/
+ * `exiting`. Only once the transition has *entered* do the wrapper layers
+ * become flex items that fill the panel's remaining height; that keeps the
+ * 220 ms height animation intact without letting long content stretch the
+ * panel (or push the bottom navigation out of view).
+ */
+export const COLLAPSE_FILL_SX = {
+  display: 'flex',
+  flexDirection: 'column',
+  flex: '1 1 auto',
+  minHeight: 0,
+  minWidth: 0,
+  width: '100%',
+}
+
+export const COLLAPSE_BODY_SX = {
+  flex: '1 1 auto',
+  minHeight: 0,
+  minWidth: 0,
+  overflow: 'hidden',
+  '&.MuiCollapse-entered': {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  '&.MuiCollapse-entered > .MuiCollapse-wrapper': COLLAPSE_FILL_SX,
+  '&.MuiCollapse-entered > .MuiCollapse-wrapper > .MuiCollapse-wrapperInner': COLLAPSE_FILL_SX,
 }
 
 const HEADER_TITLE_SX = {
@@ -480,18 +592,80 @@ const HEADER_TITLE_SX = {
   borderRadius: 0.5,
   cursor: 'pointer',
   outline: 'none',
-  '&:hover': { backgroundColor: 'action.hover' },
-  '&:focus-visible': { boxShadow: 'inset 0 0 0 2px', color: 'primary.main' },
+  '&:hover': { backgroundColor: 'rgba(255, 255, 255, 0.12)' },
+  '&:focus-visible': { boxShadow: 'inset 0 0 0 2px currentColor' },
 }
 
-const SEARCH_FIELD_SX = {
+/** The header search is a combobox; it takes the title's place while open. */
+const SEARCH_AUTOCOMPLETE_SX = {
   flex: 1,
   minWidth: 0,
   marginLeft: 0.5,
   marginRight: 0.5,
-  '& .MuiInputBase-root': { height: 32, fontSize: 12, borderRadius: 1 },
+}
+
+const SEARCH_FIELD_SX = {
+  width: '100%',
+  minWidth: 0,
+  '& .MuiInputBase-root': {
+    height: 32,
+    fontSize: 12,
+    borderRadius: 1,
+    backgroundColor: 'background.paper',
+  },
   '& .MuiInputBase-input': { padding: '4px 8px' },
   '& .MuiInputAdornment-root': { marginRight: 0.5 },
+}
+
+/** The result popup is portaled to the body, so it must out-rank the column. */
+const SEARCH_POPPER_SX = { zIndex: theme.zIndex.tooltip }
+
+/** Height cap shared by the dropdown listbox and its custom scrollbar. */
+const SEARCH_LISTBOX_MAX_HEIGHT = 280
+
+const SEARCH_LISTBOX_WRAP_SX = {
+  position: 'relative',
+  width: '100%',
+  minWidth: 0,
+}
+
+const SEARCH_LISTBOX_SX = {
+  width: '100%',
+  // The native bar is replaced by <ScrollBar> (transparent track, grey thumb).
+  '&::-webkit-scrollbar': { display: 'none', width: 0, height: 0 },
+  // `&.MuiAutocomplete-listbox ...` out-ranks MUI's own option paddings.
+  '&.MuiAutocomplete-listbox .MuiAutocomplete-option': {
+    minHeight: 0,
+    paddingTop: 0.5,
+    paddingBottom: 0.5,
+    paddingLeft: 1,
+    paddingRight: 1,
+  },
+  '&.MuiAutocomplete-listbox .MuiAutocomplete-option.Mui-focused': {
+    backgroundColor: 'action.hover',
+  },
+}
+
+const SEARCH_OPTION_SX = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  gap: 0.25,
+  paddingTop: 0.5,
+  paddingBottom: 0.5,
+  paddingLeft: 1,
+  paddingRight: 1,
+}
+
+const SEARCH_STATUS_SX = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 1,
+  paddingLeft: 1,
+  paddingRight: 1,
+  paddingTop: 0.5,
+  paddingBottom: 0.5,
 }
 
 const MENU_SX = { zIndex: theme.zIndex.tooltip - 1 }
@@ -512,7 +686,8 @@ const CARD_SX = {
   boxShadow: 'none',
 }
 
-const CARD_CONTENT_SX = {
+/** The one scrolling surface of a panel; bounded by the flex stack above it. */
+export const CARD_CONTENT_SX = {
   flex: 1,
   minHeight: 0,
   overflowY: 'auto',
@@ -521,11 +696,16 @@ const CARD_CONTENT_SX = {
   '&:last-child': { paddingBottom: 1.5 },
 }
 
-const NAV_SX = {
+/** Bottom navigation: a fixed 56 px strip that never overlaps the scroller. */
+export const NAV_SX = {
   flex: 'none',
+  height: NAV_HEIGHT,
+  minHeight: NAV_HEIGHT,
+  maxHeight: NAV_HEIGHT,
+  overflow: 'hidden',
   borderTop: '1px solid',
   borderColor: 'divider',
-  '& .MuiBottomNavigationAction-root': { minWidth: 0, padding: '5px 0 3px' },
+  '& .MuiBottomNavigationAction-root': { flex: 1, minWidth: 0, maxWidth: 'none', padding: '5px 0 3px' },
   '& .MuiBottomNavigationAction-label': { fontSize: 11, whiteSpace: 'nowrap' },
 }
 
@@ -552,9 +732,24 @@ const ERROR_BOX_SX = {
   textAlign: 'center',
 }
 
+/** Empty graph: the explanation plus the one explicit indexing button. */
+const INDEX_EMPTY_SX = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 1,
+  minHeight: 180,
+  padding: 2,
+  textAlign: 'center',
+}
+
+const INDEX_ACTION_SX = { marginTop: 0.5 }
+
 const LIST_SX = { width: '100%' }
 
-const SCOPE_BAR_SX = {
+/** Scope bar: fixed row under the title bar. */
+export const SCOPE_BAR_SX = {
   display: 'flex',
   alignItems: 'center',
   gap: 1,
@@ -712,31 +907,7 @@ const IMPORT_LABEL_SX = { display: 'block', marginBottom: 0.5 }
 
 const CHIP_WRAP_SX = { display: 'flex', flexWrap: 'wrap', gap: 0.5 }
 
-const SEARCH_RESULTS_SX = {
-  marginBottom: 1.5,
-  padding: 1,
-  border: '1px solid',
-  borderColor: 'divider',
-  borderRadius: 1,
-  backgroundColor: 'action.hover',
-}
-
-const SEARCH_HEADER_SX = { display: 'block', marginBottom: 0.5 }
-
-const SEARCH_LIST_SX = { maxHeight: 220, overflowY: 'auto' }
-
-const SEARCH_HIT_SX = {
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'stretch',
-  gap: 0.25,
-  paddingTop: 0.5,
-  paddingBottom: 0.5,
-  paddingLeft: 0.5,
-  paddingRight: 0.5,
-  borderRadius: 0.5,
-}
-
+/** One hit inside the header combobox's result listbox. */
 const SEARCH_HIT_TOP_SX = {
   display: 'flex',
   alignItems: 'center',
@@ -747,13 +918,6 @@ const SEARCH_HIT_TOP_SX = {
 const SEARCH_HIT_NAME_SX = { minWidth: 0, flex: 1 }
 
 const SEARCH_HIT_META_SX = { fontFamily: 'monospace', fontSize: 11 }
-
-const INLINE_STATE_SX = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 1,
-  padding: 0.5,
-}
 
 /** Shared prose styling for rendered Markdown and sanitized HTML. */
 const PREVIEW_PROSE_SX = {
@@ -1163,20 +1327,13 @@ function outsideRoute(): PanelRoute {
   return { panel: false, side: 'right', view: 'files', path: null, id: null }
 }
 
-function sameRoute(left: PanelRoute, right: PanelRoute): boolean {
-  return left.panel === right.panel
-    && left.side === right.side
-    && left.view === right.view
-    && left.path === right.path
-    && left.id === right.id
-}
-
 /**
  * `#coordination/panel/<left|right>/<view>[?path=…]`.
  *
- * The route names one panel at a time; the other open panel keeps its last view
- * in component state, so both can stay expanded while only the focused one owns
- * the URL.
+ * The hash is a **deep link only**. Each panel resolves it once on mount and
+ * from then on its own component state is authoritative; DSH's router is known
+ * to rewrite `location.hash`, so no `hashchange` listener may feed state back
+ * into the panels.
  */
 function parseHash(hash: string): PanelRoute {
   if (!hash.startsWith(HASH_ROOT)) return outsideRoute()
@@ -1211,71 +1368,92 @@ function buildHash(side: PanelSide, view: PanelView, params?: RouteParams): stri
   return suffix.length === 0 ? base : `${base}?${suffix}`
 }
 
-let cachedRoute: PanelRoute | null = null
-const routeListeners = new Set<() => void>()
+/* ------------------------------------------------------------------------- *
+ * Panel navigation: component state is the source of truth
+ * ------------------------------------------------------------------------- */
+
+/** One panel's selected view and selection; the only navigation state. */
+export interface PanelNavigationState {
+  view: PanelView
+  path: string | null
+  id: string | null
+}
+
+/** The only transition: select a view, optionally with a path/agent id. */
+export type PanelNavigationAction = {
+  type: 'navigate'
+  view: PanelView
+  path?: string | null
+  id?: string | null
+}
 
 /**
- * True while the current history entry was pushed for a preview, which is the
- * only panel navigation that adds an entry (so `Escape` can go back).
+ * Pure view/selection transition.
+ *
+ * It never reads the location: a click changes this state directly, which is
+ * what makes switching work even when the host router rewrites the hash.
  */
-let previewEntryActive = false
-
-function routeSnapshot(): PanelRoute {
-  const next = parseHash(readHash())
-  if (cachedRoute === null || !sameRoute(cachedRoute, next)) cachedRoute = next
-  return cachedRoute
-}
-
-function subscribeRoute(listener: () => void): () => void {
-  if (typeof window === 'undefined') return () => {}
-  const onChange = (): void => {
-    const next = parseHash(readHash())
-    if (next.view !== 'preview') previewEntryActive = false
-    if (cachedRoute === null || !sameRoute(cachedRoute, next)) cachedRoute = next
-    listener()
-  }
-  routeListeners.add(onChange)
-  window.addEventListener('hashchange', onChange)
-  window.addEventListener('popstate', onChange)
-  return () => {
-    routeListeners.delete(onChange)
-    window.removeEventListener('hashchange', onChange)
-    window.removeEventListener('popstate', onChange)
-  }
-}
-
-function useHashRoute(): PanelRoute {
-  return React.useSyncExternalStore(subscribeRoute, routeSnapshot, routeSnapshot)
+export function panelNavigationReducer(
+  state: PanelNavigationState,
+  action: PanelNavigationAction,
+): PanelNavigationState {
+  const path = action.path ?? null
+  const id = action.id ?? null
+  if (state.view === action.view && state.path === path && state.id === id) return state
+  return { view: action.view, path, id }
 }
 
 /**
- * Write a panel route.
+ * Resolve a panel's initial state from the hash.
  *
- * Ordinary tab switches replace the current entry, so the plugin does not add
- * host-history noise. Opening a preview pushes one entry, which is what makes
- * `Escape` → `history.back()` return to the view the preview came from.
+ * This is the **only** read of `location.hash` in the panel's lifetime. A hash
+ * that names the other panel, or a view this side does not route, leaves the
+ * panel on its default view with no selection.
+ */
+export function initialPanelNavigation(
+  hash: string,
+  side: PanelSide,
+  routedViews: readonly PanelView[],
+  fallbackView: PanelView,
+): PanelNavigationState {
+  const route = parseHash(hash)
+  if (!route.panel || route.side !== side || !routedViews.includes(route.view)) {
+    return { view: fallbackView, path: null, id: null }
+  }
+  return { view: route.view, path: route.path, id: route.id }
+}
+
+/** Per-side navigator installed by the mounted panel; child views call it. */
+const panelNavigators = new Map<PanelSide, (view: PanelView, params?: RouteParams) => void>()
+
+/**
+ * Route a child view's navigation intent to its panel's local state.
  *
- * `replaceState`/`pushState` fire no hash event, so subscribers are notified
- * directly; a hash change made by the host still arrives through the two window
- * listeners.
+ * Both panels stay mounted for the column's lifetime, so the map has one entry
+ * per side whenever a control can be clicked. A missing entry is a harmless
+ * no-op (the panel is not mounted, so nothing visible could have sent it).
  */
 function navigate(side: PanelSide, view: PanelView, params?: RouteParams): void {
+  panelNavigators.get(side)?.(view, params)
+}
+
+/**
+ * Best-effort deep-link mirror.
+ *
+ * Component state already changed; this only keeps a reloadable URL in sync.
+ * `history.replaceState` fires no event and is wrapped so a host router that
+ * throws (or a blocked history object) can never undo a local view switch.
+ */
+function mirrorHash(side: PanelSide, view: PanelView, params?: RouteParams): void {
   if (typeof window === 'undefined') return
-  const hash = buildHash(side, view, params)
-  if (readHash() !== hash) {
-    if (view === 'preview' && !previewEntryActive) {
-      window.history.pushState(window.history.state, '', hash)
-      previewEntryActive = true
-    } else {
+  try {
+    const hash = buildHash(side, view, params)
+    if (window.location.hash !== hash) {
       window.history.replaceState(window.history.state, '', hash)
-      if (view !== 'preview') previewEntryActive = false
     }
+  } catch {
+    // Deep link only; the panel keeps working from its local state.
   }
-  const next = parseHash(hash)
-  const current = routeSnapshot()
-  if (sameRoute(current, next)) return
-  cachedRoute = next
-  for (const listener of [...routeListeners]) listener()
 }
 
 /* ------------------------------------------------------------------------- *
@@ -2009,6 +2187,42 @@ function EmptyState(props: { message: string }): React.ReactElement {
   )
 }
 
+/**
+ * Empty graph state with the one explicit indexing entry point.
+ *
+ * A fresh profile has no persisted graph because the file tools only index the
+ * paths they are asked to parse; this button asks the host to scan the
+ * workspace once. Progress reuses the panel's shared `actionBusy` spinner and
+ * Snackbar notice; the successful run refreshes the Files view.
+ */
+function IndexEmptyState(props: {
+  copy: PanelCopy
+  busy: boolean
+  onIndex: (() => void) | undefined
+}): React.ReactElement {
+  return h(
+    MuiBox,
+    { sx: INDEX_EMPTY_SX },
+    h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, props.copy.files.empty),
+    h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, props.copy.indexHint),
+    h(
+      MuiButton,
+      {
+        variant: 'outlined',
+        size: 'small',
+        sx: INDEX_ACTION_SX,
+        disabled: props.busy || props.onIndex === undefined,
+        'aria-label': props.copy.tip.indexWorkspace,
+        onClick: props.onIndex,
+        startIcon: props.busy
+          ? h(MuiCircularProgress, { size: 16 })
+          : undefined,
+      },
+      props.copy.indexWorkspace,
+    ),
+  )
+}
+
 function ErrorState(props: { copy: PanelCopy; onRetry: () => void }): React.ReactElement {
   return h(
     MuiBox,
@@ -2093,6 +2307,10 @@ interface ViewProps {
   refresh: number
   /** Report that the view's current load finished (menu spinner bookkeeping). */
   onSettled: () => void
+  /** True while the empty Files view's indexing request is in flight. */
+  indexBusy?: boolean
+  /** Run the explicit `/graph/index` workspace scan (empty Files view). */
+  onIndexWorkspace?: () => void
 }
 
 function FilesView(props: ViewProps): React.ReactElement {
@@ -2101,7 +2319,13 @@ function FilesView(props: ViewProps): React.ReactElement {
     return h(LoadingState, { copy: props.copy })
   }
   if (state.status === 'error') return h(ErrorState, { copy: props.copy, onRetry: retry })
-  if (state.value.length === 0) return h(EmptyState, { message: props.copy.files.empty })
+  if (state.value.length === 0) {
+    return h(IndexEmptyState, {
+      copy: props.copy,
+      busy: props.indexBusy === true,
+      onIndex: props.onIndexWorkspace,
+    })
+  }
 
   return h(
     MuiList,
@@ -4417,87 +4641,342 @@ interface SearchState {
   hits: SearchHit[]
 }
 
-function SearchResults(props: {
-  copy: PanelCopy
-  state: SearchState
-  onActivate: (hit: SearchHit) => void
-  onRetry: () => void
-}): React.ReactElement | null {
-  if (props.state.status === 'idle') return null
+/** The compact TextField MUI's Autocomplete renders inside the title bar. */
+function renderSearchInput(
+  params: Record<string, unknown>,
+  copy: PanelCopy,
+  inputRef: React.RefObject<HTMLInputElement>,
+): React.ReactElement {
+  const slots = asRecord(params.slotProps)
+  const htmlInput = asRecord(slots?.htmlInput)
+  return h(MuiTextField, {
+    ...params,
+    size: 'small',
+    variant: 'outlined',
+    placeholder: copy.search.placeholder,
+    sx: SEARCH_FIELD_SX,
+    inputRef,
+    slotProps: {
+      ...(slots ?? {}),
+      htmlInput: {
+        ...(htmlInput ?? {}),
+        'aria-label': copy.search.label,
+      },
+    },
+  })
+}
 
-  let body: React.ReactNode
-  if (props.state.status === 'loading') {
-    body = h(
+/** One listbox row: kind chip, node name, then the file:line meta line. */
+function renderSearchOption(
+  optionProps: Record<string, unknown>,
+  hit: SearchHit,
+): React.ReactElement {
+  const { key, ...rest } = optionProps
+  return h(
+    MuiBox,
+    { ...rest, key: key as React.Key, component: 'li', sx: SEARCH_OPTION_SX },
+    h(
       MuiBox,
-      { sx: INLINE_STATE_SX },
-      h(MuiCircularProgress, { size: 16 }),
-      h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, props.copy.states.loading),
+      { sx: SEARCH_HIT_TOP_SX },
+      hit.kind.length > 0
+        ? h(MuiChip, { size: 'small', variant: 'outlined', label: hit.kind })
+        : null,
+      h(MuiTypography, { variant: 'body2', noWrap: true, sx: SEARCH_HIT_NAME_SX }, hit.name),
+    ),
+    hit.path !== null || hit.line !== null
+      ? h(
+        MuiTypography,
+        {
+          variant: 'caption',
+          color: 'text.secondary',
+          sx: SEARCH_HIT_META_SX,
+          title: hit.path ?? undefined,
+        },
+        `${hit.path ?? ''}${hit.line === null ? '' : `:${hit.line}`}`,
+      )
+      : null,
+  )
+}
+
+/** One measured scrollbar geometry, in the target element's pixels. */
+interface ScrollBarMetrics {
+  visible: boolean
+  trackHeight: number
+  thumbHeight: number
+  thumbTop: number
+}
+
+const HIDDEN_SCROLL_BAR: ScrollBarMetrics = {
+  visible: false,
+  trackHeight: 0,
+  thumbHeight: 0,
+  thumbTop: 0,
+}
+
+/** A thumb never gets thinner than this, however long the content is. */
+const SCROLL_BAR_MIN_THUMB = 24
+/** Overlay width; the track itself is transparent, only the thumb is painted. */
+const SCROLL_BAR_WIDTH = 6
+
+/** Transparent groove; the light-grey thumb is the only visible part. */
+export const SCROLL_TRACK_SX = {
+  position: 'absolute',
+  top: 0,
+  right: 2,
+  bottom: 0,
+  width: SCROLL_BAR_WIDTH,
+  borderRadius: SCROLL_BAR_WIDTH / 2,
+  backgroundColor: 'transparent',
+  pointerEvents: 'none',
+  zIndex: 2,
+}
+
+/** Light-grey thumb; drag to scroll, hovering darkens it slightly. */
+export const SCROLL_THUMB_SX = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  borderRadius: SCROLL_BAR_WIDTH / 2,
+  backgroundColor: 'rgba(0, 0, 0, 0.22)',
+  pointerEvents: 'auto',
+  cursor: 'grab',
+  touchAction: 'none',
+  '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.32)' },
+  '&:active': { cursor: 'grabbing' },
+}
+
+/**
+ * A small standalone React scrollbar for an existing scrolling element.
+ *
+ * The native bar on `targetRef` must be hidden by the caller (`scrollbar-width:
+ * none` + `::-webkit-scrollbar`). This component measures the target on scroll,
+ * resize and content mutation, then overlays a transparent track with a
+ * light-grey thumb. Dragging the thumb scrolls the target; the track never
+ * paints a background. It renders nothing when the target has no overflow.
+ *
+ * No dependency is added and no CSS file is used: geometry is inline style and
+ * the appearance is MUI `sx`.
+ */
+export function ScrollBar(props: {
+  targetRef: React.RefObject<HTMLElement | null>
+  /** Changes when the target's content height may have changed. */
+  refreshKey?: unknown
+}): React.ReactElement | null {
+  const [metrics, setMetrics] = React.useState<ScrollBarMetrics>(HIDDEN_SCROLL_BAR)
+  const dragRef = React.useRef<{ startY: number; startTop: number } | null>(null)
+
+  const measure = React.useCallback((): void => {
+    const target = props.targetRef.current
+    if (target === null) {
+      setMetrics(HIDDEN_SCROLL_BAR)
+      return
+    }
+    const trackHeight = target.clientHeight
+    const scrollHeight = target.scrollHeight
+    if (trackHeight <= 0 || scrollHeight <= trackHeight) {
+      setMetrics((previous) => (previous.visible ? HIDDEN_SCROLL_BAR : previous))
+      return
+    }
+    const thumbHeight = Math.max(
+      SCROLL_BAR_MIN_THUMB,
+      Math.round((trackHeight * trackHeight) / scrollHeight),
     )
-  } else if (props.state.status === 'error') {
-    body = h(
-      MuiBox,
-      { sx: INLINE_STATE_SX },
-      h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, props.copy.search.error),
-      h(MuiButton, { size: 'small', variant: 'text', onClick: props.onRetry }, props.copy.states.retry),
-    )
-  } else if (props.state.hits.length === 0) {
-    body = h(
-      MuiTypography,
-      { variant: 'caption', color: 'text.secondary' },
-      props.copy.search.noResults,
-    )
-  } else {
-    body = h(
-      MuiList,
-      { dense: true, disablePadding: true, sx: SEARCH_LIST_SX },
-      ...props.state.hits.map((hit, index) =>
-        h(
-          MuiListItemButton,
-          {
-            key: `${hit.kind}#${hit.path ?? ''}#${index}`,
-            sx: SEARCH_HIT_SX,
-            onClick: (): void => {
-              props.onActivate(hit)
-            },
-          },
-          h(
-            MuiBox,
-            { sx: SEARCH_HIT_TOP_SX },
-            hit.kind.length > 0
-              ? h(MuiChip, { size: 'small', variant: 'outlined', label: hit.kind })
-              : null,
-            h(MuiTypography, { variant: 'body2', noWrap: true, sx: SEARCH_HIT_NAME_SX }, hit.name),
-          ),
-          hit.path !== null || hit.line !== null
-            ? h(
-              MuiTypography,
-              {
-                variant: 'caption',
-                color: 'text.secondary',
-                sx: SEARCH_HIT_META_SX,
-                title: hit.path ?? undefined,
-              },
-              `${hit.path ?? ''}${hit.line === null ? '' : `:${hit.line}`}`,
-            )
-            : null,
-        ),
-      ),
-    )
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight)
+    const maxScroll = scrollHeight - trackHeight
+    const thumbTop = maxScroll <= 0
+      ? 0
+      : Math.round((target.scrollTop / maxScroll) * maxThumbTop)
+    setMetrics((previous) => (
+      previous.visible
+      && previous.trackHeight === trackHeight
+      && previous.thumbHeight === thumbHeight
+      && previous.thumbTop === thumbTop
+        ? previous
+        : { visible: true, trackHeight, thumbHeight, thumbTop }
+    ))
+  }, [props.targetRef])
+
+  React.useEffect(() => {
+    const target = props.targetRef.current
+    if (target === null || typeof window === 'undefined') return
+    measure()
+    target.addEventListener('scroll', measure, { passive: true })
+    let resize: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined') {
+      resize = new ResizeObserver(() => {
+        measure()
+      })
+      resize.observe(target)
+    }
+    let mutation: MutationObserver | null = null
+    if (typeof MutationObserver !== 'undefined') {
+      mutation = new MutationObserver(() => {
+        measure()
+      })
+      mutation.observe(target, { childList: true, subtree: true })
+    }
+    return () => {
+      target.removeEventListener('scroll', measure)
+      resize?.disconnect()
+      mutation?.disconnect()
+    }
+  }, [measure, props.targetRef, props.refreshKey])
+
+  const onThumbPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const target = props.targetRef.current
+    if (target === null) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragRef.current = { startY: event.clientY, startTop: target.scrollTop }
+    event.currentTarget.setPointerCapture?.(event.pointerId)
   }
+
+  const onThumbPointerMove = (event: React.PointerEvent<HTMLDivElement>): void => {
+    const drag = dragRef.current
+    const target = props.targetRef.current
+    if (drag === null || target === null) return
+    const maxThumbTop = Math.max(0, metrics.trackHeight - metrics.thumbHeight)
+    const maxScroll = Math.max(0, target.scrollHeight - target.clientHeight)
+    if (maxThumbTop <= 0 || maxScroll <= 0) return
+    const offset = ((event.clientY - drag.startY) / maxThumbTop) * maxScroll
+    target.scrollTop = Math.max(0, Math.min(maxScroll, drag.startTop + offset))
+  }
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>): void => {
+    dragRef.current = null
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
+  }
+
+  if (!metrics.visible) return null
 
   return h(
     MuiBox,
-    { sx: SEARCH_RESULTS_SX },
-    h(
-      MuiTypography,
-      { variant: 'caption', color: 'text.secondary', sx: SEARCH_HEADER_SX },
-      props.state.status === 'ready'
-        ? fillTemplate(props.copy.search.results, { count: String(props.state.hits.length) })
-        : props.copy.search.label,
-    ),
-    h(MuiDivider),
-    body,
+    {
+      sx: SCROLL_TRACK_SX,
+      'aria-hidden': true,
+      onMouseDown: (event: React.MouseEvent<HTMLDivElement>): void => {
+        // Keep the combobox input focused while the thumb is used.
+        event.preventDefault()
+      },
+    },
+    h(MuiBox, {
+      sx: SCROLL_THUMB_SX,
+      style: {
+        height: `${metrics.thumbHeight}px`,
+        transform: `translateY(${metrics.thumbTop}px)`,
+      },
+      onPointerDown: onThumbPointerDown,
+      onPointerMove: onThumbPointerMove,
+      onPointerUp: endDrag,
+      onPointerCancel: endDrag,
+      onLostPointerCapture: (): void => {
+        dragRef.current = null
+      },
+    }),
   )
+}
+
+/**
+ * Autocomplete listbox slot: the native scrollbar is hidden and replaced by
+ * {@link ScrollBar}, which overlays a transparent track and a light-grey thumb.
+ *
+ * The `ul` stays the scrolling element and keeps MUI's listbox class (option
+ * focus colours); its 40vh cap and 8px padding are overridden inline so the
+ * custom thumb measures exactly the visible list. MUI's `ref` is forwarded to
+ * the `ul` it queries for keyboard navigation, and `ownerState` is dropped
+ * because it is an MUI styling prop that must not reach the DOM.
+ */
+function AutocompleteScrollListboxBase(
+  props: Record<string, unknown>,
+  forwardedRef: React.ForwardedRef<HTMLElement>,
+): React.ReactElement {
+  const {
+    children,
+    className,
+    ownerState: _ownerState,
+    style,
+    ...rest
+  } = props
+  const scrollRef = React.useRef<HTMLElement | null>(null)
+  const setRef = React.useCallback((node: HTMLElement | null): void => {
+    scrollRef.current = node
+    if (typeof forwardedRef === 'function') {
+      forwardedRef(node)
+      return
+    }
+    if (forwardedRef !== null && typeof forwardedRef === 'object') {
+      (forwardedRef as React.MutableRefObject<HTMLElement | null>).current = node
+    }
+  }, [forwardedRef])
+
+  return h(
+    MuiBox,
+    { sx: SEARCH_LISTBOX_WRAP_SX },
+    h(
+      MuiBox,
+      {
+        component: 'ul',
+        ...rest,
+        ref: setRef,
+        className,
+        // Inline geometry wins over MUI's listbox class (40vh cap, 8px pad).
+        style: {
+          ...(asRecord(style) ?? {}),
+          maxHeight: SEARCH_LISTBOX_MAX_HEIGHT,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          margin: 0,
+          padding: 0,
+          listStyle: 'none',
+          scrollbarWidth: 'none',
+        },
+        sx: SEARCH_LISTBOX_SX,
+      },
+      children as React.ReactNode,
+    ),
+    h(ScrollBar, {
+      targetRef: scrollRef,
+      refreshKey: React.Children.count(children as React.ReactNode),
+    }),
+  )
+}
+
+/**
+ * MUI's listbox slot must be a `forwardRef` component: the autocomplete hands
+ * it a ref for keyboard navigation, and React only delivers that ref to a
+ * `forwardRef` component. The ref goes to the `ul`; the wrapper only positions
+ * the custom scrollbar.
+ */
+const AutocompleteScrollListbox = React.forwardRef(AutocompleteScrollListboxBase)
+
+/** Loading / no-results / error copy MUI shows when the listbox is empty. */
+function searchNoOptionsText(
+  search: SearchState,
+  copy: PanelCopy,
+  onRetry: () => void,
+): React.ReactNode {
+  if (search.status === 'error') {
+    return h(
+      MuiBox,
+      { sx: SEARCH_STATUS_SX },
+      h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, copy.search.error),
+      h(
+        MuiButton,
+        {
+          size: 'small',
+          variant: 'text',
+          // Keep the input focused so the popup does not close before the click.
+          onMouseDown: (event: React.MouseEvent<HTMLButtonElement>): void => {
+            event.preventDefault()
+          },
+          onClick: onRetry,
+        },
+        copy.states.retry,
+      ),
+    )
+  }
+  return search.status === 'loading' ? copy.states.loading : copy.search.noResults
 }
 
 /** Where a search hit opens: an explicit host view wins, then kind, then path. */
@@ -4545,48 +5024,58 @@ interface DockedPanelProps {
 
 function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const copy = useCopy().panel
-  const route = useHashRoute()
   const panelError = React.useSyncExternalStore(subscribePanelError, getPanelError, getPanelError)
   const [menuAnchor, setMenuAnchor] = React.useState<HTMLElement | null>(null)
   const [refresh, setRefresh] = React.useState(0)
-  const [actionBusy, setActionBusy] = React.useState<'refresh' | 'rebuild' | null>(null)
+  const [actionBusy, setActionBusy] = React.useState<'refresh' | 'rebuild' | 'index' | null>(null)
   const [notice, setNotice] = React.useState<Notice | null>(null)
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
   const [search, setSearch] = React.useState<SearchState>({ status: 'idle', hits: [] })
   const searchRef = React.useRef<HTMLInputElement | null>(null)
   const searchSeq = React.useRef(0)
+  const highlightedHitRef = React.useRef<SearchHit | null>(null)
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const pendingScrollRef = React.useRef<number | null>(null)
   const lastViewRef = React.useRef<PanelView>(props.views[0] ?? 'files')
   const lastPathRef = React.useRef<string | null>(null)
 
-  const active = route.panel && route.side === props.side
   const routedViews = props.side === 'left' ? LEFT_ROUTED_VIEWS : RIGHT_VIEWS
-  const [fallbackView, setFallbackView] = React.useState<PanelView>(props.views[0] ?? 'files')
-  const [fallbackPath, setFallbackPath] = React.useState<string | null>(null)
-  const view = active && routedViews.includes(route.view) ? route.view : fallbackView
-  const path = active ? route.path : fallbackPath
-  const id = active ? route.id : null
-  const go = (next: PanelView, params?: RouteParams): void => {
-    navigate(props.side, next, params)
-  }
+  // Component state is authoritative; the hash is read exactly once, here.
+  const [navigation, dispatchNavigation] = React.useReducer(
+    panelNavigationReducer,
+    routedViews,
+    (views: readonly PanelView[]): PanelNavigationState =>
+      initialPanelNavigation(readHash(), props.side, views, props.views[0] ?? 'files'),
+  )
+  const view = navigation.view
+  const path = navigation.path
+  const id = navigation.id
 
+  const go = React.useCallback((next: PanelView, params?: RouteParams): void => {
+    dispatchNavigation({
+      type: 'navigate',
+      view: next,
+      path: params?.path ?? null,
+      id: params?.id ?? null,
+    })
+    mirrorHash(props.side, next, params)
+  }, [props.side])
+
+  // Child views (tree rows, canvas, agents) navigate through this panel entry.
   React.useEffect(() => {
-    if (!active) return
-    if (route.view === 'agent') {
-      setFallbackView('agents')
-      setFallbackPath(null)
-      return
+    panelNavigators.set(props.side, go)
+    return () => {
+      if (panelNavigators.get(props.side) === go) panelNavigators.delete(props.side)
     }
-    if (!props.views.includes(route.view)) return
-    setFallbackView(route.view)
-    setFallbackPath(route.path)
-    if (route.view !== 'preview') {
-      lastViewRef.current = route.view
-      lastPathRef.current = route.path
-    }
-  }, [active, route.view, route.path, props.views])
+  }, [go, props.side])
+
+  // Remember the last non-preview selection for Escape / "leave preview".
+  React.useEffect(() => {
+    if (navigation.view === 'preview') return
+    lastViewRef.current = navigation.view === 'agent' ? 'agents' : navigation.view
+    lastPathRef.current = navigation.path
+  }, [navigation])
 
   // Minimized content is unmounted, so abandon any action spinner with it.
   React.useEffect(() => {
@@ -4595,6 +5084,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
 
   const clearSearch = React.useCallback((): void => {
     searchSeq.current += 1
+    highlightedHitRef.current = null
     setQuery('')
     setSearch({ status: 'idle', hits: [] })
   }, [])
@@ -4636,21 +5126,15 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
 
   /**
    * `Escape` in preview returns to the last non-preview view of this panel.
-   * The two panels share one URL, so `history.back()` could land on the other
-   * panel; the per-panel memory is the only reliable return target.
+   * Navigation is local state, so no history entry has to be unwound.
    */
   const leavePreview = (): void => {
     const target = lastViewRef.current === 'preview' ? 'files' : lastViewRef.current
-    previewEntryActive = false
     go(target, lastPathRef.current !== null ? { path: lastPathRef.current } : undefined)
   }
 
-  const submitSearch = React.useCallback((): void => {
-    const term = query.trim()
-    if (term.length === 0) {
-      clearSearch()
-      return
-    }
+  /** One request for one term; `searchSeq` drops stale answers. */
+  const requestSearch = React.useCallback((term: string): void => {
     const sequence = searchSeq.current + 1
     searchSeq.current = sequence
     setSearch({ status: 'loading', hits: [] })
@@ -4662,12 +5146,77 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           : { status: 'error', hits: [] },
       )
     })
-  }, [query, clearSearch])
+  }, [])
+
+  /** Immediate search (Enter or the error-state retry); bypasses the debounce. */
+  const submitSearch = React.useCallback((): void => {
+    const term = query.trim()
+    if (term.length === 0) {
+      clearSearch()
+      return
+    }
+    requestSearch(term)
+  }, [query, clearSearch, requestSearch])
+
+  /**
+   * The combobox searches while typing. Debouncing keeps one request per pause
+   * while the popup can still show the previous options; a new keystroke
+   * invalidates the pending timer through the effect cleanup.
+   */
+  React.useEffect(() => {
+    if (!searchOpen || !props.expanded) return
+    const term = query.trim()
+    // Invalidate any answer still in flight for the previous term; the
+    // debounced request below allocates its own sequence.
+    searchSeq.current += 1
+    if (term.length === 0) {
+      setSearch({ status: 'idle', hits: [] })
+      return
+    }
+    setSearch((previous) => (
+      previous.status === 'loading' ? previous : { status: 'loading', hits: [] }
+    ))
+    const timer = window.setTimeout(() => {
+      requestSearch(term)
+    }, SEARCH_DEBOUNCE_MS)
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [query, searchOpen, props.expanded, requestSearch])
 
   const activateHit = (hit: SearchHit): void => {
     const target = hitTarget(hit, props.views)
     go(target.view, target.params)
     clearSearch()
+  }
+
+  /** Typing drives the terminal state; a reset comes from a selection. */
+  const handleSearchInput = (_event: unknown, value: string, reason: string): void => {
+    if (reason === 'reset') return
+    highlightedHitRef.current = null
+    setQuery(value)
+  }
+
+  /** Selecting a listbox row opens the hit and closes the search. */
+  const handleSearchSelect = (_event: unknown, value: unknown): void => {
+    if (value === null || typeof value !== 'object') return
+    activateHit(value as SearchHit)
+  }
+
+  const onSearchKeyDown = (event: React.KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      setSearchOpen(false)
+      clearSearch()
+      return
+    }
+    // Enter selects a highlighted row (MUI's own handling); with no row
+    // highlighted it runs the search immediately.
+    if (event.key === 'Enter' && highlightedHitRef.current === null) {
+      event.preventDefault()
+      submitSearch()
+    }
   }
 
   /** Restore the scroll offset captured before a refresh/rebuild. */
@@ -4720,6 +5269,49 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           ? copy.rebuildPartial
           : fillTemplate(copy.rebuildDone, {
             files: String(report.files),
+            nodes: String(report.nodes),
+            ms: String(report.ms),
+          }),
+        severity: report.truncated ? 'warning' : 'success',
+      })
+      // The graph changed: drop stale search hits and re-request the view.
+      clearSearch()
+      setRefresh((previous) => previous + 1)
+    })
+  }
+
+  /**
+   * The explicit indexing action behind the empty state's button.
+   *
+   * The host scans the workspace (bounded to 200 files / 10 s), indexes what it
+   * can and answers counts; we then re-request the active view. Progress uses
+   * the same spinner (`actionBusy`) and Snackbar notice as refresh/rebuild.
+   */
+  const indexWorkspace = (): void => {
+    if (actionBusy !== null || !props.expanded) return
+    setActionBusy('index')
+    captureScroll()
+    void indexGraph().then((outcome) => {
+      if (!outcome.ok) {
+        setActionBusy(null)
+        if (outcome.status === 409 || outcome.code === 'BUSY') {
+          setNotice({ message: copy.indexBusy, severity: 'info' })
+          return
+        }
+        setNotice({
+          message: fillTemplate(copy.actionFailed, {
+            code: outcome.code ?? `HTTP ${outcome.status === null ? '?' : String(outcome.status)}`,
+          }),
+          severity: 'error',
+        })
+        return
+      }
+      const report = outcome.report
+      setNotice({
+        message: report.truncated
+          ? copy.indexPartial
+          : fillTemplate(copy.indexDone, {
+            indexed: String(report.indexed),
             nodes: String(report.nodes),
             ms: String(report.ms),
           }),
@@ -4851,35 +5443,35 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
       ? h(
         Tip,
         { label: copy.tip.search },
-        h(MuiTextField, {
-          inputRef: searchRef,
-          size: 'small',
-          variant: 'outlined',
-          value: query,
-          placeholder: copy.search.placeholder,
-          sx: SEARCH_FIELD_SX,
-          slotProps: { htmlInput: { 'aria-label': copy.search.label } },
-          onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>): void => {
-            const next = event.target.value
-            if (next.trim().length === 0) {
-              clearSearch()
-              return
-            }
-            setQuery(next)
+        h(MuiAutocomplete, {
+          freeSolo: false,
+          options: search.status === 'ready' ? search.hits : [],
+          value: null,
+          inputValue: query,
+          loading: search.status === 'loading',
+          loadingText: copy.states.loading,
+          noOptionsText: searchNoOptionsText(search, copy, submitSearch),
+          // The host already searched: never filter its hits locally.
+          filterOptions: (options: SearchHit[]): SearchHit[] => options,
+          getOptionLabel: (option: SearchHit): string => option.name,
+          isOptionEqualToValue: (option: SearchHit, candidate: SearchHit): boolean =>
+            option === candidate,
+          onInputChange: handleSearchInput,
+          onChange: handleSearchSelect,
+          onHighlightChange: (_event: unknown, option: unknown): void => {
+            highlightedHitRef.current = option === null || typeof option !== 'object'
+              ? null
+              : (option as SearchHit)
           },
-          onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>): void => {
-            if (event.key === 'Enter') {
-              event.preventDefault()
-              submitSearch()
-              return
-            }
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              event.stopPropagation()
-              setSearchOpen(false)
-              clearSearch()
-            }
-          },
+          onKeyDown: onSearchKeyDown,
+          renderInput: (params: Record<string, unknown>): React.ReactElement =>
+            renderSearchInput(params, copy, searchRef),
+          renderOption: renderSearchOption,
+          // The listbox owns the custom scrollbar; the popup must out-rank the
+          // fixed panel column (it is portaled to <body>).
+          slots: { listbox: AutocompleteScrollListbox },
+          slotProps: { popper: { sx: SEARCH_POPPER_SX } },
+          sx: SEARCH_AUTOCOMPLETE_SX,
         }),
       )
       : h(
@@ -4935,6 +5527,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
                 setSearchOpen(false)
                 clearSearch()
               } else {
+                highlightedHitRef.current = null
                 setSearchOpen(true)
               }
             },
@@ -4976,90 +5569,70 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     null,
     h(
       MuiBox,
-      {
-        sx: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' },
-      },
-    h(
-      MuiBox,
-      { sx: SCOPE_BAR_SX },
-      scopeChip,
+      { sx: PANEL_CONTENT_SX },
       h(
-        MuiTypography,
-        { variant: 'caption', color: 'text.secondary', noWrap: true, sx: READ_ONLY_SX },
-        copy.readOnly,
-      ),
-    ),
-    h(
-      MuiCard,
-      { elevation: 0, square: true, sx: CARD_SX },
-      h(
-        MuiCardContent,
-        { sx: CARD_CONTENT_SX, ref: scrollRef },
+        MuiBox,
+        { sx: SCOPE_BAR_SX },
+        scopeChip,
         h(
-          MuiFade,
-          {
-            key: `search:${query}`,
-            in: search.status !== 'idle',
-            appear: true,
-            unmountOnExit: true,
-            timeout: props.reducedMotion ? 0 : SEARCH_FADE_MS,
-          },
+          MuiTypography,
+          { variant: 'caption', color: 'text.secondary', noWrap: true, sx: READ_ONLY_SX },
+          copy.readOnly,
+        ),
+      ),
+      h(
+        MuiCard,
+        { elevation: 0, square: true, sx: CARD_SX },
+        h(
+          MuiCardContent,
+          { sx: CARD_CONTENT_SX, ref: scrollRef },
           h(
-            MuiBox,
-            null,
-            h(SearchResults, {
+            MuiFade,
+            {
+              key: `view:${view}:${path ?? ''}:${id ?? ''}`,
+              in: true,
+              appear: true,
+              timeout: props.reducedMotion ? 0 : VIEW_FADE_MS,
+            },
+            h(MuiBox, null, h(ActiveView, {
+              side: props.side,
               copy,
-              state: search,
-              onActivate: activateHit,
-              onRetry: submitSearch,
-            }),
+              path,
+              id,
+              refresh,
+              onSettled: handleSettled,
+              indexBusy: actionBusy === 'index',
+              onIndexWorkspace: indexWorkspace,
+            })),
           ),
-        ),
-        h(
-          MuiFade,
-          {
-            key: `view:${view}:${path ?? ''}:${id ?? ''}`,
-            in: true,
-            appear: true,
-            timeout: props.reducedMotion ? 0 : VIEW_FADE_MS,
-          },
-          h(MuiBox, null, h(ActiveView, {
-            side: props.side,
-            copy,
-            path,
-            id,
-            refresh,
-            onSettled: handleSettled,
-          })),
         ),
       ),
-    ),
-    h(
-      MuiBottomNavigation,
-      {
-        showLabels: true,
-        value: view === 'agent' ? 'agents' : view,
-        sx: NAV_SX,
-        onChange: (_event: React.SyntheticEvent, value: string): void => {
-          if (!isPanelView(value) || !props.views.includes(value)) return
-          go(value, path !== null ? { path } : undefined)
+      h(
+        MuiBottomNavigation,
+        {
+          showLabels: true,
+          value: view === 'agent' ? 'agents' : view,
+          sx: NAV_SX,
+          onChange: (_event: React.SyntheticEvent, value: string): void => {
+            if (!isPanelView(value) || !props.views.includes(value)) return
+            go(value, path !== null ? { path } : undefined)
+          },
         },
-      },
-      ...props.views.map((entry) =>
-        h(MuiBottomNavigationAction, {
-          key: entry,
-          value: entry,
-          label: tabLabel(entry, copy),
-          title: tabTip(entry, copy),
-          icon: h(
-            Tip,
-            { label: tabTip(entry, copy) },
-            h(
-              MuiBox,
-              { component: 'span', sx: { display: 'inline-flex' } },
-              h(TAB_ICONS[entry], { fontSize: 'small' }),
+        ...props.views.map((entry) =>
+          h(MuiBottomNavigationAction, {
+            key: entry,
+            value: entry,
+            label: tabLabel(entry, copy),
+            title: tabTip(entry, copy),
+            icon: h(
+              Tip,
+              { label: tabTip(entry, copy) },
+              h(
+                MuiBox,
+                { component: 'span', sx: { display: 'inline-flex' } },
+                h(TAB_ICONS[entry], { fontSize: 'small' }),
+              ),
             ),
-          ),
           sx: NAV_ACTION_SX,
         }),
       ),
@@ -5186,13 +5759,14 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
       onKeyDown: onPanelKeyDown,
       sx: {
         ...PANEL_ITEM_SX,
-        flex: props.expanded ? '1 1 0px' : '0 0 48px',
+        // Equal flex-basis/grow on both panels: two expanded panels split the
+        // column height 50/50. `minHeight: 0` on PANEL_ITEM_SX keeps that true
+        // even when either body's content is taller than its share.
+        flex: props.expanded ? PANEL_EXPANDED_FLEX : PANEL_COLLAPSED_FLEX,
         ...(props.expanded
-          ? { minHeight: PANEL_MIN_HEIGHT }
+          ? {}
           : { height: HEADER_HEIGHT, minHeight: HEADER_HEIGHT, maxHeight: HEADER_HEIGHT }),
-        transition: props.reducedMotion
-          ? 'none'
-          : 'flex-grow 220ms ease, flex-basis 220ms ease, min-height 220ms ease',
+        transition: props.reducedMotion ? 'none' : PANEL_RESIZE_TRANSITION,
       },
     },
     header,
@@ -5203,17 +5777,51 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
         timeout: props.reducedMotion ? 0 : PANEL_TOGGLE_MS,
         easing: PANEL_EASING,
         unmountOnExit: true,
-        sx: { flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+        sx: COLLAPSE_BODY_SX,
       },
+      // MUI's own fade rides the same 220 ms/easing as the height collapse, so
+      // restore/collapse is one Material transition (flex layout handles the
+      // push-up; no transform is involved).
       h(
-        MuiBox,
-        { sx: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
-        content,
+        MuiFade,
+        {
+          in: props.expanded,
+          appear: true,
+          timeout: props.reducedMotion ? 0 : PANEL_TOGGLE_MS,
+          easing: PANEL_EASING,
+        },
+        h(
+          MuiBox,
+          { sx: PANEL_CONTENT_SX },
+          content,
+        ),
       ),
     ),
     menu,
     snackbar,
   )
+}
+
+/**
+ * The fixed right-hand column.
+ *
+ * `justifyContent: 'flex-end'` anchors the stack to the bottom: the workspace
+ * panel (second child) sits at the bottom and, when it expands, pushes the
+ * relationship panel up; when the relationship panel expands it grows back
+ * downward into the space. The motion is pure flex layout — no transforms.
+ */
+export const COLUMN_SX = {
+  position: 'fixed',
+  top: COLUMN_TOP,
+  right: COLUMN_RIGHT,
+  bottom: COLUMN_BOTTOM,
+  zIndex: theme.zIndex.tooltip - 1,
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'flex-end',
+  gap: `${COLUMN_GAP}px`,
+  overflow: 'hidden',
+  pointerEvents: 'none',
 }
 
 /** The fixed right-hand column: relationship panel above, workspace below. */
@@ -5242,17 +5850,8 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
       MuiBox,
       {
         sx: {
-          position: 'fixed',
-          top: COLUMN_TOP,
-          right: COLUMN_RIGHT,
-          bottom: COLUMN_BOTTOM,
+          ...COLUMN_SX,
           width: narrow ? 'calc(100vw - 32px)' : `${column.width}px`,
-          zIndex: theme.zIndex.tooltip - 1,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: `${COLUMN_GAP}px`,
-          overflow: 'hidden',
-          pointerEvents: 'none',
         },
       },
       h(

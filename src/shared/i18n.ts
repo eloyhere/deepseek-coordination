@@ -313,6 +313,7 @@ export interface PanelTipCopy {
   readonly fit: string
   readonly resetLayout: string
   readonly rebuilding: string
+  readonly indexWorkspace: string
   readonly agentStatus: string
   readonly tabAgents: string
   readonly agentExpand: string
@@ -342,6 +343,13 @@ export interface PanelCopy {
   readonly rebuildDone: string
   readonly rebuildPartial: string
   readonly actionFailed: string
+  /** Empty-graph entry point: scan the workspace and build the first index. */
+  readonly indexWorkspace: string
+  readonly indexHint: string
+  readonly indexBusy: string
+  /** `{indexed}`/`{nodes}`/`{ms}` are resolved by {@link fillTemplate}. */
+  readonly indexDone: string
+  readonly indexPartial: string
   readonly tabs: Readonly<Record<PanelTab, string>>
   readonly families: Readonly<Record<PanelFamily, string>>
   readonly states: PanelStatesCopy
@@ -1093,6 +1101,11 @@ const ZH_PANEL: PanelCopy = {
   rebuildDone: '重建完成：{files} 个文件，{nodes} 个节点，用时 {ms} 毫秒',
   rebuildPartial: '已重建（部分）',
   actionFailed: '操作失败（{code}）',
+  indexWorkspace: '索引工作区',
+  indexHint: '工作区还没有索引。索引后可浏览文件、大纲与依赖关系。',
+  indexBusy: '正在索引工作区，请稍候',
+  indexDone: '索引完成：{indexed} 个文件，{nodes} 个节点，用时 {ms} 毫秒',
+  indexPartial: '已索引部分文件（达到上限）',
   tabs: {
     files: '文件',
     outline: '大纲',
@@ -1193,6 +1206,7 @@ const ZH_PANEL: PanelCopy = {
     fit: '适应画布',
     resetLayout: '重置节点位置',
     rebuilding: '正在重建…',
+    indexWorkspace: '扫描工作区文件并建立索引（只读）',
     agentStatus: '代理状态',
     tabAgents: '查看本会话代理',
     agentExpand: '展开子代理',
@@ -2066,6 +2080,11 @@ const EN_PANEL: PanelCopy = {
   rebuildDone: 'Rebuilt {files} files and {nodes} nodes in {ms} ms',
   rebuildPartial: 'Rebuilt partially',
   actionFailed: 'Action failed ({code})',
+  indexWorkspace: 'Index workspace',
+  indexHint: 'This workspace has no index yet. Index it to browse files, outlines and dependencies.',
+  indexBusy: 'Indexing the workspace; please wait.',
+  indexDone: 'Indexed {indexed} files and {nodes} nodes in {ms} ms',
+  indexPartial: 'Indexed partially (limit reached)',
   tabs: {
     files: 'Files',
     outline: 'Outline',
@@ -2166,6 +2185,7 @@ const EN_PANEL: PanelCopy = {
     fit: 'Fit to canvas',
     resetLayout: 'Reset node positions',
     rebuilding: 'Rebuilding…',
+    indexWorkspace: 'Scan workspace files and build the index (read-only)',
     agentStatus: 'Agent status',
     tabAgents: 'View this session’s agents',
     agentExpand: 'Expand sub-agents',

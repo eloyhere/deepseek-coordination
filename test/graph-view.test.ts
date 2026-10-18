@@ -34,6 +34,7 @@ import { deflateRawSync } from 'node:zlib'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  INDEX_SKIP_DIRECTORIES,
   MAX_AGENT_MESSAGES,
   MAX_AGENT_MESSAGE_BYTES,
   MAX_AGENT_ROSTER,
@@ -42,6 +43,8 @@ import {
   MAX_DOCX_DOCUMENT_BYTES,
   MAX_DOCX_HTML_BYTES,
   MAX_IMPORT_ENTRIES,
+  MAX_INDEX_DEPTH,
+  MAX_INDEX_FILES,
   MAX_INTRA_DEPTH,
   MAX_INTRA_EDGES,
   MAX_INTRA_NODES,
@@ -54,6 +57,7 @@ import {
   MAX_XLSX_COLUMNS,
   MAX_XLSX_ROWS,
   TURN_CEILING,
+  WorkspaceIndexGate,
   agentMessagesRoute,
   agentProgressOf,
   buildAgentRoster,
@@ -70,6 +74,8 @@ import {
   collectAgentRoster,
   createGraphQuery,
   graphCacheStats,
+  indexWorkspaceFiles,
+  isIndexableWorkspaceFile,
   normaliseGraphPath,
   previewKindOf,
   resetGraphCache,
@@ -83,6 +89,8 @@ import {
   type GraphNode,
   type GraphQuery,
   type GraphScope,
+  type WorkspaceIndexEntry,
+  type WorkspaceIndexIo,
 } from '../src/host/graph-view.js'
 
 /* ------------------------------------------------------------------------- *
@@ -1608,4 +1616,257 @@ test('agent events: a throwing non-not-found service error is propagated (route 
     () => resolveAgentSessionEvents(services, 'session-broken'),
     (error: unknown) => error instanceof Error && error.message === 'disk read failed',
   )
+})
+
+/* ------------------------------------------------------------------------- *
+ * Bounded workspace indexing (the scan half of POST /graph/index)
+ * ------------------------------------------------------------------------- */
+
+interface StubWalk {
+  io: WorkspaceIndexIo
+  /** Directory paths the walker asked for, in visit order. */
+  reads: string[]
+  /** File paths the walker handed to the parser, in visit order. */
+  indexed: string[]
+}
+
+/**
+ * One virtual workspace for the scanner.
+ *
+ * `tree` maps a workspace-relative directory (`''` is the root) to its direct
+ * entries; a path in `fail` makes `indexFile` throw exactly like an
+ * unsupported/binary/missing file. No real file system is involved.
+ */
+function stubWalk(
+  tree: Readonly<Record<string, readonly WorkspaceIndexEntry[]>>,
+  options: { fail?: readonly string[]; nodesPerFile?: number } = {},
+): StubWalk {
+  const reads: string[] = []
+  const indexed: string[] = []
+  const io: WorkspaceIndexIo = {
+    async readDirectory(path: string): Promise<readonly WorkspaceIndexEntry[]> {
+      reads.push(path)
+      return tree[path] ?? []
+    },
+    async indexFile(path: string): Promise<number> {
+      if (options.fail?.includes(path) === true) throw new Error(`cannot parse ${path}`)
+      indexed.push(path)
+      return options.nodesPerFile ?? 2
+    },
+  }
+  return { io, reads, indexed }
+}
+
+function walkFile(name: string): WorkspaceIndexEntry {
+  return { name, directory: false }
+}
+
+function walkDirectory(name: string): WorkspaceIndexEntry {
+  return { name, directory: true }
+}
+
+test('index scan: extension allowlist and skipped directories are explicit', () => {
+  for (const path of [
+    'src/app.ts',
+    'src/app.tsx',
+    'README.md',
+    'SUMMARY.md',
+    'paper.tex',
+    'main.py',
+    'lib.rs',
+    'x.TS',
+    'a/b/c.css',
+    'book.csv',
+  ]) {
+    assert.equal(isIndexableWorkspaceFile(path), true, path)
+  }
+  for (const path of [
+    'logo.png',
+    'report.docx',
+    'setup.exe',
+    'archive.zip',
+    'notes.json',
+    'data.yaml',
+    'page.html.bak',
+    '.gitignore',
+    'Makefile',
+    'src/no-extension',
+  ]) {
+    assert.equal(isIndexableWorkspaceFile(path), false, path)
+  }
+  assert.deepEqual(
+    [...INDEX_SKIP_DIRECTORIES].sort(),
+    ['.git', '.tmp', 'dist', 'node_modules'],
+  )
+})
+
+test('index scan: depth ≤ 8, breadth-first deterministic order, skipped count', async () => {
+  const tree: Record<string, WorkspaceIndexEntry[]> = {
+    '': [
+      walkDirectory('src'),
+      walkDirectory('d1'),
+      walkFile('root.ts'),
+      walkFile('notes.json'),
+    ],
+    src: [walkFile('app.tsx'), walkFile('logo.png')],
+  }
+  // d1 → d1/d2 → … → d1/…/d8; a file in each directory. Files at path depth 8
+  // (d1/…/d7/f7.ts) are inside the bound; d1/…/d8 is never entered (its files
+  // would be depth 9).
+  let directoryPath = 'd1'
+  for (let level = 1; level <= 8; level += 1) {
+    tree[directoryPath] = level < 8
+      ? [walkFile(`f${level}.ts`), walkDirectory(`d${level + 1}`)]
+      : [walkFile('too-deep.ts')]
+    directoryPath = level < 8 ? `${directoryPath}/d${level + 1}` : directoryPath
+  }
+
+  const { io, reads, indexed } = stubWalk(tree)
+  const result = await indexWorkspaceFiles(io, { now: () => 0 })
+
+  const expected = [
+    'd1/f1.ts',
+    'd1/d2/f2.ts',
+    'd1/d2/d3/f3.ts',
+    'd1/d2/d3/d4/f4.ts',
+    'd1/d2/d3/d4/d5/f5.ts',
+    'd1/d2/d3/d4/d5/d6/f6.ts',
+    'd1/d2/d3/d4/d5/d6/d7/f7.ts',
+    'root.ts',
+    'src/app.tsx',
+  ]
+  assert.deepEqual([...indexed].sort(), [...expected].sort())
+  assert.equal(indexed.includes('d1/d2/d3/d4/d5/d6/d7/d8/too-deep.ts'), false)
+  assert.equal(reads.some((path) => path.endsWith('/d8')), false)
+  assert.equal(reads.length, 9)
+  // notes.json and logo.png were seen but are not parser extensions.
+  assert.equal(result.indexed, 9)
+  assert.equal(result.skipped, 2)
+  assert.equal(result.nodes, 18)
+  assert.equal(result.truncated, false)
+  assert.equal(result.durationMs, 0)
+})
+
+test('index scan: dependency/VCS dirs are never entered and parse failures are skipped', async () => {
+  const tree: Record<string, WorkspaceIndexEntry[]> = {
+    '': [
+      walkDirectory('node_modules'),
+      walkDirectory('.git'),
+      walkDirectory('dist'),
+      walkDirectory('.tmp'),
+      walkDirectory('src'),
+      walkFile('binary.png'),
+      walkFile('README.md'),
+      walkFile('bad.ts'),
+      walkFile('style.css'),
+    ],
+    node_modules: [walkFile('dep.ts')],
+    '.git': [walkFile('config.ts')],
+    dist: [walkFile('bundle.js')],
+    '.tmp': [walkFile('cache.md')],
+    src: [walkFile('ok.ts'), walkFile('logo.png')],
+  }
+
+  const { io, reads, indexed } = stubWalk(tree, { fail: ['bad.ts'], nodesPerFile: 3 })
+  const result = await indexWorkspaceFiles(io, { now: () => 0 })
+
+  assert.deepEqual([...reads].sort(), ['', 'src'])
+  for (const skipped of ['node_modules', '.git', 'dist', '.tmp']) {
+    assert.equal(reads.includes(skipped), false, skipped)
+  }
+  assert.deepEqual([...indexed].sort(), ['README.md', 'src/ok.ts', 'style.css'])
+  // binary.png, bad.ts (parse failure) and src/logo.png are skipped files.
+  assert.equal(result.indexed, 3)
+  assert.equal(result.skipped, 3)
+  assert.equal(result.nodes, 9)
+})
+
+test('index scan: the 200-file cap truncates, exactly 200 files does not', async () => {
+  const capped = Array.from(
+    { length: MAX_INDEX_FILES + 5 },
+    (_unused, index) => walkFile(`f${String(index).padStart(3, '0')}.ts`),
+  )
+  const cappedWalk = stubWalk({ '': capped })
+  const cappedResult = await indexWorkspaceFiles(cappedWalk.io, { now: () => 0 })
+  assert.equal(cappedResult.indexed, MAX_INDEX_FILES)
+  assert.equal(cappedResult.truncated, true)
+  assert.equal(cappedWalk.indexed.length, MAX_INDEX_FILES)
+  assert.equal(cappedWalk.indexed[0], 'f000.ts')
+  assert.equal(cappedWalk.indexed[MAX_INDEX_FILES - 1], 'f199.ts')
+
+  const exact = Array.from(
+    { length: MAX_INDEX_FILES },
+    (_unused, index) => walkFile(`f${String(index).padStart(3, '0')}.ts`),
+  )
+  const exactWalk = stubWalk({ '': exact })
+  const exactResult = await indexWorkspaceFiles(exactWalk.io, { now: () => 0 })
+  assert.equal(exactResult.indexed, MAX_INDEX_FILES)
+  assert.equal(exactResult.truncated, false)
+})
+
+test('index scan: the wall-clock budget stops before the next file', async () => {
+  let clock = 0
+  const { io, reads, indexed } = stubWalk({ '': [walkFile('a.ts')] })
+  const result = await indexWorkspaceFiles(io, {
+    now: () => {
+      const current = clock
+      clock += 6_000
+      return current
+    },
+  })
+
+  // Started at 0, the loop starts at 6 s (allowed), the file check at 12 s
+  // truncates before parsing.
+  assert.equal(result.indexed, 0)
+  assert.equal(result.truncated, true)
+  assert.deepEqual(indexed, [])
+  assert.deepEqual(reads, [''])
+  assert.ok(result.durationMs >= 10_000)
+})
+
+test('index scan: an unreadable directory is skipped, not fatal', async () => {
+  const io: WorkspaceIndexIo = {
+    async readDirectory(path: string): Promise<readonly WorkspaceIndexEntry[]> {
+      if (path === 'broken') throw new Error('EACCES')
+      return path === '' ? [walkDirectory('broken'), walkFile('ok.ts')] : []
+    },
+    async indexFile(): Promise<number> {
+      return 1
+    },
+  }
+  const result = await indexWorkspaceFiles(io, { now: () => 0 })
+  assert.equal(result.indexed, 1)
+  assert.equal(result.skipped, 0)
+  assert.equal(result.truncated, false)
+})
+
+test('workspace index gate: a concurrent run answers BUSY and always releases', async () => {
+  const gate = new WorkspaceIndexGate()
+  let release = (): void => {}
+  const blocker = new Promise<void>((resolve) => {
+    release = resolve
+  })
+
+  const first = gate.run(async () => {
+    await blocker
+    return 'first'
+  })
+  assert.equal(gate.isBusy(), true)
+  assert.deepEqual(await gate.run(async () => 'second'), { ok: false, busy: true })
+
+  release()
+  assert.deepEqual(await first, { ok: true, value: 'first' })
+  assert.equal(gate.isBusy(), false)
+
+  assert.deepEqual(await gate.run(async () => 'third'), { ok: true, value: 'third' })
+  await assert.rejects(
+    () => gate.run(async () => { throw new Error('index failed') }),
+    /index failed/,
+  )
+  assert.equal(gate.isBusy(), false)
+})
+
+test('index scan default budget constants match the documented bounds', () => {
+  assert.equal(MAX_INDEX_DEPTH, 8)
+  assert.equal(MAX_INDEX_FILES, 200)
 })

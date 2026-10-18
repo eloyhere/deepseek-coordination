@@ -71,6 +71,18 @@
  * No Office byte is ever written to disk, no external process is started and
  * no converted body is stored or cached.
  *
+ * # Bounded workspace indexing (`POST /graph/index`)
+ *
+ * A fresh profile has an empty graph: the file tools index only what they are
+ * asked to parse. {@link indexWorkspaceFiles} is the scan half of the explicit
+ * indexing entry point and is still pure orchestration — the host injects a
+ * read-only {@link WorkspaceIndexIo} that binds it to `node:fs`, `ParseService`
+ * and `GraphStore`/`ChainEngine`. The scan never descends into
+ * `node_modules`/`.git`/`dist`/`.tmp`, never attempts a binary extension, is
+ * capped at {@link MAX_INDEX_FILES} files / {@link INDEX_TIME_LIMIT_MS} ms and
+ * reports `truncated` when a bound stopped it. {@link WorkspaceIndexGate}
+ * serializes concurrent runs (the route answers 409 `BUSY`).
+ *
  * # Two-level cache (dependencies / imports / intra)
  *
  * Per-file facts (`imports`, `exports`, `deps`) are resolved through:
@@ -3670,3 +3682,219 @@ const Color = {
 } as const
 
 type Color = (typeof Color)[keyof typeof Color]
+
+/* ------------------------------------------------------------------------- *
+ * Bounded workspace indexing (the scan half of POST /graph/index)
+ *
+ * This is the only part of the module that asks the host to do work: a fresh
+ * profile has an empty graph, so the panel cannot show anything until someone
+ * scans the workspace. The scan itself stays out of this module: the caller
+ * injects a read-only `WorkspaceIndexIo`, which the host route binds to
+ * `node:fs` + `ParseService` + `GraphStore`/`ChainEngine`. Tests bind it to a
+ * stub tree.
+ *
+ * Bounds (all enforced here, not by the adapters):
+ *  - workspace-relative path depth ≤ {@link MAX_INDEX_DEPTH} (root file = 1);
+ *  - at most {@link MAX_INDEX_FILES} files are handed to the parser;
+ *  - at most {@link INDEX_TIME_LIMIT_MS} ms of wall-clock time;
+ *  - dependency/build output and VCS directories are never descended into;
+ *  - only extensions the text layer has a parser for are attempted, so a
+ *    binary can never reach the parser by extension.
+ * Overrunning any bound reports `truncated: true` with the completed counts;
+ * a file that fails to parse is counted as `skipped` and never aborts the run.
+ * ------------------------------------------------------------------------- */
+
+/** Maximum files one workspace index hands to the parser. */
+export const MAX_INDEX_FILES = 200
+/** Wall-clock budget of one workspace index. */
+export const INDEX_TIME_LIMIT_MS = 10_000
+/** Maximum workspace-relative path depth (a root-level file is depth 1). */
+export const MAX_INDEX_DEPTH = 8
+
+/** Directories the scan never descends into (matched case-insensitively). */
+export const INDEX_SKIP_DIRECTORIES: readonly string[] = ['node_modules', '.git', 'dist', '.tmp']
+
+/**
+ * Extensions the scan accepts, mirroring the registered text parsers.
+ *
+ * Deliberately an allowlist: shared `.json`/`.yaml`/`.xml` extensions have no
+ * registered parser (the text layer refuses to guess), and binary documents
+ * (`.docx`, `.pdf`, images, archives) stay out by construction.
+ */
+export const INDEX_FILE_EXTENSIONS: readonly string[] = [
+  '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs',
+  '.java', '.py', '.pyi', '.pyw', '.rs', '.php',
+  '.c', '.h', '.cc', '.cpp', '.hpp', '.cxx', '.hh',
+  '.md', '.markdown', '.mdx', '.tex', '.ltx', '.latex', '.book',
+  '.css', '.html', '.htm', '.csv', '.tsv',
+]
+
+/** One directory entry returned by {@link WorkspaceIndexIo.readDirectory}. */
+export interface WorkspaceIndexEntry {
+  /** Last path segment (file or directory name). */
+  name: string
+  /** True for a directory; symbolic links are filtered out by the adapter. */
+  directory: boolean
+}
+
+/** Read-only adapter the host binds to the file system / parser / graph store. */
+export interface WorkspaceIndexIo {
+  /** List one workspace-relative directory (`''` is the workspace root). */
+  readDirectory(path: string): Promise<readonly WorkspaceIndexEntry[]>
+  /** Parse and persist one workspace-relative file; returns its node count. */
+  indexFile(path: string): Promise<number>
+}
+
+/** Overrides for the scan budgets; the host route uses the defaults. */
+export interface WorkspaceIndexOptions {
+  maxFiles?: number
+  timeLimitMs?: number
+  maxDepth?: number
+  /** Clock injection for deterministic tests; defaults to `Date.now`. */
+  now?: () => number
+}
+
+/** Value of `POST /graph/index`. */
+export interface WorkspaceIndexResult {
+  /** Files parsed and persisted. */
+  indexed: number
+  /** Files seen but not indexed (unsupported extension or parse failure). */
+  skipped: number
+  /** Graph nodes registered by the indexed files. */
+  nodes: number
+  durationMs: number
+  /** True when a file/time bound stopped the scan before it finished. */
+  truncated: boolean
+}
+
+/** True when a workspace-relative path has an extension the text layer parses. */
+export function isIndexableWorkspaceFile(path: string): boolean {
+  const extension = extensionOf(path)
+  return extension.length > 0 && INDEX_FILE_EXTENSIONS.includes(extension)
+}
+
+function isSkippedWorkspaceDirectory(name: string): boolean {
+  return INDEX_SKIP_DIRECTORIES.includes(name.toLowerCase())
+}
+
+function joinWorkspacePath(directory: string, name: string): string {
+  return directory.length === 0 ? name : `${directory}/${name}`
+}
+
+/**
+ * Scan the workspace and index every accepted text file.
+ *
+ * Breadth-first and deterministic: each directory's entries are sorted by
+ * code-point name before they are visited, so a capped run always indexes the
+ * same prefix of the workspace. `indexed` counts successful parses, `skipped`
+ * counts files that were seen but not indexed (extension or parse failure);
+ * directories are never counted. A directory that cannot be listed is skipped
+ * without aborting the scan.
+ */
+export async function indexWorkspaceFiles(
+  io: WorkspaceIndexIo,
+  options: WorkspaceIndexOptions = {},
+): Promise<WorkspaceIndexResult> {
+  const maxFiles = Math.max(0, Math.floor(options.maxFiles ?? MAX_INDEX_FILES))
+  const timeLimitMs = Math.max(0, Math.floor(options.timeLimitMs ?? INDEX_TIME_LIMIT_MS))
+  const maxDepth = Math.max(1, Math.floor(options.maxDepth ?? MAX_INDEX_DEPTH))
+  const now = options.now ?? Date.now
+  const startedAt = now()
+
+  let indexed = 0
+  let skipped = 0
+  let nodes = 0
+  let attempted = 0
+  let truncated = false
+
+  const pending: Array<{ path: string; depth: number }> = [{ path: '', depth: 0 }]
+
+  scan: while (pending.length > 0) {
+    if (now() - startedAt >= timeLimitMs) {
+      truncated = true
+      break
+    }
+    const directory = pending.shift() as { path: string; depth: number }
+    let entries: readonly WorkspaceIndexEntry[]
+    try {
+      entries = await io.readDirectory(directory.path)
+    } catch {
+      // An unreadable directory contributes nothing; it must not abort the run.
+      continue
+    }
+    const ordered = [...entries].sort((left, right) => compareText(left.name, right.name))
+    for (const entry of ordered) {
+      if (now() - startedAt >= timeLimitMs) {
+        truncated = true
+        break scan
+      }
+      if (entry.directory) {
+        // A child directory is only descended into when its files can still be
+        // within the depth bound (the child's entries are one level deeper).
+        if (directory.depth + 1 >= maxDepth) continue
+        if (isSkippedWorkspaceDirectory(entry.name)) continue
+        pending.push({
+          path: joinWorkspacePath(directory.path, entry.name),
+          depth: directory.depth + 1,
+        })
+        continue
+      }
+      const path = joinWorkspacePath(directory.path, entry.name)
+      if (!isIndexableWorkspaceFile(path)) {
+        skipped += 1
+        continue
+      }
+      if (attempted >= maxFiles) {
+        truncated = true
+        break scan
+      }
+      attempted += 1
+      try {
+        const count = await io.indexFile(path)
+        indexed += 1
+        nodes += Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
+      } catch {
+        // Unsupported/binary/missing content: one skipped file, scan continues.
+        skipped += 1
+      }
+    }
+  }
+
+  return {
+    indexed,
+    skipped,
+    nodes,
+    durationMs: Math.max(0, now() - startedAt),
+    truncated,
+  }
+}
+
+/** Outcome of one gated workspace index run. */
+export type WorkspaceIndexGateOutcome<T> =
+  | { ok: true; value: T }
+  | { ok: false; busy: true }
+
+/**
+ * Serialize workspace indexes in one host process.
+ *
+ * The flag flips synchronously before the task's first `await`, so a second
+ * request in the same tick answers BUSY instead of queuing behind the scan.
+ * The `finally` reset means a thrown task never leaves the gate stuck.
+ */
+export class WorkspaceIndexGate {
+  private active = false
+
+  isBusy(): boolean {
+    return this.active
+  }
+
+  async run<T>(task: () => Promise<T>): Promise<WorkspaceIndexGateOutcome<T>> {
+    if (this.active) return { ok: false, busy: true }
+    this.active = true
+    try {
+      return { ok: true, value: await task() }
+    } finally {
+      this.active = false
+    }
+  }
+}

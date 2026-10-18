@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.14.2（2026-10-18）。** 本版新增右侧两个只读工作区面板（canvas 关系图、预览矩阵：Markdown 与数学、净化 HTML、Prism 代码、docx/xlsx/pptx、带预计进度的代理名册），并做了崩溃隔离——任一面板失败都不会拖垮宿主。它建立在 v0.12.0 的领域层与 v0.11.0 的设置/缓存代理之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.14.3（2026-10-18）。** 本版新增右侧两个只读工作区面板（canvas 关系图、预览矩阵：Markdown 与数学、净化 HTML、Prism 代码、docx/xlsx/pptx、带预计进度的代理名册），并做了崩溃隔离——任一面板失败都不会拖垮宿主。它建立在 v0.12.0 的领域层与 v0.11.0 的设置/缓存代理之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -60,7 +60,7 @@ npm pack                # 先执行 prepack，生成可安装 tarball
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.14.2.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.14.3.tgz
 dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 ```
 
@@ -86,7 +86,7 @@ dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 |---|---|---|
 | `lib/index.mjs` | 宿主 ESM，`platform: node` | 2,380,317 B |
 | `lib/index.d.mts` | 宿主类型声明 | 9,095 B |
-| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 3,252,801 B |
+| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 3,331,578 B |
 
 Material UI、emotion 与 `react-dom` 被打进 `lib/client.js`，React 本身来自宿主模块表。内联的 `react-dom` 是 18.3.1 线，与宿主的 React 18 匹配——npm 不会为 React 18 的 `react` 自动配一个 React 19 的 `react-dom`。客户端体积大是因为内联了 MUI 与 `react-dom`，不是因为多带了一份 React。
 

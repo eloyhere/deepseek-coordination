@@ -710,6 +710,8 @@ export async function reportLocale(locale: Locale): Promise<void> {
 const GRAPH_TIMEOUT = 8000
 /** The host rebuild budget is 10 s; the request must outlive it. */
 const REBUILD_TIMEOUT = 15000
+/** The host index budget is also 10 s (depth 8 / 200 files). */
+const INDEX_TIMEOUT = 15000
 
 /**
  * One graph answer. `value` is the host's `{ ok, value }` payload as untrusted
@@ -781,6 +783,57 @@ export async function rebuildGraph(): Promise<RebuildOutcome> {
     ok: true,
     report: {
       files: finiteNumberOf(report?.files) ?? 0,
+      nodes: finiteNumberOf(report?.nodes) ?? 0,
+      ms: finiteNumberOf(report?.durationMs) ?? finiteNumberOf(report?.ms) ?? 0,
+      truncated: report?.truncated === true,
+    },
+  }
+}
+
+/** What one workspace index did, as the panel's success notice reports it. */
+export interface IndexReport {
+  indexed: number
+  skipped: number
+  nodes: number
+  ms: number
+  truncated: boolean
+}
+
+/** Result of `POST /deepseek-coordination/graph/index`. */
+export type IndexOutcome =
+  | { ok: true; report: IndexReport }
+  | { ok: false; status: number | null; code?: string; message?: string }
+
+/**
+ * Ask the host to scan the workspace and index every accepted text file.
+ *
+ * This is the explicit entry point the empty panel offers: until it runs, the
+ * graph only contains files the file tools already parsed. A concurrent index
+ * (or a rebuild collision reported by the host) answers 409 (`BUSY`); the panel
+ * turns that into its "already running" notice. Never throws.
+ */
+export async function indexGraph(): Promise<IndexOutcome> {
+  const { status, wire } = await call<unknown>(
+    '/graph/index',
+    { method: 'POST' },
+    INDEX_TIMEOUT,
+  )
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  const value = asRecord(wire.value)
+  const report = asRecord(value?.report) ?? value
+  return {
+    ok: true,
+    report: {
+      indexed: finiteNumberOf(report?.indexed) ?? 0,
+      skipped: finiteNumberOf(report?.skipped) ?? 0,
       nodes: finiteNumberOf(report?.nodes) ?? 0,
       ms: finiteNumberOf(report?.durationMs) ?? finiteNumberOf(report?.ms) ?? 0,
       truncated: report?.truncated === true,

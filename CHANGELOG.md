@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.3 | 2026-10-18 | `—` | Bottom-anchored panels, reducer navigation, workspace indexing |
 | 0.14.2 | 2026-10-18 | `5b5fdf8` | Client bundle no longer requires Node builtins |
 | 0.14.1 | 2026-10-18 | `c5f333b` | Panel error containment, lazy panel module, escape hatch |
 | 0.14.0 | 2026-10-18 | `429d05e` | Read-only workspace & relationship panels, canvas graphs, preview matrix, agent roster, cache-strategy wiring |
@@ -51,6 +52,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.3] — 2026-10-18
+
+### Fixed
+
+- **Panels stack from the bottom.** The docked column uses `justify-content: flex-end`, so the workspace panel sits at the bottom and its expansion pushes the relationship panel up; equal split is `1 1 0px` for both.
+- **Panel internals are a bounded flex chain.** The 320px minimum is gone; header 48px, scope bar fixed, content `flex:1; min-height:0` with its own scroll, nav fixed at 56px. The MUI `Collapse` wrapper joins the fill chain only after `entered`, so height measurement still works.
+- **Tab clicks no longer depend on the URL hash.** Each panel owns a `useReducer` view state; the hash is read once at mount and only mirrored with `history.replaceState` inside `try/catch`. DSH's router can no longer clobber a click.
+- **An empty graph can be filled deliberately.** `POST /graph/index` walks the workspace (depth ≤ 8, skips `node_modules`/`.git`/`dist`/`.tmp`, allowlisted extensions, 200 files / 10 s, serialized 409 BUSY) and indexes through the existing parser/graph path. The Files empty state offers an「Index workspace」button. Read-only: no writes, no builds, no execution.
+
+### Changed
+
+- **Title bars use `primary.main`**, so both panels read as MUI AppBars.
+- **Search is an MUI `Autocomplete`** with 250 ms debounce, keyboard selection and a custom scrollbar (`ScrollBar`, native bar hidden).
 
 ## [0.14.2] — 2026-10-18
 

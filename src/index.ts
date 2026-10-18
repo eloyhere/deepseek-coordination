@@ -21,6 +21,7 @@ import {
   readSync,
   realpathSync,
 } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { dirname, join, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -41,6 +42,7 @@ import { NodeRegistry } from './host/node-registry.js'
 import {
   MAX_PREVIEW_ARCHIVE_BYTES,
   MAX_PREVIEW_TEXT_BYTES,
+  WorkspaceIndexGate,
   agentMessagesRoute,
   buildAgentRoster,
   buildDependencies,
@@ -55,6 +57,7 @@ import {
   collectAgentRoster,
   createGraphQuery,
   graphVersionOf,
+  indexWorkspaceFiles,
   isOfficePreviewKind,
   normaliseGraphPath,
   previewKindOf,
@@ -67,6 +70,9 @@ import {
   type GraphQuery,
   type GraphScope,
   type PreviewValue,
+  type WorkspaceIndexEntry,
+  type WorkspaceIndexIo,
+  type WorkspaceIndexResult,
 } from './host/graph-view.js'
 import type { TakeoverGateAnswer } from './host/takeover-gate.js'
 import { CoordinationError, InvalidArgumentError, InvalidStateError, NotFoundError, toErrorJson } from './shared/error.js'
@@ -419,6 +425,72 @@ async function rebuildGraph(service: CoordinationService): Promise<RebuildValue>
   }
   resetGraphCache()
   return { files, nodes, durationMs: Date.now() - startedAt, truncated }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Index — scan the workspace and index files that are not in the graph yet
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Serializes `POST /graph/index`: the flag flips before the first await, so a
+ * concurrent request answers 409 `BUSY` instead of queuing behind the scan.
+ */
+const indexGate = new WorkspaceIndexGate()
+
+/**
+ * Explicit indexing entry point for a profile whose graph is still empty.
+ *
+ * The file tools only index the paths they are asked to parse, so a fresh
+ * workspace legitimately has no graph and the panels show their empty state.
+ * This scan walks the workspace instead: the bounds (depth ≤ 8, accepted
+ * extensions, skipped directories, 200 files / 10 s) live beside the pure
+ * walker in `host/graph-view.ts`; this adapter only binds it to the same
+ * services {@link rebuildGraph} uses.
+ *
+ * Read-only: directories are listed, accepted files are read through
+ * `ParseService`'s budgeted read path, and only the coordination database's own
+ * graph rows are rewritten. No build, command or execution runs, no workspace
+ * file is written, and symlinks are not followed.
+ */
+async function indexWorkspace(service: CoordinationService): Promise<WorkspaceIndexResult> {
+  const root = resolveToolWorkspaceRoot(service)
+  const parser = new ParseService({ workspaceRoot: root })
+  const store = new GraphStore(service.db, { workspaceRoot: root })
+  const registry = new NodeRegistry({ persist: { saveNode: (record) => store.saveNode(record) } })
+  const chain = new ChainEngine({
+    persist: {
+      saveNode: (node) => store.saveChainNode(node),
+      saveEdge: (edge) => store.saveEdge(edge),
+      deleteEdge: (edge) => store.deleteEdge(edge),
+    },
+  })
+
+  const io: WorkspaceIndexIo = {
+    async readDirectory(path: string): Promise<readonly WorkspaceIndexEntry[]> {
+      const absolute = path.length === 0 ? root : join(root, path)
+      const entries = await readdir(absolute, { withFileTypes: true })
+      // A symlink is never followed: the scan cannot leave the workspace and
+      // cannot index one file twice through an alias.
+      return entries
+        .filter((entry) => !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
+        .map((entry) => ({ name: entry.name, directory: entry.isDirectory() }))
+    },
+    async indexFile(path: string): Promise<number> {
+      const parsed = parser.parse({ path })
+      return store.transaction(() => {
+        store.beginParse(path)
+        const registered = registry.register(parsed)
+        chain.index(parsed)
+        store.saveSnapshot(parsed, { nodeCount: registered.length })
+        return registered.length
+      })
+    },
+  }
+
+  const result = await indexWorkspaceFiles(io)
+  // Rewritten rows bump the snapshot-derived graph version; drop L2 explicitly.
+  resetGraphCache()
+  return result
 }
 
 /**
@@ -880,6 +952,7 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            *   GET /graph/agents/messages?id=<id>  -> bounded transcript
            *   GET /graph/preview?path=<rel>       -> only body-bearing file route
            *   POST /graph/rebuild                 -> re-index known paths (action)
+           *   POST /graph/index                   -> scan + index a fresh workspace (action)
            */
           if (path === '/graph/tree' && method === 'GET') {
             const snapshot = graphSnapshotOf(service)
@@ -1082,7 +1155,30 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
           }
 
           /*
-           * The one graph action: re-parse and re-index the files already in
+           * The explicit indexing entry point. A fresh profile's graph is empty
+           * because the file tools only index what they parse; this scan walks
+           * the workspace instead. Bounded to depth 8 / 200 files / 10 s with
+           * dependency, VCS and temp directories skipped and only parser-backed
+           * text extensions attempted. Serialized in-process (409 BUSY). It is
+           * read-only: no build, command or execution runs and no workspace file
+           * is written — only the coordination database's own graph rows change.
+           */
+          if (path === '/graph/index' && method === 'POST') {
+            const outcome = await indexGate.run(() => indexWorkspace(service))
+            if (!outcome.ok) {
+              json(
+                response,
+                { ok: false, error: { code: 'BUSY', message: 'a workspace index is already running' } },
+                409,
+              )
+              return
+            }
+            json(response, { ok: true, value: outcome.value })
+            return
+          }
+
+          /*
+           * The graph rebuild action: re-parse and re-index the files already in
            * the graph. It reads files only (no build, command or execution),
            * is serialized in-process and bounded to 2000 files / 10 s. The
            * response carries counts and timing only — never file content.
