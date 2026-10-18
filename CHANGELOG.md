@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.11.0 | 2026-10-18 | `—` | Durable settings, DSH-owned reasoning, cache proxy and brand profiles, dialog and label fixes |
+| 0.11.0 | 2026-10-18 | `19bfedf` | Durable settings, DSH-owned reasoning, cache proxy and brand profiles, dialog and label fixes |
 | 0.10.0 | 2026-10-18 | `8a8d0f7` | Settings catalog, durable file layer, turn pipeline, phase freeze, data structures, installable package |
 | 0.9.2 | 2026-10-18 | `73a273d` | One dropdown tooltip at a time |
 | 0.9.1 | 2026-10-18 | `31f64da` | Restore working dropdown tooltips |
