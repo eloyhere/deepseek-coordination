@@ -19,7 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.14.9 | 2026-10-18 | `—` | Panel mount crash and portal/inset layout |
+| 0.14.9 | 2026-10-18 | `12115b5` | Panel mount crash and portal/inset layout |
 | 0.14.8 | 2026-10-18 | `26936c1` | Virtualized panels, routed tabs, outline/preview pages, four graph tools |
 | 0.14.7 | 2026-10-18 | `d5f80c6` | Preview keeps the selection and resolves the workspace |
 | 0.14.6 | 2026-10-18 | `f4549a7` | WebGL2 relationship canvas, priority render queue |
