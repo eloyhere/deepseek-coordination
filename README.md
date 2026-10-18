@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.14.1 (2026-10-18).** This release makes `interface`, `type`, `enumeration` and `namespace` first-class declaration kinds across TypeScript, Java, Rust and PHP. It adds a domain-concept layer split by ecosystem — tex, book, markdown, html, five programming languages, maven/npm and Office — plus a `kind` filter on the chain query, a directory layer, and the canonical `NodeRecord`. It builds on v0.11.0 (durable settings, DSH-owned reasoning, experimental cache proxy). The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.14.1 (2026-10-18).** This release adds two read-only docked workspace panels with canvas relationship graphs, a preview matrix (Markdown and math, sanitized HTML, Prism code, docx/xlsx/pptx), an agent roster with estimated progress, and hardens all of it so a panel failure cannot blank the harness. It builds on the v0.12.0 domain layer and the v0.11.0 settings and cache-proxy work. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|

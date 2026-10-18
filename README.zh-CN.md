@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.14.1（2026-10-18）。** 本版让 `interface`、`type`、`enumeration`、`namespace` 成为 TypeScript、Java、Rust、PHP 的一等声明 kind，并新增按体系拆分的领域概念层——tex、book、markdown、html、五种编程语言、maven/npm 与 Office——并为 chain 查询加上 `kind` 过滤、加入目录层与规范 `NodeRecord`。它建立在 v0.11.0（持久设置、推理交还 DSH、实验性缓存代理）之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.14.1（2026-10-18）。** 本版新增右侧两个只读工作区面板（canvas 关系图、预览矩阵：Markdown 与数学、净化 HTML、Prism 代码、docx/xlsx/pptx、带预计进度的代理名册），并做了崩溃隔离——任一面板失败都不会拖垮宿主。它建立在 v0.12.0 的领域层与 v0.11.0 的设置/缓存代理之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -393,7 +393,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 - 插件使用独立 SQLite 库，从不打开 DSH 的 `harness` 库。默认路径是 `%DSH_HOME%\coordination\coordination.db`；`database`/`databasePath` 只属于部署配置，既不投影也不允许 `/config` 写入。
 - 解析节点、`NodeCard`、`ChainLink` 及其工具结果都不带文件正文、附件或 AST。只有 `coordination_read` 返回文本，而且只返回请求的范围。
-- **预览是唯一承载正文的路由**：仅工作区相对路径、正文上限 64 KiB、由用户主动触发、`no-store`、不缓存也不写日志。其余 `/graph/*` 路由保持 body-free。
+- **预览是唯一承载正文的路由**：仅工作区相对路径、正文上限 64 KiB、由用户主动触发、`no-store`、不缓存也不写日志。其余 `/graph/*` 路由保持 body-free。Office 预览在服务端转换并限制大小，不写任何文件。
 - **工作区面板是只读的**：不编辑、不重命名、不删除、不新建、不构建；唯一的非 GET 图路由是 `POST /graph/rebuild`，它只重新解析已索引路径。
 - 文件路径必须是工作区相对路径；绝对路径、盘符路径、UNC、`..` 逃逸与符号链接逃逸在读取前拒绝。二进制/NUL/不可解码内容直接拒绝，不猜。
 - Turn 钩子只写 Turn 元数据和一条空 prompt 行，不镜像 DSH 对话，也不把文件内容复制进协调库。
