@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.14.8（2026-10-18）。** 本版新增右侧两个只读工作区面板（canvas 关系图、预览矩阵：Markdown 与数学、净化 HTML、Prism 代码、docx/xlsx/pptx、带预计进度的代理名册），并做了崩溃隔离——任一面板失败都不会拖垮宿主。它建立在 v0.12.0 的领域层与 v0.11.0 的设置/缓存代理之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.14.9（2026-10-18）。** 本版新增右侧两个只读工作区面板（canvas 关系图、预览矩阵：Markdown 与数学、净化 HTML、Prism 代码、docx/xlsx/pptx、带预计进度的代理名册），并做了崩溃隔离——任一面板失败都不会拖垮宿主。它建立在 v0.12.0 的领域层与 v0.11.0 的设置/缓存代理之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
 
 | 状态 | 含义 |
 |---|---|
@@ -60,7 +60,7 @@ npm pack                # 先执行 prepack，生成可安装 tarball
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.14.8.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.14.9.tgz
 dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 ```
 

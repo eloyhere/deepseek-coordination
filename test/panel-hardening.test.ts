@@ -21,6 +21,7 @@ import { resolve } from 'node:path'
 import * as React from 'react'
 // @ts-ignore react-dom 18 ships no declarations here and @types/react-dom is not a dependency.
 import { createRoot as createRootUntyped } from 'react-dom/client'
+import { DEFAULT_COPY } from '../src/shared/i18n.js'
 import {
   COLUMN_SX,
   CoordinationPanels,
@@ -229,11 +230,42 @@ class FakeComment extends FakeNode {
   }
 }
 
+/**
+ * Inline style object with the two `CSSStyleDeclaration` members React uses:
+ * custom properties go through `setProperty`, everything else is a plain
+ * assignment. MUI's Paper sets `--Paper-shadow` on mount.
+ */
+class FakeStyle {
+  [name: string]: unknown
+
+  setProperty(name: string, value: string): void {
+    this[name] = value
+  }
+
+  getPropertyValue(name: string): string {
+    const value = this[name]
+    return typeof value === 'string' ? value : ''
+  }
+
+  removeProperty(name: string): string {
+    const previous = this[name]
+    delete this[name]
+    return typeof previous === 'string' ? previous : ''
+  }
+}
+
 class FakeElement extends FakeNode {
   tagName: string
   namespaceURI: string
+  /**
+   * Modern browsers expose `innerHTML` on HTML *and* SVG elements. React checks
+   * for that property before falling back to its IE11 SVG parse dance (which
+   * needs a real document and would crash on this shim); an inert value keeps
+   * React on the plain property-assignment path. Tests never parse this markup.
+   */
+  innerHTML = ''
   attributes: Record<string, string> = Object.create(null)
-  style: Record<string, string> = {}
+  style = new FakeStyle()
   dataset: Record<string, string> = {}
   id = ''
   className = ''
@@ -359,6 +391,11 @@ const fakeWindow = {
   document,
   navigator: { userAgent: 'node' },
   localStorage: storage,
+  location: { hash: '' },
+  history: {
+    state: null,
+    replaceState(): void {},
+  },
   HTMLElement: FakeElement,
   Element: FakeElement,
   Node: FakeNode,
@@ -378,6 +415,8 @@ const fakeWindow = {
   getComputedStyle(): { getPropertyValue: () => string } {
     return { getPropertyValue: () => '' }
   },
+  setTimeout,
+  clearTimeout,
   requestAnimationFrame: (callback: () => void): ReturnType<typeof setTimeout> => setTimeout(callback, 0),
   cancelAnimationFrame: (handle: ReturnType<typeof setTimeout>): void => clearTimeout(handle),
   devicePixelRatio: 1,
@@ -441,6 +480,49 @@ test('PanelErrorBoundary renders healthy children normally', async () => {
     assert.equal(container.textContent, 'healthy panel')
     assert.equal(container.childNodes.length, 1)
   } finally {
+    await React.act(async () => {
+      root.unmount()
+    })
+    restoreDom()
+  }
+})
+
+test('mounting both docked panels does not crash the MUI transitions', async () => {
+  const restoreDom = installDom()
+  const logged: unknown[][] = []
+  const originalError = console.error
+  console.error = (...args: unknown[]): void => {
+    logged.push(args)
+  }
+
+  const { container, root } = createHost()
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(CoordinationPanels, { sessionId: 's1' }))
+    })
+    // Fade / Collapse finish on real timers; flush them while the DOM shim and
+    // the mounted tree are still installed, so a transition callback cannot
+    // read a ref that was never attached.
+    await React.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400))
+    })
+
+    const failures = logged.filter((args) => args[0] === '[coordination] panel failed')
+    assert.deepEqual(
+      failures.map(
+        (args) =>
+          `${String((args[1] as Error | undefined)?.stack ?? args[1])}\n${String(args[2] ?? '')}`,
+      ),
+      [],
+      'mounting the fixed column must not throw',
+    )
+    assert.doesNotMatch(document.body.textContent, /Panel crashed/)
+    assert.ok(document.body.textContent.includes(DEFAULT_COPY.panel.leftTitle))
+    assert.ok(document.body.textContent.includes(DEFAULT_COPY.panel.rightTitle))
+    // The column is portaled out of the composer slot into document.body.
+    assert.equal(container.childNodes.length, 0)
+  } finally {
+    console.error = originalError
     await React.act(async () => {
       root.unmount()
     })
@@ -1339,19 +1421,42 @@ test('the outline component stays mounted across the global/local route flip', (
  * ------------------------------------------------------------------------- */
 
 test('the column is bounded above and below and never scrolls its own box', () => {
+  // Viewport-relative inset rectangle: 72 top, 120 bottom, 16 right.
   assert.equal(COLUMN_SX.top, 72)
   assert.equal(COLUMN_SX.bottom, 120)
+  assert.equal(COLUMN_SX.right, 16)
+  assert.equal(COLUMN_SX.left, 'auto')
+  assert.equal(COLUMN_SX.width, 'min(440px, calc(100vw - 32px))')
   assert.equal(COLUMN_SX.overflow, 'hidden')
+  assert.equal(COLUMN_SX.pointerEvents, 'none')
   assert.equal(COLUMN_SX.display, 'flex')
   assert.equal(COLUMN_SX.flexDirection, 'column')
   assert.match(String(COLUMN_SX.maxHeight), /calc\(100dvh - 192px\)/)
   const fallback = COLUMN_SX['@supports not (height: 100dvh)']
   assert.match(String(fallback.maxHeight), /calc\(100vh - 192px\)/)
-  // Panel items shrink inside the column; fixed 320 px minimums are gone.
+
+  // Panel items and their content shrink inside the column; the old 320 px
+  // minimum and any wider inline width are gone.
+  assert.equal(PANEL_ITEM_SX.width, '100%')
+  assert.equal(PANEL_ITEM_SX.minWidth, 0)
+  assert.equal(PANEL_ITEM_SX.boxSizing, 'border-box')
   assert.equal(PANEL_ITEM_SX.minHeight, 0)
   assert.equal(PANEL_ITEM_SX.maxHeight, '100%')
   assert.equal(PANEL_ITEM_SX.overflow, 'hidden')
-  assert.doesNotMatch(panelSource(), /minHeight: 320/)
+  assert.equal(PANEL_CONTENT_SX.minWidth, 0)
+  const source = panelSource()
+  assert.doesNotMatch(source, /minHeight: 320/)
+  assert.doesNotMatch(source, /width: narrow \?/)
+})
+
+test('the column renders through a body portal so fixed means the viewport', () => {
+  const source = panelSource()
+  // The DSH shell has transformed ancestors; the portal restores viewport
+  // coordinates for the fixed inset rectangle.
+  assert.match(source, /import \{ createPortal \} from 'react-dom'/)
+  assert.match(source, /createPortal\(fixedColumn, document\.body\)/)
+  // SSR has no document (and no portals): render the column inline instead.
+  assert.match(source, /typeof document === 'undefined'\) return fixedColumn/)
 })
 
 test('splitPanelHeights keeps both panels inside the container', () => {

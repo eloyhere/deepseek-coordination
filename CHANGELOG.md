@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.9 | 2026-10-18 | `—` | Panel mount crash and portal/inset layout |
 | 0.14.8 | 2026-10-18 | `26936c1` | Virtualized panels, routed tabs, outline/preview pages, four graph tools |
 | 0.14.7 | 2026-10-18 | `d5f80c6` | Preview keeps the selection and resolves the workspace |
 | 0.14.6 | 2026-10-18 | `f4549a7` | WebGL2 relationship canvas, priority render queue |
@@ -57,6 +58,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.9] — 2026-10-18
+
+### Fixed
+
+- **Both panels no longer crash on mount.** MUI `Fade`/`Grow` clone their single child and call `reflow(node)` (`node.scrollTop`) when the appear transition starts. The panel content transition wrapped `PanelScrollProvider`, which renders only a `Context.Provider`, so the transition had no DOM node and threw `Cannot read properties of null (reading 'scrollTop')`; the boundary caught it and both panels rendered the crash chip. Every transition child is now a plain `div`/`span` host element (preview, header status, scope chip and content included), so the ref is always attached and the animation still runs. The same latent bug in the preview transition is fixed.
+- **The column is portal-rendered and inset.** The DSH shell has transformed ancestors, so `position: fixed` was resolved against them: the panels overflowed the right edge and ignored the top/bottom gaps. The column now renders through `createPortal(column, document.body)` (SSR falls back to inline), with `top:72 / right:16 / bottom:120`, `width:min(440px, calc(100vw - 32px))` and `maxHeight:calc(100dvh - 192px)`; panel items are `box-sizing:border-box` with `minWidth:0`, so long paths ellipsize instead of widening the panel.
+- **Regression tests** mount both panels, flush the transition timers, assert no boundary report and no crash chip, and pin the portal target and the full inset/width contract.
+
+### Changed
+
+- `column.width` and the「重置面板宽度」menu item are no longer used by rendering: the width is now the fixed responsive budget above. The persisted field is kept for schema compatibility.
 
 ## [0.14.8] — 2026-10-18
 

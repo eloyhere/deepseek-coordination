@@ -11,8 +11,10 @@
  * therefore split the column height exactly in half; a collapsed panel is
  * pinned to its 48 px title bar. Every panel is a bounded column, so its
  * scrolling content can never spill past the bottom-navigation divider.
- * The column is mounted as a sibling of the composer row (see `./index.ts`), so
- * neither a keystroke nor a panel toggle ever re-renders the composer itself.
+ * The column is mounted as a sibling of the composer row (see `./index.ts`) and
+ * portaled to `document.body`, so its `position: fixed` inset is measured
+ * against the viewport even though the DSH shell has transformed ancestors.
+ * Neither a keystroke nor a panel toggle ever re-renders the composer itself.
  * Minimizing keeps only the 48 px title bar; there is no floating button and no
  * free dragging/resizing.
  *
@@ -82,9 +84,10 @@
  *
  * `localStorage["coordination.panel.right"]` holds exactly
  * `{ openLeft, openRight, width }`; there are no coordinates. The relationship
- * panel defaults minimized and the workspace panel defaults expanded; width
- * defaults to 420 px. Views and paths live in component state; the hash only
- * mirrors the latest selection for deep links.
+ * panel defaults minimized and the workspace panel defaults expanded. The column
+ * width is budgeted at `min(440px, calc(100vw - 32px))` so it always stays
+ * inside the right-hand inset. Views and paths live in component state; the hash
+ * only mirrors the latest selection for deep links.
  *
  * # Failure containment
  *
@@ -153,6 +156,8 @@
  * animation, low = layout) and an idle canvas schedules no callback at all.
  */
 import * as React from 'react'
+// @ts-ignore react-dom 18 ships no declarations here and @types/react-dom is not a dependency.
+import { createPortal } from 'react-dom'
 import IconButton from '@mui/material/IconButton'
 import TextField from '@mui/material/TextField'
 import Autocomplete from '@mui/material/Autocomplete'
@@ -551,15 +556,20 @@ function tabTip(view: PanelView, copy: PanelCopy): string {
 /**
  * One docked panel: a bounded flex column. `minHeight: 0` is what keeps two
  * expanded panels inside the fixed column instead of stretching it past its
- * declared bottom edge. Bottom anchoring happens on {@link COLUMN_SX}.
+ * declared bottom edge. `width: 100%` + `boxSizing: border-box` keep the card
+ * (and its 1 px border) inside the column, and `minWidth: 0` lets long paths
+ * ellipsize instead of widening the whole column off the right edge of the
+ * viewport. Bottom anchoring happens on {@link COLUMN_SX}.
  */
 export const PANEL_ITEM_SX = {
   display: 'flex',
   flexDirection: 'column',
+  width: '100%',
   minHeight: 0,
   minWidth: 0,
   maxHeight: '100%',
   overflow: 'hidden',
+  boxSizing: 'border-box',
   backgroundColor: 'background.paper',
   border: '1px solid',
   borderColor: 'divider',
@@ -605,6 +615,37 @@ export const PANEL_CONTENT_SX = {
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
+}
+
+/**
+ * MUI transitions clone their single child and attach a ref to it. Fade and
+ * Grow then call `reflow(node)` — `node.scrollTop` — when the enter animation
+ * starts, so the direct child must be a plain DOM element that always accepts a
+ * ref. Wrapping a context provider, an error boundary or even a styled wrapper
+ * in the transition left that ref null and crashed the whole panel; these plain
+ * layout styles are applied to the host element instead.
+ */
+const TRANSITION_SURFACE_STYLE: React.CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+}
+
+/** {@link PANEL_CONTENT_SX} as inline style for a transition's DOM child. */
+const PANEL_CONTENT_STYLE: React.CSSProperties = {
+  flex: '1 1 auto',
+  minHeight: 0,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  overflow: 'hidden',
+}
+
+/** Scope-chip row layout as inline style for the Grow transition's DOM child. */
+const SCOPE_CHIP_WRAP_STYLE: React.CSSProperties = {
+  display: 'flex',
+  minWidth: 0,
+  maxWidth: '100%',
+  flex: 1,
 }
 
 /**
@@ -1394,8 +1435,6 @@ export const SCOPE_BAR_SX = {
   borderColor: 'divider',
   backgroundColor: 'background.paper',
 }
-
-const SCOPE_CHIP_WRAP_SX = { display: 'flex', minWidth: 0, maxWidth: '100%', flex: 1 }
 
 const READ_ONLY_SX = { flex: 'none', fontSize: 11, paddingLeft: 1 }
 
@@ -4692,7 +4731,7 @@ function PreviewView(props: ViewProps): React.ReactElement {
       h(
         MuiFade,
         { in: !ready, timeout: reducedMotion ? 0 : PREVIEW_FADE_MS, unmountOnExit: true },
-        skeleton,
+        h('div', { style: TRANSITION_SURFACE_STYLE }, skeleton),
       ),
       ready
         ? h(
@@ -4704,12 +4743,16 @@ function PreviewView(props: ViewProps): React.ReactElement {
             timeout: reducedMotion ? 0 : PREVIEW_FADE_MS,
           },
           h(
-            PanelErrorBoundary,
-            null,
+            'div',
+            { style: TRANSITION_SURFACE_STYLE },
             h(
-              React.Suspense,
-              { fallback: skeleton },
-              h(LazyPreviewRenderer, { copy: props.copy, data: state.value }),
+              PanelErrorBoundary,
+              null,
+              h(
+                React.Suspense,
+                { fallback: skeleton },
+                h(LazyPreviewRenderer, { copy: props.copy, data: state.value }),
+              ),
             ),
           ),
         )
@@ -7211,9 +7254,14 @@ function StatusPulse(props: { enabled: boolean }): React.ReactElement {
       window.clearInterval(timer)
     }
   }, [props.enabled, reducedMotion])
-  const dot = h(MuiBox, {
-    component: 'span',
-    sx: { display: 'inline-block', width: 8, height: 8, borderRadius: '50%', backgroundColor: 'success.main' },
+  const dot = h('span', {
+    style: {
+      display: 'inline-block',
+      width: 8,
+      height: 8,
+      borderRadius: '50%',
+      backgroundColor: theme.palette.success.main,
+    },
   })
   if (!props.enabled || reducedMotion) return dot
   return h(MuiFade, { in: on, timeout: 300 }, dot)
@@ -7226,8 +7274,8 @@ function AgentStatusChip(props: { copy: PanelCopy; status: string }): React.Reac
     MuiFade,
     { key: props.status, in: true, appear: true, timeout: reducedMotion ? 0 : 180 },
     h(
-      MuiBox,
-      { component: 'span', sx: { display: 'inline-flex' } },
+      'span',
+      { style: { display: 'inline-flex' } },
       h(
         Tip,
         { label: props.copy.tip.agentStatus },
@@ -8588,8 +8636,8 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
       timeout: props.reducedMotion ? 0 : SCOPE_GROW_MS,
     },
     h(
-      MuiBox,
-      { sx: SCOPE_CHIP_WRAP_SX },
+      'div',
+      { style: SCOPE_CHIP_WRAP_STYLE },
       h(
         Tip,
         { label: scopeTip },
@@ -8814,8 +8862,8 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
         timeout: props.reducedMotion ? 0 : 150,
       },
       h(
-        MuiBox,
-        { component: 'span', sx: { display: 'inline-flex' } },
+        'span',
+        { style: { display: 'inline-flex' } },
         h(
           Tip,
           { label: props.expanded ? copy.minimize : copy.restore },
@@ -8867,16 +8915,20 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
               appear: true,
               timeout: props.reducedMotion ? 0 : VIEW_FADE_MS,
             },
-            h(PanelScrollProvider, { target: scrollRef }, h(MuiBox, null, h(ActiveView, {
-              side: props.side,
-              copy,
-              path: viewPath,
-              id,
-              refresh,
-              onSettled: handleSettled,
-              indexBusy: actionBusy === 'index',
-              onIndexWorkspace: indexWorkspace,
-            }))),
+            h(
+              'div',
+              { style: TRANSITION_SURFACE_STYLE },
+              h(PanelScrollProvider, { target: scrollRef }, h(MuiBox, { sx: { minWidth: 0 } }, h(ActiveView, {
+                side: props.side,
+                copy,
+                path: viewPath,
+                id,
+                refresh,
+                onSettled: handleSettled,
+                indexBusy: actionBusy === 'index',
+                onIndexWorkspace: indexWorkspace,
+              }))),
+            ),
           ),
         ),
       ),
@@ -9074,8 +9126,8 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           easing: PANEL_EASING,
         },
         h(
-          MuiBox,
-          { sx: PANEL_CONTENT_SX },
+          'div',
+          { style: PANEL_CONTENT_STYLE },
           content,
         ),
       ),
@@ -9132,21 +9184,32 @@ export function splitPanelHeights(
 /**
  * The fixed right-hand column.
  *
+ * The column is portaled to `document.body` by
+ * {@link CoordinationPanelsColumn}: the DSH shell has transformed ancestors, so
+ * a `position: fixed` box rendered inside the composer slot would be positioned
+ * against the nearest transform instead of the viewport. The portal restores
+ * viewport coordinates for this inset rectangle (72 px from the top, 120 px from
+ * the bottom, 16 px from the right).
+ *
  * `justifyContent: 'flex-end'` anchors the stack to the bottom: the workspace
  * panel (second child) sits at the bottom and, when it expands, pushes the
  * relationship panel up; when the relationship panel expands it grows back
  * downward into the space. The motion is pure flex layout — no transforms.
  *
  * `top` + `bottom` keep the column clear of the host title bar and the composer
- * row; `maxHeight` (100dvh with a 100vh fallback) and `overflow: hidden` are a
- * second guard against a rotation/resize ever growing it. Both panels plus the
- * gap therefore always fit inside the column's own box.
+ * row; `width` is capped at 440 px and at the viewport minus the right inset, so
+ * the column can never grow past the right edge. `maxHeight` (100dvh with a
+ * 100vh fallback) and `overflow: hidden` are a second guard against a
+ * rotation/resize ever growing it. Both panels plus the gap therefore always fit
+ * inside the column's own box.
  */
 export const COLUMN_SX = {
   position: 'fixed',
   top: COLUMN_TOP,
   right: COLUMN_RIGHT,
   bottom: COLUMN_BOTTOM,
+  left: 'auto',
+  width: 'min(440px, calc(100vw - 32px))',
   maxHeight: `calc(100dvh - ${COLUMN_HEIGHT_OFFSET}px)`,
   '@supports not (height: 100dvh)': {
     maxHeight: `calc(100vh - ${COLUMN_HEIGHT_OFFSET}px)`,
@@ -9161,10 +9224,9 @@ export const COLUMN_SX = {
 }
 
 /** The fixed right-hand column: relationship panel above, workspace below. */
-function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
+function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement | React.ReactPortal {
   const copy = useCopy().panel
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
-  const narrow = useMediaQuery('(max-width:899.95px)')
   const [column, setColumn] = React.useState<ColumnState>(readColumnState)
   const columnRef = React.useRef<HTMLElement | null>(null)
   const [columnHeight, setColumnHeight] = React.useState(0)
@@ -9199,18 +9261,12 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
     setColumn((previous) => ({ ...previous, width: COLUMN_DEFAULT_WIDTH }))
   }
 
-  return h(
+  const fixedColumn = h(
     MuiThemeProvider,
     { theme },
     h(
       MuiBox,
-      {
-        ref: columnRef,
-        sx: {
-          ...COLUMN_SX,
-          width: narrow ? 'calc(100vw - 32px)' : `${column.width}px`,
-        },
-      },
+      { ref: columnRef, sx: COLUMN_SX },
       h(
         PanelErrorBoundary,
         null,
@@ -9245,6 +9301,12 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement {
       ),
     ),
   )
+
+  // SSR has no `document` (and no portals): render the column inline there. In
+  // the browser the portal is what makes `position: fixed` viewport-relative
+  // under the DSH shell's transformed ancestors.
+  if (typeof document === 'undefined') return fixedColumn
+  return createPortal(fixedColumn, document.body)
 }
 
 /**
