@@ -60,7 +60,7 @@ npm pack                # 先执行 prepack，生成可安装 tarball
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.12.0.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.14.1.tgz
 dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 ```
 
@@ -70,11 +70,23 @@ dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 
 `dsh plugin add` 会写入依赖和 bundle 行。如果 profile 里仍记录着别的包 spec，请替换它，不要假定新代码已经加载；用 `dsh --profile <name> --dump-config` 和已安装的 `package.json` 版本核对。
 
+### 卸载或禁用
+
+如果某个版本让 harness 无法进入，按下面顺序移除，然后重启：
+
+1. 从 profile 的 bundle 列表移除 `deepseek-coordination`（`dsh plugin --profile <name> remove deepseek-coordination`，或手动删除该行）。
+2. 在 profile 目录执行 `pnpm remove deepseek-coordination`。
+3. 如果 `node_modules/deepseek-coordination` 仍存在，手动删除——部分卸载路径会留下目录。
+4. 执行 `pnpm install` 重写 lockfile 与依赖树。
+5. 重启 harness。客户端 bundle 在启动时下发，仅刷新页面不会卸载旧插件。
+
+只针对面板 UI 的免重装恢复：在 Web GUI 里设置 `localStorage['coordination.panel.disabled'] = '1'`（或 `'true'`）并刷新，面板列不挂载任何内容，插件其余功能仍可用。改回 `'0'`（或删除该键）再刷新即可恢复。该开关只在挂载时读取一次，两个方向都需要刷新。
+
 | 产物 | 格式 | 本次构建大小 |
 |---|---|---|
-| `lib/index.mjs` | 宿主 ESM，`platform: node` | 940,726 B |
+| `lib/index.mjs` | 宿主 ESM，`platform: node` | 2,380,317 B |
 | `lib/index.d.mts` | 宿主类型声明 | 9,095 B |
-| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 1,170,887 B |
+| `lib/client.js` | 浏览器 CJS，包在 `__ModuleLoader__.load()` 中 | 3,250,623 B（gzip 687,907 B） |
 
 Material UI、emotion 与 `react-dom` 被打进 `lib/client.js`，React 本身来自宿主模块表。内联的 `react-dom` 是 18.3.1 线，与宿主的 React 18 匹配——npm 不会为 React 18 的 `react` 自动配一个 React 19 的 `react-dom`。客户端体积大是因为内联了 MUI 与 `react-dom`，不是因为多带了一份 React。
 
@@ -279,7 +291,17 @@ DSH 在任何 adapter 看到请求之前就把它冻结了：`buildRequest()` �
 5. 拒绝/失败信息只报路由名；
 6. 默认关闭、可逆。
 
-启用方式：创建 `%DSH_HOME%\coordination\proxy.enable`（或 `DSH_COORDINATION_PROXY=1`）后重启。`GET /deepseek-coordination/proxy/status` 只报告计数与标识：`available`、`enabled`、`decorate`、`upstream`、`model`（品牌与策略）、`forwards`、`refusals`。删掉开关文件重启即回到普通链路。
+启用方式：创建 `%DSH_HOME%\coordination\proxy.enable`（或 `DSH_COORDINATION_PROXY=1`）后重启。`GET /deepseek-coordination/proxy/status` 报告计数与标识：`available`、`enabled`、`decorate`、`upstream`、`upstreamProvider`、`model`（品牌与策略）、`mode`、`metrics`、`prefix`、`cacheStrategy`、`forwards`、`refusals`。删掉开关文件重启即回到普通链路。
+
+### 观测与改写（measure 与 normalize）
+
+接上代理与改写请求是**两个独立开关**。代理启用后默认是 `measure`：只恢复真实 provider 路由，从不调用缓存装饰器。要让装饰器运行，需创建内容为 `normalize` 的 `proxy.mode` 文件、创建 `proxy.rewrite` 标记文件，或设置 `DSH_COORDINATION_PROXY_REWRITE=1`，然后重启。
+
+两种模式下 `proxy.log` 每次转发都会多一行 `prefix`（`{ prefix: '<16 hex>', stable }`），指纹变化时再写一行 `prefix-churn`（`{ from, to }`）。`metrics` 聚合最近 100 次请求（`requests`、`samples`、`inputTokens`、`cachedInputTokens`、`hitRate`；DSH 的 `cacheReadTokens` 以 `cachedInputTokens` 呈现）。读取真实会话基线：用服务 Web GUI 的端口执行 `curl http://127.0.0.1:<port>/deepseek-coordination/proxy/status`。
+
+### 与按 provider id 精确匹配的宿主模块的交互
+
+改写对所有 `agent/request` 消费者可见：代理接入期间，请求里记录的路由是 `coordination-proxy`，而不是真实 provider。因此 `/proxy/status` 在 `upstream` 之外还暴露 `upstreamProvider`（改写前捕获的真实 provider）。按 provider id 解析凭据或账户状态的宿主模块在这种改写下可能出错；已知案例是宿主 web-search 的账户回退，需要宿主侧修复（0.2.1-rc.2 补丁已包含）。`ProxyService.compatibility()` 以静态数据携带同一份清单，代理不探测宿主。
 
 ## 自动压缩与 Token 治理器
 
@@ -371,6 +393,8 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 - 插件使用独立 SQLite 库，从不打开 DSH 的 `harness` 库。默认路径是 `%DSH_HOME%\coordination\coordination.db`；`database`/`databasePath` 只属于部署配置，既不投影也不允许 `/config` 写入。
 - 解析节点、`NodeCard`、`ChainLink` 及其工具结果都不带文件正文、附件或 AST。只有 `coordination_read` 返回文本，而且只返回请求的范围。
+- **预览是唯一承载正文的路由**：仅工作区相对路径、正文上限 64 KiB、由用户主动触发、`no-store`、不缓存也不写日志。其余 `/graph/*` 路由保持 body-free。
+- **工作区面板是只读的**：不编辑、不重命名、不删除、不新建、不构建；唯一的非 GET 图路由是 `POST /graph/rebuild`，它只重新解析已索引路径。
 - 文件路径必须是工作区相对路径；绝对路径、盘符路径、UNC、`..` 逃逸与符号链接逃逸在读取前拒绝。二进制/NUL/不可解码内容直接拒绝，不猜。
 - Turn 钩子只写 Turn 元数据和一条空 prompt 行，不镜像 DSH 对话，也不把文件内容复制进协调库。
 - 权限预设立即写给 DSH（完全权限需二次确认），从不进入离线 localStorage；离线重放只覆盖五个已存选择字段。
