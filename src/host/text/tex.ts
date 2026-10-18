@@ -8,15 +8,22 @@
  * (`\begin{condition}[…]`, `\requires`, `\meets`, `\necessary`, `\sufficient`,
  * `\adequate`, `\invariant`, `\assumption`, `\hypothesis`, `\guard`,
  * `\constraint`, `\goal`), `\label{...}` and
- * `\ref`/`\eqref`/`\autoref`/`\pageref`, `\begin{proof}…\end{proof}`,
+ * `\ref`/`\eqref`/`\autoref`/`\pageref`, citation keys
+ * (`\cite`/`\citep`/`\citet` and the other `cite*` spellings) as `citation`
+ * nodes, `\begin{proof}…\end{proof}`,
  * `$…$`, `$$…$$`, `\(…\)`, `\[…\]` and math environments
  * (`equation`/`align`/`gather`/`array`/`matrix`, starred variants), and
  * `\input`/`\include` as file references.
  *
  * Not done, by design: macro expansion (`\newcommand` is only skipped), package
- * semantics, `\write18`, bibliography targets, rendering. `\input` is a
+ * semantics, `\write18`, bibliography *definitions* (a `.bib` file is not
+ * parsed, so a cite key is emitted as a `citation` node with the key as its
+ * name and no workspace definition is invented), rendering. `\input` is a
  * dependency, never formula content. Theorem text is **not** returned; only the
  * body-free span, label, title and an explicit abstract brief are metadata.
+ *
+ * A `\ref` is a cross-reference, not a project dependency: it stays in
+ * {@link TexParseResult.crossReferences} and never becomes a citation node.
  *
  * Complexity: comments O(n); statements and explicit condition markers O(n)
  * because each known environment/command is consumed once; labels/refs/inputs
@@ -206,6 +213,32 @@ const REFERENCE_COMMANDS: Readonly<Record<string, TexReference['command']>> = {
 }
 
 /**
+ * Commands whose braced argument lists citation keys.
+ *
+ * The set is deliberately closed to the `cite*` spellings LaTeX packages use
+ * for a bibliography key: an unknown command never creates a citation node.
+ * The starred form and up to two `[optional]` arguments are accepted, so
+ * `\citep*[see][p.~3]{key}` still names exactly `key`.
+ */
+const CITATION_COMMANDS: ReadonlySet<string> = new Set([
+  'cite',
+  'citep',
+  'citet',
+  'citealp',
+  'citealt',
+  'citeauthor',
+  'citeyear',
+  'citeyearpar',
+  'cites',
+])
+
+/** One explicit citation key and its exact source span. */
+interface TexCitationKey {
+  name: string
+  span: SourceSpan
+}
+
+/**
  * Parse LaTeX.
  *
  * Time O(n), space O(statements + labels + formulas). Throws only for a
@@ -232,6 +265,12 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
   const statements: TexStatement[] = []
   const labels: TexLabel[] = []
   const crossReferences: TexReference[] = []
+  /**
+   * Explicit `\cite*` keys, first occurrence per key only: the key text is the
+   * parsed evidence, never a guessed bibliography title.
+   */
+  const citations: TexCitationKey[] = []
+  const citedKeys = new Set<string>()
   const comments: CodeComment[] = commentRanges.map((span) => ({
     style: 'line',
     brief: sanitizeMetadataText(source.slice(span.start + 1, span.end), MAX_BRIEF_LENGTH),
@@ -425,6 +464,20 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
         crossReferences.push({ command: referenceCommand, name: argument.value, span })
       }
       index = argument.next
+      continue
+    }
+    if (CITATION_COMMANDS.has(command.name)) {
+      const parsed = readCitationKeys(source, command.end)
+      if (parsed === undefined) {
+        index = command.end
+        continue
+      }
+      for (const key of parsed.keys) {
+        if (citedKeys.has(key.name)) continue
+        citedKeys.add(key.name)
+        citations.push({ name: key.name, span: locate(key.start, key.end) })
+      }
+      index = parsed.next
       continue
     }
     if (command.name === 'input' || command.name === 'include') {
@@ -673,6 +726,22 @@ export function parseTex(text: string, options: ParseOptions = {}): TexParseResu
     missingBrief += 1
     firstMissing ??= formula.span
     appendAstNode(ctx, root, 'formula', formula.span, formula.dialect)
+  }
+
+  /*
+   * Citation keys are explicit `\cite*` arguments only. The node carries the
+   * key text and its exact span; no bibliography entry, title or author is
+   * invented (a `.bib` file is not parsed). `\ref` stays a cross-reference and
+   * never creates a citation node.
+   */
+  for (const citation of citations) {
+    pushNodeMetadata(ctx, nodes, {
+      kind: 'citation',
+      name: citation.name,
+      fragment: fragmentForSpan(ctx, citation.span),
+      source: 'command',
+      span: citation.span,
+    })
   }
 
   /*
@@ -995,6 +1064,60 @@ function readBracedArgument(source: string, from: number): BracedArgument | unde
     cursor += 1
   }
   return undefined
+}
+
+/** One citation key with its offsets inside the braced argument text. */
+interface CitationKeyRange {
+  name: string
+  start: number
+  end: number
+}
+
+/**
+ * Read the keys of one `\cite*` command.
+ *
+ * Accepted shape: an optional star, at most two `[…]` optional arguments, then
+ * one `{k1,k2,…}` key list. Only the keys are returned (trimmed, empty and `*`
+ * entries skipped, each with its own exact span); a command without a braced
+ * key list states no citation and produces nothing.
+ */
+function readCitationKeys(
+  source: string,
+  from: number,
+): { keys: CitationKeyRange[]; next: number } | undefined {
+  let cursor = from
+  if (source.charCodeAt(cursor) === 42) cursor += 1
+  for (let optional = 0; optional < 2; optional += 1) {
+    const bracket = skipCitationSpace(source, cursor)
+    if (source.charCodeAt(bracket) !== 91) break
+    const close = source.indexOf(']', bracket + 1)
+    if (close < 0) break
+    cursor = close + 1
+  }
+  const argument = readBracedArgument(source, cursor)
+  if (argument === undefined) return undefined
+  const keys: CitationKeyRange[] = []
+  let offset = 0
+  for (const part of argument.value.split(',')) {
+    const partStart = argument.start + offset
+    offset += part.length + 1
+    const name = part.trim()
+    if (name.length === 0 || name === '*') continue
+    const leading = part.length - part.trimStart().length
+    keys.push({ name, start: partStart + leading, end: partStart + leading + name.length })
+  }
+  return { keys, next: argument.next }
+}
+
+function skipCitationSpace(source: string, from: number): number {
+  let cursor = from
+  while (
+    cursor < source.length &&
+    (source[cursor] === ' ' || source[cursor] === '\t' || source[cursor] === '\n' || source[cursor] === '\r')
+  ) {
+    cursor += 1
+  }
+  return cursor
 }
 
 interface BeginParse {

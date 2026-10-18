@@ -103,6 +103,19 @@ export type NodeKind =
   | 'code'
   | 'importation'
   | 'exportation'
+  /**
+   * Manifest dependency entry (`package.json` section entry, `pom.xml`
+   * `<dependency>`/`<parent>`): the parser names the package/coordinate and
+   * labels the declared range. Added for the project-level dependency graph;
+   * these nodes are evidence, never a workspace file.
+   */
+  | 'dependency'
+  /**
+   * `\cite{key}` target key (LaTeX). The parser names the key it read; the
+   * key is evidence for a project-level document dependency, never a
+   * fabricated workspace path.
+   */
+  | 'citation'
   | 'sign'
   | 'person'
   | 'venue'

@@ -19,6 +19,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import * as React from 'react'
+import MenuList from '@mui/material/MenuList'
 // @ts-ignore react-dom 18 ships no declarations here and @types/react-dom is not a dependency.
 import { createRoot as createRootUntyped } from 'react-dom/client'
 import { DEFAULT_COPY } from '../src/shared/i18n.js'
@@ -28,7 +29,9 @@ import {
   HEADER_SX,
   LEFT_PANEL_ROUTES,
   LEFT_PANEL_TABS,
-  MESSAGE_SANITIZE_CONFIG,
+  MESSAGE_COLLAPSED_HEIGHT,
+  MESSAGE_EXPANDED_MAX_HEIGHT,
+  MESSAGE_TEXT_SX,
   NAV_SX,
   PANEL_COLLAPSED_FLEX,
   PANEL_CONTENT_SX,
@@ -40,16 +43,23 @@ import {
   PANEL_ROW_ICON_SX,
   PANEL_ROW_SX,
   PanelErrorBoundary,
+  PanelContextMenuItems,
   RIGHT_PANEL_ROUTES,
   RIGHT_PANEL_TABS,
   SCOPE_BAR_SX,
   SCROLL_THUMB_SX,
   SCROLL_TRACK_SX,
   Task,
+  VirtualList,
+  agentContextMenuItems,
+  computeRowLayout,
+  contextMenuStateFromEvent,
+  copyPanelText,
   createVirtualListAdapter,
   createVirtualTreeAdapter,
   entryTreeAdapter,
   estimateMessageHeight,
+  fileContextMenuItems,
   fitScale,
   getPanelError,
   getTaskQueue,
@@ -61,11 +71,11 @@ import {
   messageAlignment,
   messageCanExpand,
   messageRoleKind,
+  outlineContextMenuItems,
   outermostOutlineProjects,
   outlineProjectOf,
   panelErrorTooltip,
   panelNavigationReducer,
-  sanitizeMessageHtml,
   shouldDrawLabel,
   splitPanelHeights,
   taskQueue,
@@ -458,6 +468,20 @@ function createHost(): { container: FakeElement; root: ClientRoot } {
   document.body.appendChild(container)
   const root = createRoot(container as unknown as Element)
   return { container, root }
+}
+
+/** Depth-first collect of fake elements matching `predicate`. */
+function collectElements(
+  node: FakeNode,
+  predicate: (element: FakeElement) => boolean,
+): FakeElement[] {
+  const found: FakeElement[] = []
+  const walk = (current: FakeNode): void => {
+    if (current instanceof FakeElement && predicate(current)) found.push(current)
+    for (const child of current.childNodes) walk(child)
+  }
+  walk(node)
+  return found
 }
 
 /* ------------------------------------------------------------------------- *
@@ -1148,74 +1172,43 @@ test('imports and exports are WebGL canvas pages on both panels', () => {
 })
 
 /* ------------------------------------------------------------------------- *
- * Agent transcript: sanitized Markdown, roles and read-only controls
+ * Agent transcript: plain-text bodies, roles and read-only controls
  * ------------------------------------------------------------------------- */
 
-test('sanitizeMessageHtml strips script/event handlers/javascript: URLs', () => {
-  const dirty = [
-    '<p>safe</p>',
-    '<script>alert(1)</script>',
-    '<img src="x" onerror="alert(1)">',
-    '<a href="javascript:alert(1)">click</a>',
-    '<iframe src="https://example.test"></iframe>',
-    '<div style="color:red" contenteditable="true" onclick="alert(1)">text</div>',
-  ].join('')
-  const clean = sanitizeMessageHtml(dirty)
-  assert.match(clean, /<p>safe<\/p>/)
-  assert.match(clean, /<img src="x">/)
-  assert.match(clean, /click/)
-  for (const forbidden of [
-    /<script/i,
-    /onerror/i,
-    /onclick/i,
-    /javascript:/i,
-    /<iframe/i,
-    /style=/i,
-    /contenteditable/i,
-    /srcset=/i,
-  ]) {
-    assert.doesNotMatch(clean, forbidden)
-  }
-})
+test('transcript bodies are plain text with pre-wrap, never Markdown/HTML', () => {
+  // The accepted contract: message text is a React text node. No Markdown
+  // pipeline, no HTML injection, no KaTeX/Prism/DOMPurify on this path.
+  assert.equal(MESSAGE_TEXT_SX.whiteSpace, 'pre-wrap')
+  assert.equal(MESSAGE_TEXT_SX.overflowWrap, 'anywhere')
+  assert.equal(MESSAGE_TEXT_SX.wordBreak, 'break-word')
 
-test('sanitizeMessageHtml runs the DOMPurify pass first, then the scrub', () => {
-  let seenConfig: unknown
-  const html = sanitizeMessageHtml('<p>raw</p>', {
-    sanitize: (raw: string, config?: Record<string, unknown>) => {
-      seenConfig = config
-      return `${raw}<script>bad</script><b>ok</b>`
-    },
-  })
-  assert.equal(seenConfig, MESSAGE_SANITIZE_CONFIG)
-  assert.equal(html, '<p>raw</p><b>ok</b>')
-})
-
-test('MESSAGE_SANITIZE_CONFIG denies the documented tags and attributes', () => {
-  for (const tag of [
-    'script',
-    'style',
-    'iframe',
-    'object',
-    'embed',
-    'form',
-    'input',
-    'textarea',
-    'select',
-    'button',
-    'video',
-    'audio',
-  ]) {
-    assert.ok(MESSAGE_SANITIZE_CONFIG.FORBID_TAGS.includes(tag), `missing FORBID_TAGS ${tag}`)
-  }
-  for (const attr of ['onerror', 'onclick', 'contenteditable', 'style', 'srcset']) {
-    assert.ok(MESSAGE_SANITIZE_CONFIG.FORBID_ATTR.includes(attr), `missing FORBID_ATTR ${attr}`)
-  }
-  assert.ok(MESSAGE_SANITIZE_CONFIG.ADD_ATTR.includes('target'))
-  assert.ok(MESSAGE_SANITIZE_CONFIG.ADD_ATTR.includes('rel'))
   const source = panelSource()
-  assert.match(source, /purify\.sanitize\(html, MESSAGE_SANITIZE_CONFIG\)/)
-  assert.match(source, /renderToStaticMarkup/)
-  assert.match(source, /target: '_blank', rel: 'noreferrer'/)
+  const bubbleStart = source.indexOf('function MessageBubble')
+  assert.ok(bubbleStart !== -1, 'MessageBubble must exist')
+  const bubble = source.slice(bubbleStart, source.indexOf('const EMPTY_AGENT_MESSAGES', bubbleStart))
+  // The raw message is handed to the element as a text child...
+  assert.match(bubble, /props\.message\.text,\s*\)/)
+  // ...styled by the exported pre-wrap recipe, with no HTML escape hatch.
+  assert.match(bubble, /\.\.\.MESSAGE_TEXT_SX/)
+  assert.doesNotMatch(bubble, /dangerouslySetInnerHTML/)
+  assert.doesNotMatch(bubble, /MessageHtmlRenderer|renderer|loadMessageHtmlRenderer/)
+  assert.doesNotMatch(bubble, /MESSAGE_PROSE_SX|renderToStaticMarkup|react-markdown/)
+  assert.doesNotMatch(bubble, /<strong|<code|<pre/)
+
+  // The whole view never loads the Markdown pipeline, and the transcript-only
+  // loader/machinery is gone from the module (the preview pipeline stays).
+  const viewStart = source.indexOf('function AgentMessagesView')
+  const view = source.slice(viewStart, source.indexOf('const RIGHT_VIEW_REGISTRY', viewStart))
+  assert.doesNotMatch(view, /renderer|loadMessageHtmlRenderer|renderMessageMarkdown/)
+  for (const removed of [
+    'loadMessageHtmlRenderer',
+    'messageMarkdownComponents',
+    'messageHtmlRendererPromise',
+    'renderMessageMarkdown',
+    'renderToStaticMarkup',
+  ]) {
+    assert.equal(source.includes(removed), false, `${removed} must be removed from the transcript path`)
+  }
 })
 
 test('message roles map to the documented bubble alignment', () => {
@@ -1232,9 +1225,11 @@ test('message roles map to the documented bubble alignment', () => {
   assert.equal(messageAlignment('system'), 'center')
 })
 
-test('transcript rows expand inside the 48–240 px estimate', () => {
-  assert.ok(estimateMessageHeight({ text: '' }, false) >= 48)
-  assert.ok(estimateMessageHeight({ text: 'x'.repeat(10_000) }, true) <= 240)
+test('transcript slots are 96 px collapsed and capped at 240 px expanded', () => {
+  assert.equal(estimateMessageHeight({ text: '' }, false), MESSAGE_COLLAPSED_HEIGHT)
+  assert.equal(estimateMessageHeight({ text: 'short' }, false), 96)
+  assert.equal(estimateMessageHeight({ text: 'x'.repeat(10_000) }, false), 96)
+  assert.ok(estimateMessageHeight({ text: 'x'.repeat(10_000) }, true) <= MESSAGE_EXPANDED_MAX_HEIGHT)
   assert.ok(
     estimateMessageHeight({ text: 'x'.repeat(600) }, true) >
       estimateMessageHeight({ text: 'x'.repeat(600) }, false),
@@ -1256,12 +1251,14 @@ test('agent detail is virtualized, truncation-aware and has no composer', () => 
   assert.doesNotMatch(view, /<input|<textarea|<form/)
   assert.doesNotMatch(view, /SendIcon|sendMessage|onSend|MuiButton[^]*发送/)
 
-  // The raw message text is never handed to dangerouslySetInnerHTML directly.
+  // The bubble renders the raw message as a text node under the plain-text
+  // recipe; no HTML/Markdown branch survives.
   const bubbleStart = source.indexOf('function MessageBubble')
   assert.ok(bubbleStart !== -1)
   const bubble = source.slice(bubbleStart, source.indexOf('const EMPTY_AGENT_MESSAGES', bubbleStart))
-  assert.match(bubble, /dangerouslySetInnerHTML: \{ __html: html \}/)
-  assert.doesNotMatch(bubble, /__html: props\.message\.text/)
+  assert.match(bubble, /props\.message\.text,\s*\)/)
+  assert.match(bubble, /MESSAGE_TEXT_SX/)
+  assert.doesNotMatch(bubble, /dangerouslySetInnerHTML|__html/)
   assert.match(bubble, /messageRoleKind/)
   assert.match(bubble, /messageAlignment/)
   assert.match(bubble, /formatAgentTime/)
@@ -1274,6 +1271,295 @@ test('agent detail is a routed page and Escape returns to the roster', () => {
   assert.match(source, /agent: AgentMessagesView/)
   assert.match(source, /if \(view === 'agent'\) \{\s*go\('agents'\)/)
   assert.match(source, /navigate\(props\.side, 'agents'\)/)
+})
+
+/* ------------------------------------------------------------------------- *
+ * Transcript fixed slots and context menus
+ * ------------------------------------------------------------------------- */
+
+test('three transcript rows use non-overlapping fixed slots', async () => {
+  const restoreDom = installDom()
+  const { container, root } = createHost()
+  const messages = [
+    { role: 'user', text: 'short' },
+    { role: 'assistant', text: 'x'.repeat(500) },
+    { role: 'tool', text: 'tool output' },
+  ]
+  const keys = messages.map((message, index) => `${index}:${message.role}`)
+  const expanded = new Set([keys[1] as string])
+  const heights = messages.map((message, index) =>
+    estimateMessageHeight(message, expanded.has(keys[index] as string)))
+  const expected = computeRowLayout(heights)
+  try {
+    const adapter = createVirtualListAdapter(messages, (_value, index) => keys[index] as string)
+    await React.act(async () => {
+      root.render(React.createElement(VirtualList, {
+        adapter,
+        rowHeight: (index: number) => heights[index] as number,
+        slot: (index: number) => React.createElement('div', { 'data-slot': String(index) }),
+      }))
+    })
+    const rows = collectElements(
+      container,
+      (element) => element.getAttribute('data-row-index') !== null,
+    ).map((element) => ({
+      index: Number(element.getAttribute('data-row-index')),
+      top: Number(element.getAttribute('data-row-top')),
+      height: Number(element.getAttribute('data-row-height')),
+    })).sort((left, right) => left.index - right.index)
+
+    assert.equal(rows.length, 3)
+    assert.deepEqual(rows.map((row) => row.top), [...expected.tops])
+    assert.deepEqual(rows.map((row) => row.height), [...expected.sizes])
+    for (let index = 1; index < rows.length; index += 1) {
+      const previous = rows[index - 1] as { top: number; height: number }
+      const next = rows[index] as { top: number }
+      assert.ok(
+        next.top >= previous.top + previous.height,
+        `row ${index} must start at or after the previous slot ends`,
+      )
+    }
+    assert.equal(expected.total, rows.reduce((sum, row) => sum + row.height, 0))
+  } finally {
+    await React.act(async () => {
+      root.unmount()
+    })
+    restoreDom()
+  }
+})
+
+test('contextMenuStateFromEvent prevents the native menu and clamps the pointer', () => {
+  let prevented = 0
+  assert.deepEqual(
+    contextMenuStateFromEvent({
+      clientX: 12.4,
+      clientY: 30.6,
+      preventDefault: (): void => {
+        prevented += 1
+      },
+    }),
+    { top: 31, left: 12 },
+  )
+  assert.equal(prevented, 1)
+  assert.deepEqual(contextMenuStateFromEvent({ clientX: Number.NaN, clientY: -4 }), {
+    top: 0,
+    left: 0,
+  })
+})
+
+test('the files context menu opens at the pointer and disables file actions for directories', async () => {
+  const restoreDom = installDom()
+  const { container, root } = createHost()
+  const prevented: number[] = []
+  let openFromContextMenu:
+    | ((event: { clientX: number; clientY: number; preventDefault(): void }) => void)
+    | null = null
+  function Harness(): React.ReactElement {
+    const [menu, setMenu] = React.useState<{ top: number; left: number } | null>(null)
+    openFromContextMenu = (event): void => {
+      setMenu(contextMenuStateFromEvent(event))
+    }
+    const actions = menu === null
+      ? []
+      : fileContextMenuItems(DEFAULT_COPY.panel, {
+        directory: true,
+        expanded: false,
+        hasChildren: true,
+        canPreview: true,
+      })
+    return React.createElement(
+      'div',
+      null,
+      menu === null
+        ? null
+        : React.createElement(
+          // MenuList supplies the context a MenuItem needs without a portal
+          // (the fake DOM cannot host MUI Modal's focus manager).
+          MenuList,
+          { 'aria-label': DEFAULT_COPY.panel.contextMenu.label },
+          React.createElement(PanelContextMenuItems, {
+            actions,
+            onClose: (): void => {
+              setMenu(null)
+            },
+          }),
+        ),
+    )
+  }
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(Harness))
+    })
+    // The row's onContextMenu handler is exactly this call.
+    await React.act(async () => {
+      openFromContextMenu?.({
+        clientX: 48,
+        clientY: 32,
+        preventDefault: (): void => {
+          prevented.push(1)
+        },
+      })
+    })
+    assert.deepEqual(prevented, [1])
+    // The items render as real MenuItems inside a MenuList; the menu surface
+    // itself (Menu/Modal) is source-asserted below because the fake DOM cannot
+    // host MUI's ModalManager.
+    const items = collectElements(
+      container,
+      (element) => element.getAttribute('data-context-item') !== null,
+    ).map((element) => ({
+      item: element.getAttribute('data-context-item'),
+      disabled: element.getAttribute('data-disabled'),
+    }))
+    assert.deepEqual(items, [
+      { item: 'preview', disabled: 'true' },
+      { item: 'locate', disabled: 'true' },
+      { item: 'copyPath', disabled: 'true' },
+      { item: 'expand', disabled: 'false' },
+    ])
+  } finally {
+    await React.act(async () => {
+      root.unmount()
+    })
+    restoreDom()
+  }
+})
+
+test('the context-menu item matrix is read-only and matches each target', () => {
+  const copy = DEFAULT_COPY.panel
+  const file = fileContextMenuItems(copy, {
+    directory: false,
+    expanded: false,
+    hasChildren: false,
+    canPreview: true,
+  })
+  assert.deepEqual(file.map((item) => item.id), ['preview', 'locate', 'copyPath'])
+  assert.deepEqual(file.map((item) => item.disabled === true), [false, false, false])
+  assert.equal(file[0]?.label, copy.contextMenu.preview)
+
+  const leftFile = fileContextMenuItems(copy, {
+    directory: false,
+    expanded: false,
+    hasChildren: false,
+    canPreview: false,
+  })
+  assert.equal(leftFile[0]?.disabled, true)
+
+  const directory = fileContextMenuItems(copy, {
+    directory: true,
+    expanded: true,
+    hasChildren: true,
+    canPreview: true,
+  })
+  assert.deepEqual(directory.map((item) => item.id), ['preview', 'locate', 'copyPath', 'collapse'])
+  assert.deepEqual(directory.map((item) => item.disabled === true), [true, true, true, false])
+  const emptyDirectory = fileContextMenuItems(copy, {
+    directory: true,
+    expanded: false,
+    hasChildren: false,
+    canPreview: true,
+  })
+  assert.equal(emptyDirectory[3]?.id, 'expand')
+  assert.equal(emptyDirectory[3]?.disabled, true)
+
+  const outline = outlineContextMenuItems(copy, { hasPath: true, canPreview: true })
+  assert.deepEqual(outline.map((item) => item.id), ['jumpToFile', 'previewFile', 'copyTitle'])
+  assert.deepEqual(outline.map((item) => item.disabled === true), [false, false, false])
+  const pathless = outlineContextMenuItems(copy, { hasPath: false, canPreview: true })
+  assert.deepEqual(pathless.map((item) => item.disabled === true), [true, true, false])
+  const leftOutline = outlineContextMenuItems(copy, { hasPath: true, canPreview: false })
+  assert.equal(leftOutline[1]?.disabled, true)
+
+  const agents = agentContextMenuItems(copy)
+  assert.deepEqual(agents.map((item) => item.id), [
+    'viewMessages',
+    'copyId',
+    'info',
+    'objective',
+    'plan',
+    'sendMessage',
+    'stop',
+  ])
+  assert.deepEqual(agents.slice(0, 5).map((item) => item.disabled === true), [
+    false,
+    false,
+    false,
+    false,
+    false,
+  ])
+  for (const action of agents.slice(5)) {
+    assert.equal(action.disabled, true)
+    assert.equal(action.tooltip, copy.contextMenu.hostUnavailable)
+  }
+  assert.equal(agents[0]?.label, copy.contextMenu.viewMessages)
+})
+
+test('copyPanelText uses the async clipboard and never throws on failure', async () => {
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const restoreNavigator = (): void => {
+    if (navigatorDescriptor === undefined) {
+      delete (globalThis as unknown as Record<string, unknown>).navigator
+    } else {
+      Object.defineProperty(globalThis, 'navigator', navigatorDescriptor)
+    }
+  }
+  const copied: string[] = []
+  try {
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        clipboard: {
+          writeText: async (text: string): Promise<void> => {
+            copied.push(text)
+          },
+        },
+      },
+    })
+    assert.equal(await copyPanelText('src/a.ts'), true)
+    assert.deepEqual(copied, ['src/a.ts'])
+  } finally {
+    restoreNavigator()
+  }
+
+  const restoreDom = installDom()
+  const warnings: unknown[][] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]): void => {
+    warnings.push(args)
+  }
+  try {
+    // Without a real clipboard/selection the fallback fails closed: `false`
+    // plus one warning, never a rejection into the menu handler.
+    assert.equal(await copyPanelText('src/a.ts'), false)
+    assert.equal(warnings.length, 1)
+    assert.equal(warnings[0]?.[0], '[coordination] copy failed')
+  } finally {
+    console.warn = originalWarn
+    restoreDom()
+  }
+})
+
+test('PanelContextMenu anchors at the pointer with the documented test id', () => {
+  const source = panelSource()
+  const start = source.indexOf('export function PanelContextMenu(')
+  assert.ok(start !== -1, 'PanelContextMenu must exist')
+  const end = source.indexOf('export function PanelContextMenuItems(', start)
+  const component = source.slice(start, end)
+  assert.match(component, /anchorReference: 'anchorPosition'/)
+  assert.match(component, /anchorPosition/)
+  assert.match(component, /onClose: props\.onClose/)
+  assert.match(component, /'data-testid': 'panel-context-menu'/)
+  assert.match(component, /event\.key !== 'Escape'/)
+  assert.match(component, /slotProps/)
+  // File headings/leaves, outline groups/nodes and agent rows all wire
+  // onContextMenu; the pointer helper prevents the native menu.
+  assert.ok((source.match(/onContextMenu: \(event: React\.MouseEvent\)/g) ?? []).length >= 4)
+  assert.match(source, /function fileContextMenuItems/)
+  assert.match(source, /function outlineContextMenuItems/)
+  assert.match(source, /function agentContextMenuItems/)
+  assert.match(source, /navigator\.clipboard/)
+  assert.match(source, /execCommand\('copy'\)/)
+  assert.match(source, /'data-testid': 'agent-info-dialog'/)
 })
 
 /* ------------------------------------------------------------------------- *

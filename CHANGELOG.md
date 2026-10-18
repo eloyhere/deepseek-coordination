@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.10 | 2026-10-18 | `—` | Project-level dependencies, imports own file cycles, plain-text transcript, context menus |
 | 0.14.9 | 2026-10-18 | `12115b5` | Panel mount crash and portal/inset layout |
 | 0.14.8 | 2026-10-18 | `26936c1` | Virtualized panels, routed tabs, outline/preview pages, four graph tools |
 | 0.14.7 | 2026-10-18 | `d5f80c6` | Preview keeps the selection and resolves the workspace |
@@ -58,6 +59,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.10] — 2026-10-18
+
+### Changed
+
+- **Dependency is now project-level; imports stay file-level.** `/graph/dependencies` returns only project-to-project edges:
+  `{ from, to, relation:'depends', kind:'project', medium:'code'|'document', manager?:'npm'|'maven'|'tex', label?, external, cyclic }`.
+  Code projects come from `package.json` and `pom.xml` dependency entries (from = the manifest path; to = another workspace project's manifest when the declared name binds, otherwise an `external:true` stub with the package/coordinate as name). Documents come from `\cite`-family commands in `.tex` files; `\ref`/`\label` are deliberately **not** dependencies.
+  `/graph/imports` keeps the file-level rows and now reports its own file-level `cyclic` flag and `cycles`, computed over resolved file `depends` edges, so project and file cycles never mix.
+- **`NodeKind` gains `dependency` and `citation`.** npm/maven already emitted `dependency` nodes and the chain already persisted them; the projection now reads that evidence instead of synthesising edges.
+
+### Added
+
+- **`\cite` scanning** in the TeX parser: `cite`, `citep`, `citet`, `citealp`, `citealt`, `citeauthor`, `citeyear`, `citeyearpar`, `cites`, with an optional `*`, up to two optional arguments and comma-separated keys; each key becomes a body-free `citation` node with its own span.
+- **Project cycle detection** over the project edge set (SCC flags plus a bounded simple-cycle list), sorted `medium → from → to`, still capped at 2,000 links / 50 cycles.
+
+### Fixed
+
+- **Transcript layout and Markdown misuse.** Message bodies are plain text (`white-space: pre-wrap`, `overflow-wrap: anywhere`) — no Markdown, no HTML injection — and rows use fixed slots (`estimateMessageHeight`, `computeRowLayout`, cumulative offsets) so bubbles can no longer overlap. The old transcript path passed a built `rehype-katex` transformer where unified expected a plugin, which threw and silently fell back to raw text for every message; the same misuse in the preview is fixed too.
+- **Context menus exist.** `PanelContextMenu` (pointer-anchored MUI `Menu`, Escape/backdrop/selection close) is wired to file rows, directory rows (preview/locate/copy disabled, expand enabled), outline groups/nodes and agent rows; the agents menu adds a read-only info/objective/plan dialog and keeps send/stop disabled with a “host command not wired” tooltip. Copy uses the clipboard API with a textarea fallback and only warns on failure.
 
 ## [0.14.9] — 2026-10-18
 

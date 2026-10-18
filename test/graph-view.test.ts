@@ -4,8 +4,10 @@
  * The module is deliberately pure: every fixture here is a body-free snapshot
  * of the persisted v24 graph (`GraphNode[]` + `GraphEdge[]`), exactly what the
  * `/graph/*` routes hand in from `GraphStore.loadNodes()` / `loadEdges()`. No
- * database, filesystem, parser or Cordis host is involved, so these tests run
- * on plain Node.
+ * database or filesystem is involved. The manifest/citation fixtures are built
+ * from the real npm/maven/TeX parser results (`parsedSnapshot`) so the
+ * project-dependency tests prove the parser→graph seam instead of a hand-written
+ * edge; every other fixture is explicit. These tests run on plain Node.
  *
  * Covered contracts:
  *
@@ -13,9 +15,12 @@
  *    nodes ignored and the depth cap applied;
  *  - outline family detection and depth ordering for book, tex and project
  *    fixtures, with unknown kinds omitted, plus file/workspace scopes and caps;
- *  - dependency projection keeps file-level `depends` edges only (containment
- *    edges are filtered out), scopes to one file on request and computes cycles
- *    on the projected subgraph;
+ *  - project-level dependency projection: npm/maven manifest entries and TeX
+ *    `\cite*` keys become `kind: 'project'` edges with a `medium` and `manager`,
+ *    external targets stay stubs, resolved workspace targets point at the
+ *    manifest path, and cycles are computed on that (separate) edge set;
+ *  - file-level imports stay on `/graph/imports`, which computes its own cycles
+ *    from the resolved file `depends` edges so the two edge sets never mix;
  *  - the cycle forms: mutual pair, three-node cycle, self-loop, acyclic graph;
  *  - import/export rows keep complete lists inside a cycle, scope to one file
  *    and respect caps;
@@ -113,6 +118,10 @@ import {
   resolveToolWorkspaceRootForRequest,
   type ToolWorkspaceRootService,
 } from '../src/host/tools.js'
+import { parsePackageJson } from '../src/host/text/npm.js'
+import { parsePom } from '../src/host/text/maven.js'
+import { parseTex } from '../src/host/text/tex.js'
+import type { NodeMetadata } from '../src/host/text/parser.js'
 
 /* ------------------------------------------------------------------------- *
  * Fixtures
@@ -137,6 +146,33 @@ function query(
   workspaceRoot = 'C:\\workspace',
 ): GraphQuery {
   return createGraphQuery({ version, scope, workspaceRoot, nodes, edges })
+}
+
+/**
+ * Build the body-free snapshot the chain persists for one parser result: the
+ * file node first, then every metadata node under that path, in source order.
+ * This is the parser→graph seam the project dependency projection reads, so a
+ * manifest/citation fixture proves the edge is derived from parsed evidence.
+ */
+function parsedSnapshot(
+  path: string,
+  parsed: { nodes?: readonly NodeMetadata[] },
+  fileKind = 'document',
+): GraphNode[] {
+  const nodes: GraphNode[] = [node('f-file', fileKind, path, { name: path })]
+  let ordinal = 1
+  for (const metadata of parsed.nodes ?? []) {
+    nodes.push({
+      handle: `n-${ordinal}`,
+      kind: metadata.kind,
+      path: metadata.path ?? path,
+      ...(metadata.name === undefined ? {} : { name: metadata.name }),
+      ...(metadata.label === undefined ? {} : { label: metadata.label }),
+      ordinal,
+    })
+    ordinal += 1
+  }
+  return nodes
 }
 
 function names(entries: ReadonlyArray<{ name: string }>): string[] {
@@ -508,135 +544,270 @@ test('outline rejects invalid paths and returns NOT_FOUND for unindexed files', 
 })
 
 /* ------------------------------------------------------------------------- *
- * Dependencies and cycles
+ * Project-level dependencies and cycles
  * ------------------------------------------------------------------------- */
 
-test('dependencies keep file-level depends edges only and skip unresolved targets', () => {
-  const nodes: GraphNode[] = [
-    node('d-src', 'directory', 'src'),
-    node('f-a', 'module', 'src/a.ts'),
-    node('f-b', 'module', 'src/b.ts'),
-  ]
-  const edges: GraphEdge[] = [
-    edge('f-a', 'f-b'),
-    edge('d-src', 'f-a', 'contains'),
-    edge('f-a', 'd-src', 'part_of'),
-    // Unresolved specifier: no indexed node, so no path and no pseudo-cycle.
-    edge('f-a', 'missing-handle'),
-  ]
-  const view = buildDependencies(query(nodes, edges))
+test('dependencies: a parsed package.json with two entries yields two project code edges', () => {
+  resetGraphCache()
+  const parsed = parsePackageJson(
+    JSON.stringify(
+      {
+        name: 'demo',
+        version: '1.0.0',
+        dependencies: { react: '^18.2.0' },
+        devDependencies: { typescript: '~5.6.0' },
+      },
+      null,
+      2,
+    ),
+    { path: 'package.json' },
+  )
+  const view = buildDependencies(query(parsedSnapshot('package.json', parsed), [], 'deps-npm'))
   assert.equal(view.scope, 'workspace')
   assert.deepEqual(view.links, [
-    { from: 'src/a.ts', to: 'src/b.ts', relation: 'depends', cyclic: false },
+    {
+      from: 'package.json',
+      to: 'react',
+      relation: 'depends',
+      kind: 'project',
+      medium: 'code',
+      manager: 'npm',
+      label: '^18.2.0',
+      external: true,
+      cyclic: false,
+    },
+    {
+      from: 'package.json',
+      to: 'typescript',
+      relation: 'depends',
+      kind: 'project',
+      medium: 'code',
+      manager: 'npm',
+      label: '~5.6.0',
+      external: true,
+      cyclic: false,
+    },
   ])
   assert.deepEqual(view.cycles, [])
 })
 
-test('dependencies: mutual A<->B is one cycle and both edges are cyclic', () => {
+test('dependencies: a parsed pom yields project code edges including the parent', () => {
+  resetGraphCache()
+  const parsed = parsePom(
+    '<?xml version="1.0"?>' +
+      '<project>' +
+      '<modelVersion>4.0.0</modelVersion>' +
+      '<groupId>com.example</groupId>' +
+      '<artifactId>demo</artifactId>' +
+      '<version>1.0.0</version>' +
+      '<parent>' +
+      '<groupId>org.springframework.boot</groupId>' +
+      '<artifactId>spring-boot-starter-parent</artifactId>' +
+      '<version>3.3.0</version>' +
+      '</parent>' +
+      '<dependencies>' +
+      '<dependency><groupId>org.springframework</groupId><artifactId>spring-core</artifactId>' +
+      '<version>6.1.0</version></dependency>' +
+      '<dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId></dependency>' +
+      '</dependencies>' +
+      '</project>',
+    { path: 'pom.xml' },
+  )
+  const view = buildDependencies(query(parsedSnapshot('pom.xml', parsed), [], 'deps-pom'))
+  assert.deepEqual(
+    view.links.map((link) => [link.from, link.to, link.manager, link.label, link.external]),
+    [
+      ['pom.xml', 'org.slf4j:slf4j-api', 'maven', undefined, true],
+      ['pom.xml', 'org.springframework.boot:spring-boot-starter-parent', 'maven', 'parent', true],
+      ['pom.xml', 'org.springframework:spring-core', 'maven', '6.1.0', true],
+    ],
+  )
+  assert.ok(view.links.every((link) => link.kind === 'project' && link.medium === 'code'))
+})
+
+test('dependencies: parsed tex \\cite keys become project document edges; \\ref does not', () => {
+  resetGraphCache()
+  const source = String.raw`\documentclass{article}
+\begin{document}
+See \cite{alpha2024} and \citep[see][p.~3]{beta2025}.
+\section{Result}\label{b}
+As shown in \ref{b}.
+\end{document}`
+  const parsed = parseTex(source, { path: 'paper/main.tex' })
+  const view = buildDependencies(query(parsedSnapshot('paper/main.tex', parsed), [], 'deps-tex'))
+  assert.deepEqual(
+    view.links.map((link) => [link.from, link.to, link.medium, link.manager, link.external]),
+    [
+      ['paper/main.tex', 'alpha2024', 'document', 'tex', true],
+      ['paper/main.tex', 'beta2025', 'document', 'tex', true],
+    ],
+  )
+  // `\ref{b}` points at an in-file `\label`: a file-level cross-reference,
+  // never a project dependency edge.
+  assert.ok(!view.links.some((link) => link.to === 'b'))
+  assert.deepEqual(view.cycles, [])
+
+  // A citation node on a non-TeX path is not a `\cite` occurrence.
+  const stray = buildDependencies(
+    query(
+      [
+        node('f-note', 'document', 'docs/notes.md', { name: 'notes.md' }),
+        node('c-note', 'citation', 'docs/notes.md', { name: 'ignored', ordinal: 1 }),
+      ],
+      [],
+      'deps-tex-stray',
+    ),
+  )
+  assert.deepEqual(stray.links, [])
+})
+
+test('dependencies and imports use separate edge sets: file imports never become project edges', () => {
   resetGraphCache()
   const nodes: GraphNode[] = [
     node('f-a', 'module', 'a.ts'),
     node('f-b', 'module', 'b.ts'),
-    node('i-a', 'importation', 'a.ts', { name: './b', ordinal: 1 }),
-    node('i-b', 'importation', 'b.ts', { name: './a', ordinal: 1 }),
+    node('a-i1', 'importation', 'a.ts', { name: './b', ordinal: 1 }),
+    node('b-i1', 'importation', 'b.ts', { name: './a', ordinal: 1 }),
   ]
   const edges: GraphEdge[] = [edge('f-a', 'f-b'), edge('f-b', 'f-a')]
-  const graph = query(nodes, edges, 'cycle-pair')
-  const view = buildDependencies(graph)
-  assert.equal(view.scope, 'workspace')
-  assert.deepEqual(view.cycles, [['a.ts', 'b.ts', 'a.ts']])
+  const graph = query(nodes, edges, 'edge-sets')
+  // The project edge set is empty: a code import is a file-level fact.
+  assert.deepEqual(buildDependencies(graph).links, [])
+  assert.deepEqual(buildDependencies(graph).cycles, [])
+
+  // `/graph/imports` reports the file-level cycle on its own graph.
+  const imports = buildImports(graph)
+  assert.deepEqual(
+    imports.rows.map((row) => [row.path, row.imported, row.cyclic]),
+    [
+      ['a.ts', ['./b'], true],
+      ['b.ts', ['./a'], true],
+    ],
+  )
+  assert.deepEqual(imports.cycles, [['a.ts', 'b.ts', 'a.ts']])
+})
+
+test('dependencies: two manifests that depend on each other form one project cycle', () => {
+  resetGraphCache()
+  const nodes: GraphNode[] = [
+    node('f-a', 'document', 'packages/a/package.json', { name: 'package.json' }),
+    node('f-b', 'document', 'packages/b/package.json', { name: 'package.json' }),
+    node('a-dep', 'dependency', 'packages/a/package.json', { name: 'b', label: '1.0.0', ordinal: 1 }),
+    node('b-dep', 'dependency', 'packages/b/package.json', { name: 'a', label: '1.0.0', ordinal: 1 }),
+  ]
+  const view = buildDependencies(query(nodes, [], 'project-cycle'))
+  assert.deepEqual(view.cycles, [
+    ['packages/a/package.json', 'packages/b/package.json', 'packages/a/package.json'],
+  ])
+  // Each target names a workspace project (its manifest directory name), so
+  // the edge is internal rather than an external stub.
+  assert.deepEqual(
+    view.links.map((link) => [link.from, link.to, link.external, link.cyclic]),
+    [
+      ['packages/a/package.json', 'packages/b/package.json', false, true],
+      ['packages/b/package.json', 'packages/a/package.json', false, true],
+    ],
+  )
+})
+
+test('dependencies: maven modules that depend on each other form one project cycle', () => {
+  resetGraphCache()
+  const nodes: GraphNode[] = [
+    node('f-a', 'document', 'modules/a/pom.xml', { name: 'pom.xml' }),
+    node('f-b', 'document', 'modules/b/pom.xml', { name: 'pom.xml' }),
+    node('a-dep', 'dependency', 'modules/a/pom.xml', {
+      name: 'com.example:b',
+      label: '1.0.0',
+      ordinal: 1,
+    }),
+    node('b-dep', 'dependency', 'modules/b/pom.xml', {
+      name: 'com.example:a',
+      label: '1.0.0',
+      ordinal: 1,
+    }),
+  ]
+  const view = buildDependencies(query(nodes, [], 'maven-project-cycle'))
+  assert.deepEqual(view.cycles, [
+    ['modules/a/pom.xml', 'modules/b/pom.xml', 'modules/a/pom.xml'],
+  ])
+  // A maven coordinate binds by its artifactId (the project's declared name).
+  assert.deepEqual(
+    view.links.map((link) => [link.from, link.to, link.external, link.cyclic]),
+    [
+      ['modules/a/pom.xml', 'modules/b/pom.xml', false, true],
+      ['modules/b/pom.xml', 'modules/a/pom.xml', false, true],
+    ],
+  )
+})
+
+test('dependencies: file scope keeps incident project edges and still reports the cycle', () => {
+  resetGraphCache()
+  const nodes: GraphNode[] = [
+    node('f-a', 'document', 'packages/a/package.json', { name: 'package.json' }),
+    node('f-b', 'document', 'packages/b/package.json', { name: 'package.json' }),
+    node('a-dep', 'dependency', 'packages/a/package.json', { name: 'b', label: '1.0.0', ordinal: 1 }),
+    node('b-dep', 'dependency', 'packages/b/package.json', { name: 'a', label: '1.0.0', ordinal: 1 }),
+  ]
+  const view = buildDependencies(query(nodes, [], 'project-cycle-file'), 'packages/a/package.json')
+  assert.equal(view.scope, 'file')
+  assert.equal(view.path, 'packages/a/package.json')
+  assert.deepEqual(view.cycles, [
+    ['packages/a/package.json', 'packages/b/package.json', 'packages/a/package.json'],
+  ])
   assert.equal(view.links.length, 2)
   assert.ok(view.links.every((link) => link.cyclic))
-  assert.deepEqual(
-    view.links.map((link) => [link.from, link.to]),
-    [['a.ts', 'b.ts'], ['b.ts', 'a.ts']],
-  )
 
-  // A cycle never removes an import: both rows stay complete.
-  const imports = buildImports(graph)
-  assert.equal(imports.scope, 'workspace')
-  assert.deepEqual(
-    imports.rows.map((row) => [row.path, row.imported, row.exported]),
-    [
-      ['a.ts', ['./b'], []],
-      ['b.ts', ['./a'], []],
-    ],
-  )
-})
-
-test('dependencies: file scope keeps incident edges only and still reports the cycle', () => {
-  resetGraphCache()
-  const nodes: GraphNode[] = [
-    node('f-a', 'module', 'a.ts'),
-    node('f-b', 'module', 'b.ts'),
-    node('f-c', 'module', 'c.ts'),
-    node('f-d', 'module', 'd.ts'),
-  ]
-  const edges: GraphEdge[] = [
-    edge('f-a', 'f-b'),
-    edge('f-b', 'f-a'),
-    edge('f-c', 'f-d'),
-  ]
-  const view = buildDependencies(query(nodes, edges, 'cycle-scope'), 'a.ts')
-  assert.equal(view.scope, 'file')
-  assert.equal(view.path, 'a.ts')
-  assert.deepEqual(
-    view.links.map((link) => [link.from, link.to, link.cyclic]),
-    [
-      ['a.ts', 'b.ts', true],
-      ['b.ts', 'a.ts', true],
-    ],
-  )
-  assert.deepEqual(view.cycles, [['a.ts', 'b.ts', 'a.ts']])
-})
-
-test('dependencies: A->B->C->A is one three-node cycle', () => {
-  resetGraphCache()
-  const nodes: GraphNode[] = [
-    node('f-a', 'module', 'a.ts'),
-    node('f-b', 'module', 'b.ts'),
-    node('f-c', 'module', 'c.ts'),
-  ]
-  const edges: GraphEdge[] = [edge('f-a', 'f-b'), edge('f-b', 'f-c'), edge('f-c', 'f-a')]
-  const view = buildDependencies(query(nodes, edges, 'cycle-three'))
-  assert.deepEqual(view.cycles, [['a.ts', 'b.ts', 'c.ts', 'a.ts']])
-  assert.ok(view.links.every((link) => link.cyclic))
-})
-
-test('dependencies: a self-loop is a length-1 cycle listed separately', () => {
-  resetGraphCache()
-  const nodes: GraphNode[] = [node('f-a', 'module', 'a.ts')]
-  const edges: GraphEdge[] = [edge('f-a', 'f-a')]
-  const view = buildDependencies(query(nodes, edges, 'cycle-self'))
-  assert.deepEqual(view.cycles, [['a.ts', 'a.ts']])
-  assert.deepEqual(view.links, [{ from: 'a.ts', to: 'a.ts', relation: 'depends', cyclic: true }])
-})
-
-test('dependencies: an acyclic graph reports no cycles and non-cyclic edges', () => {
-  resetGraphCache()
-  const nodes: GraphNode[] = [
-    node('f-a', 'module', 'a.ts'),
-    node('f-b', 'module', 'b.ts'),
-  ]
-  const edges: GraphEdge[] = [edge('f-a', 'f-b')]
-  const view = buildDependencies(query(nodes, edges, 'cycle-none'))
-  assert.deepEqual(view.cycles, [])
-  assert.deepEqual(view.links, [{ from: 'a.ts', to: 'b.ts', relation: 'depends', cyclic: false }])
-  assert.ok(view.cycles.length <= MAX_CYCLES)
-})
-
-test('dependencies: a scoped query for an unindexed file is NOT_FOUND', () => {
   assert.throws(
     () => buildDependencies(query([], [], 'deps-missing'), 'missing.ts'),
     (error: unknown) => error instanceof Error && (error as { code?: string }).code === 'NOT_FOUND',
   )
 })
 
+test('dependencies sort by medium, from and to and dedupe repeated manifest entries', () => {
+  resetGraphCache()
+  const nodes: GraphNode[] = [
+    node('f-pkg', 'document', 'package.json', { name: 'package.json' }),
+    node('f-pom', 'document', 'pom.xml', { name: 'pom.xml' }),
+    node('f-tex', 'document', 'paper/main.tex', { name: 'main.tex' }),
+    node('a-react', 'dependency', 'package.json', { name: 'react', label: '^18.2.0', ordinal: 2 }),
+    node('b-react', 'dependency', 'package.json', { name: 'react', label: '^18.2.0', ordinal: 1 }),
+    node('c-coord', 'dependency', 'pom.xml', { name: 'org.example:lib', label: '2.0', ordinal: 1 }),
+    node('d-cite', 'citation', 'paper/main.tex', { name: 'alpha', ordinal: 1 }),
+  ]
+  const view = buildDependencies(query(nodes, [], 'deps-sort'))
+  assert.deepEqual(
+    view.links.map((link) => [link.medium, link.from, link.to]),
+    [
+      ['code', 'package.json', 'react'],
+      ['code', 'pom.xml', 'org.example:lib'],
+      ['document', 'paper/main.tex', 'alpha'],
+    ],
+  )
+  assert.ok(view.cycles.length <= MAX_CYCLES)
+})
+
+test('dependencies: a manifest that depends on itself is a self-loop project cycle', () => {
+  resetGraphCache()
+  const nodes: GraphNode[] = [
+    node('f-pkg', 'document', 'package.json', { name: 'package.json' }),
+    // A declared project name is optional evidence (the bounded store read does
+    // not return `project` rows in production); when present it binds a target.
+    node('p-pkg', 'project', 'package.json', { name: 'app', label: 'app@1.0.0' }),
+    node('d-self', 'dependency', 'package.json', { name: 'app', label: '1.0.0', ordinal: 1 }),
+  ]
+  const view = buildDependencies(query(nodes, [], 'project-self'))
+  assert.deepEqual(view.cycles, [['package.json', 'package.json']])
+  assert.deepEqual(
+    view.links.map((link) => [link.from, link.to, link.external, link.cyclic]),
+    [['package.json', 'package.json', false, true]],
+  )
+})
+
 /* ------------------------------------------------------------------------- *
- * Imports
+ * File-level imports
  * ------------------------------------------------------------------------- */
 
-test('imports group by path, sort rows and cap the entries per row', () => {
+test('imports group by path, sort rows, mark cycles and cap the entries per row', () => {
   resetGraphCache()
   const nodes: GraphNode[] = [
     node('f-a', 'module', 'a.ts'),
@@ -653,11 +824,17 @@ test('imports group by path, sort rows and cap the entries per row', () => {
   const rows = buildImports(query(nodes, [], 'imports-caps'))
   assert.equal(rows.scope, 'workspace')
   assert.deepEqual(rows.rows.map((row) => row.path), ['a.ts', 'b.ts', 'c.ts'])
-  assert.deepEqual(rows.rows[0], { path: 'a.ts', imported: ['./b', './c'], exported: ['./c'] })
+  assert.deepEqual(rows.rows[0], {
+    path: 'a.ts',
+    imported: ['./b', './c'],
+    exported: ['./c'],
+    cyclic: false,
+  })
   assert.equal(rows.rows[1]?.imported.length, MAX_IMPORT_ENTRIES)
   assert.equal(rows.rows[1]?.imported[0], 'pkg-0')
   assert.equal(rows.rows[1]?.imported[MAX_IMPORT_ENTRIES - 1], `pkg-${MAX_IMPORT_ENTRIES - 1}`)
-  assert.deepEqual(rows.rows[2], { path: 'c.ts', imported: ['node:fs'], exported: [] })
+  assert.deepEqual(rows.rows[2], { path: 'c.ts', imported: ['node:fs'], exported: [], cyclic: false })
+  assert.deepEqual(rows.cycles, [])
 })
 
 test('imports: file scope returns exactly one row, including an empty one', () => {
@@ -671,10 +848,16 @@ test('imports: file scope returns exactly one row, including an empty one', () =
   assert.deepEqual(withImports, {
     scope: 'file',
     path: 'a.ts',
-    rows: [{ path: 'a.ts', imported: ['./b'], exported: [] }],
+    rows: [{ path: 'a.ts', imported: ['./b'], exported: [], cyclic: false }],
+    cycles: [],
   })
   const empty = buildImports(graph, 'b.ts')
-  assert.deepEqual(empty, { scope: 'file', path: 'b.ts', rows: [{ path: 'b.ts', imported: [], exported: [] }] })
+  assert.deepEqual(empty, {
+    scope: 'file',
+    path: 'b.ts',
+    rows: [{ path: 'b.ts', imported: [], exported: [], cyclic: false }],
+    cycles: [],
+  })
   assert.throws(
     () => buildImports(graph, 'missing.ts'),
     (error: unknown) => error instanceof Error && (error as { code?: string }).code === 'NOT_FOUND',

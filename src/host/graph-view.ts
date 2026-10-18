@@ -13,8 +13,10 @@
  *   - {@link buildOutline}     `{ path, family, nodes }`   per-file outline
  *   - {@link buildIntra}       `{ path, family, nodes, edges, truncated }`
  *                                                         intra-file symbol graph
- *   - {@link buildDependencies}`{ links, cycles }`         `depends` edges + cycles
- *   - {@link buildImports}     `{ path, imported, exported }[]`
+ *   - {@link buildDependencies}`{ links, cycles }`         project-level
+ *                                                         dependency edges + cycles
+ *   - {@link buildImports}     `{ rows, cycles }`         per-file import/export
+ *                                                         rows + file-level cycles
  *   - {@link searchGraph}      `{ handle, kind, name, path, line }[]`
  *
  * # Body-free by construction
@@ -88,13 +90,13 @@
  * {@link workspaceIndexReport} adds the resolved root the route actually scanned
  * and, when nothing was indexed, the `no-workspace-files` diagnostic.
  *
- * # Two-level cache (dependencies / imports / intra)
+ * # Two-level cache (imports / intra)
  *
  * Per-file facts (`imports`, `exports`, `deps`) are resolved through:
  *
  *  - **L1 (per request)**: `createGraphQuery` allocates one `Map`; a query that
- *    visits the same file twice (dependency walk plus cycle scan) resolves it
- *    once. The map is dropped when the request ends.
+ *    visits the same file twice (import row plus cycle scan) resolves it once.
+ *    The map is dropped when the request ends.
  *  - **L2 (per process)**: a module-level `Map` keyed
  *    `` `${version}\u0000${scope}\u0000${path}` ``, holding only the resolved
  *    specifier/path lists. Intra-file views share the same map, version tracker
@@ -107,22 +109,49 @@
  *    equivalent of the chain's `graphVersion` counter).
  *
  * Node is single-threaded, so no lock is needed; every read checks the map for
- * an actual entry instead of caching `undefined`.
+ * an actual entry instead of caching `undefined`. The project-level dependency
+ * projection is a pure function of the snapshot nodes (no per-file facts), so
+ * it uses no cache entry at all.
+ *
+ * # Dependencies are project-level; imports are file-level
+ *
+ * "Dependency" is domain-aware: a project (a manifest, or a citing document)
+ * imports another project, while an `import`/`export` is a file-to-file fact.
+ * The two projections therefore use **separate edge sets**:
+ *
+ *  - `/graph/dependencies` projects **project-level** edges. The evidence is
+ *    the parser metadata already in the snapshot, never a guess:
+ *    `package.json` `dependencies`/`devDependencies`/`peerDependencies`/
+ *    `optionalDependencies` entries and `pom.xml` `<dependency>`/`<parent>`
+ *    elements become `{ kind: 'project', medium: 'code', manager: 'npm'|'maven' }`
+ *    edges from the manifest path, with the declared range/version as `label`;
+ *    a `\cite*` key in a `.tex` file becomes a
+ *    `{ kind: 'project', medium: 'document', manager: 'tex' }` edge from the
+ *    citing document, with the key as the target. A target that names another
+ *    workspace project (same manager, equal declared project name or manifest
+ *    directory name) is bound to that project's manifest path (`external:
+ *    false`); every other target is an external stub (`external: true`) and is
+ *    never fabricated as a workspace path. `\ref` to an in-file `\label` is a
+ *    cross-reference, not a project dependency, and never appears here.
+ *  - `/graph/imports` keeps the file-level import/export lists and computes its
+ *    own cycles from the resolved file `depends` edges.
  *
  * # Cycles
  *
- * A `depends` graph is allowed to be cyclic. Every traversal here is an
+ * A dependency graph is allowed to be cyclic. Every traversal here is an
  * **iterative** DFS with explicit white/gray/black colouring — recursion is
  * forbidden because a deep dependency chain would overflow the stack.
  *
- * Dependency rows carry `cyclic: true` when the edge belongs to a cycle. That
- * flag is derived from the strongly connected components (iterative Kosaraju,
- * O(V + E)), so an edge deep in a cycle is marked even when the returned cycle
- * list is capped. The cycle list enumerates simple cycles up to a bounded scan
- * and reports each as a closed path (`['a', 'b', 'a']`); a self-loop is
- * `['a', 'a']`. Cycles are deduplicated by canonical rotation, sorted
- * lexicographically and capped at {@link MAX_CYCLES}. Edges are never removed
- * to break a cycle: the import/export rows stay complete.
+ * Project-level dependency rows carry `cyclic: true` when the edge belongs to a
+ * cycle **within the project edge set** (file-level cycles are never mixed in;
+ * they are reported by `/graph/imports`). That flag is derived from the
+ * strongly connected components (iterative Kosaraju, O(V + E)), so an edge deep
+ * in a cycle is marked even when the returned cycle list is capped. The cycle
+ * list enumerates simple cycles up to a bounded scan and reports each as a
+ * closed path (`['a', 'b', 'a']`); a self-loop is `['a', 'a']`. Cycles are
+ * deduplicated by canonical rotation, sorted lexicographically and capped at
+ * {@link MAX_CYCLES}. Edges are never removed to break a cycle: the
+ * import/export rows stay complete.
  *
  * # Caps
  *
@@ -1534,16 +1563,46 @@ function containmentDepths(
  * Dependency projection (with cycle support)
  * ------------------------------------------------------------------------- */
 
-/** One direct file-level dependency edge. */
+/** Medium of one project-level dependency edge. */
+export type DependencyMedium = 'code' | 'document'
+
+/**
+ * Manifest/format family that justified one project-level dependency edge.
+ *
+ * `npm`/`maven` are manifest managers (`package.json` / `pom.xml`); `tex` is
+ * the document citation format (`\cite*`).
+ */
+export type DependencyManager = 'npm' | 'maven' | 'tex'
+
+/**
+ * One project-level dependency edge.
+ *
+ * "Dependency" is a project→project fact: a manifest (or a citing document)
+ * imports another project. File-level import/export facts stay on
+ * `/graph/imports` and never appear here.
+ */
 export interface DependencyLink {
+  /** Workspace-relative manifest path, or the citing document path. */
   from: string
+  /**
+   * Target project identity. A workspace project is named by its manifest path;
+   * an external target keeps the parsed package/coordinate or citation key and
+   * is never fabricated as a workspace path.
+   */
   to: string
-  relation: string
-  /** True when this edge lies on a directed cycle (self-loop included). */
+  relation: 'depends'
+  kind: 'project'
+  medium: DependencyMedium
+  manager?: DependencyManager
+  /** Declared range/version (npm/maven); omitted when the parser read none. */
+  label?: string
+  /** True when the target is not a workspace project (an external stub). */
+  external: boolean
+  /** True when this edge lies on a directed cycle of the project graph. */
   cyclic: boolean
 }
 
-/** Direct dependency rows: links plus the cycles they form. */
+/** Project dependency rows: links plus the cycles they form. */
 export interface DependencyLinks {
   links: DependencyLink[]
   /** Closed cycles (`['a', 'b', 'a']`); a self-loop is `['a', 'a']`. */
@@ -1556,13 +1615,29 @@ export interface FileDependencyView extends DependencyLinks {
   path: string
 }
 
+/** One symbol-level edge of `/graph/dependencies?level=intra`. */
+export interface IntraDependencyLink {
+  from: string
+  to: string
+  relation: IntraRelation
+  /** True when this edge lies on a directed cycle (self-loop included). */
+  cyclic: boolean
+}
+
+/** Symbol-level dependency rows: links plus the cycles they form. */
+export interface IntraDependencyLinks {
+  links: IntraDependencyLink[]
+  cycles: string[][]
+}
+
 /**
  * Value of `GET /graph/dependencies?path=<file>&level=intra`.
  *
  * `links` are the `/graph/intra` `edges` (handles, not paths) plus the `cyclic`
- * flag; `cycles` are enumerated on that same intra-file subgraph.
+ * flag; `cycles` are enumerated on that same intra-file subgraph. This is the
+ * in-file symbol view; the project-level edge set never mixes into it.
  */
-export interface IntraDependencyView extends DependencyLinks {
+export interface IntraDependencyView extends IntraDependencyLinks {
   scope: 'file'
   path: string
 }
@@ -1574,16 +1649,47 @@ export interface WorkspaceDependencyView extends DependencyLinks {
 
 export type DependencyView = FileDependencyView | WorkspaceDependencyView
 
-/** Detail level of `/graph/dependencies`: file rows (default) or in-file symbols. */
+/** Detail level of `/graph/dependencies`: project rows (default) or in-file symbols. */
 export type DependencyLevel = 'file' | 'intra'
 
+/** Manifest kind → the manager a project dependency edge names. */
+const PROJECT_MANAGER_BY_MANIFEST: ReadonlyMap<ManifestKind, DependencyManager> = new Map([
+  ['npm', 'npm'],
+  ['maven', 'maven'],
+])
+
+/** One workspace project a manifest in the snapshot declares. */
+interface ProjectRecord {
+  /** Workspace-relative manifest path: the edge source and the project identity. */
+  path: string
+  /** Declared project name (`project` node); absent from the bounded snapshot read. */
+  name?: string
+  /** Manifest directory name, the fallback project identity of a layout. */
+  directory?: string
+  manager: DependencyManager
+}
+
 /**
- * Project the direct `depends` edges and the cycles they form.
+ * Project the project-level dependency edges and the cycles they form.
+ *
+ * Evidence comes from the body-free parser metadata already in the snapshot:
+ *
+ *  - `dependency` nodes under an npm `package.json` / maven `pom.xml` become
+ *    `medium: 'code'` edges from the manifest path, labelled with the declared
+ *    range/version (`parent` for a maven `<parent>`);
+ *  - `citation` nodes under a `.tex` file become `medium: 'document'` edges
+ *    from the citing document, named by the `\cite*` key;
+ *  - a target equal to another workspace project of the same manager (its
+ *    declared name or manifest directory name; a maven coordinate also matches
+ *    its artifactId) is bound to that manifest path and marked `external:
+ *    false`; every other target keeps its parsed identity and is an
+ *    `external: true` stub. A `\ref` to an in-file `\label` is a
+ *    cross-reference and never becomes an edge.
  *
  * With `requestPath` only edges incident to that file are kept and the cycle
  * analysis runs on that **subgraph**, so `A → B → A` still reports a cycle when
- * `A` is the requested file. Without it the whole workspace graph is used.
- * The path must be valid (`InvalidArgumentError` → 400) and indexed
+ * `A` is the requested file. Without it the whole workspace project graph is
+ * used. The path must be valid (`InvalidArgumentError` → 400) and indexed
  * (`NotFoundError` → 404).
  *
  * `level: 'intra'` (requires `requestPath`, else `InvalidArgumentError` → 400)
@@ -1623,41 +1729,28 @@ export function buildDependencies(
   if (level !== undefined && level !== 'file') {
     throw new InvalidArgumentError('level must be "file" or "intra"')
   }
-  const adjacency = new Map<string, string[]>()
-  for (const path of query.paths) {
-    const deps = [...query.factsOf(path).deps].sort(compareText)
-    if (deps.length > 0) adjacency.set(path, deps)
-  }
-
+  const links = projectDependencyLinks(query.nodes)
   if (requestPath === undefined) {
-    return { scope: 'workspace', ...dependencyProjection(adjacency) }
+    return { scope: 'workspace', ...projectDependencyProjection(links) }
   }
   const path = normaliseGraphPath(requestPath)
   if (path === undefined) {
     throw new InvalidArgumentError('path must be a workspace-relative path without ".."')
   }
   if (!query.paths.includes(path)) throw new NotFoundError('file', path)
-  const subgraph = new Map<string, string[]>()
-  for (const [from, targets] of adjacency) {
-    for (const to of targets) {
-      if (from !== path && to !== path) continue
-      const list = subgraph.get(from)
-      if (list === undefined) subgraph.set(from, [to])
-      else list.push(to)
-    }
-  }
-  return { scope: 'file', path, ...dependencyProjection(subgraph) }
+  const scoped = links.filter((link) => link.from === path || link.to === path)
+  return { scope: 'file', path, ...projectDependencyProjection(scoped) }
 }
 
 /**
- * Dependency view over the intra-file symbol subgraph.
+ * Project dependency view over the intra-file symbol subgraph.
  *
  * `links` preserve the `/graph/intra` edge order and relations, adding the
  * `cyclic` flag; the adjacency for `cycles` is that same edge set, deduplicated
  * per ordered pair (two relations between the same pair remain separate links
  * but repeat no traversal step).
  */
-function intraDependencyProjection(edges: readonly IntraEdge[]): DependencyLinks {
+function intraDependencyProjection(edges: readonly IntraEdge[]): IntraDependencyLinks {
   const adjacency = new Map<string, string[]>()
   for (const edge of edges) {
     const targets = adjacency.get(edge.from)
@@ -1669,7 +1762,7 @@ function intraDependencyProjection(edges: readonly IntraEdge[]): DependencyLinks
   }
   const nodes = collectNodes(adjacency)
   const cyclic = cyclicEdges(adjacency, nodes)
-  const links: DependencyLink[] = edges.map((edge) => ({
+  const links: IntraDependencyLink[] = edges.map((edge) => ({
     from: edge.from,
     to: edge.to,
     relation: edge.relation,
@@ -1681,21 +1774,193 @@ function intraDependencyProjection(edges: readonly IntraEdge[]): DependencyLinks
   }
 }
 
-/** Links + cycles of one already-built dependency adjacency. */
-function dependencyProjection(adjacency: ReadonlyMap<string, readonly string[]>): DependencyLinks {
+/** Links + cycles of one already-sorted project edge set. */
+function projectDependencyProjection(links: readonly DependencyLink[]): DependencyLinks {
+  const adjacency = new Map<string, string[]>()
+  for (const link of links) {
+    const targets = adjacency.get(link.from)
+    if (targets === undefined) adjacency.set(link.from, [link.to])
+    else if (!targets.includes(link.to)) targets.push(link.to)
+  }
+  for (const targets of adjacency.values()) targets.sort(compareText)
   const nodes = collectNodes(adjacency)
   const cyclic = cyclicEdges(adjacency, nodes)
-  const links: DependencyLink[] = []
-  for (const [from, targets] of adjacency) {
-    for (const to of targets) {
-      links.push({ from, to, relation: 'depends', cyclic: cyclic.has(edgeKey(from, to)) })
-    }
-  }
-  links.sort((left, right) => compareText(left.from, right.from) || compareText(left.to, right.to))
+  const projected = links.map((link) => ({
+    ...link,
+    cyclic: cyclic.has(edgeKey(link.from, link.to)),
+  }))
   return {
-    links: links.slice(0, MAX_DEPENDENCY_LINKS),
+    links: projected.slice(0, MAX_DEPENDENCY_LINKS),
     cycles: findCycles(adjacency, nodes),
   }
+}
+
+/**
+ * Every project-level dependency edge the snapshot proves, sorted
+ * deterministically (`medium → from → to`).
+ *
+ * Only parser evidence creates a link: a `dependency` node under a manifest,
+ * or a `citation` node under a `.tex` file. A dependency/citation node without
+ * a name, or one whose path is not its manifest/document, contributes nothing.
+ */
+function projectDependencyLinks(nodes: readonly GraphNode[]): DependencyLink[] {
+  const projects = projectRecordsOf(nodes)
+  const ordered = dependencyNodeOrder(nodes)
+  const links: DependencyLink[] = []
+  const seen = new Set<string>()
+
+  for (const node of ordered) {
+    if (node.kind.trim().toLowerCase() !== 'dependency' || node.path === undefined) continue
+    const path = normaliseGraphPath(node.path)
+    const project = path === undefined ? undefined : projects.get(path)
+    if (project === undefined) continue
+    // The package name / `groupId:artifactId` is the only valid target: a
+    // version label is never promoted into a project identity.
+    const target = (node.name ?? '').trim()
+    if (target.length === 0) continue
+    const resolved = resolveProjectTarget(target, project.manager, projects)
+    const to = resolved?.path ?? target
+    const key = `${project.manager}\u0000${project.path}\u0000${to}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const label = node.label?.trim()
+    links.push({
+      from: project.path,
+      to,
+      relation: 'depends',
+      kind: 'project',
+      medium: 'code',
+      manager: project.manager,
+      ...(label === undefined || label.length === 0 ? {} : { label }),
+      external: resolved === undefined,
+      cyclic: false,
+    })
+  }
+
+  for (const node of ordered) {
+    if (node.kind.trim().toLowerCase() !== 'citation' || node.path === undefined) continue
+    const path = normaliseGraphPath(node.path)
+    // A `.bib` definition is not parsed yet; only a citing document owns an edge.
+    if (path === undefined || !TEX_EXTENSIONS.has(extensionOf(path))) continue
+    const target = (node.name ?? '').trim()
+    if (target.length === 0) continue
+    const key = `tex\u0000${path}\u0000${target}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    links.push({
+      from: path,
+      to: target,
+      relation: 'depends',
+      kind: 'project',
+      medium: 'document',
+      manager: 'tex',
+      // No `.bib` parsing: every cited work stays an external stub until a
+      // bibliography definition exists in the graph.
+      external: true,
+      cyclic: false,
+    })
+  }
+
+  links.sort(compareDependencyLinks)
+  return links
+}
+
+/** Deterministic evidence order: path, parser ordinal (source order), handle. */
+function dependencyNodeOrder(nodes: readonly GraphNode[]): GraphNode[] {
+  return [...nodes].sort(
+    (left, right) =>
+      compareText(left.path ?? '', right.path ?? '') ||
+      (left.ordinal ?? 0) - (right.ordinal ?? 0) ||
+      compareText(left.handle, right.handle),
+  )
+}
+
+/** Deterministic project-link order: medium, from, to, then manager/label. */
+function compareDependencyLinks(left: DependencyLink, right: DependencyLink): number {
+  return (
+    compareText(left.medium, right.medium) ||
+    compareText(left.from, right.from) ||
+    compareText(left.to, right.to) ||
+    compareText(left.manager ?? '', right.manager ?? '') ||
+    compareText(left.label ?? '', right.label ?? '')
+  )
+}
+
+/**
+ * Every manifest project the snapshot mentions, keyed by workspace-relative
+ * manifest path.
+ *
+ * Any node carrying a manifest path proves the manifest was parsed (the graph
+ * store's bounded node read excludes `project` kind rows, so the file node and
+ * the dependency nodes are the usual evidence). A `project` node, when the
+ * caller's snapshot carries one, contributes the declared project name; the
+ * manifest directory name is the fallback identity.
+ */
+function projectRecordsOf(nodes: readonly GraphNode[]): Map<string, ProjectRecord> {
+  const records = new Map<string, ProjectRecord>()
+  for (const node of nodes) {
+    if (node.path === undefined) continue
+    const path = normaliseGraphPath(node.path)
+    if (path === undefined || records.has(path)) continue
+    const manager = projectManagerOf(path)
+    if (manager === undefined) continue
+    const directory = basenameOf(dirnameOf(path))
+    records.set(path, {
+      path,
+      manager,
+      ...(directory.length === 0 ? {} : { directory }),
+    })
+  }
+  for (const node of nodes) {
+    if (node.path === undefined || node.kind.trim().toLowerCase() !== 'project') continue
+    const path = normaliseGraphPath(node.path)
+    const record = path === undefined ? undefined : records.get(path)
+    const name = node.name?.trim()
+    if (record === undefined || name === undefined || name.length === 0) continue
+    // Deterministic when a snapshot ever carries two spellings of the name.
+    if (record.name === undefined || compareText(name, record.name) < 0) record.name = name
+  }
+  return records
+}
+
+/** Manager of a manifest path, or `undefined` when it is not a project manifest. */
+function projectManagerOf(path: string): DependencyManager | undefined {
+  const kind = manifestKindOfPath(path)
+  return kind === undefined ? undefined : PROJECT_MANAGER_BY_MANIFEST.get(kind)
+}
+
+/**
+ * Bind one parsed dependency target to a workspace project of the same
+ * manager: an exact (case-insensitive) match on the declared project name or
+ * the manifest directory name. A maven coordinate also matches its artifactId
+ * (the part after the last `:`), because that is the maven project's declared
+ * name. The lowest manifest path wins when several projects match, so the
+ * answer is deterministic. A target that matches nothing stays external — no
+ * path is guessed.
+ */
+function resolveProjectTarget(
+  target: string,
+  manager: DependencyManager,
+  projects: ReadonlyMap<string, ProjectRecord>,
+): ProjectRecord | undefined {
+  const needles = new Set<string>([target.toLowerCase()])
+  if (manager === 'maven') {
+    const separator = target.lastIndexOf(':')
+    const artifactId = separator < 0 ? '' : target.slice(separator + 1).trim().toLowerCase()
+    if (artifactId.length > 0) needles.add(artifactId)
+  }
+  let best: ProjectRecord | undefined
+  for (const project of projects.values()) {
+    if (project.manager !== manager) continue
+    if (!matchesProjectIdentity(project, needles)) continue
+    if (best === undefined || compareText(project.path, best.path) < 0) best = project
+  }
+  return best
+}
+
+function matchesProjectIdentity(project: ProjectRecord, needles: ReadonlySet<string>): boolean {
+  if (project.name !== undefined && needles.has(project.name.toLowerCase())) return true
+  return project.directory !== undefined && needles.has(project.directory.toLowerCase())
 }
 
 /** Every node mentioned by the dependency adjacency, sorted. */
@@ -1868,33 +2133,50 @@ export interface ImportRow {
   path: string
   imported: string[]
   exported: string[]
+  /** True when the file's resolved import edges lie on a file-level cycle. */
+  cyclic: boolean
+}
+
+/** File-level import/export rows plus the cycles their resolved edges form. */
+export interface ImportLinks {
+  rows: ImportRow[]
+  /**
+   * Closed cycles over the resolved file-level `depends` edges
+   * (`['a.ts', 'b.ts', 'a.ts']`). This edge set is separate from the
+   * project-level `/graph/dependencies` graph; the two never share a cycle.
+   */
+  cycles: string[][]
 }
 
 /** Value of `GET /graph/imports?path=<file>`. */
-export interface FileImportsView {
+export interface FileImportsView extends ImportLinks {
   scope: 'file'
   path: string
-  rows: ImportRow[]
 }
 
 /** Value of `GET /graph/imports` (no `path`). */
-export interface WorkspaceImportsView {
+export interface WorkspaceImportsView extends ImportLinks {
   scope: 'workspace'
-  rows: ImportRow[]
 }
 
 export type ImportsView = FileImportsView | WorkspaceImportsView
 
 /**
- * Project `importation`/`exportation` nodes into per-file rows.
+ * Project `importation`/`exportation` nodes into per-file rows and compute the
+ * file-level import cycles from the resolved `depends` edges.
  *
  * With `requestPath` exactly one row is returned for that file (empty lists
  * when it has no import/export nodes); the path must be valid
- * (`InvalidArgumentError` → 400) and indexed (`NotFoundError` → 404). Without
- * it rows are sorted by path and capped at {@link MAX_IMPORT_ROWS}. Each list is
- * deduplicated, source-ordered and capped at {@link MAX_IMPORT_ENTRIES}. A file
- * inside a dependency cycle keeps its complete lists — cycles are reported by
- * `/graph/dependencies` and never repaired by deleting an import.
+ * (`InvalidArgumentError` → 400) and indexed (`NotFoundError` → 404). The
+ * cycles of a file-scoped answer are computed on the edges incident to that
+ * file, so `A → B → A` still reports a cycle when `A` is requested.
+ *
+ * Without `requestPath` rows are sorted by path and capped at
+ * {@link MAX_IMPORT_ROWS}. Each list is deduplicated, source-ordered and capped
+ * at {@link MAX_IMPORT_ENTRIES}. Import cycles are computed over the resolved
+ * file-level edge set only (never the project-level dependency graph, and never
+ * by deleting an import): `cyclic` marks a file on a cycle and `cycles` lists
+ * them up to {@link MAX_CYCLES}.
  */
 export function buildImports(query: GraphQuery): WorkspaceImportsView
 export function buildImports(query: GraphQuery, requestPath: string): FileImportsView
@@ -1907,20 +2189,93 @@ export function buildImports(query: GraphQuery, requestPath?: string): ImportsVi
     }
     if (!query.paths.includes(path)) throw new NotFoundError('file', path)
     const facts = query.factsOf(path)
+    const { cyclicRows, cycles } = importCycles(incidentImportAdjacency(query, path))
     return {
       scope: 'file',
       path,
-      rows: [{ path, imported: [...facts.imports], exported: [...facts.exports] }],
+      rows: [
+        {
+          path,
+          imported: [...facts.imports],
+          exported: [...facts.exports],
+          cyclic: cyclicRows.has(path),
+        },
+      ],
+      cycles,
     }
   }
+
+  const adjacency = new Map<string, string[]>()
+  for (const path of query.paths) {
+    const deps = [...query.factsOf(path).deps].sort(compareText)
+    if (deps.length > 0) adjacency.set(path, deps)
+  }
+  const { cyclicRows, cycles } = importCycles(adjacency)
   const rows: ImportRow[] = []
   for (const path of query.paths) {
     const facts = query.factsOf(path)
     if (facts.imports.length === 0 && facts.exports.length === 0) continue
-    rows.push({ path, imported: [...facts.imports], exported: [...facts.exports] })
+    rows.push({
+      path,
+      imported: [...facts.imports],
+      exported: [...facts.exports],
+      cyclic: cyclicRows.has(path),
+    })
     if (rows.length >= MAX_IMPORT_ROWS) break
   }
-  return { scope: 'workspace', rows }
+  return { scope: 'workspace', rows, cycles }
+}
+
+/** File-level cycles: the cyclic file set plus the enumerated closed paths. */
+function importCycles(
+  adjacency: ReadonlyMap<string, readonly string[]>,
+): { cyclicRows: Set<string>; cycles: string[][] } {
+  const nodes = collectNodes(adjacency)
+  const cyclic = cyclicEdges(adjacency, nodes)
+  const cyclicRows = new Set<string>()
+  for (const [from, targets] of adjacency) {
+    for (const to of targets) {
+      if (!cyclic.has(edgeKey(from, to))) continue
+      cyclicRows.add(from)
+      cyclicRows.add(to)
+    }
+  }
+  return { cyclicRows, cycles: findCycles(adjacency, nodes) }
+}
+
+/**
+ * Import adjacency of the edges incident to one file.
+ *
+ * Outgoing edges come from the query's resolved facts; incoming edges are read
+ * from the persisted `depends` rows by target handle, so a file-scoped answer
+ * never resolves the whole workspace just to find a two-node cycle.
+ */
+function incidentImportAdjacency(query: GraphQuery, path: string): Map<string, string[]> {
+  const adjacency = new Map<string, string[]>()
+  const add = (from: string, to: string): void => {
+    const targets = adjacency.get(from)
+    if (targets === undefined) adjacency.set(from, [to])
+    else if (!targets.includes(to)) targets.push(to)
+  }
+  for (const to of query.factsOf(path).deps) add(path, to)
+  const pathByHandle = new Map<string, string>()
+  const targetHandles = new Set<string>()
+  for (const node of query.nodes) {
+    if (node.path === undefined) continue
+    const nodePath = normaliseGraphPath(node.path)
+    if (nodePath === undefined) continue
+    pathByHandle.set(node.handle, nodePath)
+    if (nodePath === path && FILE_NODE_KINDS.has(node.kind.trim().toLowerCase())) {
+      targetHandles.add(node.handle)
+    }
+  }
+  for (const edge of query.edges) {
+    if (edge.relation !== 'depends' || !targetHandles.has(edge.to)) continue
+    const from = pathByHandle.get(edge.from)
+    if (from !== undefined && from !== path) add(from, path)
+  }
+  for (const targets of adjacency.values()) targets.sort(compareText)
+  return adjacency
 }
 
 /* ------------------------------------------------------------------------- *

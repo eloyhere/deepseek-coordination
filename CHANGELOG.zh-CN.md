@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.14.10 | 2026-10-18 | `—` | 项目级依赖、文件级导入各自成环、纯文本聊天、右键菜单 |
 | 0.14.9 | 2026-10-18 | `12115b5` | 面板崩溃与 portal/内缩布局 |
 | 0.14.8 | 2026-10-18 | `26936c1` | 面板虚拟化、路由页签、大纲/预览页、四个图工具 |
 | 0.14.7 | 2026-10-18 | `d5f80c6` | 预览保留选择并解析工作区 |
@@ -55,6 +56,26 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.14.10] — 2026-10-18
+
+### 变更
+
+- **依赖改为项目级，导入保持文件级。** `/graph/dependencies` 只返回项目之间的引入边：
+  `{ from, to, relation:'depends', kind:'project', medium:'code'|'document', manager?:'npm'|'maven'|'tex', label?, external, cyclic }`。
+  代码工程来自 `package.json` 与 `pom.xml` 的依赖条目（from = manifest 路径；to = 声明名称能绑定的工作区项目 manifest，否则是带包名/坐标的 `external:true` stub）；文档来自 `.tex` 的 `\cite` 系列命令，**`\ref`/`\label` 刻意不算依赖**。
+  `/graph/imports` 保持文件级行，并新增自己的文件级 `cyclic` 与 `cycles`（基于已解析的文件 `depends` 边），项目环与文件环不再混算。
+- **`NodeKind` 新增 `dependency` 与 `citation`。** npm/maven 本已产出 `dependency` 节点、chain 也已持久化；投影现在读取这些证据而不是合成边。
+
+### 新增
+
+- **TeX `\cite` 扫描**：`cite`、`citep`、`citet`、`citealp`、`citealt`、`citeauthor`、`citeyear`、`citeyearpar`、`cites`，支持可选 `*`、最多两个可选参数与逗号分隔键；每个键产出带独立 span 的 body-free `citation` 节点。
+- **项目级环检测**：在项目边集上做 SCC 标记 + 有界简单环列表，排序 `medium → from → to`，上限仍为 2000 边 / 50 环。
+
+### 修复
+
+- **聊天排版与 Markdown 误用。** 消息正文改为纯文本（`white-space: pre-wrap`、`overflow-wrap: anywhere`），不解析 Markdown、不注入 HTML；行使用固定槽位（`estimateMessageHeight`、`computeRowLayout`、累计偏移），气泡不再重叠。旧聊天路径把已构建的 `rehype-katex` transformer 当作 unified 插件传入，抛错后每条消息静默回退原始文本；预览里的同类误用一并修正。
+- **右键菜单落地。** `PanelContextMenu`（光标锚定 MUI `Menu`，Esc/遮罩/选中关闭）接到文件行、目录行（预览/定位/复制禁用，展开可用）、大纲分组与节点、职能行；职能菜单附只读信息/目标/计划弹窗，发送/停止保持禁用并注明"宿主命令未接入"。复制走 clipboard API 并有 textarea 兜底，失败只 warn。
 
 ## [0.14.9] — 2026-10-18
 

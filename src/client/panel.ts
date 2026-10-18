@@ -69,7 +69,7 @@
  * with a scope-bar back button. The view stays mounted across the flip so the
  * global collapse state and scroll offset survive; Escape returns as well.
  * The agent detail route (`left/agent?id=…`) is a read-only, virtualized
- * Markdown transcript with a back button and no composer.
+ * Markdown-free (plain text) transcript with a back button and no composer.
  *
  * Each panel reads `location.hash` exactly once, when it mounts, then keeps its
  * own `useReducer` navigation state. A click changes that state directly and
@@ -195,6 +195,10 @@ import Table from '@mui/material/Table'
 import TableBody from '@mui/material/TableBody'
 import TableCell from '@mui/material/TableCell'
 import TableRow from '@mui/material/TableRow'
+import Dialog from '@mui/material/Dialog'
+import DialogTitle from '@mui/material/DialogTitle'
+import DialogContent from '@mui/material/DialogContent'
+import DialogActions from '@mui/material/DialogActions'
 import useMediaQuery from '@mui/material/useMediaQuery'
 import MenuIcon from '@mui/icons-material/Menu'
 import SearchIcon from '@mui/icons-material/Search'
@@ -267,6 +271,10 @@ const MuiTable = Table as unknown as Loose
 const MuiTableBody = TableBody as unknown as Loose
 const MuiTableCell = TableCell as unknown as Loose
 const MuiTableRow = TableRow as unknown as Loose
+const MuiDialog = Dialog as unknown as Loose
+const MuiDialogTitle = DialogTitle as unknown as Loose
+const MuiDialogContent = DialogContent as unknown as Loose
+const MuiDialogActions = DialogActions as unknown as Loose
 const MuiThemeProvider = ThemeProvider as unknown as Loose
 
 /* Icon components accept SvgIcon props; the loose alias keeps one call shape. */
@@ -805,6 +813,48 @@ const MENU_ITEM_CONTENT_SX = {
   pointerEvents: 'auto',
 }
 
+/* Right-click menus and the read-only agent information dialog. */
+const CONTEXT_MENU_SX = { zIndex: theme.zIndex.tooltip }
+const CONTEXT_MENU_PAPER_SX = {
+  minWidth: 200,
+  maxWidth: 280,
+  paddingTop: 0.5,
+  paddingBottom: 0.5,
+}
+const CONTEXT_MENU_ITEM_SX = { minHeight: 30, fontSize: 12 }
+const AGENT_INFO_DIALOG_SX = {
+  '& .MuiDialog-paper': {
+    width: 360,
+    maxWidth: 'calc(100vw - 48px)',
+  },
+}
+const AGENT_INFO_SECTION_SX = { marginTop: 1 }
+const AGENT_INFO_ROW_SX = {
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 1,
+  minWidth: 0,
+  marginBottom: 0.5,
+}
+const AGENT_INFO_LABEL_SX = {
+  flex: 'none',
+  width: 68,
+  fontSize: 11,
+  color: 'text.secondary',
+}
+const AGENT_INFO_VALUE_SX = {
+  fontSize: 12,
+  minWidth: 0,
+  overflowWrap: 'anywhere',
+}
+const AGENT_INFO_TITLE_SX = { fontSize: 14, lineHeight: 1.4 }
+const AGENT_INFO_SECTION_TITLE_SX = {
+  fontSize: 11,
+  fontWeight: 600,
+  color: 'text.secondary',
+  marginBottom: 0.5,
+}
+
 const CARD_SX = {
   flex: 1,
   minHeight: 0,
@@ -874,7 +924,7 @@ const INDEX_EMPTY_SX = {
 
 const INDEX_ACTION_SX = { marginTop: 0.5 }
 
-const LIST_SX = { width: '100%' }
+const LIST_SX = { width: '100%', minWidth: 0, maxWidth: '100%' }
 
 /* ------------------------------------------------------------------------- *
  * Virtual list plumbing
@@ -1215,40 +1265,58 @@ export interface VirtualTreeProps<T> {
  * Row-height strategy for {@link VirtualList}.
  *
  * A number keeps the strict fixed-row window (48 px by default, used by every
- * tree/flat panel list). A function opts into estimated variable rows, which is
- * what the agent transcript needs: a bubble's height depends on its Markdown
- * content. Estimates are cumulative and the scroll offset is mapped onto that
- * cumulative height, so the scrollbar still represents the whole transcript.
+ * tree/flat panel list). A function opts into fixed-slot variable rows, which
+ * is what the agent transcript needs: each row still occupies exactly the
+ * height returned for it (no measurement), and only the heights differ per
+ * row. Positions are the cumulative sum of those heights, so two rows can
+ * never overlap.
  */
 export type VirtualRowHeight<T> = number | ((index: number, value: T) => number)
 
-interface VariableRowLayout {
+/** Deterministic cumulative layout for fixed-slot rows. */
+export interface PanelRowLayout {
   readonly tops: readonly number[]
   readonly sizes: readonly number[]
   readonly total: number
 }
 
-const EMPTY_ROW_LAYOUT: VariableRowLayout = { tops: [], sizes: [], total: 0 }
+const EMPTY_ROW_LAYOUT: PanelRowLayout = { tops: [], sizes: [], total: 0 }
 
 function clampRowHeight(value: number): number {
   return Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1
 }
 
-/** Cumulative top offsets for estimated rows; pure and deterministic. */
-function variableRowLayout<T>(
-  adapter: VirtualListAdapter<T>,
-  estimate: (index: number, value: T) => number,
-): VariableRowLayout {
-  const tops = new Array<number>(adapter.size)
-  const sizes = new Array<number>(adapter.size)
+/**
+ * Prefix-sum layout for a list of fixed-slot heights.
+ *
+ * `tops[i]` is the sum of every previous size, `sizes[i]` the exact slot
+ * height, and `total` the scroll height of the list. Pure and deterministic:
+ * the same heights always yield the same offsets, and `tops[i + 1] >=
+ * tops[i] + sizes[i]` by construction.
+ */
+export function computeRowLayout(heights: readonly number[]): PanelRowLayout {
+  const tops = new Array<number>(heights.length)
+  const sizes = new Array<number>(heights.length)
   let top = 0
-  for (let index = 0; index < adapter.size; index += 1) {
-    const height = clampRowHeight(estimate(index, adapter.at(index)))
+  for (let index = 0; index < heights.length; index += 1) {
+    const height = clampRowHeight(heights[index] as number)
     tops[index] = top
     sizes[index] = height
     top += height
   }
   return { tops, sizes, total: top }
+}
+
+/** Cumulative top offsets for fixed-slot rows; pure and deterministic. */
+function variableRowLayout<T>(
+  adapter: VirtualListAdapter<T>,
+  estimate: (index: number, value: T) => number,
+): PanelRowLayout {
+  const heights = new Array<number>(adapter.size)
+  for (let index = 0; index < adapter.size; index += 1) {
+    heights[index] = estimate(index, adapter.at(index))
+  }
+  return computeRowLayout(heights)
 }
 
 /** First index whose cumulative top is >= target (array is non-decreasing). */
@@ -1268,7 +1336,7 @@ function lowerBound(values: readonly number[], target: number): number {
  * first/last row intersecting the visible band, then add the overscan.
  */
 function useVariableRange(
-  layout: VariableRowLayout,
+  layout: PanelRowLayout,
   offset: number,
 ): { start: number; end: number } {
   const viewport = React.useContext(PanelScrollContext)
@@ -1288,7 +1356,7 @@ export interface VirtualListProps<T> {
   adapter: VirtualListAdapter<T>
   /** Row slot: (row index, adapter value). */
   slot: (index: number, value: T) => React.ReactNode
-  /** Fixed row height (default 48), or an estimated height per row. */
+  /** Fixed row height (default 48), or a fixed-slot height per row. */
   rowHeight?: VirtualRowHeight<T>
   /** Accessible name for the virtualized list surface. */
   'aria-label'?: string
@@ -1326,16 +1394,26 @@ export function VirtualList<T>(props: VirtualListProps<T>): React.ReactElement {
       },
       ...Array.from({ length: variableRange.end - variableRange.start }, (_unused, position) => {
         const index = variableRange.start + position
+        const top = layout.tops[index] ?? 0
+        const height = layout.sizes[index] ?? 1
         return h(
           MuiBox,
           {
             key: props.adapter.key(index),
+            // Fixed slot: `top` is the cumulative sum of every previous slot
+            // and `height` is this row's exact budget. The row clips its own
+            // content, so nothing can paint into the next row.
+            'data-row-index': index,
+            'data-row-top': top,
+            'data-row-height': height,
             style: {
               position: 'absolute',
               left: 0,
               right: 0,
-              top: layout.tops[index],
-              height: layout.sizes[index],
+              top,
+              height,
+              minWidth: 0,
+              boxSizing: 'border-box',
               overflow: 'hidden',
             },
           },
@@ -1649,6 +1727,10 @@ const MESSAGES_VIEW_SX = {
   display: 'flex',
   flexDirection: 'column',
   minHeight: 0,
+  minWidth: 0,
+  width: '100%',
+  maxWidth: '100%',
+  overflow: 'hidden',
 }
 
 const MESSAGES_HEADER_SX = {
@@ -1672,30 +1754,64 @@ const MESSAGES_SKELETON_SX = {
   paddingBottom: 1,
 }
 
-/** One chat row: a full-width flex line that aligns its bubble. */
+/**
+ * Fixed-slot transcript geometry.
+ *
+ * Strategy (a) — fixed slots: `VirtualList` pins every row to exactly
+ * `rowHeight(index)` and lays rows out at the cumulative sum of those heights.
+ * A row is therefore a hard box (`overflow: hidden`) and the bubble scrolls
+ * inside it; rendered content can never overlap the next row. Collapsed rows
+ * are exactly {@link MESSAGE_COLLAPSED_HEIGHT}; expansion grows the slot up to
+ * {@link MESSAGE_EXPANDED_MAX_HEIGHT} at an 18 px-per-line step.
+ */
+export const MESSAGE_COLLAPSED_HEIGHT = 96
+export const MESSAGE_EXPANDED_MAX_HEIGHT = 240
+const MESSAGE_LINE_HEIGHT = 18
+/** Approximate characters per bubble line at the panel's 420 px width. */
+const MESSAGE_CHARS_PER_LINE = 64
+/** Body lines a collapsed slot shows before it clips. */
+const MESSAGE_COLLAPSED_LINES = 3
+/** Extra lines one expansion step reveals (up to the 240 px ceiling). */
+const MESSAGE_EXPANDED_STEP_LINES = 8
+
+/**
+ * One chat row: a fixed-height flex line that aligns its bubble left/right or
+ * centres a notice. `height: 100%` is the slot the virtual list gave it; the
+ * row never grows past that slot.
+ */
 const MESSAGE_ROW_SX = {
   display: 'flex',
   width: '100%',
+  minWidth: 0,
+  height: '100%',
+  maxHeight: '100%',
+  boxSizing: 'border-box',
   paddingLeft: 0.5,
   paddingRight: 0.5,
-  boxSizing: 'border-box',
+  paddingTop: 0.25,
+  paddingBottom: 0.25,
+  overflow: 'hidden',
+  alignItems: 'stretch',
 }
 
 /**
- * Bubble shell. `textAlign`/alignment is supplied per role; the body Markdown
- * uses {@link MESSAGE_PROSE_SX}. The estimated virtual row height is enforced
- * by the list; long text scrolls inside an expanded bubble.
+ * Bubble shell. `maxWidth: 85%` of the row, `minWidth: 0` and `height: 100%`
+ * keep the bubble inside the fixed slot: the header stays put and only the
+ * body scrolls. The body is plain text styled with {@link MESSAGE_TEXT_SX}.
  */
 const MESSAGE_BUBBLE_SX = {
-  maxWidth: '88%',
+  maxWidth: '85%',
+  minWidth: 0,
+  height: '100%',
+  display: 'flex',
+  flexDirection: 'column',
   borderRadius: 1,
-  paddingTop: 0.75,
-  paddingBottom: 0.75,
-  paddingLeft: 1,
-  paddingRight: 1,
+  padding: 0.75,
   fontSize: 12,
   lineHeight: 1.5,
+  overflow: 'hidden',
   overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
   border: '1px solid',
   borderColor: 'divider',
   boxSizing: 'border-box',
@@ -1722,34 +1838,61 @@ const MESSAGE_NOTICE_SX = {
   ...MESSAGE_BUBBLE_SX,
   marginLeft: 'auto',
   marginRight: 'auto',
-  maxWidth: '100%',
   backgroundColor: 'transparent',
   borderColor: 'transparent',
   color: 'text.secondary',
   fontSize: 11,
 }
 
-const MESSAGE_META_SX = {
+/** Header line (role + timestamp), separated from the body by a divider. */
+const MESSAGE_HEADER_SX = {
   display: 'flex',
-  alignItems: 'center',
+  alignItems: 'baseline',
   gap: 0.75,
-  flexWrap: 'wrap',
-  marginBottom: 0.25,
+  flex: 'none',
+  minWidth: 0,
+  paddingBottom: 0.25,
+  marginBottom: 0.5,
+  borderBottom: '1px solid',
+  borderColor: 'divider',
   fontSize: 10,
   lineHeight: 1.2,
   color: 'text.secondary',
 }
 
-const MESSAGE_META_USER_SX = { justifyContent: 'flex-end' }
+const MESSAGE_HEADER_USER_SX = { justifyContent: 'flex-end' }
+const MESSAGE_HEADER_CENTER_SX = { justifyContent: 'center' }
 const MESSAGE_ROLE_SX = { fontWeight: 600, fontSize: 10 }
-const MESSAGE_TIME_SX = { fontSize: 10, opacity: 0.75 }
+const MESSAGE_TIME_SX = { fontSize: 10, opacity: 0.75, flex: 'none' }
 const MESSAGE_NOTICE_TEXT_SX = { fontStyle: 'italic', textAlign: 'center' }
 
-/** Expanded bubble body: capped at the virtual row's max estimated height. */
+/**
+ * Body between the header and the expand button: the only scrolling surface of
+ * the bubble. `minHeight: 0` is what lets it shrink inside the fixed slot.
+ */
 const MESSAGE_BODY_SX = {
-  maxHeight: 216,
-  overflowY: 'auto',
+  flex: '1 1 auto',
+  minHeight: 0,
+  minWidth: 0,
+  maxWidth: '100%',
   overflowX: 'hidden',
+  overflowY: 'auto',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+}
+
+/** Collapsed body: clipped at the slot; clicking the row expands it. */
+const MESSAGE_BODY_COLLAPSED_SX = {
+  ...MESSAGE_BODY_SX,
+  overflowY: 'hidden',
+}
+
+const MESSAGE_EXPAND_SX = {
+  flex: 'none',
+  minWidth: 0,
+  padding: '0 4px',
+  fontSize: 10,
+  marginTop: 0.25,
 }
 
 /* Canvas view */
@@ -2932,6 +3075,241 @@ function useGraph<T>(
 }
 
 /* ------------------------------------------------------------------------- *
+ * Context menus (read-only)
+ *
+ * File rows, directory rows, outline nodes and agent rows open a MUI `Menu`
+ * anchored at the pointer. Select/Escape/backdrop close it; every action is
+ * read-only and copy failures are warnings, never throws.
+ * ------------------------------------------------------------------------- */
+
+/** Pointer anchor of an open context menu (viewport coordinates). */
+export interface PanelContextMenuState {
+  readonly top: number
+  readonly left: number
+}
+
+/**
+ * Turn a `contextmenu` event into the menu anchor, preventing the native menu.
+ * Pure, so the row handlers can be unit-tested without a DOM event system.
+ */
+export function contextMenuStateFromEvent(event: {
+  readonly clientX: number
+  readonly clientY: number
+  readonly preventDefault?: () => void
+}): PanelContextMenuState {
+  event.preventDefault?.()
+  const top = Number.isFinite(event.clientY) ? event.clientY : 0
+  const left = Number.isFinite(event.clientX) ? event.clientX : 0
+  return { top: Math.max(0, Math.round(top)), left: Math.max(0, Math.round(left)) }
+}
+
+/** One entry of a context menu; `disabled` items may still carry a tooltip. */
+export interface PanelContextMenuAction {
+  readonly id: string
+  readonly label: string
+  readonly disabled?: boolean
+  readonly tooltip?: string
+  readonly onSelect?: () => void
+}
+
+/**
+ * Files menu: 预览 / 在文件树中定位 / 复制路径.
+ *
+ * A directory disables all three (a folder has no preview or file-tree
+ * selection) and offers exactly one toggle: 展开 when collapsed, 折叠 when
+ * expanded. `canPreview` is false on the left panel, which has no preview
+ * route.
+ */
+export function fileContextMenuItems(
+  copy: PanelCopy,
+  options: {
+    readonly directory: boolean
+    readonly expanded: boolean
+    readonly hasChildren: boolean
+    readonly canPreview: boolean
+  },
+): PanelContextMenuAction[] {
+  const menu = copy.contextMenu
+  const actions: PanelContextMenuAction[] = [
+    {
+      id: 'preview',
+      label: menu.preview,
+      disabled: options.directory || !options.canPreview,
+    },
+    { id: 'locate', label: menu.locate, disabled: options.directory },
+    { id: 'copyPath', label: menu.copyPath, disabled: options.directory },
+  ]
+  if (options.directory) {
+    actions.push({
+      id: options.expanded ? 'collapse' : 'expand',
+      label: options.expanded ? menu.collapse : menu.expand,
+      disabled: !options.hasChildren,
+    })
+  }
+  return actions
+}
+
+/** Outline menu: 跳转文件 / 预览所在文件 / 复制标题. */
+export function outlineContextMenuItems(
+  copy: PanelCopy,
+  options: { readonly hasPath: boolean; readonly canPreview: boolean },
+): PanelContextMenuAction[] {
+  const menu = copy.contextMenu
+  return [
+    { id: 'jumpToFile', label: menu.jumpToFile, disabled: !options.hasPath },
+    {
+      id: 'previewFile',
+      label: menu.previewFile,
+      disabled: !options.hasPath || !options.canPreview,
+    },
+    { id: 'copyTitle', label: menu.copyTitle },
+  ]
+}
+
+/**
+ * Agents menu: 查看消息 / 复制 ID / 信息·目标·计划 / 发送消息·停止.
+ *
+ * The last two are read-only stubs: disabled, with the host-unavailable
+ * tooltip. `viewMessages` is enabled because the agent detail route exists on
+ * the left panel.
+ */
+export function agentContextMenuItems(copy: PanelCopy): PanelContextMenuAction[] {
+  const menu = copy.contextMenu
+  return [
+    { id: 'viewMessages', label: menu.viewMessages },
+    { id: 'copyId', label: menu.copyId },
+    { id: 'info', label: menu.info },
+    { id: 'objective', label: menu.objective },
+    { id: 'plan', label: menu.plan },
+    {
+      id: 'sendMessage',
+      label: menu.sendMessage,
+      disabled: true,
+      tooltip: menu.hostUnavailable,
+    },
+    { id: 'stop', label: menu.stop, disabled: true, tooltip: menu.hostUnavailable },
+  ]
+}
+
+/**
+ * Copy text without ever throwing.
+ *
+ * The async Clipboard API is preferred; when it is missing (insecure context,
+ * older browser, permission denial) a hidden textarea plus `execCommand('copy')`
+ * is the fallback. Any failure resolves `false` after a `[coordination]`
+ * warning, so a menu action cannot break the panel.
+ */
+export async function copyPanelText(text: string): Promise<boolean> {
+  try {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clipboard !== undefined && typeof clipboard.writeText === 'function') {
+      await clipboard.writeText(text)
+      return true
+    }
+    if (typeof document === 'undefined') throw new Error('no document for the copy fallback')
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.top = '-1000px'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    try {
+      area.select()
+      if (typeof document.execCommand !== 'function' || !document.execCommand('copy')) {
+        throw new Error('execCommand copy was rejected')
+      }
+      return true
+    } finally {
+      document.body.removeChild(area)
+    }
+  } catch (error) {
+    console.warn('[coordination] copy failed', error)
+    return false
+  }
+}
+
+/** The menu shell: a MUI `Menu` anchored at the pointer, children as a slot. */
+export interface PanelContextMenuProps {
+  readonly open: boolean
+  readonly position: PanelContextMenuState | null
+  readonly label: string
+  readonly onClose: () => void
+  readonly children?: React.ReactNode
+}
+
+export function PanelContextMenu(props: PanelContextMenuProps): React.ReactElement {
+  const anchorPosition = props.position ?? { top: 0, left: 0 }
+  return h(
+    MuiMenu,
+    {
+      open: props.open && props.position !== null,
+      onClose: props.onClose,
+      anchorReference: 'anchorPosition',
+      anchorPosition,
+      autoFocus: true,
+      sx: CONTEXT_MENU_SX,
+      slotProps: {
+        // The visible paper carries the test id; the root slot is the Modal.
+        paper: { sx: CONTEXT_MENU_PAPER_SX, 'data-testid': 'panel-context-menu' },
+        list: {
+          'aria-label': props.label,
+          onKeyDown: (event: React.KeyboardEvent): void => {
+            if (event.key !== 'Escape') return
+            event.stopPropagation()
+            props.onClose()
+          },
+        },
+      },
+    },
+    props.children,
+  )
+}
+
+/**
+ * The menu's item list. A selected item closes the menu first and then runs
+ * its action, so a dialog opened by the action is not stacked under a closing
+ * menu. Disabled items render disabled and carry their explanation as a
+ * tooltip.
+ */
+export function PanelContextMenuItems(props: {
+  readonly actions: readonly PanelContextMenuAction[]
+  readonly onClose: () => void
+}): React.ReactElement {
+  return h(
+    React.Fragment,
+    null,
+    ...props.actions.map((action) => {
+      const disabled = action.disabled === true
+      const item = h(
+        MuiMenuItem,
+        {
+          key: action.id,
+          'data-context-item': action.id,
+          'data-disabled': disabled ? 'true' : 'false',
+          disabled,
+          sx: CONTEXT_MENU_ITEM_SX,
+          onClick: (): void => {
+            if (disabled) return
+            props.onClose()
+            action.onSelect?.()
+          },
+        },
+        h(MuiListItemText, { primary: action.label }),
+      )
+      if (!disabled || action.tooltip === undefined) return item
+      // A disabled MenuItem swallows pointer events, so the tooltip anchor is
+      // an enabled span around it (the documented MUI disabled-child pattern).
+      return h(
+        Tip,
+        { key: action.id, label: action.tooltip },
+        h('span', { style: { display: 'block' } }, item),
+      )
+    }),
+  )
+}
+
+/* ------------------------------------------------------------------------- *
  * Small shared components
  * ------------------------------------------------------------------------- */
 
@@ -3106,6 +3484,15 @@ function buildFileTree(entries: readonly TreeEntry[]): VirtualTreeEntry<TreeEntr
   return roots
 }
 
+/** What one file/directory row's context menu acts on. */
+interface FilesMenuTarget {
+  readonly path: string
+  readonly key: string
+  readonly directory: boolean
+  readonly expanded: boolean
+  readonly hasChildren: boolean
+}
+
 function FilesView(props: ViewProps): React.ReactElement {
   const { state, retry } = useGraph('/graph/tree', parseTree, props.refresh, props.onSettled)
   // The file tree's root is the workspace root the host actually scanned; the
@@ -3173,6 +3560,32 @@ function FilesView(props: ViewProps): React.ReactElement {
       return next
     })
   }, [])
+  // The one open context menu: pointer position plus the row it acts on.
+  const [menu, setMenu] = React.useState<{
+    readonly position: PanelContextMenuState
+    readonly target: FilesMenuTarget
+  } | null>(null)
+  const closeMenu = React.useCallback((): void => {
+    setMenu(null)
+  }, [])
+  const openMenu = (event: React.MouseEvent, target: FilesMenuTarget): void => {
+    setMenu({ position: contextMenuStateFromEvent(event), target })
+  }
+  const runMenuAction = (target: FilesMenuTarget, action: string): void => {
+    if (action === 'preview') {
+      navigate(props.side, 'preview', { path: target.path })
+      return
+    }
+    if (action === 'locate') {
+      navigate(props.side, 'files', { path: target.path })
+      return
+    }
+    if (action === 'copyPath') {
+      void copyPanelText(target.path)
+      return
+    }
+    if (action === 'expand' || action === 'collapse') onToggle(target.key)
+  }
   if (state.status === 'loading' || state.status === 'idle') {
     return h(LoadingState, { copy: props.copy })
   }
@@ -3186,7 +3599,7 @@ function FilesView(props: ViewProps): React.ReactElement {
     })
   }
 
-  return h(VirtualTree<VirtualTreeEntry<TreeEntry>>, {
+  const tree = h(VirtualTree<VirtualTreeEntry<TreeEntry>>, {
     adapter,
     collapsed,
     onToggle,
@@ -3211,6 +3624,17 @@ function FilesView(props: ViewProps): React.ReactElement {
               style: { paddingLeft: 8 + depth * 16 },
               title: entry.path,
               onClick: hasChildren ? (): void => { onToggle(node.key) } : undefined,
+              // Workspace/project headings are directories: right-click shows
+              // the directory menu (file actions disabled, expand/collapse).
+              onContextMenu: (event: React.MouseEvent): void => {
+                openMenu(event, {
+                  path: entry.path,
+                  key: node.key,
+                  directory: true,
+                  expanded,
+                  hasChildren,
+                })
+              },
             },
             h(
               MuiListItemIcon,
@@ -3277,6 +3701,15 @@ function FilesView(props: ViewProps): React.ReactElement {
                 }
                 navigate(props.side, props.side === 'right' ? 'outline' : 'files', { path: entry.path })
               },
+            onContextMenu: (event: React.MouseEvent): void => {
+              openMenu(event, {
+                path: entry.path,
+                key: node.key,
+                directory: entry.directory || hasChildren,
+                expanded,
+                hasChildren,
+              })
+            },
           },
           h(
             MuiListItemIcon,
@@ -3299,6 +3732,36 @@ function FilesView(props: ViewProps): React.ReactElement {
       )
     },
   })
+  const actions = menu === null
+    ? []
+    : fileContextMenuItems(props.copy, {
+      directory: menu.target.directory,
+      expanded: menu.target.expanded,
+      hasChildren: menu.target.hasChildren,
+      canPreview: props.side === 'right',
+    }).map((action) => ({
+      ...action,
+      onSelect: (): void => {
+        if (menu !== null) runMenuAction(menu.target, action.id)
+      },
+    }))
+  return h(
+    React.Fragment,
+    null,
+    tree,
+    menu === null
+      ? null
+      : h(
+        PanelContextMenu,
+        {
+          open: true,
+          position: menu.position,
+          label: props.copy.contextMenu.label,
+          onClose: closeMenu,
+        },
+        h(PanelContextMenuItems, { actions, onClose: closeMenu }),
+      ),
+  )
 }
 
 function familyLabel(family: string, copy: PanelCopy): string {
@@ -3531,6 +3994,12 @@ function outlineGroupEntry(
  * stays mounted across `path` changes (see DockedPanel's Fade key), so the
  * global collapse state survives the round trip.
  */
+/** What one outline row's context menu acts on. */
+interface OutlineMenuTarget {
+  readonly path: string | null
+  readonly title: string
+}
+
 function OutlineView(props: ViewProps): React.ReactElement {
   const local = props.path !== null
   const { state, retry } = useGraph(withPath('/graph/outline', props.path), parseOutline, props.refresh, props.onSettled)
@@ -3669,6 +4138,31 @@ function OutlineView(props: ViewProps): React.ReactElement {
       return next
     })
   }, [])
+  // Pointer-anchored menu for one outline row (node or file group).
+  const [menu, setMenu] = React.useState<{
+    readonly position: PanelContextMenuState
+    readonly target: OutlineMenuTarget
+  } | null>(null)
+  const closeMenu = React.useCallback((): void => {
+    setMenu(null)
+  }, [])
+  const openMenu = (event: React.MouseEvent, target: OutlineMenuTarget): void => {
+    setMenu({ position: contextMenuStateFromEvent(event), target })
+  }
+  const runMenuAction = (target: OutlineMenuTarget, action: string): void => {
+    if (action === 'copyTitle') {
+      void copyPanelText(target.title)
+      return
+    }
+    if (target.path === null) return
+    if (action === 'jumpToFile') {
+      navigate(props.side, 'files', { path: target.path })
+      return
+    }
+    if (action === 'previewFile') {
+      navigate(props.side, 'preview', { path: target.path })
+    }
+  }
   if (state.status === 'loading' || state.status === 'idle') {
     return h(LoadingState, { copy: props.copy })
   }
@@ -3682,7 +4176,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
     : groups.reduce((sum, group) => sum + structureNodes(group.nodes).length, 0)
   if (total === 0) return h(EmptyState, { message: props.copy.outline.empty })
 
-  return h(VirtualTree<VirtualTreeEntry<OutlineRowValue>>, {
+  const tree = h(VirtualTree<VirtualTreeEntry<OutlineRowValue>>, {
     adapter,
     collapsed,
     onToggle,
@@ -3785,6 +4279,9 @@ function OutlineView(props: ViewProps): React.ReactElement {
               onClick: value.group.path === null
                 ? undefined
                 : (): void => { navigate(props.side, 'outline', { path: value.group.path }) },
+              onContextMenu: (event: React.MouseEvent): void => {
+                openMenu(event, { path: value.group.path, title })
+              },
             },
             h(MuiListItemIcon, { sx: PANEL_ROW_ICON_SX }, h(IconArticle, { fontSize: 'small' })),
             h(MuiListItemText, {
@@ -3863,6 +4360,9 @@ function OutlineView(props: ViewProps): React.ReactElement {
               : target === null
                 ? undefined
                 : (): void => { navigate(props.side, 'files', { path: target }) },
+            onContextMenu: (event: React.MouseEvent): void => {
+              openMenu(event, { path: target, title: value.node.name })
+            },
           },
           h(
             MuiListItemIcon,
@@ -3882,6 +4382,34 @@ function OutlineView(props: ViewProps): React.ReactElement {
       )
     },
   })
+  const actions = menu === null
+    ? []
+    : outlineContextMenuItems(props.copy, {
+      hasPath: menu.target.path !== null,
+      canPreview: props.side === 'right',
+    }).map((action) => ({
+      ...action,
+      onSelect: (): void => {
+        if (menu !== null) runMenuAction(menu.target, action.id)
+      },
+    }))
+  return h(
+    React.Fragment,
+    null,
+    tree,
+    menu === null
+      ? null
+      : h(
+        PanelContextMenu,
+        {
+          open: true,
+          position: menu.position,
+          label: props.copy.contextMenu.label,
+          onClose: closeMenu,
+        },
+        h(PanelContextMenuItems, { actions, onClose: closeMenu }),
+      ),
+  )
 }
 
 /** Adapter input while the dependencies request is loading or failed. */
@@ -4030,75 +4558,6 @@ const HTML_SANITIZE_CONFIG = {
   FORBID_ATTR: FORBIDDEN_HTML_ATTRS,
 }
 
-/**
- * DOMPurify whitelist for rendered transcript messages.
- *
- * Same deny lists as every other sanitized surface, plus the two attributes the
- * link renderer sets (`target="_blank"`, `rel="noreferrer"`). Inline `style` is
- * still forbidden: Prism token colours are expressed as classes instead.
- */
-export const MESSAGE_SANITIZE_CONFIG = {
-  ...HTML_SANITIZE_CONFIG,
-  ADD_ATTR: ['target', 'rel'],
-}
-
-/** The small DOMPurify surface the transcript renderer needs. */
-export interface MessageHtmlSanitizer {
-  sanitize(html: string, config?: Record<string, unknown>): unknown
-}
-
-/** Elements whose whole subtree is removed before the string reaches the DOM. */
-const SCRUBBED_HTML_TAGS = FORBIDDEN_HTML_TAGS.filter((tag) => tag !== 'link' && tag !== 'meta')
-
-/**
- * Defence-in-depth string scrub applied after DOMPurify (and on its own in the
- * DOM-less unit-test environment).
- *
- * DOMPurify is the primary sanitizer. This pass exists so a sanitizer failure
- * or a future config regression cannot let a script/event handler/`javascript:`
- * URL through: every forbidden element is removed with its content, every
- * `on*`/`style`/`srcset`/`contenteditable` attribute is stripped, and
- * `javascript:`/`data:`/`vbscript:` URLs are dropped. It is intentionally
- * conservative — losing a styling attribute beats executing one.
- */
-export function scrubMessageHtml(html: string): string {
-  let clean = html
-  for (const tag of SCRUBBED_HTML_TAGS) {
-    clean = clean.replace(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi'), '')
-    clean = clean.replace(new RegExp(`<${tag}\\b[^>]*\\/?>`, 'gi'), '')
-  }
-  clean = clean.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-  clean = clean.replace(
-    /\s+(?:style|srcset|contenteditable|srcdoc)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,
-    '',
-  )
-  clean = clean.replace(
-    /\s+(?:href|src|xlink:href)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi,
-    (match: string, doubleQuoted: string | undefined, singleQuoted: string | undefined) => {
-      const value = doubleQuoted ?? singleQuoted ?? ''
-      return /^\s*(?:javascript|data|vbscript):/i.test(value) ? '' : match
-    },
-  )
-  clean = clean.replace(
-    /\s+(?:href|src|xlink:href)\s*=\s*([^\s"'>]+)/gi,
-    (match: string, value: string) =>
-      /^\s*(?:javascript|data|vbscript):/i.test(value) ? '' : match,
-  )
-  return clean
-}
-
-/**
- * Sanitize one rendered message before `dangerouslySetInnerHTML`.
- *
- * The runtime always passes the lazily loaded DOMPurify instance; the tests
- * omit it and exercise the DOM-free scrub, so the policy is verifiable without
- * a browser DOM. Output is always a fresh string.
- */
-export function sanitizeMessageHtml(html: string, purify?: MessageHtmlSanitizer): string {
-  const purified = purify === undefined ? html : String(purify.sanitize(html, MESSAGE_SANITIZE_CONFIG))
-  return scrubMessageHtml(purified)
-}
-
 function SheetsPreview(props: {
   copy: PanelCopy
   sheets: readonly SheetData[]
@@ -4212,7 +4671,7 @@ interface PreviewRendererProps {
  */
 
 /* ------------------------------------------------------------------------- *
- * Markdown pipeline shared by the file preview and the agent transcript
+ * Markdown pipeline used by the file preview (the transcript is plain text)
  * ------------------------------------------------------------------------- */
 
 interface MarkdownModules {
@@ -4232,12 +4691,28 @@ interface MarkdownModules {
 /** KaTeX renders MathML only: the panel ships no stylesheet/font assets. */
 const KATEX_OPTIONS = { output: 'mathml' as const }
 
+/**
+ * KaTeX is passed to `rehypePlugins` as a `[plugin, options]` tuple, never as
+ * `rehypeKatex(options)`.
+ *
+ * `rehypeKatex(options)` returns a *transformer* `(tree) => void`; passing that
+ * function as a plugin makes unified call it as an attacher with no arguments,
+ * so the transformer receives `tree === undefined` and throws inside
+ * `visitParents` ("Cannot use 'in' operator to search for 'children'"). The
+ * tuple form is the supported shape: unified calls the attacher with the
+ * options and uses the transformer it returns. The preview uses the tuple for
+ * its one KaTeX rehype plugin.
+ */
+type MarkdownPluginEntry = readonly [MarkdownModules['rehypeKatex'], typeof KATEX_OPTIONS]
+
 let markdownModulesPromise: Promise<MarkdownModules> | null = null
 
 /**
- * Lazily load the Markdown stack exactly once and share it between the preview
- * and the transcript. A failed load rejects the shared promise; both callers
- * degrade to a skeleton/plain text instead of taking the panel down.
+ * Lazily load the Markdown stack exactly once for the file preview.
+ *
+ * A failed load rejects the shared promise; the preview degrades to its error
+ * boundary instead of taking the panel down. The agent transcript deliberately
+ * never calls this loader (its bodies are plain text).
  */
 function loadMarkdownModules(): Promise<MarkdownModules> {
   if (markdownModulesPromise === null) {
@@ -4289,210 +4764,24 @@ function MarkdownTaskCheckbox(props: { checked?: boolean }): React.ReactElement 
   )
 }
 
-/** Two high-contrast token sets derived from the MUI palette. */
-function prismThemeFor(muiTheme: Theme): PrismTheme {
-  const palette = muiTheme.palette
-  const dark = palette.mode === 'dark'
-  return {
-    plain: { color: palette.text.primary, backgroundColor: 'transparent' },
-    styles: [
-      {
-        types: ['comment', 'prolog', 'doctype', 'cdata'],
-        style: { color: palette.text.disabled, fontStyle: 'italic' },
-      },
-      {
-        types: ['punctuation', 'operator'],
-        style: { color: dark ? palette.grey[400] : palette.grey[700] },
-      },
-      {
-        types: ['keyword', 'builtin', 'tag', 'important', 'atrule'],
-        style: { color: palette.primary.main, fontWeight: '600' },
-      },
-      {
-        types: ['string', 'char', 'attr-value', 'regex', 'url'],
-        style: { color: palette.success.main },
-      },
-      {
-        types: ['number', 'boolean', 'constant', 'symbol', 'deleted'],
-        style: { color: palette.warning.main },
-      },
-      {
-        types: ['function', 'class-name', 'function-variable'],
-        style: { color: palette.info.main },
-      },
-      {
-        types: ['variable', 'parameter', 'property', 'attr-name'],
-        style: { color: palette.text.primary },
-      },
-      {
-        types: ['selector', 'rule'],
-        style: { color: palette.secondary.main },
-      },
-    ],
-  }
-}
-
-/** Prefix a token type's theme entry as an emotion selector for sanitized HTML. */
-function messageTokenSelectors(): Record<string, Record<string, unknown>> {
-  const selectors: Record<string, Record<string, unknown>> = {}
-  for (const entry of prismThemeFor(theme).styles) {
-    for (const type of entry.types) {
-      selectors[`& .token.${type}`] = { ...entry.style }
-    }
-  }
-  return selectors
-}
-
-/** Rendered Markdown prose inside a chat bubble, Prism token classes included. */
-const MESSAGE_PROSE_SX = {
-  ...PREVIEW_PROSE_SX,
-  fontSize: 12,
-  lineHeight: 1.55,
-  '& p:last-of-type': { marginBottom: 0 },
-  '& pre': {
-    margin: '0 0 6px',
-    padding: 0.75,
-    borderRadius: 1,
-    backgroundColor: 'action.hover',
-    overflowX: 'auto',
-    fontSize: 11,
-  },
-  '& .coordination-code-line': { minHeight: '1.4em', whiteSpace: 'pre' },
-  ...messageTokenSelectors(),
-}
-
 /* ------------------------------------------------------------------------- *
- * Markdown → sanitized HTML (agent transcript bubbles)
+ * Plain-text transcript body
+ *
+ * The agent transcript is deliberately NOT Markdown: message text is rendered
+ * as a text node under `pre-wrap` (newlines and indentation preserved) and is
+ * never parsed, highlighted or injected as HTML. The Markdown pipeline below
+ * serves the file preview only.
  * ------------------------------------------------------------------------- */
 
-type MessageHtmlRenderer = (markdown: string) => string
-
-let messageHtmlRendererPromise: Promise<MessageHtmlRenderer> | null = null
-
-/** Concatenate the text content of a React node tree. */
-function reactNodeText(node: React.ReactNode): string {
-  if (typeof node === 'string' || typeof node === 'number') return String(node)
-  if (Array.isArray(node)) return node.map(reactNodeText).join('')
-  if (React.isValidElement(node)) {
-    return reactNodeText((node.props as { children?: React.ReactNode }).children)
-  }
-  return ''
-}
-
-/** The prism-react-renderer `Highlight` shape used for transcript code fences. */
-type HighlightComponent = (props: {
-  code: string
-  language: string
-  theme: PrismTheme
-  children: (props: RenderProps) => React.ReactElement
-}) => React.ReactElement
-
-/**
- * Components applied inside every transcript message.
- *
- * Links always open a new tab with `noreferrer`; fenced code goes through Prism
- * with class-based token spans (the message sanitizer strips inline `style`, so
- * token colours come from {@link MESSAGE_PROSE_SX} instead).
- */
-function messageMarkdownComponents(
-  Highlight: HighlightComponent,
-  prismTheme: PrismTheme,
-): Record<string, Loose> {
-  function MessagePre(props: { children?: React.ReactNode }): React.ReactElement {
-    const child = React.Children.toArray(props.children)[0]
-    if (!React.isValidElement(child)) return h('pre', null, props.children)
-    const childProps = child.props as { className?: string; children?: React.ReactNode }
-    const code = reactNodeText(childProps.children)
-    const language = /language-([\w-]+)/.exec(childProps.className ?? '')?.[1] ?? 'plain'
-    return h(Highlight, {
-      code,
-      language,
-      theme: prismTheme,
-      children: (renderProps: RenderProps): React.ReactElement =>
-        h(
-          'pre',
-          { className: 'coordination-code' },
-          ...renderProps.tokens.map((line, lineIndex) =>
-            h(
-              'div',
-              { className: 'coordination-code-line', key: `line:${lineIndex}` },
-              ...line.map((token, tokenIndex) =>
-                h(
-                  'span',
-                  {
-                    className: `token ${token.types.join(' ')}`,
-                    key: `token:${tokenIndex}`,
-                  },
-                  token.content,
-                ),
-              ),
-            ),
-          ),
-        ),
-    })
-  }
-
-  function MessageLink(props: { href?: string; children?: React.ReactNode }): React.ReactElement {
-    return h(
-      'a',
-      { href: props.href, target: '_blank', rel: 'noreferrer' },
-      props.children,
-    )
-  }
-
-  return {
-    pre: MessagePre as unknown as Loose,
-    a: MessageLink as unknown as Loose,
-    input: MarkdownTaskCheckbox as unknown as Loose,
-  }
-}
-
-/**
- * Lazily build the Markdown → sanitized-HTML renderer used by every bubble.
- *
- * `react-markdown` produces React nodes, so they are serialised with
- * `renderToStaticMarkup`; the resulting fragment then goes through DOMPurify's
- * whitelist before it may be inserted with `dangerouslySetInnerHTML`. Any
- * load/render/sanitize failure rejects or throws and the bubble falls back to
- * plain text (the caller catches and logs with the `[coordination]` prefix).
- */
-function loadMessageHtmlRenderer(): Promise<MessageHtmlRenderer> {
-  if (messageHtmlRendererPromise === null) {
-    messageHtmlRendererPromise = (async (): Promise<MessageHtmlRenderer> => {
-      const [markdown, prismModule, serverModule] = await Promise.all([
-        loadMarkdownModules(),
-        import('prism-react-renderer'),
-        // The explicit browser entry keeps Node's `stream`/`util` out of the
-        // browser bundle (the bare `react-dom/server` specifier resolves to the
-        // node build under this bundler even with platform: 'browser').
-        // @ts-ignore react-dom 18 ships no declarations for its server entry.
-        import('react-dom/server.browser'),
-      ])
-      const renderToStaticMarkup = serverModule.renderToStaticMarkup as (
-        node: React.ReactElement,
-      ) => string
-      const components = messageMarkdownComponents(
-        prismModule.Highlight as unknown as HighlightComponent,
-        prismThemeFor(theme),
-      )
-      return (source: string): string => {
-        const element = h(
-          markdown.MarkdownView,
-          {
-            remarkPlugins: [markdown.remarkGfm, markdown.remarkMath],
-            rehypePlugins: [markdown.rehypeKatex(KATEX_OPTIONS)],
-            components,
-          },
-          source,
-        )
-        return sanitizeMessageHtml(
-          renderToStaticMarkup(element),
-          markdown.DOMPurify as unknown as MessageHtmlSanitizer,
-        )
-      }
-    })()
-  }
-  return messageHtmlRendererPromise
+/** Plain-text transcript body: preserves whitespace, wraps long tokens. */
+export const MESSAGE_TEXT_SX = {
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+  fontFamily: 'inherit',
+  fontSize: 'inherit',
+  lineHeight: 1.5,
+  margin: 0,
 }
 
 const LazyPreviewRenderer = React.lazy(async (): Promise<{
@@ -4513,7 +4802,9 @@ const LazyPreviewRenderer = React.lazy(async (): Promise<{
     math: boolean
   }): React.ReactElement {
     const remarkPlugins = props.math ? [remarkGfm, remarkMath] : [remarkGfm]
-    const rehypePlugins = props.math ? [rehypeKatex(KATEX_OPTIONS)] : []
+    const rehypePlugins = props.math
+      ? [[rehypeKatex, KATEX_OPTIONS] as MarkdownPluginEntry]
+      : []
     return h(
       MuiBox,
       { sx: PREVIEW_BOX_SX, role: 'region', 'aria-label': props.copy.preview },
@@ -7349,10 +7640,111 @@ function agentInitial(label: string): string {
   return first.toUpperCase()
 }
 
+/** One fixed id: only one agent-information dialog can be open at a time. */
+const AGENT_INFO_TITLE_ID = 'coordination-agent-info-title'
+
+/**
+ * Read-only roster projection behind the agents menu's 信息 / 目标 / 计划 items.
+ *
+ * All three items open this one dialog: identity fields first, then the
+ * objective and the plan estimate. A progress estimate without a known basis
+ * renders the explicit 「暂无计划数据」 copy instead of inventing a number.
+ */
+function AgentInfoDialog(props: {
+  copy: PanelCopy
+  agent: AgentInfoData
+  onClose: () => void
+}): React.ReactElement {
+  const copy = props.copy.agentInfo
+  const agent = props.agent
+  const basisLabel = agent.progress.basis === 'completed'
+    ? props.copy.progressBasisCompleted
+    : agent.progress.basis === 'turns'
+      ? props.copy.progressBasisTurns
+      : props.copy.progressBasisUnknown
+  const progressText = agent.progress.basis === 'unknown'
+    ? copy.empty
+    : [
+      fillTemplate(props.copy.progress, { value: String(agent.progress.value) }),
+      basisLabel,
+    ].join(' · ')
+  const field = (label: string, value: string): React.ReactElement =>
+    h(
+      MuiBox,
+      { sx: AGENT_INFO_ROW_SX },
+      h(MuiTypography, { component: 'span', sx: AGENT_INFO_LABEL_SX }, label),
+      h(MuiTypography, { component: 'span', sx: AGENT_INFO_VALUE_SX }, value),
+    )
+  const section = (title: string, body: string): React.ReactElement =>
+    h(
+      MuiBox,
+      { sx: AGENT_INFO_SECTION_SX },
+      h(MuiTypography, { component: 'div', sx: AGENT_INFO_SECTION_TITLE_SX }, title),
+      h(MuiTypography, { component: 'p', sx: AGENT_INFO_VALUE_SX }, body),
+    )
+  return h(
+    MuiDialog,
+    {
+      open: true,
+      onClose: props.onClose,
+      fullWidth: true,
+      maxWidth: 'xs',
+      sx: AGENT_INFO_DIALOG_SX,
+      'aria-labelledby': AGENT_INFO_TITLE_ID,
+      'data-testid': 'agent-info-dialog',
+    },
+    h(
+      MuiDialogTitle,
+      { id: AGENT_INFO_TITLE_ID, sx: AGENT_INFO_TITLE_SX },
+      `${copy.title} · ${agent.label}`,
+    ),
+    h(
+      MuiDialogContent,
+      { dividers: true },
+      field(copy.id, agent.id),
+      field(copy.status, agent.status),
+      field(copy.parent, agent.parentId ?? copy.empty),
+      field(copy.created, formatAgentTime(agent.startedAt) || copy.empty),
+      field(copy.completed, formatAgentTime(agent.completedAt) || copy.empty),
+      field(copy.progress, progressText),
+      section(copy.objective, agent.objective.length > 0 ? agent.objective : copy.empty),
+      section(copy.plan, progressText),
+    ),
+    h(
+      MuiDialogActions,
+      null,
+      h(MuiButton, { size: 'small', onClick: props.onClose }, copy.close),
+    ),
+  )
+}
+
 function AgentsView(props: ViewProps): React.ReactElement {
   const { state, retry } = useGraph('/graph/agents', parseAgents, props.refresh, props.onSettled)
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const [collapsed, setCollapsed] = React.useState<Set<string>>(() => new Set())
+  // Right-click menu (one row) and the read-only information dialog.
+  const [menu, setMenu] = React.useState<{
+    readonly position: PanelContextMenuState
+    readonly agent: AgentInfoData
+  } | null>(null)
+  const [info, setInfo] = React.useState<AgentInfoData | null>(null)
+  const closeMenu = React.useCallback((): void => {
+    setMenu(null)
+  }, [])
+  const openMenu = (event: React.MouseEvent, agent: AgentInfoData): void => {
+    setMenu({ position: contextMenuStateFromEvent(event), agent })
+  }
+  const runMenuAction = (agent: AgentInfoData, action: string): void => {
+    if (action === 'viewMessages') {
+      navigate(props.side, 'agent', { id: agent.id })
+      return
+    }
+    if (action === 'copyId') {
+      void copyPanelText(agent.id)
+      return
+    }
+    if (action === 'info' || action === 'objective' || action === 'plan') setInfo(agent)
+  }
 
   if (state.status === 'loading' || state.status === 'idle') {
     return h(
@@ -7409,6 +7801,9 @@ function AgentsView(props: ViewProps): React.ReactElement {
           'aria-selected': false,
           onClick: (): void => {
             navigate(props.side, 'agent', { id: agent.id })
+          },
+          onContextMenu: (event: React.MouseEvent): void => {
+            openMenu(event, agent)
           },
         },
         h(
@@ -7486,6 +7881,36 @@ function AgentsView(props: ViewProps): React.ReactElement {
     props.copy.estimated,
   ].join(' · ')
 
+  const actions = menu === null
+    ? []
+    : agentContextMenuItems(props.copy).map((action) => ({
+      ...action,
+      onSelect: (): void => {
+        if (menu !== null) runMenuAction(menu.agent, action.id)
+      },
+    }))
+  const contextMenu = menu === null
+    ? null
+    : h(
+      PanelContextMenu,
+      {
+        open: true,
+        position: menu.position,
+        label: props.copy.contextMenu.label,
+        onClose: closeMenu,
+      },
+      h(PanelContextMenuItems, { actions, onClose: closeMenu }),
+    )
+  const infoDialog = info === null
+    ? null
+    : h(AgentInfoDialog, {
+      copy: props.copy,
+      agent: info,
+      onClose: (): void => {
+        setInfo(null)
+      },
+    })
+
   return h(
     MuiBox,
     { sx: AGENTS_VIEW_SX },
@@ -7521,6 +7946,8 @@ function AgentsView(props: ViewProps): React.ReactElement {
       ),
       h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: AGENTS_FOOTER_TEXT_SX }, totalText),
     ),
+    contextMenu,
+    infoDialog,
   )
 }
 
@@ -7542,49 +7969,46 @@ function agentMessageKey(index: number, message: AgentMessageData): string {
 }
 
 /**
- * Estimated height of one transcript row (48–240 px).
+ * Fixed-slot height of one transcript row (96 collapsed, up to 240 expanded).
  *
- * The transcript uses {@link VirtualList}'s variable-row mode: the estimate is
- * derived from the source length (≈72 characters per line, 18 px per line plus
- * padding), collapsed to two lines and expanded to the full text. The estimate
- * decides the cumulative scroll geometry; the row itself stays exact because
- * the bubble clips/scrolls inside the row.
+ * Strategy (a) — fixed slots: this function is the only source of row heights.
+ * It depends on the source length and the expansion flag, never on a DOM
+ * measurement, so the cumulative offset table is deterministic and identical on
+ * every render. A message that fits the collapsed slot stays exactly 96 px in
+ * both states; a longer one expands in 18 px line steps, capped at 240 px.
  */
 export function estimateMessageHeight(
   message: Pick<AgentMessageData, 'text'>,
   expanded: boolean,
 ): number {
-  const lines = Math.max(1, Math.ceil(message.text.length / 72))
-  const shown = expanded ? Math.min(lines, 12) : Math.min(lines, 2)
-  return Math.max(48, Math.min(240, 48 + shown * 18))
+  const lines = Math.max(1, Math.ceil(message.text.length / MESSAGE_CHARS_PER_LINE))
+  if (!expanded || lines <= MESSAGE_COLLAPSED_LINES) return MESSAGE_COLLAPSED_HEIGHT
+  const extra = Math.min(MESSAGE_EXPANDED_STEP_LINES, lines - MESSAGE_COLLAPSED_LINES)
+  return Math.min(MESSAGE_EXPANDED_MAX_HEIGHT, MESSAGE_COLLAPSED_HEIGHT + extra * MESSAGE_LINE_HEIGHT)
 }
 
 /** True when the collapsed transcript row hides part of the message. */
 export function messageCanExpand(message: Pick<AgentMessageData, 'text'>): boolean {
-  return estimateMessageHeight(message, true) > estimateMessageHeight(message, false)
+  return Math.ceil(message.text.length / MESSAGE_CHARS_PER_LINE) > MESSAGE_COLLAPSED_LINES
 }
 
-/** Read-only chat bubble: provenance meta, sanitized Markdown, no composer. */
+/**
+ * Read-only chat bubble: header line, plain-text body, no composer.
+ *
+ * The body is a React text node — never parsed as Markdown and never injected
+ * as HTML. `pre-wrap` keeps the message's newlines/indentation exactly as the
+ * host sent them; React escapes any markup, so control characters or HTML in a
+ * message are displayed, not executed. The Markdown/KaTeX/Prism/DOMPurify
+ * pipeline is intentionally absent from this path (it belongs to the preview).
+ */
 function MessageBubble(props: {
   copy: PanelCopy
   message: AgentMessageData
   index: number
-  renderer: MessageHtmlRenderer | null
   expanded: boolean
   onToggle: (key: string) => void
 }): React.ReactElement {
   const kind = messageRoleKind(props.message.role)
-  // The sanitized HTML is produced once per message text / renderer generation.
-  const html = React.useMemo(() => {
-    if (props.renderer === null) return null
-    try {
-      return props.renderer(props.message.text)
-    } catch (error) {
-      // A Markdown/sanitize failure degrades to plain text; never a white screen.
-      console.error('[coordination] message markdown failed', error)
-      return null
-    }
-  }, [props.renderer, props.message.text])
   const bubble = kind === 'user'
     ? MESSAGE_USER_SX
     : kind === 'assistant'
@@ -7596,44 +8020,19 @@ function MessageBubble(props: {
   const toggle = (): void => {
     props.onToggle(key)
   }
-  const body = html === null
-    ? h(
-      MuiTypography,
-      {
-        component: 'span',
-        variant: 'inherit',
-        sx: kind === 'tool'
-          ? { fontFamily: 'monospace', whiteSpace: 'pre-wrap' }
-          : { whiteSpace: 'pre-wrap' },
-      },
-      props.message.text,
-    )
-    : h(MuiBox, {
-      // Sanitized by DOMPurify + scrubMessageHtml before it reaches this point.
-      dangerouslySetInnerHTML: { __html: html },
-      sx: {
-        ...MESSAGE_PROSE_SX,
-        ...(kind === 'tool' ? { fontFamily: 'monospace' } : {}),
-        ...(kind === 'tool' || kind === 'system' ? MESSAGE_NOTICE_TEXT_SX : {}),
-      },
-    })
   return h(
     MuiBox,
     {
       sx: { ...MESSAGE_ROW_SX, justifyContent: messageAlignment(props.message.role) },
       'data-message-role': kind,
+      'data-message-index': props.index,
+      'data-message-expanded': props.expanded ? 'true' : 'false',
     },
     h(
       MuiBox,
       {
         sx: { ...bubble, cursor: canExpand ? 'pointer' : 'auto' },
-        onClick: (event: React.MouseEvent): void => {
-          // Links inside the sanitized HTML keep their own navigation.
-          const target = event.target as unknown as {
-            closest?: (selector: string) => unknown
-          } | null
-          const link = target?.closest?.('a')
-          if (link !== null && link !== undefined) return
+        onClick: (): void => {
           if (canExpand) toggle()
         },
       },
@@ -7641,18 +8040,47 @@ function MessageBubble(props: {
         MuiBox,
         {
           sx: {
-            ...MESSAGE_META_SX,
+            ...MESSAGE_HEADER_SX,
             ...(kind === 'assistant'
               ? {}
               : kind === 'user'
-                ? MESSAGE_META_USER_SX
-                : { justifyContent: 'center' }),
+                ? MESSAGE_HEADER_USER_SX
+                : MESSAGE_HEADER_CENTER_SX),
           },
         },
-        h(MuiTypography, { component: 'span', sx: MESSAGE_ROLE_SX }, props.copy.messageRoles[kind]),
-        h(MuiTypography, { component: 'span', sx: MESSAGE_TIME_SX }, time),
+        h(
+          MuiTypography,
+          { component: 'span', variant: 'inherit', noWrap: true, sx: MESSAGE_ROLE_SX },
+          props.copy.messageRoles[kind],
+        ),
+        h(
+          MuiTypography,
+          { component: 'span', variant: 'inherit', noWrap: true, sx: MESSAGE_TIME_SX },
+          time,
+        ),
       ),
-      h(MuiBox, { sx: props.expanded ? MESSAGE_BODY_SX : undefined }, body),
+      h(
+        MuiBox,
+        {
+          sx: props.expanded ? MESSAGE_BODY_SX : MESSAGE_BODY_COLLAPSED_SX,
+          // The body is a single text node; this marks the plain-text branch
+          // for the hardening tests (no HTML/Markdown child is ever built).
+          'data-message-body': 'plain',
+        },
+        h(
+          MuiTypography,
+          {
+            component: 'span',
+            variant: 'inherit',
+            sx: {
+              ...MESSAGE_TEXT_SX,
+              ...(kind === 'tool' ? { fontFamily: 'monospace' } : {}),
+              ...(kind === 'tool' || kind === 'system' ? MESSAGE_NOTICE_TEXT_SX : {}),
+            },
+          },
+          props.message.text,
+        ),
+      ),
       canExpand
         ? h(
           MuiButton,
@@ -7661,11 +8089,8 @@ function MessageBubble(props: {
             variant: 'text',
             'aria-expanded': props.expanded,
             sx: {
-              minWidth: 0,
-              padding: '0 4px',
-              fontSize: 10,
-              marginTop: 0.25,
-              alignSelf: kind === 'user' ? 'flex-end' : 'flex-start',
+              ...MESSAGE_EXPAND_SX,
+              alignSelf: kind === 'user' ? 'flex-end' : kind === 'assistant' ? 'flex-start' : 'center',
             },
             onClick: (event: React.MouseEvent): void => {
               event.stopPropagation()
@@ -7682,12 +8107,14 @@ function MessageBubble(props: {
 const EMPTY_AGENT_MESSAGES: readonly AgentMessageData[] = []
 
 /**
- * Agent (profession) detail page: a read-only, virtualized Markdown transcript.
+ * Agent (profession) detail page: a read-only, virtualized plain-text
+ * transcript.
  *
- * There is deliberately no composer, retry or send control. Each message is
- * rendered once through the shared lazy Markdown pipeline, sanitized, and only
- * then inserted; until the pipeline resolves (or if it fails) bubbles show the
- * raw text. Expansion is per message and drives the variable row height.
+ * There is deliberately no composer, retry or send control. Message bodies are
+ * rendered as text nodes (`white-space: pre-wrap`), never through Markdown,
+ * KaTeX, Prism or DOMPurify; only the fixed-slot row height and the expand
+ * toggle apply to the transcript. Expansion is per message and drives the row
+ * geometry (strategy (a), see {@link estimateMessageHeight}).
  */
 function AgentMessagesView(props: ViewProps): React.ReactElement {
   const id = props.id ?? ''
@@ -7705,7 +8132,6 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
     ? messagesGraph.state.value.messages
     : EMPTY_AGENT_MESSAGES
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set())
-  const [renderer, setRenderer] = React.useState<MessageHtmlRenderer | null>(null)
   const adapter = React.useMemo(
     () => createVirtualListAdapter(
       messages,
@@ -7725,19 +8151,6 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
       else next.add(key)
       return next
     })
-  }, [])
-  React.useEffect(() => {
-    let active = true
-    void loadMessageHtmlRenderer()
-      .then((render) => {
-        if (active) setRenderer(() => render)
-      })
-      .catch((error: unknown) => {
-        console.error('[coordination] message markdown pipeline failed', error)
-      })
-    return () => {
-      active = false
-    }
   }, [])
 
   const header = h(
@@ -7834,7 +8247,6 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
           copy: props.copy,
           message,
           index,
-          renderer,
           expanded: expanded.has(agentMessageKey(index, message)),
           onToggle: toggleExpanded,
         }),
