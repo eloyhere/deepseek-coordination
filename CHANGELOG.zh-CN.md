@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.14.2 | 2026-10-18 | `—` | 客户端不再引用 Node 内建模块 |
 | 0.14.1 | 2026-10-18 | `c5f333b` | 面板错误隔离、面板懒加载、逃生开关 |
 | 0.14.0 | 2026-10-18 | `429d05e` | 只读工作区/关系双面板、canvas 关系图、预览矩阵、代理名册、缓存策略接线 |
 | 0.13.0 | 2026-10-18 | `83d3601` | TS、Java、Rust、PHP 的 `interface`/`type`/`enumeration`/`namespace` 成为一等 kind |
@@ -47,6 +48,18 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.14.2] — 2026-10-18
+
+### 修复
+
+- **客户端 bundle 不再引用 Node 内建模块。** `vfile`（`react-markdown` 的依赖）从
+  Node 入口 import 了 `node:path`、`node:process`、`node:url`，而它的 `exports`
+  没有暴露浏览器变体，于是被打包器外部化。DSH 客户端模块表只认已注册的包 id，
+  整个 web boot 因此失败：`client-modules: require("node:process") missed the
+  module table`。现在客户端构建把三个浏览器 shim
+  （`src/client/shims/node-{path,process,url}.ts`）alias 进去；产物中不再有
+  `require("node:*")`，factory 只向模块表要 `react`。
 
 ## [0.14.1] — 2026-10-18
 

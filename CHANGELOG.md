@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.14.2 | 2026-10-18 | `—` | Client bundle no longer requires Node builtins |
 | 0.14.1 | 2026-10-18 | `c5f333b` | Panel error containment, lazy panel module, escape hatch |
 | 0.14.0 | 2026-10-18 | `429d05e` | Read-only workspace & relationship panels, canvas graphs, preview matrix, agent roster, cache-strategy wiring |
 | 0.13.0 | 2026-10-18 | `83d3601` | First-class `interface`/`type`/`enumeration`/`namespace` kinds across TS, Java, Rust and PHP |
@@ -50,6 +51,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.14.2] — 2026-10-18
+
+### Fixed
+
+- **The client bundle no longer requires Node builtins.** `vfile` (pulled in by
+  `react-markdown`) imports `node:path`, `node:process` and `node:url` from its
+  Node entry and does not publish browser variants through `exports`, so the
+  bundler externalised them. DSH's client module table only serves registered
+  package ids, so the whole web boot aborted with
+  `client-modules: require("node:process") missed the module table`. Three tiny
+  browser shims (`src/client/shims/node-{path,process,url}.ts`) are now aliased
+  in the client build; the bundle contains no `require("node:*")` and the
+  factory only asks the module table for `react`.
 
 ## [0.14.1] — 2026-10-18
 

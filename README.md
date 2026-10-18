@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.14.1 (2026-10-18).** This release adds two read-only docked workspace panels with canvas relationship graphs, a preview matrix (Markdown and math, sanitized HTML, Prism code, docx/xlsx/pptx), an agent roster with estimated progress, and hardens all of it so a panel failure cannot blank the harness. It builds on the v0.12.0 domain layer and the v0.11.0 settings and cache-proxy work. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.14.2 (2026-10-18).** This release adds two read-only docked workspace panels with canvas relationship graphs, a preview matrix (Markdown and math, sanitized HTML, Prism code, docx/xlsx/pptx), an agent roster with estimated progress, and hardens all of it so a panel failure cannot blank the harness. It builds on the v0.12.0 domain layer and the v0.11.0 settings and cache-proxy work. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
 
 | Status | Meaning in this README |
 |---|---|
@@ -60,7 +60,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.14.1.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.14.2.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -86,7 +86,7 @@ For a no-restart recovery path limited to the panel UI, set `localStorage['coord
 |---|---|---|
 | `lib/index.mjs` | Host ESM, `platform: node` | 2,380,317 B |
 | `lib/index.d.mts` | Host declarations | 9,095 B |
-| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 3,250,623 B (687,907 B gzipped) |
+| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 3,252,801 B |
 
 Material UI, emotion and `react-dom` are bundled into `lib/client.js`; React itself comes from the host module table. The inlined `react-dom` is the 18.3.1 line that matches the host's React 18 — npm refuses to auto-install a React 19 `react-dom` against a React 18 `react`. The client bundle is large because MUI and `react-dom` are inlined, not because it ships a second React.
 

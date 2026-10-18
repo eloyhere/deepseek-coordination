@@ -1,4 +1,5 @@
 import { defineConfig } from 'tsdown'
+import { fileURLToPath } from 'node:url'
 
 // Must match package.json's name exactly: the client module system resolves the
 // browser half by package name + `/client`, and __ModuleLoader__'s id is this string.
@@ -41,6 +42,17 @@ export default defineConfig([
     target: 'es2022',
     dts: true,
     clean: false,
+    alias: {
+      // `vfile` (via react-markdown) imports Node builtins from its Node entry
+      // and does not expose the browser variants through `exports`, so the
+      // bundler externalises them. DSH's client module table only serves
+      // registered package ids; a `node:*` require there aborts the whole web
+      // boot ("import failed: client-modules: require(\"node:process\")").
+      // These shims keep the tiny surface vfile uses inside the bundle.
+      'node:path': fileURLToPath(new URL('./src/client/shims/node-path.ts', import.meta.url)),
+      'node:process': fileURLToPath(new URL('./src/client/shims/node-process.ts', import.meta.url)),
+      'node:url': fileURLToPath(new URL('./src/client/shims/node-url.ts', import.meta.url)),
+    },
     define: {
       // MUI and emotion read process.env.NODE_ENV. The browser has no `process`,
       // and an unsubstituted read throws at module evaluation, which takes the
