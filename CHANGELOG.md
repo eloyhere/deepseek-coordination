@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.22.0 | 2026-10-29 | — | Broad tasks decomposed into verifiable plan steps |
 | 0.21.0 | 2026-10-29 | — | /amp/story, concrete request/plan/ignored, all-MUI panel |
 | 0.20.0 | 2026-10-29 | — | Plain-language panel, no composer dropdowns, 16 px floor |
 | 0.19.0 | 2026-10-29 | — | Gated `Goal` + `Plan` artifacts from recorded acceptance |
@@ -69,6 +70,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-29
+
+### Changed
+
+- **A broad task is now decomposed in the plan instead of being recorded as a condition.** Comprehension has always flagged vague task markers as `任务描述过于宽泛（A / B）`; the organizer then carried the whole finding as one generic "resolve the open ambiguity" step. Now `broadTaskMarkers()` extracts the user's own fragments and each becomes its own plan step — `Turn the broad request into a verifiable sub-task: A` — with a concrete acceptance (`"A" has an observable done condition and its evidence is recorded`). The finding never survives as a plan condition, and the remaining ambiguity text (reference ambiguity, short input) still gets its step.
+- The same decomposition applies to writing plans, orchestration drafts and writing drafts; `ambiguityWithoutBroadTask()` is the shared filter.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (877 tests, 876 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+- `test/broad-task.test.ts`: helper parsing, per-marker steps with acceptance, no residual broad-task condition, a non-broad ambiguity keeps its step, orchestration drafts decompose too.
 ## [0.21.0] — 2026-10-29
 
 ### Added
@@ -1153,6 +1165,7 @@ Initial publication, preceded by the build-out that began on 2026-10-12 (`c2dae0
 - Tags: `v0.1.5`, `v0.1.6`, `v0.1.7`, `v0.1.8`, `v0.1.9`
 - Last commit of the dsh-os tree: `3ba4a45`
 - First commit: `c2dae0c` (2026-10-12)
+
 
 
 

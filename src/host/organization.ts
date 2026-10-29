@@ -228,6 +228,44 @@ function composeWritingApproach(): string {
   return `Outline the structure first (大纲), write a complete draft from the outline (草稿), then revise the draft against every acceptance criterion (修订). Every step stays inside the stated constraints, and every stated assumption is checked before execution.`
 }
 
+/** Prefix comprehension uses for a broad-task finding. */
+const BROAD_TASK_PREFIX = '任务描述过于宽泛（'
+
+/**
+ * The task fragments comprehension flagged as too broad.
+ *
+ * A broad request is a decomposition input, not a blocker to plan around: the
+ * fragments between the brackets are the user's own words, so each becomes a
+ * sub-task with its own acceptance check instead of one generic "resolve the
+ * ambiguity" step.
+ */
+export function broadTaskMarkers(ambiguity: string): string[] {
+  const start = ambiguity.indexOf(BROAD_TASK_PREFIX)
+  if (start < 0) return []
+  const close = ambiguity.indexOf('）', start)
+  if (close < 0) return []
+  return ambiguity
+    .slice(start + BROAD_TASK_PREFIX.length, close)
+    .split(' / ')
+    .map((marker) => marker.trim())
+    .filter((marker) => marker.length > 0)
+}
+
+/** The ambiguity text with the broad-task finding removed. */
+export function ambiguityWithoutBroadTask(ambiguity: string): string {
+  return ambiguity
+    .split('；')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0 && !part.startsWith(BROAD_TASK_PREFIX))
+    .join('；')
+}
+
+function broadTaskSteps(markers: readonly string[], prefix: string): PlanStepDraft[] {
+  return markers.map((marker) => ({
+    step: `${prefix}: ${marker}`,
+    acceptance: `"${marker}" has an observable done condition and its evidence is recorded`,
+  }))
+}
 interface StepDraftInput {
   intent: string
   requirement: string
@@ -250,10 +288,17 @@ function composeSteps(input: StepDraftInput): PlanStepDraft[] {
     })
   }
   if (input.ambiguity !== '') {
-    steps.push({
-      step: `Resolve the open ambiguity: ${input.ambiguity}`,
-      acceptance: 'every ambiguity item is answered or explicitly accepted',
-    })
+    const markers = broadTaskMarkers(input.ambiguity)
+    const restAmbiguity = ambiguityWithoutBroadTask(input.ambiguity)
+    if (markers.length > 0) {
+      steps.push(...broadTaskSteps(markers, 'Turn the broad request into a verifiable sub-task'))
+    }
+    if (restAmbiguity !== '') {
+      steps.push({
+        step: `Resolve the open ambiguity: ${restAmbiguity}`,
+        acceptance: 'every ambiguity item is answered or explicitly accepted',
+      })
+    }
   }
   steps.push({
     step: 'Carry out the work inside the stated constraints',
@@ -281,10 +326,17 @@ function composeWritingSteps(input: StepDraftInput): PlanStepDraft[] {
   const deliverable = input.requirement === '' ? goalText : input.requirement
   const steps: PlanStepDraft[] = []
   if (input.ambiguity !== '') {
-    steps.push({
-      step: `Resolve the open ambiguity before outlining: ${input.ambiguity}`,
-      acceptance: 'every ambiguity item is answered or explicitly accepted',
-    })
+    const markers = broadTaskMarkers(input.ambiguity)
+    const restAmbiguity = ambiguityWithoutBroadTask(input.ambiguity)
+    if (markers.length > 0) {
+      steps.push(...broadTaskSteps(markers, 'Turn the broad request into a verifiable sub-task before outlining'))
+    }
+    if (restAmbiguity !== '') {
+      steps.push({
+        step: `Resolve the open ambiguity before outlining: ${restAmbiguity}`,
+        acceptance: 'every ambiguity item is answered or explicitly accepted',
+      })
+    }
   }
   steps.push(
     {
@@ -346,11 +398,22 @@ function composeSubtaskDrafts(input: SubtaskDraftInput): PlanSubtaskDraft[] {
     },
   ]
   if (input.ambiguity !== '') {
-    drafts.push({
-      task: `Resolve the open ambiguity: ${input.ambiguity}`,
-      acceptance: 'every ambiguity item is answered or explicitly accepted',
-      profession: 'outcome',
-    })
+    const markers = broadTaskMarkers(input.ambiguity)
+    const restAmbiguity = ambiguityWithoutBroadTask(input.ambiguity)
+    for (const marker of markers) {
+      drafts.push({
+        task: `Turn the broad request into a verifiable subtask: ${marker}`,
+        acceptance: `"${marker}" has an observable done condition and its evidence is recorded`,
+        profession: 'execution',
+      })
+    }
+    if (restAmbiguity !== '') {
+      drafts.push({
+        task: `Resolve the open ambiguity: ${restAmbiguity}`,
+        acceptance: 'every ambiguity item is answered or explicitly accepted',
+        profession: 'outcome',
+      })
+    }
   }
   drafts.push({
     task: `Independently verify every subtask against its acceptance: ${deliverable}`,
@@ -381,11 +444,22 @@ function composeWritingSubtaskDrafts(input: WritingSubtaskDraftInput): PlanSubta
   const deliverable = input.requirement === '' ? goalText : input.requirement
   const drafts: PlanSubtaskDraft[] = []
   if (input.ambiguity !== '') {
-    drafts.push({
-      task: `Resolve the open ambiguity before outlining: ${input.ambiguity}`,
-      acceptance: 'every ambiguity item is answered or explicitly accepted',
-      profession: 'decision',
-    })
+    const markers = broadTaskMarkers(input.ambiguity)
+    const restAmbiguity = ambiguityWithoutBroadTask(input.ambiguity)
+    for (const marker of markers) {
+      drafts.push({
+        task: `Turn the broad request into a verifiable subtask before outlining: ${marker}`,
+        acceptance: `"${marker}" has an observable done condition and its evidence is recorded`,
+        profession: 'decision',
+      })
+    }
+    if (restAmbiguity !== '') {
+      drafts.push({
+        task: `Resolve the open ambiguity before outlining: ${restAmbiguity}`,
+        acceptance: 'every ambiguity item is answered or explicitly accepted',
+        profession: 'decision',
+      })
+    }
   }
   drafts.push(
     {
@@ -508,3 +582,5 @@ export class OrganizationModule {
     return row === undefined ? undefined : mapOrganization(row)
   }
 }
+
+

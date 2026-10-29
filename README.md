@@ -279,6 +279,8 @@ Rules that hold across every ecosystem:
 - **Bounded.** ZIP entries ≤ 2000, uncompressed ≤ 64 MiB per entry / 256 MiB total, XML nesting ≤ 128, nodes ≤ `MAX_METADATA_NODES` (20 000), and the parser honors the token/time budgets.
 - **`SUMMARY.md` resolves to `book`** through the registry's filename-first rule; `README.md` and other Markdown stay with the Markdown parser.
 
+A broad request is not parked as an ambiguity condition: comprehension's `任务描述过于宽泛（A / B）` finding is split into per-fragment plan steps (`Turn the broad request into a verifiable sub-task: A`) with a concrete acceptance each, so the plan is monitorable from the first turn. `ambiguityWithoutBroadTask()` keeps whatever other ambiguity was found.
+
 The graph answers "what is in this workspace" through `coordination_parse`, `coordination_describe` and `coordination_chain`. The chain query takes an optional `kind` (trimmed, case-insensitive) on every node-returning action, so "all lemmas" or "all chapters" is one call instead of a scan. Directory nodes are derived from unambiguous workspace paths and connected with `contains`/`part_of`; the invariant is **`part_of` (child→parent) exact, `contains` (parent→child) best-effort**.
 
 ## Coordination panel (read-only)
@@ -513,6 +515,8 @@ Known limitations, stated rather than hidden:
 `0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles; `0.12.0` added the per-ecosystem domain layer, the chain `kind` filter, the directory layer and `NodeRecord`; `0.15.0` added the AMP v0.1 protocol layer and its conformance document. Earlier states remain in git history and tags.
 
 Apache-2.0 © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).
+
+
 
 
 

@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.22.0 | 2026-10-29 | — | 宽泛任务拆解为可验收的计划步骤 |
 | 0.21.0 | 2026-10-29 | — | /amp/story、具体请求/计划/忽略项、全 MUI 面板 |
 | 0.20.0 | 2026-10-29 | — | 面向普通读者的面板、移除输入框下拉框、16px 下限 |
 | 0.19.0 | 2026-10-29 | — | 由已记录验收标准生成的 `Goal` + `Plan` 制品 |
@@ -66,6 +67,17 @@
 
 ## [未发布]
 
+## [0.22.0] — 2026-10-29
+
+### 变更
+
+- **宽泛任务改为在计划里拆解，而不是记成一条条件。** comprehension 一直会把模糊任务标记成 `任务描述过于宽泛（A / B）`，而组织器此前把整条发现塞进一个笼统的 “resolve the open ambiguity” 步骤。现在 `broadTaskMarkers()` 会把括号里用户自己的任务片段拆出来，每条生成一个计划步骤 —— `Turn the broad request into a verifiable sub-task: A` —— 并带具体验收标准（`"A" has an observable done condition and its evidence is recorded`）。这条发现在计划里不再作为条件残留；其余歧义（指代不明、输入过短）仍保留自己的步骤。
+- 同样的拆解适用于写作计划、编排草稿与写作草稿；共享过滤器是 `ambiguityWithoutBroadTask()`。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（877 项，876 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+- `test/broad-task.test.ts`：辅助函数解析、逐片段生成带验收的步骤、不再残留宽泛任务条件、非宽泛歧义保留原步骤、编排草稿同样拆解。
 ## [0.21.0] — 2026-10-29
 
 ### 新增
@@ -1002,6 +1014,7 @@ host 半提供路由，client 半提供设置页。
 ### 修复
 
 - 发布前修复了本会随版本发布的缺陷（`faaa0b7`）。
+
 
 
 
