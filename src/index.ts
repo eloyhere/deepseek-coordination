@@ -741,7 +741,7 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
       // surface and the four read-only graph tools. The graph set gets the
       // apply-time context so its per-call workspace-root resolution follows
       // the same session workspace the `/graph/*` routes use.
-      const disposeFileTools = registerCoordinationTools(receipted, service, locale)
+      const disposeFileTools = registerCoordinationTools(receipted, service, locale, { context })
       let disposeGraphTools: () => void
       try {
         disposeGraphTools = registerCoordinationGraphTools(receipted, service, locale, { context })
@@ -1355,4 +1355,5 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
     return () => { dispose() }
   }, `${name}: ${ROUTE_PREFIX} routes`)
 }
+
 

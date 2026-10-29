@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.22.1 | 2026-10-29 | — | 会话级工作区根、接受 . |
 | 0.22.0 | 2026-10-29 | — | 宽泛任务拆解为可验收的计划步骤 |
 | 0.21.0 | 2026-10-29 | — | /amp/story、具体请求/计划/忽略项、全 MUI 面板 |
 | 0.20.0 | 2026-10-29 | — | 面向普通读者的面板、移除输入框下拉框、16px 下限 |
@@ -67,6 +68,18 @@
 
 ## [未发布]
 
+## [0.22.1] — 2026-10-29
+
+### 修复
+
+- **文件与图谱工具改为解析“调用方会话”的工作区。** 此前它们用进程级默认值（`host.sandboxPolicy.resolve()` 不带 session），也就是桌面最近打开的项目；子会话在 `R:\project\deepseek-coordination` 里却被解析到 `R:\project\lyra`，于是 `coordination_read docs/amp-conformance.md` 报 “file not found”，所有路径都落空。两组工具现在都走 `/graph/*` 路由相同的请求级解析器，把工具调用的 `exec.agent.id` 作为 session 传入；根变化时复用已有的按根重建逻辑。
+- **`coordination_file` 接受 `"."` / `"./"` 表示工作区根**，不再以 `INVALID_ARGUMENT` 拒绝；省略 `path` 与传 `.` 现在返回同一棵树。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（879 项，878 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+- `integration.test.ts`：`.` 返回会话根（而非默认根），且与省略 path 的树一致。
+- 安装后真机探针：`coordination_file {path:"."}` → `R:\project\deepseek-coordination`；`coordination_read docs/amp-conformance.md` 返回指定行。
 ## [0.22.0] — 2026-10-29
 
 ### 变更
@@ -1014,6 +1027,8 @@ host 半提供路由，client 半提供设置页。
 ### 修复
 
 - 发布前修复了本会随版本发布的缺陷（`faaa0b7`）。
+
+
 
 
 

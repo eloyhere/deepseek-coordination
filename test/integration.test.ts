@@ -34,6 +34,7 @@ import {
   coordinationToolDefinitions,
   registerCoordinationGraphTools,
   registerCoordinationTools,
+  resolveToolWorkspaceRootForRequest,
 } from '../src/host/tools.js'
 import type {
   CoordinationExportationValue,
@@ -1426,4 +1427,78 @@ test('graph tools project an empty graph when nothing has been indexed', async (
   assert.deepEqual(value.entries, [])
   assert.equal(value.truncated, false)
 })
+
+
+test('coordination_file treats "." as the workspace root and resolves the calling session', async () => {
+  const workspace = graphWorkspace()
+  const sessionWorkspace = graphWorkspace()
+  try {
+    const base = graphToolService('en-US')
+    const definitions = coordinationGraphToolDefinitions(
+      {
+        ...base,
+        host: {
+          sandboxPolicy: {
+            resolve: (request?: { session?: unknown }) => ({
+              mode: 'default',
+              workspaceRoot: request?.session === 'session-root-probe' ? sessionWorkspace.root : workspace.root,
+            }),
+          },
+        },
+      },
+      'en-US',
+      { graphSnapshot: () => stubGraphSnapshot(graphFixture()) },
+    )
+    const file = toolOf(definitions, 'coordination_file')
+
+    const dot = (await file.execute({ path: '.' }, { agent: { id: 'session-root-probe' } })) as CoordinationFileValue
+    assert.ok(!('error' in dot), JSON.stringify(dot))
+    assert.equal(dot.root, sessionWorkspace.root)
+    assert.ok(Array.isArray(dot.entries))
+
+    const implicit = (await file.execute({}, { agent: { id: 'session-root-probe' } })) as CoordinationFileValue
+    assert.deepEqual(flattenTree(dot.entries), flattenTree(implicit.entries))
+  } finally {
+    workspace.close()
+    sessionWorkspace.close()
+  }
+})
+
+
+
+
+
+test('the request resolver prefers the session cwd over the policy default', async () => {
+  const sessionWorkspace = graphWorkspace()
+  const fallbackWorkspace = graphWorkspace()
+  try {
+    const root = await resolveToolWorkspaceRootForRequest(
+      {
+        host: {
+          sandboxPolicy: {
+            resolve: () => ({ mode: 'default', workspaceRoot: fallbackWorkspace.root }),
+          },
+        },
+      },
+      {},
+      {
+        session: 'session-cwd-probe',
+        context: {
+          get: (name: string) => (name === 'sessionQuery'
+            ? {
+              observeSession: async (id: string) => ({
+                header: { id, cwd: sessionWorkspace.root },
+              }),
+            }
+            : undefined),
+        },
+      },
+    )
+    assert.equal(root, sessionWorkspace.root)
+  } finally {
+    sessionWorkspace.close()
+    fallbackWorkspace.close()
+  }
+})
+
 

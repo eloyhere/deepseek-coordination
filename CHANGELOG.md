@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.22.1 | 2026-10-29 | — | Session-scoped workspace root, . accepted |
 | 0.22.0 | 2026-10-29 | — | Broad tasks decomposed into verifiable plan steps |
 | 0.21.0 | 2026-10-29 | — | /amp/story, concrete request/plan/ignored, all-MUI panel |
 | 0.20.0 | 2026-10-29 | — | Plain-language panel, no composer dropdowns, 16 px floor |
@@ -70,6 +71,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-10-29
+
+### Fixed
+
+- **The file and graph tools now resolve the calling session's workspace.** They used to resolve the process-wide default (`host.sandboxPolicy.resolve()` with no session), which is the desktop's last active project — a subagent running in `R:\project\deepseek-coordination` was served `R:\project\lyra`, so `coordination_read docs/amp-conformance.md` answered "file not found" and every path missed. Both tool families now resolve through the same request-scoped resolver the `/graph/*` routes use, passing the tool call's `exec.agent.id` as the session; the cached runtime is recreated when the root changes (the existing per-root guard).
+- **`coordination_file` accepts `"."` / `"./"` as the workspace root** instead of rejecting it with `INVALID_ARGUMENT`. Omitting `path` and passing `.` now return the same tree.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (879 tests, 878 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+- `integration.test.ts`: `.` returns the session root (not the default), and the tree equals the implicit root request.
+- Live probe after install: `coordination_file {path:"."}` → workspace root `R:\project\deepseek-coordination`; `coordination_read docs/amp-conformance.md` returns the requested lines.
 ## [0.22.0] — 2026-10-29
 
 ### Changed
@@ -1165,6 +1178,8 @@ Initial publication, preceded by the build-out that began on 2026-10-12 (`c2dae0
 - Tags: `v0.1.5`, `v0.1.6`, `v0.1.7`, `v0.1.8`, `v0.1.9`
 - Last commit of the dsh-os tree: `3ba4a45`
 - First commit: `c2dae0c` (2026-10-12)
+
+
 
 
 

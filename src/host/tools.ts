@@ -942,6 +942,7 @@ export class ToolWorkspaceRootResolver {
       nonEmptyRoot(this.options.workspaceRoot),
       nonEmptyRoot(this.service.workspaceRoot),
       nonEmptyRoot(this.service.host?.workspaceRoot),
+      await this.sessionCwd(session),
       this.sandboxRoot(session),
     ]
     for (const candidate of candidates) {
@@ -958,6 +959,37 @@ export class ToolWorkspaceRootResolver {
     // The final fallback is the only unresolvable case; `resolve` keeps the
     // return absolute even if a caller replaced the process cwd.
     return (await existingDirectoryRoot(process.cwd())) ?? resolve(process.cwd())
+  }
+
+  /**
+   * The session's recorded working directory, read through `ctx.sessionQuery`.
+   *
+   * The sandbox policy, asked with a bare session id, answers the process-wide
+   * default workspace; the session's own `header.cwd` is the directory the user
+   * actually opened, so it outranks the policy answer.
+   */
+  private async sessionCwd(session: unknown): Promise<string | undefined> {
+    if (typeof session !== 'string' || session.length === 0) return undefined
+    const query = contextGet(this.request.context, 'sessionQuery')
+    const observe = callableOf(query, 'observeSession')
+    if (observe === undefined) return undefined
+    let observation: unknown
+    try {
+      observation = await observe.call(query, session)
+      const header = recordOfValue(recordOfValue(observation)?.['header'])
+      return nonEmptyRoot(header?.['cwd'])
+    } catch {
+      return undefined
+    } finally {
+      const disposable = recordOfValue(observation)?.[Symbol.dispose as unknown as string]
+      if (typeof disposable === 'function') {
+        try {
+          disposable.call(observation)
+        } catch {
+          // A failed dispose never changes the resolved root.
+        }
+      }
+    }
   }
 
   /** Validate the explicit query parameter, or `undefined` when absent. */
@@ -1413,6 +1445,19 @@ class ToolRuntime {
 
 const toolRuntimes = new WeakMap<CoordinationToolService, ToolRuntime>()
 
+/**
+ * The file-tool runtime for one call, rooted at the calling session's
+ * workspace. The runtime cache already recreates itself when the root changes,
+ * so a workspace switch between calls is handled without leaking the old graph.
+ */
+async function toolRuntimeFor(
+  service: CoordinationToolService,
+  options: CoordinationToolOptions,
+  exec?: ToolExecution,
+): Promise<ToolRuntime> {
+  const root = await toolRequestRoot(service, options, exec)
+  return toolRuntimeOf(service, options.workspaceRoot === root ? options : { ...options, workspaceRoot: root })
+}
 function toolRuntimeOf(service: CoordinationToolService, options: CoordinationToolOptions): ToolRuntime {
   const workspaceRoot = resolveToolWorkspaceRoot(service, options)
   const signature = fileLayerSignature(service, options, workspaceRoot)
@@ -1670,7 +1715,7 @@ function parseTool(
       schema: PARSE_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       const args = asArguments(rawArgs)
       const path = optionalToken(args, 'path')
       const text = optionalText(args, 'text')
@@ -1678,7 +1723,7 @@ function parseTool(
       if ((path === undefined) === (text === undefined)) {
         throw new InvalidArgumentError('coordination_parse requires exactly one of path or text')
       }
-      const runtime = toolRuntimeOf(service, options)
+      const runtime = await toolRuntimeFor(service, options, exec)
       const parsed = runtime.parseService.parse({
         ...(path === undefined ? {} : { path }),
         ...(text === undefined ? {} : { text }),
@@ -1717,11 +1762,11 @@ function describeTool(
       schema: DESCRIBE_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       const args = asArguments(rawArgs)
       const handle = requiredToken(args, 'handle')
       const fields = optionalStringList(args, 'fields')
-      return toolRuntimeOf(service, options).registry.describe(handle, fields)
+      return (await toolRuntimeFor(service, options, exec)).registry.describe(handle, fields)
     },
   }
 }
@@ -1756,7 +1801,7 @@ function chainDefinition(
       schema: CHAIN_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       const args = asArguments(rawArgs)
       const handle = requiredToken(args, 'handle')
       const action = requiredAction(args)
@@ -1768,7 +1813,7 @@ function chainDefinition(
           : { relation: requiredToken(args, 'relation') as ChainRelation }),
         ...(args.kind === undefined ? {} : { kind: requiredToken(args, 'kind') }),
       }
-      const engine = toolRuntimeOf(service, options).chain
+      const engine = (await toolRuntimeFor(service, options, exec)).chain
       switch (action) {
         case 'dependencies':
           return engine.dependenciesOf(handle, query)
@@ -1822,7 +1867,7 @@ function readTool(
       schema: READ_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       const args = asArguments(rawArgs)
       const mode = requiredMode(args)
       const request = {
@@ -1833,7 +1878,7 @@ function readTool(
         ...(args.maxBytes === undefined ? {} : { maxBytes: nonNegativeInteger(args, 'maxBytes') }),
         ...(args.maxLines === undefined ? {} : { maxLines: nonNegativeInteger(args, 'maxLines') }),
       }
-      return toolRuntimeOf(service, options).parseService.readContent(request)
+      return (await toolRuntimeFor(service, options, exec)).parseService.readContent(request)
     },
   }
 }
@@ -2200,20 +2245,24 @@ function fileTreeTool(
       schema: FILE_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       try {
         const args = asArguments(rawArgs)
         const depth = boundedGraphInteger(args, 'depth', 2, MAX_FILE_TOOL_DEPTH)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_FILE_TOOL_ENTRIES, MAX_FILE_TOOL_ENTRIES)
         const requested = optionalGraphPath(args)
-        const scope = requested === undefined ? undefined : normaliseGraphPath(requested)
-        if (requested !== undefined && scope === undefined) {
+        // "." and "./" are how callers spell "the workspace root"; they mean
+        // the same thing as omitting `path`, not an invalid argument.
+        const rootAlias = requested !== undefined &&
+          (requested.trim() === '.' || requested.trim() === './' || requested.trim() === '.\\')
+        const scope = requested === undefined || rootAlias ? undefined : normaliseGraphPath(requested)
+        if (requested !== undefined && !rootAlias && scope === undefined) {
           throw new InvalidArgumentError(
             'path must be a workspace-relative directory without absolute paths or ".."',
             { path: requested },
           )
         }
-        const read = await graphReadOf(service, options)
+        const read = await graphReadOf(service, options, exec)
         return fileTreeValue(read.snapshot, read.root, scope, depth, limit)
       } catch (error) {
         return graphToolFailure(error)
@@ -2242,12 +2291,12 @@ function outlineTool(
       schema: OUTLINE_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       try {
         const args = asArguments(rawArgs)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_OUTLINE_TOOL_NODES, MAX_OUTLINE_TOOL_NODES)
         const requested = optionalGraphPath(args)
-        const read = await graphReadOf(service, options)
+        const read = await graphReadOf(service, options, exec)
         const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
         return structureOutlineValue(query, requested, limit)
       } catch (error) {
@@ -2277,12 +2326,12 @@ function importationTool(
       schema: IMPORTATION_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       try {
         const args = asArguments(rawArgs)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_RELATION_TOOL_ROWS, MAX_RELATION_TOOL_ROWS)
         const requested = optionalGraphPath(args)
-        const read = await graphReadOf(service, options)
+        const read = await graphReadOf(service, options, exec)
         const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
         return importationValue(query, requested, limit)
       } catch (error) {
@@ -2312,12 +2361,12 @@ function exportationTool(
       schema: EXPORTATION_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
-    async execute(rawArgs) {
+    async execute(rawArgs, exec) {
       try {
         const args = asArguments(rawArgs)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_RELATION_TOOL_ROWS, MAX_RELATION_TOOL_ROWS)
         const requested = optionalGraphPath(args)
-        const read = await graphReadOf(service, options)
+        const read = await graphReadOf(service, options, exec)
         const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
         return exportationValue(query, requested, limit)
       } catch (error) {
@@ -2347,21 +2396,68 @@ interface GraphRead {
 async function graphWorkspaceRootOf(
   service: CoordinationToolService,
   options: CoordinationToolOptions,
+  exec?: ToolExecution,
 ): Promise<string> {
+  const session = toolSessionOf(exec)
   const resolver = createToolWorkspaceRootResolver(
     service,
     options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot },
-    options.context === undefined ? {} : { context: options.context },
+    {
+      ...(options.context === undefined ? {} : { context: options.context }),
+      ...(session === undefined ? {} : { session }),
+    },
   )
   return resolver.resolve()
+}
+
+/** The session that is executing one tool call, when the host supplied one. */
+function toolSessionOf(exec?: ToolExecution): string | undefined {
+  const id = exec?.agent?.id
+  if (typeof id !== 'string') return undefined
+  const trimmed = id.trim()
+  return trimmed.length === 0 ? undefined : trimmed
+}
+
+/**
+ * Root for one tool call: the **calling session's** workspace, not the root
+ * agent's.
+ *
+ * Graph routes always pass `?session=`, so they resolve per request; tools used
+ * to fall back to `host.sandboxPolicy.resolve()` with no session, which returns
+ * the process-wide default workspace (the desktop's last project). When a
+ * session is known, resolve through the same request-scoped path the routes
+ * use; an unresolvable session keeps the legacy fallback.
+ */
+async function toolRequestRoot(
+  service: CoordinationToolService,
+  options: CoordinationToolOptions,
+  exec?: ToolExecution,
+): Promise<string> {
+  const session = toolSessionOf(exec)
+  if (session !== undefined) {
+    try {
+      return await resolveToolWorkspaceRootForRequest(
+        service,
+        options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot },
+        {
+          session,
+          ...(options.context === undefined ? {} : { context: options.context }),
+        },
+      )
+    } catch {
+      // A session whose cwd cannot be resolved falls back to the cached root.
+    }
+  }
+  return resolveToolWorkspaceRoot(service, options)
 }
 
 /** Resolve the root and load one body-free snapshot for it. */
 async function graphReadOf(
   service: CoordinationToolService,
   options: CoordinationToolOptions,
+  exec?: ToolExecution,
 ): Promise<GraphRead> {
-  const root = await graphWorkspaceRootOf(service, options)
+  const root = await graphWorkspaceRootOf(service, options, exec)
   return { root, snapshot: await graphSnapshotOf(service, options, root) }
 }
 
@@ -3321,4 +3417,8 @@ const EXPORTATION_TOOL_SCHEMA: Record<string, unknown> = {
     GRAPH_TOOL_ERROR_SCHEMA,
   ],
 }
+
+
+
+
 
