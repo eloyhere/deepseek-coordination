@@ -955,8 +955,12 @@ function GroupAccordion(props: {
 /** One collapsed section whose body is static data; no input is ever built. */
 function SectionAccordion(props: {
   title: string
-  children?: React.ReactNode[]
+  children?: React.ReactNode
 }): React.ReactElement {
+  // A React element is not iterable: spreading `props.children` directly throws
+  // "Spread syntax requires ...iterable" when a caller passes exactly one child.
+  // `Children.toArray` normalises one child, many children and none.
+  const children = React.Children.toArray(props.children)
   return React.createElement(
     MuiAccordion,
     { defaultExpanded: false, disableGutters: true, elevation: 0, sx: ACCORDION_SX },
@@ -968,7 +972,7 @@ function SectionAccordion(props: {
     React.createElement(
       MuiAccordionDetails,
       { sx: DETAILS_SX },
-      React.createElement('div', { style: PAGE_TAIL_STACK_STYLE }, ...(props.children ?? [])),
+      React.createElement('div', { style: PAGE_TAIL_STACK_STYLE }, ...children),
     ),
   )
 }

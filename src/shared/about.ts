@@ -70,7 +70,7 @@ export interface AboutInfo {
 /** The project metadata; `version` and every dependency row are test-pinned. */
 export const ABOUT: AboutInfo = {
   name: 'deepseek-coordination',
-  version: '0.22.1',
+  version: '0.22.2',
   license: 'Apache-2.0',
   summary:
     'deepseek-coordination is a dual-face Cordis plugin for DeepSeek Harness: the host half records coordination state, registers model-facing tools and serves read-only HTTP routes, while the web half mounts the composer controls, workspace panel and settings page. The panel and parser layer is read-only: it projects body-free metadata and never edits, renames or deletes workspace files.',
@@ -407,6 +407,7 @@ export const ABOUT: AboutInfo = {
     },
   ],
 }
+
 
 
 

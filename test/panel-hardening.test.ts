@@ -23,6 +23,7 @@ import MenuList from '@mui/material/MenuList'
 // @ts-ignore react-dom 18 ships no declarations here and @types/react-dom is not a dependency.
 import { createRoot as createRootUntyped } from 'react-dom/client'
 import { DEFAULT_COPY } from '../src/shared/i18n.js'
+import { CoordinationSettings } from '../src/client/settings.js'
 import {
   COLUMN_SX,
   CoordinationPanels,
@@ -2093,4 +2094,21 @@ test('panel typography is rem-based with a 1rem floor', () => {
 })
 
 
+
+
+test('the settings section renders without throwing', async () => {
+  const restore = installDom()
+  const { container, root } = createHost()
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(CoordinationSettings))
+    })
+    assert.ok(container.childNodes.length > 0, 'settings rendered nothing')
+  } finally {
+    await React.act(async () => {
+      root.unmount()
+    })
+    restore()
+  }
+})
 

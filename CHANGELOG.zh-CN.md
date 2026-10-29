@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.22.2 | 2026-10-29 | — | 设置白屏修复 |
 | 0.22.1 | 2026-10-29 | — | 会话级工作区根、接受 . |
 | 0.22.0 | 2026-10-29 | — | 宽泛任务拆解为可验收的计划步骤 |
 | 0.21.0 | 2026-10-29 | — | /amp/story、具体请求/计划/忽略项、全 MUI 面板 |
@@ -68,6 +69,16 @@
 
 ## [未发布]
 
+## [0.22.2] — 2026-10-29
+
+### 修复
+
+- **设置页不再白屏。** `SectionAccordion` 直接展开 `props.children`；某个分区只传一个子元素时，`children` 是 React 元素而不是可迭代对象，展开即抛 `TypeError: Spread syntax requires ...iterable[Symbol.iterator] to be a function`，整个设置正文因此被卸载——就是白屏。现在用 `React.Children.toArray` 归一化，单子元素、多子元素、无子元素都能正常渲染。
+- 新增渲染测试：设置分区在 DOM shim 中挂载不抛错。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（880 项，879 通过，1 跳过）、`npm run build`、`npm run pack:check`。
 ## [0.22.1] — 2026-10-29
 
 ### 修复
@@ -1027,6 +1038,7 @@ host 半提供路由，client 半提供设置页。
 ### 修复
 
 - 发布前修复了本会随版本发布的缺陷（`faaa0b7`）。
+
 
 
 

@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.22.2 | 2026-10-29 | — | Settings white-screen fix |
 | 0.22.1 | 2026-10-29 | — | Session-scoped workspace root, . accepted |
 | 0.22.0 | 2026-10-29 | — | Broad tasks decomposed into verifiable plan steps |
 | 0.21.0 | 2026-10-29 | — | /amp/story, concrete request/plan/ignored, all-MUI panel |
@@ -71,6 +72,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.2] — 2026-10-29
+
+### Fixed
+
+- **The settings section no longer renders a blank pane.** `SectionAccordion` spread `props.children` directly; when a section passed exactly one child, `children` was a React element (not iterable) and the spread threw `TypeError: Spread syntax requires ...iterable[Symbol.iterator] to be a function`, which unmounted the whole settings body — the white screen. Children are now normalised with `React.Children.toArray`, so one child, many children and none all render.
+- New render test: the settings section mounts in the DOM shim without throwing.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (880 tests, 879 pass, 1 skipped), `npm run build`, `npm run pack:check`.
 ## [0.22.1] — 2026-10-29
 
 ### Fixed
@@ -1178,6 +1189,7 @@ Initial publication, preceded by the build-out that began on 2026-10-12 (`c2dae0
 - Tags: `v0.1.5`, `v0.1.6`, `v0.1.7`, `v0.1.8`, `v0.1.9`
 - Last commit of the dsh-os tree: `3ba4a45`
 - First commit: `c2dae0c` (2026-10-12)
+
 
 
 
