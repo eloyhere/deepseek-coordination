@@ -7,119 +7,139 @@
  * particular, no module imports `@deepseek-ai/dsh-*` at runtime, so the host
  * bundle only needs Cordis and its own code.
  */
-import type { CoordinationConfig } from './config.js'
-import type { CoordinationDatabase } from './database.js'
-import { HandleGenerator } from './handle.js'
-import type { Clock } from './handle.js'
-import type { OrchestrationTrace } from '../shared/entity.js'
-import type { TraceEvent } from '../shared/enum.js'
+import type { CoordinationConfig } from "./config.js";
+import type { CoordinationDatabase } from "./database.js";
+import { HandleGenerator } from "./handle.js";
+import type { Clock } from "./handle.js";
+import type { ExecutionStore } from "./execution-store.js";
+import type { TurnStore } from "./turn-store.js";
+import type { ProfessionStore } from "./profession-store.js";
+import type { TraceWriter } from "./trace-port.js";
+export type {
+  TraceInput,
+  TraceVerification,
+  TraceWriter,
+} from "./trace-port.js";
 
 /* ------------------------------------------------------------------------- *
  * Read-only DSH ports
  * ------------------------------------------------------------------------- */
 
 export interface LlmProviderInfo {
-  id: string
-  name: string
+  id: string;
+  name: string;
 }
 
 export interface LlmConfigurableProviderInfo {
-  provider: string
-  displayName: string
-  settingsNs: string
-  settingsPath: readonly string[]
-  declared?: boolean
-  error?: string
+  provider: string;
+  displayName: string;
+  settingsNs: string;
+  settingsPath: readonly string[];
+  declared?: boolean;
+  error?: string;
 }
 
 export interface LlmModelInfo {
-  provider: string
-  id: string
-  name: string
-  description?: string
-  inputModalities?: readonly string[]
+  provider: string;
+  id: string;
+  name: string;
+  description?: string;
+  inputModalities?: readonly string[];
 }
 
 export interface LlmResolvedModelInfo extends LlmModelInfo {
-  context?: { contextWindow: number }
-  defaultMaxTokens?: number
-  reasoning?: { efforts: ReadonlyArray<{ id: string; name: string; description?: string }>; defaultEffort?: string }
-  systemPromptUpdate?: string
-  toolUpdate?: string
+  context?: { contextWindow: number };
+  defaultMaxTokens?: number;
+  reasoning?: {
+    efforts: ReadonlyArray<{ id: string; name: string; description?: string }>;
+    defaultEffort?: string;
+  };
+  systemPromptUpdate?: string;
+  toolUpdate?: string;
 }
 
 export interface LlmReadPort {
-  listProviders(): LlmProviderInfo[]
-  listConfigurableProviders(): LlmConfigurableProviderInfo[]
-  listModels(provider: string): Promise<LlmModelInfo[]>
-  resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>
+  listProviders(): LlmProviderInfo[];
+  listConfigurableProviders(): LlmConfigurableProviderInfo[];
+  listModels(provider: string): Promise<LlmModelInfo[]>;
+  resolveModelInfo(
+    provider: string,
+    model: string,
+    signal?: AbortSignal,
+  ): Promise<LlmResolvedModelInfo>;
 }
 
 export interface AgentView {
-  readonly id: string
-  readonly session?: unknown
+  readonly id: string;
+  readonly session?: unknown;
 }
 
 export interface AgentPort {
-  get(id: string): AgentView | undefined
-  list(): AgentView[]
+  get(id: string): AgentView | undefined;
+  list(): AgentView[];
 }
 
 export interface SessionPort {
-  get(id: string): unknown
-  list(): unknown[]
-  flush?(session: unknown): Promise<unknown>
+  get(id: string): unknown;
+  list(): unknown[];
+  flush?(session: unknown): Promise<unknown>;
 }
 
 export interface GoalViewPort {
-  id?: string
-  objective?: string
-  phase?: string
+  id?: string;
+  objective?: string;
+  phase?: string;
 }
 
 export interface GoalPort {
-  get(agent: AgentView): GoalViewPort | undefined
-  create(agent: AgentView, request: { objective: string; maxGoalRounds?: number }): GoalViewPort
-  edit?(agent: AgentView, reference: unknown, request: unknown): GoalViewPort
-  pause?(agent: AgentView, reference: unknown): GoalViewPort
-  resume?(agent: AgentView, reference: unknown): GoalViewPort
-  complete?(agent: AgentView, reference: unknown): GoalViewPort
-  clear?(agent: AgentView, reference: unknown): unknown
+  get(agent: AgentView): GoalViewPort | undefined;
+  create(
+    agent: AgentView,
+    request: { objective: string; maxGoalRounds?: number },
+  ): GoalViewPort;
+  edit?(agent: AgentView, reference: unknown, request: unknown): GoalViewPort;
+  pause?(agent: AgentView, reference: unknown): GoalViewPort;
+  resume?(agent: AgentView, reference: unknown): GoalViewPort;
+  complete?(agent: AgentView, reference: unknown): GoalViewPort;
+  clear?(agent: AgentView, reference: unknown): unknown;
 }
 
 export interface CompactionPort {
-  compactNow(agent: AgentView, signal: AbortSignal): Promise<unknown>
+  compactNow(agent: AgentView, signal: AbortSignal): Promise<unknown>;
   /**
    * DSH's own pressure policy: `null` when no safe range should be compacted.
    * The governor only asks; DSH decides and performs the replacement.
    */
   compactIfNeeded?(
     agent: AgentView,
-    trigger: 'pressure' | 'context-overflow',
+    trigger: "pressure" | "context-overflow",
     signal: AbortSignal,
-  ): Promise<unknown>
+  ): Promise<unknown>;
 }
 
 export interface WebSearchPort {
-  search(request: { query: string; maxResults?: number }, signal?: AbortSignal): Promise<unknown>
+  search(
+    request: { query: string; maxResults?: number },
+    signal?: AbortSignal,
+  ): Promise<unknown>;
 }
 
 export interface ApprovalPort {
-  setPolicy(agent: AgentView, policy: unknown): void
+  setPolicy(agent: AgentView, policy: unknown): void;
 }
 
 /** One permission preset the DSH deployment exposes (v23 §16). */
 export interface PermissionPresetOption {
-  value: string
-  name: string
-  description?: string
-  sandbox?: string
-  approval?: string
+  value: string;
+  name: string;
+  description?: string;
+  sandbox?: string;
+  approval?: string;
 }
 
 export interface PermissionPresetCatalog {
-  options: PermissionPresetOption[]
-  defaultPreset?: string
+  options: PermissionPresetOption[];
+  defaultPreset?: string;
 }
 
 /**
@@ -128,84 +148,63 @@ export interface PermissionPresetCatalog {
  * writes the chosen preset back through this port.
  */
 export interface PermissionPresetPort {
-  catalog(): PermissionPresetCatalog
-  current(session: unknown): string
-  set(session: unknown, name: string): void
+  catalog(): PermissionPresetCatalog;
+  current(session: unknown): string;
+  set(session: unknown, name: string): void;
   /** Optional: the preset's effective knobs, for the dropdown tooltip. */
-  resolve?(name: string): { sandbox?: string; approval?: string; name?: string; description?: string }
+  resolve?(name: string): {
+    sandbox?: string;
+    approval?: string;
+    name?: string;
+    description?: string;
+  };
 }
 
 export interface SandboxPolicyView {
-  mode: string
-  workspaceRoot: string
+  mode: string;
+  workspaceRoot: string;
 }
 
 export interface SandboxPolicyPort {
-  resolve(request?: { session?: unknown; mode?: string }): SandboxPolicyView
-  overrideOf(session: unknown): string | undefined
-  readonly defaultMode: string
+  resolve(request?: { session?: unknown; mode?: string }): SandboxPolicyView;
+  overrideOf(session: unknown): string | undefined;
+  readonly defaultMode: string;
 }
 
 export interface LoggerPort {
-  debug(message: string, ...args: unknown[]): void
-  info(message: string, ...args: unknown[]): void
-  warn(message: string, ...args: unknown[]): void
-  error(message: string, ...args: unknown[]): void
-}
-
-/* ------------------------------------------------------------------------- *
- * Trace port
- * ------------------------------------------------------------------------- */
-
-export interface TraceInput {
-  turn: number
-  event: TraceEvent
-  actor: string
-  subtask?: number
-  profession?: OrchestrationTrace['profession']
-  parentEvent?: number
-  detail: string | Record<string, unknown>
-}
-
-export interface TraceVerification {
-  ok: boolean
-  brokenAt?: number
-  reason?: string
-}
-
-export interface TraceWriter {
-  append(input: TraceInput): OrchestrationTrace
-  list(turn: number): OrchestrationTrace[]
-  verify(turn: number): TraceVerification
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
 }
 
 /* ------------------------------------------------------------------------- *
  * Event bus
  * ------------------------------------------------------------------------- */
 
-export type CoordinationListener = (payload: unknown) => void
+export type CoordinationListener = (payload: unknown) => void;
 
 export class CoordinationEventBus {
-  private readonly listeners = new Map<string, Set<CoordinationListener>>()
+  private readonly listeners = new Map<string, Set<CoordinationListener>>();
 
   on(type: string, listener: CoordinationListener): () => void {
-    let set = this.listeners.get(type)
+    let set = this.listeners.get(type);
     if (set === undefined) {
-      set = new Set()
-      this.listeners.set(type, set)
+      set = new Set();
+      this.listeners.set(type, set);
     }
-    set.add(listener)
+    set.add(listener);
     return () => {
-      set?.delete(listener)
-    }
+      set?.delete(listener);
+    };
   }
 
   emit(type: string, payload: unknown): void {
-    const set = this.listeners.get(type)
-    if (set === undefined) return
+    const set = this.listeners.get(type);
+    if (set === undefined) return;
     for (const listener of [...set]) {
       try {
-        listener(payload)
+        listener(payload);
       } catch {
         // A broken observer must not break the committing operation.
       }
@@ -213,7 +212,7 @@ export class CoordinationEventBus {
   }
 
   clear(): void {
-    this.listeners.clear()
+    this.listeners.clear();
   }
 }
 
@@ -222,41 +221,47 @@ export class CoordinationEventBus {
  * ------------------------------------------------------------------------- */
 
 export interface ModuleHost {
-  readonly db: CoordinationDatabase
-  readonly config: CoordinationConfig
-  readonly handles: HandleGenerator
-  readonly clock: Clock
-  readonly events: CoordinationEventBus
-  readonly trace: TraceWriter
-  readonly llm?: LlmReadPort
-  readonly goals?: GoalPort
-  readonly compaction?: CompactionPort
-  readonly web?: WebSearchPort
-  readonly agents?: AgentPort
-  readonly sessions?: SessionPort
-  readonly approval?: ApprovalPort
-  readonly permissionPresets?: PermissionPresetPort
-  readonly sandboxPolicy?: SandboxPolicyPort
-  readonly logger?: LoggerPort
+  readonly db: CoordinationDatabase;
+  readonly config: CoordinationConfig;
+  readonly handles: HandleGenerator;
+  readonly clock: Clock;
+  readonly events: CoordinationEventBus;
+  readonly trace: TraceWriter;
+  readonly executionStore?: ExecutionStore;
+  readonly turnStore?: TurnStore;
+  readonly professionStore?: ProfessionStore;
+  readonly llm?: LlmReadPort;
+  readonly goals?: GoalPort;
+  readonly compaction?: CompactionPort;
+  readonly web?: WebSearchPort;
+  readonly agents?: AgentPort;
+  readonly sessions?: SessionPort;
+  readonly approval?: ApprovalPort;
+  readonly permissionPresets?: PermissionPresetPort;
+  readonly sandboxPolicy?: SandboxPolicyPort;
+  readonly logger?: LoggerPort;
 }
 
 export interface ModuleHostInput {
-  db: CoordinationDatabase
-  config: CoordinationConfig
-  trace: TraceWriter
-  handles?: HandleGenerator
-  clock?: Clock
-  events?: CoordinationEventBus
-  llm?: LlmReadPort
-  goals?: GoalPort
-  compaction?: CompactionPort
-  web?: WebSearchPort
-  agents?: AgentPort
-  sessions?: SessionPort
-  approval?: ApprovalPort
-  permissionPresets?: PermissionPresetPort
-  sandboxPolicy?: SandboxPolicyPort
-  logger?: LoggerPort
+  db: CoordinationDatabase;
+  config: CoordinationConfig;
+  trace: TraceWriter;
+  executionStore?: ExecutionStore;
+  turnStore?: TurnStore;
+  professionStore?: ProfessionStore;
+  handles?: HandleGenerator;
+  clock?: Clock;
+  events?: CoordinationEventBus;
+  llm?: LlmReadPort;
+  goals?: GoalPort;
+  compaction?: CompactionPort;
+  web?: WebSearchPort;
+  agents?: AgentPort;
+  sessions?: SessionPort;
+  approval?: ApprovalPort;
+  permissionPresets?: PermissionPresetPort;
+  sandboxPolicy?: SandboxPolicyPort;
+  logger?: LoggerPort;
 }
 
 /** Compose the common kernel; modules receive exactly this object. */
@@ -265,6 +270,11 @@ export function createModuleHost(input: ModuleHostInput): ModuleHost {
     db: input.db,
     config: input.config,
     trace: input.trace,
+    ...(input.executionStore === undefined
+      ? {}
+      : { executionStore: input.executionStore }),
+    ...(input.turnStore === undefined ? {} : { turnStore: input.turnStore }),
+    ...(input.professionStore === undefined ? {} : { professionStore: input.professionStore }),
     handles: input.handles ?? new HandleGenerator(),
     clock: input.clock ?? { now: () => Date.now() },
     events: input.events ?? new CoordinationEventBus(),
@@ -275,19 +285,23 @@ export function createModuleHost(input: ModuleHostInput): ModuleHost {
     ...(input.agents === undefined ? {} : { agents: input.agents }),
     ...(input.sessions === undefined ? {} : { sessions: input.sessions }),
     ...(input.approval === undefined ? {} : { approval: input.approval }),
-    ...(input.permissionPresets === undefined ? {} : { permissionPresets: input.permissionPresets }),
-    ...(input.sandboxPolicy === undefined ? {} : { sandboxPolicy: input.sandboxPolicy }),
+    ...(input.permissionPresets === undefined
+      ? {}
+      : { permissionPresets: input.permissionPresets }),
+    ...(input.sandboxPolicy === undefined
+      ? {}
+      : { sandboxPolicy: input.sandboxPolicy }),
     ...(input.logger === undefined ? {} : { logger: input.logger }),
-  }
+  };
 }
 
 /** Run a callback with a small, deterministic amount of jitter. */
 export function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.min(maximum, Math.max(minimum, value))
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 /** Round to a fixed number of decimals without float noise. */
 export function round(value: number, decimals = 4): number {
-  const factor = 10 ** decimals
-  return Math.round(value * factor) / factor
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
 }

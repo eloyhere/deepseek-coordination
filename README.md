@@ -2,9 +2,9 @@
 
 **English** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh-CN.md)
 
-A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
+A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, eleven model-facing tools, an AMP v0.1 protocol layer and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.
 
-**Status: v0.14.10 (2026-10-18).** This release adds two read-only docked workspace panels with canvas relationship graphs, a preview matrix (Markdown and math, sanitized HTML, Prism code, docx/xlsx/pptx), an agent roster with estimated progress, and hardens all of it so a panel failure cannot blank the harness. It builds on the v0.12.0 domain layer and the v0.11.0 settings and cache-proxy work. The package version, changelog and release tarball are the same tree; claims below were checked against source, not against the design documents alone.
+**Status: v0.20.0 (2026-10-29).** The composer no longer carries coordination dropdowns, and the docked panel now tells the story in plain language — what the answer used (profession/interaction/scene), what it focused on and set aside, what it did, and whether the record is intact — with a 16 px typographic floor. It builds on v0.19.0 (gated Goal/Plan artifacts) and v0.17.2 (live-verified boundary fixes).
 
 | Status | Meaning in this README |
 |---|---|
@@ -17,13 +17,14 @@ A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordinatio
 | Piece | Location | Role |
 |---|---|---|
 | Bundle | `cordis.patch.yml`, `dsh.bundle` in `package.json` | Inserts one `deepseek-coordination` row into a DSH profile roster. |
-| Host half | `lib/index.mjs` (ESM, Node) | `CoordinationService`, the `coordination` SQLite database, 7 tools, 14 route paths and the agent hooks. |
+| Host half | `lib/index.mjs` (ESM, Node) | `CoordinationService`, the `coordination` SQLite database, 11 tools, 33 route paths / 36 method handlers and the agent hooks. |
+| Protocol layer | `src/protocol/`, `src/host/amp.ts`, `src/host/amp-store.ts` | AMP v0.1: signed manifest, frame per turn with explicit exclusions, receipts per turn and tool call, append-only ledger, signed checkpoints. |
 | Client half | `lib/client.js` (CJS, browser, `__ModuleLoader__` wrapper) | React 18 + Material UI 9: composer dropdowns, settings page, takeover dialog. |
-| Database | `%DSH_HOME%\coordination\coordination.db` by default | Plugin-owned SQLite file; 63 tables, 7 triggers, 63 indexes, schema version 24. Never DSH's `harness` database. |
+| Database | `%DSH_HOME%\coordination\coordination.db` by default | Plugin-owned SQLite file; 68 tables, 15 triggers, 67 indexes, schema version 25. Never DSH's `harness` database. |
 
-The plugin does not replace DSH's agent loop. It records coordination state, locks one profession per task, exposes the composer selection and file metadata, asks DSH to compact when context pressure crosses a threshold, and relays approvals/questions to a human through its own dialog.
+The plugin does not replace DSH's agent loop. It records coordination state, locks one profession per task, shows the current selection in a read-only panel, exposes file metadata, asks DSH to compact when context pressure crosses a threshold, and relays approvals/questions to a human through its own dialog.
 
-The five composer controls are **权限 (permission), 职能 (profession), 交互 (interaction), 情景 (scene), 验证 (validation)**. The command face (`/goal`, `/plan`, `/feedback`, `/compact`, `/permission`) is defined as a message prefix, not a sixth dropdown.
+The composer keeps DSH's own controls: this plugin no longer contributes dropdowns. The current **职能 (profession), 交互 (interaction) and 情景 (scene)** triple is shown read-only in the docked panel; values are set through the `coordination_selection` tool or the host config defaults, and **验证 (validation)** is no longer displayed.
 
 ## Install and build
 
@@ -84,9 +85,9 @@ For a no-restart recovery path limited to the panel UI, set `localStorage['coord
 
 | Artifact | Format | Size in this build |
 |---|---|---|
-| `lib/index.mjs` | Host ESM, `platform: node` | 2,380,317 B |
+| `lib/index.mjs` | Host ESM, `platform: node` | 2,539,208 B |
 | `lib/index.d.mts` | Host declarations | 9,095 B |
-| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 3,332,193 B |
+| `lib/client.js` | Browser CJS wrapped in `__ModuleLoader__.load()` | 3,441,832 B |
 
 Material UI, emotion and `react-dom` are bundled into `lib/client.js`; React itself comes from the host module table. The inlined `react-dom` is the 18.3.1 line that matches the host's React 18 — npm refuses to auto-install a React 19 `react-dom` against a React 18 `react`. The client bundle is large because MUI and `react-dom` are inlined, not because it ships a second React.
 
@@ -95,11 +96,11 @@ Material UI, emotion and `react-dom` are bundled into `lib/client.js`; React its
 Host half (`src/index.ts`):
 
 - exports `name`, `inject = ['webServer', 'tools']` and `Config`; `apply()` resolves config, creates the service, recovers interrupted turns and installs every effect through `ctx.effect`.
-- `CoordinationService` (`src/host/coordination.ts`) is the Cordis `coordination` service. It owns the database, module host and the composed modules: session, selection, turn, profession, plan, goal, compact, directive, permission, takeover/gate, provider, cache and command.
-- SQLite is opened with `node:sqlite` (`DatabaseSync`), foreign keys, a 5 s busy timeout and WAL outside `:memory:`. Triggers refuse changing a locked profession and make `orchestration_trace` append-only.
-- The `/deepseek-coordination` prefix route answers JSON `{ ok, value | error }`; request bodies are capped at 1 MiB and unknown paths return 404 with the route envelope.
-- Seven tools are registered through `ctx.tools`; the three composer tools are re-registered after `POST /locale`, because their descriptions are part of the model-facing prompt.
-- Hooks: `agent/pre-step` opens the coordination turn and runs the compaction governor; `agent/turn-stopping` closes it as `done`; `agent/error` closes it as failed; `approval/request` and `user-questions/request` feed the takeover gate. A 60 s timer deletes expired lock rows.
+- `CoordinationService` (`src/host/coordination.ts`) is the Cordis `coordination` service. It owns the database, module host and the composed modules: session, selection, turn, profession, plan, comprehension, organization, predict, goal, compact, directive, permission, takeover/gate, provider, cache, command, the `TurnPipeline` and the `AmpService`.
+- SQLite is opened with `node:sqlite` (`DatabaseSync`), foreign keys, a 5 s busy timeout and WAL outside `:memory:`. Triggers refuse changing a locked profession and make `orchestration_trace` append-only; eight more make every AMP table write-once.
+- The `/deepseek-coordination` prefix route answers JSON `{ ok, value | error }`; request bodies are capped at 1 MiB and unknown paths return 404 with the route envelope. Seven `/amp/*` routes serve protocol artifacts under the same envelope.
+- Eleven tools are registered through `ctx.tools` (three composer, four file-layer, four read-only graph tools), each wrapped so every call settles as an AMP receipt. All eleven are re-registered after `POST /locale`, because their descriptions are part of the model-facing prompt.
+- Hooks: `agent/pre-step` opens the coordination turn (and its AMP frame) and runs the compaction governor; `agent/turn-stopping` closes it as `done` (and writes the `reflect` receipt); `agent/error` closes it as failed; `approval/request` and `user-questions/request` feed the takeover gate. A 60 s timer deletes expired lock rows.
 
 Client half (`src/client/index.ts`):
 
@@ -113,33 +114,88 @@ Client half (`src/client/index.ts`):
 deepseek-coordination/
 ├─ src/
 │  ├─ index.ts                 # host composition root: service, routes, tools, hooks
+│  ├─ protocol/                # AMP v0.1 port: types, canonical, ids, envelope,
+│  │                           #   manifest, frame, receipt, warrant, ledger
 │  ├─ host/
 │  │  ├─ coordination.ts      # CoordinationService (Cordis service "coordination")
 │  │  ├─ config.ts             # Schemastery schema + resolveConfig()
-│  │  ├─ database.ts           # SQLite schema (24), 63 tables, triggers
+│  │  ├─ database.ts           # SQLite schema (25), 68 tables, 15 triggers
+│  │  ├─ amp.ts               # AmpService: manifest/frame/receipt/event, verify
+│  │  ├─ amp-store.ts         # AMP SQLite chain, key, manifest, checkpoint
 │  │  ├─ dsh.ts                # narrow DSH ports + turn lifecycle
-│  │  ├─ tools.ts              # 7 model-facing tools
+│  │  ├─ tools.ts              # 11 model-facing tools
 │  │  ├─ chain.ts              # bounded Chain projection engine
 │  │  ├─ node-registry.ts      # NodeCard registry and describe()
 │  │  ├─ parse-service.ts      # workspace-bound parse + read service
 │  │  ├─ token.ts              # TokenGovernor and pure policy
 │  │  ├─ takeover-gate.ts      # approval/question waterfall gate
-│  │  ├─ selection.ts turn.ts profession.ts …   # selection, lock, lifecycle
+│  │  ├─ selection.ts turn.ts profession.ts session.ts …  # selection, lock, lifecycle
+│  │  ├─ module.ts             # ModuleHost ports and the event bus
+│  │  ├─ adapters/sqlite/      # execution/turn/profession/trace stores
 │  │  ├─ bayesian.ts comprehension.ts organization.ts … # library engines
 │  │  └─ text/                 # P0 parsers: JS/TS, CSS/HTML/MD, TeX, formulas, graph
 │  ├─ client/
 │  │  ├─ index.ts              # slots, locale store, nav icon, takeover CSS
-│  │  ├─ controls.ts           # five composer dropdowns, tooltips, offline replay
-│  │  ├─ settings.ts           # 13-group, 151-control settings catalog
+│  │  ├─ controls.ts           # selection helpers shared with settings; the composer surface is gone
+│  │  ├─ settings.ts           # 13-group, 139-control settings catalog
 │  │  ├─ takeover.ts           # approval/question dialog
 │  │  ├─ bridge.ts store.ts i18n.ts theme.ts selection-cache.ts
 │  └─ shared/                  # entity/enum/selection/i18n/error + data structures
-├─ test/                       # 24 *.test.ts + helpers.ts
+├─ test/                       # 52 *.test.ts + helpers.ts
+├─ docs/amp-conformance.md     # protocol mapping, invariants, deliberate gaps
 ├─ lib/                        # build output; gitignored, never edited by hand
 ├─ cordis.patch.yml            # bundle row inserted into a profile
 ├─ scripts/check-pack.mjs      # tarball runtime-file verification
 └─ .github/workflows/release.yml
 ```
+
+## AMP v0.1 protocol layer
+
+The host half implements the [Attention Manifest Protocol](https://github.com/eloyhere/attention-manifest-protocol) at its boundaries. The port is vendored in `src/protocol/` (see [`NOTICE`](NOTICE)) and driven by `src/host/amp.ts`; the full mapping — including what is deliberately *not* implemented — is [`docs/amp-conformance.md`](docs/amp-conformance.md).
+
+| Artifact | Produced when | Served at | Signature |
+|---|---|---|---|
+| Manifest | first read, then reissued every 12 h or when the policy digest changes | `GET /amp/manifest` | Ed25519 over canonical JSON, `signatures` excluded, `digest` included |
+| Frame | `beginTurn` | `GET /amp/frame?session=` | `digest` over the frame body (integrity, not authentication) |
+| Receipt | turn close (`reflect`) and every tool call (`read`/`attend`/`act`) | `GET /amp/receipts` | none — integrity comes from the ledger chain |
+| Claim | turn close, from the comprehension row (`intent`/`requirement`/`constraint`/`assumption`) | `GET /amp/ledger` | none — `confidence` is derived, evidence carries a digest |
+| Unknown | turn close, from the comprehension ambiguity | `GET /amp/ledger` | none |
+| Goal | turn close, when a goal row and per-step acceptance exist | `GET /amp/ledger` | none |
+| Plan | turn close, same gate: every step has `expect` and the plan has a constraint | `GET /amp/ledger` | none |
+| Event | `turn.opened`, `turn.closed`, `tool.invoked`, and a whitelisted set of module-bus events | `GET /amp/ledger` | `digest` over the event body |
+| Ledger | continuously | `GET /amp/ledger`, `GET /amp/verify` | hash chain, triggers reject UPDATE/DELETE |
+| Checkpoint | `POST /amp/checkpoint` | same route | Ed25519 over `amp:ledger-checkpoint:0.1\n` + canonical body |
+| Identity | on first artifact | `GET /amp/identity` | public key only; the private key stays in `amp_key` |
+
+What the protocol changed in this plugin:
+
+- **Every turn has a frame with explicit exclusions.** The scene knobs this host does not enforce (`allowBash`, `maxIteration`, and `allowWeb` when disabled) are recorded as `ignored` entries with a `revisit_if` trigger, before the turn runs. Previously they existed only inside an in-memory pipeline report.
+- **Every turn and tool call settles with a receipt.** Turn duration is measured from the turn row (`usage.ms`); token usage is not claimed because the host owns it. Turn `done`/`failed`/`cancelled`/`abandoned` map to `success`/`failure`/`blocked`/`partial`.
+- **A plan is only a plan when it can be monitored.** The `Goal`/`Plan` pair is emitted only when every decoded step records acceptance and the plan records a constraint; otherwise one `plan.deferred` event names the missing fact and nothing is stored. `expect.check` is that acceptance text — monitorable by a human, not yet by a kernel (no check runner).
+- **Interpretation is separated from fact.** The comprehension's four statements become claims, but only a **verbatim** prompt anchor raises one to `T1` with `entails: true` evidence; a paraphrase stays `T0` with no evidence. Confidence is always `deriveConfidence(tier, evidence)`, never the stage's own number, and the ambiguity becomes an `unknown` whose `importance` is `1 − confidence`. Claims that fail `validateClaim` are dropped, not stored.
+- **Confidence is derived, never authored.** A manifest capability's tier is `T2` only after a successful tool receipt, and its confidence is the Laplace-smoothed success rate over recorded receipts.
+- **The audit chain is now signed and checkable.** `GET /amp/verify` recomputes every hash from storage and checks the latest checkpoint against the prefix it witnessed; tampering with a row (even with the trigger dropped) is reported.
+- **The ledger stores pointers, not prose.** Mirrored bus events pass through `ledgerProjection`, which keeps id-shaped strings and numbers and elides everything else.
+
+The sealed A-surface envelope is implemented and tested but not wired: this deployment has no peer to exchange messages with. Everything else in the table is driven by the live turn lifecycle; §7 of the conformance document lists each remaining gap with its reason.
+
+### Live verification (2026-10-29)
+
+Installed into `%DSH_HOME%\profiles\desktop` with `dsh plugin --profile desktop add` and verified against the running client:
+
+| Check | Result |
+|---|---|
+| Host half loads in the running app | `GET /deepseek-coordination/ping` → `{ ok: true, … }`; `GET /amp/identity` returns a real Ed25519 `kid` |
+| Manifest is signed, and verifiable *outside* the plugin | `digestMatches: true`, `signatureValid: true`, `kidMatches: true` with an independent canonical-JSON + WebCrypto verifier |
+| Real turns produce artifacts | 19 ledger entries: 3 frames (4 slots, 2 exclusions each), `turn.opened` mappings, tool receipts, a `reflect` receipt for a closed turn, and mirrored `pipeline.report` events with their prose elided |
+| Frames are served | `GET /amp/frame?session=…` → mode, cycle, digest, slots with `why`, `ignored` with `revisit_if` |
+| Checkpoints seal the live chain | `POST /amp/checkpoint` → `seq 0` over `count 19`; `GET /amp/verify` → `{ ok: true, reasons: [] }` |
+| Client module is served | `plugins/??deepseek-coordination/client.js&rev=…` → 3,441,910 bytes, present in `__DSH_BOOT__.entries` |
+
+The live run also caught a real defect: `coordination_selection` returned a value DSH rejected as "not lossless JSON". 0.17.2 omits absent projection fields and detaches every tool result through `jsonSafe` before it crosses the boundary. Two operational facts matter:
+
+- **An update is not hot-swapped.** Adding the package hot-loaded it; replacing the installed build while the app was running left the old module in memory. `GET /ping` now reports `version`, so the running build is observable; restart the app to load a new one.
+- **A headless profile does not activate the plugin**, because it declares `inject: ['webServer']` and headless mounts no webserver. Mounting `@deepseek-ai/dsh-host-webserver` (plus its startup row) or relaxing the inject is the fix; the composed service itself does not need the routes.
 
 ## Composer controls
 
@@ -151,13 +207,7 @@ deepseek-coordination/
 | 情景 Scene | dialogue / writing / office / research / engineering / iterate | Stored for the next turn. `writing` sits between `dialogue` and `office`; the scene policy is read by the turn pipeline. |
 | 验证 Validation | low / medium / high | Stored for the next turn; frozen while the active turn has a draft/scored/active plan. All three levels search. |
 
-- Every control and every option has a tooltip. A single-owner `tooltipVisibility` store ensures only one composer tooltip is visible; placement is left/right, exit is a 160 ms fade, and the fade popper is pointer-transparent.
-- Clicking a dropdown opens its menu on the first click; there is no state change on pointerdown/mousedown that would swallow the Select click.
-- A locked profession trigger is disabled and carries an accessible name with the lock explanation; option `MenuItem`s carry the label plus hint for keyboard and screen-reader users.
-- Phase freezes are re-derived from the host on every poll: turn → profession, plan → validation, goal → interaction. The select is disabled but stays focusable, its aria-label and tooltip name when the freeze lifts, and the server refuses a changed value with `INVALID_STATE` (replaying the stored value is allowed).
-- Tooltips obey the host's `ui.showTooltip` gate; the local “show hints” preference can only narrow them, never resurrect a host-disabled tooltip.
-- Saves are optimistic and debounced by 120 ms. A rejected save reverts to the last host-confirmed state; offline edits are replayed when the host returns. A full-access preset needs an explicit second confirmation.
-- While the host state is loading, selects stay disabled and show a loading line. A missing preset catalog is shown as a missing catalog, not invented.
+The dropdown UI is removed: the composer only carries DSH's own controls. The semantic rules below still hold in the service and the `coordination_selection` tool; the panel displays the resulting triple, not a way to change it.
 
 Validation budgets are policy, not a claim that the whole pipeline runs today:
 
@@ -231,9 +281,15 @@ Rules that hold across every ecosystem:
 
 The graph answers "what is in this workspace" through `coordination_parse`, `coordination_describe` and `coordination_chain`. The chain query takes an optional `kind` (trimmed, case-insensitive) on every node-returning action, so "all lemmas" or "all chapters" is one call instead of a scan. Directory nodes are derived from unambiguous workspace paths and connected with `contains`/`part_of`; the invariant is **`part_of` (child→parent) exact, `contains` (parent→child) best-effort**.
 
-## Workspace panels
+## Coordination panel (read-only)
 
-Two read-only panels dock to the right edge and stack vertically: the relationship panel (files / agents / dependencies / imports / exports) and the workspace panel (files / outline / dependencies / imports / preview). Each keeps a 48px title bar with menu, search and minimize/restore; expanding one pushes the other. A relationship tab draws a native canvas graph with directional flow, cycle pulsing, hover tooltips and click selection; the agents tab lists the main agent and its subagents with an estimated progress ring and opens a read-only transcript. The preview tab renders Markdown/math, sanitized HTML, `docx` HTML, Prism-highlighted code, `xlsx` sheets and `pptx` slides — all read-only, bounded and `no-store`. State is `{ openLeft, openRight, width }` in `localStorage`; views are hash routes (`#coordination/panel/right/<view>?path=…`). Bundle cost is about +2 MB (KaTeX, react-markdown, Prism, MUI icons), 700 KB gzipped.
+The right dock hosts one read-only panel written for a general reader, not for a protocol engineer. It is MUI end to end — `Card` sections, `Table`s for the plan, the ignored items, the actions and the technical rows, and one collapsed `Accordion` for the raw evidence. It answers three questions in order:
+
+- **What it had to solve** — the turn's **actual prompt excerpt** (`/amp/story`), the turn ordinal, the 职能 / 交互 / 情景 labels with the rule each one imposes, any goal text, and a table of the plan's steps with their recorded acceptance. The composer no longer has dropdowns; this is where the values are visible.
+- **What it deliberately set aside** — a table of the ignored items by name, the reason class, and the exact "reconsidered when …" condition. The raw `why` / `revisit_if` text, digests and ids live under a collapsed **technical details** accordion.
+- **What it did, and whether the record can be trusted** — the five latest receipts in plain words (read / focus / review / ask / tool call) and one trust line: "the record is complete and unmodified · N entries · append-only and signed", or the verifier's failure reasons.
+
+Panel typography is rem-based with a **1 rem (16 px) floor** (`PANEL_TYPE_SX`): no text in the dock is smaller than 16 px. Values are never reshaped — the digest and tip in the technical details are the digest and tip a verifier checks. A missing session or frame is an explicit empty state, not a fallback to file browsing. Minimized, the panel collapses to a single floating button at the top-right of the conversation; its view is the `amp` hash route (`#coordination/panel/right/amp`).
 
 ## Settings and configuration
 
@@ -311,7 +367,9 @@ Fail-safe rules are deliberate: the hook never blocks the step; a missing compac
 
 ## File tools, parser and Chain
 
-The file layer is wired as four model-facing tools, alongside the three composer tools:
+The file layer is wired as four model-facing tools, alongside the three composer
+tools and the four read-only graph tools (eleven in total; see
+[Tools and routes](#tools-and-routes)):
 
 | Tool | Purpose |
 |---|---|
@@ -360,17 +418,22 @@ The second adoption pass is measured and randomized-tested. Its honest caveat: o
 |---|---|
 | `coordination_selection` | Read or patch the five selections for a session (including `command` and DSH `preset`); returns `SelectionState` with lock, presets and config projection. |
 | `coordination_profession` | Read the current profession record; set a profession only before/without an active task. A locked task returns `PROFESSION_LOCKED` and leaves the selection unchanged. |
-| `coordination_professionlock` | Read the lock state/profession of the active turn, or of a given turn ordinal. |
+| `coordination_profession_lock` | Read the lock state/profession of the active turn, or of a given turn ordinal. |
 | `coordination_parse` | Body-free parse projection (references, diagnostics, charset, truncation, cards). |
 | `coordination_describe` | Body-free `NodeCard` and requested metadata fields. |
 | `coordination_chain` | Bounded `ChainProjection` only. |
 | `coordination_read` | The only content-returning tool; capped byte/line range. |
+| `coordination_file` | Bounded workspace tree of indexed paths. |
+| `coordination_outline` | Structure outline of one file or the workspace. |
+| `coordination_importation` | Import rows of one file or the workspace. |
+| `coordination_exportation` | Export rows of one file or the workspace. |
 
-All routes live under `/deepseek-coordination`; there are **14 paths / 16 method handlers**:
+All routes live under `/deepseek-coordination`; there are **33 paths / 36 method handlers**:
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/ping` | Liveness; returns plugin name, `pong`, current locale. |
+| GET | `/proxy/status` | Cache-proxy status: counts, ids and hashes only (body-free). |
 | POST | `/echo` | Echo a JSON body (diagnostic). |
 | GET, POST | `/selection` | Read `SelectionState`; patch the five choices. |
 | GET | `/presets` | DSH permission-preset catalog projected for the dropdown. |
@@ -384,15 +447,33 @@ All routes live under `/deepseek-coordination`; there are **14 paths / 16 method
 | POST | `/profession/abandon` | End the active task without a replacement. |
 | POST | `/locale` | Report the client language; re-registers localized tool descriptions. |
 | GET | `/state` | Selection plus coordination metrics (`session`, `turn`, `plan`, `subtask`, `trace`, `takeover`, `schema`). |
+| GET | `/amp/identity` | Public Ed25519 identity `{ kid, alg, publicKey }`. |
+| GET | `/amp/manifest` | Signed AMP manifest. |
+| GET | `/amp/frame` | Latest AMP frame for `?session=`. |
+| GET | `/amp/receipts` | Newest receipts (`?limit=`). |
+| GET | `/amp/ledger` | Chain head plus entries (`?limit=`, `?full=1`). |
+| GET | `/amp/verify` | Recomputed chain verdict, latest checkpoint. |
+| POST | `/amp/checkpoint` | Seal a signed checkpoint over the current tip. |
+| GET | `/graph/tree` | Bounded workspace tree (`?root=` override). |
+| GET | `/graph/outline` | File or workspace structure outline. |
+| GET | `/graph/intra` | In-file symbols and edges. |
+| GET | `/graph/dependencies` | File/workspace dependency links and cycles (`?level=file\|intra`). |
+| GET | `/graph/imports` | File/workspace import rows. |
+| GET | `/graph/search` | Search the persisted graph. |
+| GET | `/graph/agents` | Read-only agent roster with estimated progress. |
+| GET | `/graph/agents/messages` | Bounded, no-store agent transcript. |
+| GET | `/graph/preview` | The only body-bearing file route; bounded, no-store. |
+| POST | `/graph/index` | Index a fresh workspace (`409 BUSY` while running). |
+| POST | `/graph/rebuild` | Re-parse the already-known paths (`409 BUSY` while running). |
 
-There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol`, `searchSummary` or `commentsOf` tool. The four file tools carry inline EN/zh-CN copy because the shared `ToolName` table has no keys for them yet; the three composer tools use the shared copy table.
+There is no `coordination_write` or `coordination_refresh` tool. The four file tools and the four graph tools carry inline EN/zh-CN copy because the shared `ToolName` table has no keys for them yet; the three composer tools use the shared copy table.
 
 ## Data, privacy and safety
 
 - The plugin owns an independent SQLite database. It never opens DSH's `harness` database. The default path is `%DSH_HOME%\coordination\coordination.db`; `database`/`databasePath` are deployment-only and are neither projected nor writable from `/config`.
 - Parser nodes, `NodeCard`s, `ChainLink`s and their tool results never carry file bodies, attachments or ASTs. Only `coordination_read` returns text, and only for the requested range.
 - Preview is the only body-bearing route: workspace-relative only, 64 KiB text cap, user-initiated, never cached or logged; every other graph route stays body-free. Office previews are converted server-side and size-capped; no file is written.
-- The workspace panel is read-only: no edit/rename/delete/create/build; the only non-GET graph route is POST /graph/rebuild, which re-parses known paths.
+- The workspace panel is read-only: no edit/rename/delete/create/build; the only non-GET graph routes are POST `/graph/rebuild` (re-parse known paths) and POST `/graph/index` (scan and index a fresh workspace).
 - File paths are workspace-relative; absolute paths, drive-rooted paths, UNC paths, `..` escapes and symlink escapes are rejected before a read. Binary/NUL/undecodable content is refused rather than guessed.
 - The turn hook records turn metadata and an empty prompt row; it does not mirror the DSH transcript. No file content is copied into the coordination database.
 - Permission presets are written to DSH immediately (full access needs a second confirmation) and are never stored in the offline localStorage copy. Offline replay covers only the five stored selection fields.
@@ -405,7 +486,7 @@ There is no `coordination_write`, `coordination_refresh`, `outline`, `findSymbol
 
 | Check | Result |
 |---|---|
-| `npm test` | **615 tests, 614 pass, 1 skipped (GC-only), 0 fail**, ~3 s on Node 24.21.0 |
+| `npm test` | **872 tests, 871 pass, 1 skipped (GC-only), 0 fail**, ~9 s on Node 24.21.0 |
 | `npm run typecheck` / `npm run test:tsc` | Clean |
 | `npm run build` | Host + client bundles green; MUI `"use client"` directive warnings are non-fatal |
 | `npm run pack:check` | OK: the runtime tarball carries the four shipped files |
@@ -415,7 +496,7 @@ Parser and structure numbers are guards, not promises: a 100k-character parse te
 
 Known limitations, stated rather than hidden:
 
-1. **Durable graph is bounded.** `node`/`edge`/`snapshot` are now schema 24 and survive a new runtime; rehydration is bounded to the newest 10k nodes / 50k edges, removed symbols are not pruned, and a handle older than the rehydration window is `NOT_FOUND`.
+1. **Durable graph is bounded.** `node`/`edge`/`snapshot` are schema 25 and survive a new runtime; rehydration is bounded to the newest 10k nodes / 50k edges, removed symbols are not pruned, and a handle older than the rehydration window is `NOT_FOUND`.
 2. **Domain extraction is parser-level; some projections are still partial.** Book/Article/Part/Chapter/Section/Paragraph, Person/Venue, Condition, Sheet/Cell/Range and TeX proof status are emitted and projected onto node cards; docx/xlsx/pptx now parse through a bounded ZIP+OOXML reader, while Publisher/Access stay explicitly unsupported. `partOf`/`condition` edges are queryable through `coordination_chain`; cross-file Book composition and Sign promotion remain deferred.
 3. **The core turn pipeline is wired, the wider engines are not.** Comprehension → Organization → Plan/score and required Predict rows now run for `command=none` turns, with the scene policy applied where ports exist. Standalone Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score, plan rebuild loops and decompose/dispatch/verify/synthesize remain library-only. Reasoning is DSH-owned and no longer reported as a plugin gap; `allowBash`, `maxIteration` and non-writing score thresholds are still recorded as deferred diagnostics, not faked.
 4. **Configured caps are live.** `parser.maxAstDepth`, both dependency-graph caps and `tools.maxResultBytes` are consumed; parser/chain limits retune an existing runtime, and a config change no longer leaves a stale tool runtime.
@@ -423,11 +504,33 @@ Known limitations, stated rather than hidden:
 6. **`parser.enabled` still needs registration.** The other file-layer limits retune live; turning the parser off fails closed immediately, but adding/removing the four tools requires the next registration (restart).
 7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog tests and the takeover/bridge/integration tests; visual verification remains manual/screenshot-based.
 8. **Node engine is `>=22.13.0`.** `node:sqlite` is unflagged from 22.13.0/23.4.0; CI and this verification use 24.21.0.
-9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.11.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
+9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.15.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
 10. **The cache proxy is experimental and off by default.** Its brand profiles are policy defaults, not measurements, and it only rewrites content for families with an automatic prefix cache; the observable gain on a stable session may be near zero, which is why it ships behind a flag and a status endpoint rather than enabled.
+11. **AMP conformance is boundary-deep, not complete.** Manifests, frames, receipts, events, claims/unknowns, goal/plan pairs (gated on recorded acceptance), the ledger and checkpoints are wired and verified; the sealed envelope and the warrant's hypothesis/revision/authorization functions are implemented and tested but not driven by any path, and hypotheses, governance manifests, credentials, federation and interrupt budgets are not implemented. [`docs/amp-conformance.md`](docs/amp-conformance.md) §7 lists each gap with its reason, and the manifest's `self.limits` states the two unmeasured fields (calibration, token usage).
 
 ## Repository history and license
 
-`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles; `0.12.0` added the per-ecosystem domain layer, the chain `kind` filter, the directory layer and `NodeRecord`. Earlier states remain in git history and tags.
+`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles; `0.12.0` added the per-ecosystem domain layer, the chain `kind` filter, the directory layer and `NodeRecord`; `0.15.0` added the AMP v0.1 protocol layer and its conformance document. Earlier states remain in git history and tags.
 
 Apache-2.0 © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

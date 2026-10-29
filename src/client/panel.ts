@@ -194,6 +194,7 @@ import Tab from '@mui/material/Tab'
 import Table from '@mui/material/Table'
 import TableBody from '@mui/material/TableBody'
 import TableCell from '@mui/material/TableCell'
+import TableContainer from '@mui/material/TableContainer'
 import TableRow from '@mui/material/TableRow'
 import Dialog from '@mui/material/Dialog'
 import DialogTitle from '@mui/material/DialogTitle'
@@ -228,9 +229,10 @@ import type { Theme } from '@mui/material/styles'
 import type { PrismTheme, RenderProps } from 'prism-react-renderer'
 import { theme } from './theme.js'
 import { useCopy } from './i18n.js'
-import { fetchGraph, indexGraph, rebuildGraph } from './bridge.js'
+import { fetchGraph, indexGraph, loadSelection, rebuildGraph } from './bridge.js'
 import { PANEL_FAMILIES, PANEL_VIEW_IDS, fillTemplate } from '../shared/i18n.js'
-import type { PanelCopy, PanelFamily, PanelView } from '../shared/i18n.js'
+import type { PanelAmpCopy, PanelCopy, PanelFamily, PanelView } from '../shared/i18n.js'
+import type { SelectionState } from '../shared/selection.js'
 
 /* MUI's generics describe every overload; this module passes one narrow shape. */
 type Loose = React.ComponentType<Record<string, unknown>>
@@ -270,6 +272,7 @@ const MuiTab = Tab as unknown as Loose
 const MuiTable = Table as unknown as Loose
 const MuiTableBody = TableBody as unknown as Loose
 const MuiTableCell = TableCell as unknown as Loose
+const MuiTableContainer = TableContainer as unknown as Loose
 const MuiTableRow = TableRow as unknown as Loose
 const MuiDialog = Dialog as unknown as Loose
 const MuiDialogTitle = DialogTitle as unknown as Loose
@@ -359,7 +362,7 @@ const CRASH_CHIP_SX = {
   '& .MuiChip-label': {
     paddingLeft: 0.75,
     paddingRight: 0.75,
-    fontSize: 10,
+    fontSize: '1rem',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
@@ -422,12 +425,12 @@ export function isPanelDisabled(): boolean {
 /** Never rethrows: a boundary failure must not escape into the host tree. */
 export class PanelErrorBoundary extends React.Component<
   { children?: React.ReactNode },
-  { failed: boolean }
+  { failed: boolean; message: string }
 > {
-  state: { failed: boolean } = { failed: false }
+  state: { failed: boolean; message: string } = { failed: false, message: '' }
 
-  static getDerivedStateFromError(): { failed: boolean } {
-    return { failed: true }
+  static getDerivedStateFromError(error: Error): { failed: boolean; message: string } {
+    return { failed: true, message: panelErrorTooltip(error) }
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
@@ -436,7 +439,27 @@ export class PanelErrorBoundary extends React.Component<
   }
 
   render(): React.ReactNode {
-    return this.state.failed ? null : this.props.children
+    if (!this.state.failed) return this.props.children
+    // A disappeared panel is worse than a visible, bounded failure: keep the
+    // error inside the dock so the rest of the shell stays usable.
+    return React.createElement(
+      'div',
+      {
+        role: 'alert',
+        'data-panel-crashed': 'true',
+        style: {
+          padding: 12,
+          margin: 8,
+          border: '1px solid',
+          borderColor: 'rgba(211, 47, 47, 0.5)',
+          borderRadius: 8,
+          color: '#b3261e',
+          font: '12px/1.4 system-ui, sans-serif',
+          overflowWrap: 'anywhere',
+        },
+      },
+      `Panel failed: ${this.state.message}`,
+    )
   }
 }
 
@@ -448,27 +471,9 @@ export class PanelErrorBoundary extends React.Component<
  * without adding a sixth tab.
  */
 export const RIGHT_PANEL_TABS: readonly PanelView[] = [
-  'files',
-  'outline',
-  'dependencies',
-  'imports',
-  'exports',
+  'amp',
 ]
-export const RIGHT_PANEL_ROUTES: readonly PanelView[] = [...RIGHT_PANEL_TABS, 'preview']
-
-/**
- * The top (relationship) panel: its own tab set and routed pages.
- *
- * `agent` is the detail page of the Agents tab (`id` parameter), not a tab.
- */
-export const LEFT_PANEL_TABS: readonly PanelView[] = [
-  'files',
-  'agents',
-  'dependencies',
-  'imports',
-  'exports',
-]
-export const LEFT_PANEL_ROUTES: readonly PanelView[] = [...LEFT_PANEL_TABS, 'agent']
+export const RIGHT_PANEL_ROUTES: readonly PanelView[] = ['amp']
 
 /** Cycle paths rendered in a warning block before the overflow line. */
 const MAX_CYCLE_LINES = 5
@@ -526,9 +531,11 @@ const TAB_ICONS: Readonly<Record<PanelView, Loose>> = {
   exports: IconExports,
   agents: IconAgents,
   agent: IconAgents,
+  amp: IconArticle,
 }
 
 function tabLabel(view: PanelView, copy: PanelCopy): string {
+  if (view === 'amp') return copy.amp.title
   if (view === 'preview') return copy.preview
   if (view === 'exports') return copy.exports
   if (view === 'agents' || view === 'agent') return copy.agents
@@ -537,6 +544,8 @@ function tabLabel(view: PanelView, copy: PanelCopy): string {
 
 function tabTip(view: PanelView, copy: PanelCopy): string {
   switch (view) {
+    case 'amp':
+      return copy.amp.subtitle
     case 'files':
       return copy.tip.tabFiles
     case 'outline':
@@ -745,7 +754,7 @@ const SEARCH_FIELD_SX = {
   minWidth: 0,
   '& .MuiInputBase-root': {
     height: 32,
-    fontSize: 12,
+    fontSize: '1rem',
     borderRadius: 1,
     backgroundColor: 'background.paper',
   },
@@ -839,17 +848,17 @@ const AGENT_INFO_ROW_SX = {
 const AGENT_INFO_LABEL_SX = {
   flex: 'none',
   width: 68,
-  fontSize: 11,
+  fontSize: '1rem',
   color: 'text.secondary',
 }
 const AGENT_INFO_VALUE_SX = {
-  fontSize: 12,
+  fontSize: '1rem',
   minWidth: 0,
   overflowWrap: 'anywhere',
 }
-const AGENT_INFO_TITLE_SX = { fontSize: 14, lineHeight: 1.4 }
+const AGENT_INFO_TITLE_SX = { fontSize: '1rem', lineHeight: 1.4 }
 const AGENT_INFO_SECTION_TITLE_SX = {
-  fontSize: 11,
+  fontSize: '1rem',
   fontWeight: 600,
   color: 'text.secondary',
   marginBottom: 0.5,
@@ -884,7 +893,7 @@ export const NAV_SX = {
   borderTop: '1px solid',
   borderColor: 'divider',
   '& .MuiBottomNavigationAction-root': { flex: 1, minWidth: 0, maxWidth: 'none', padding: '5px 0 3px' },
-  '& .MuiBottomNavigationAction-label': { fontSize: 11, whiteSpace: 'nowrap' },
+  '& .MuiBottomNavigationAction-label': { fontSize: '1rem', whiteSpace: 'nowrap' },
 }
 
 const NAV_ACTION_SX = { minWidth: 0 }
@@ -968,6 +977,22 @@ export const PANEL_ROW_SX = {
   alignItems: 'center',
   width: '100%',
   boxSizing: 'border-box',
+  overflow: 'hidden',
+  // MUI's ListItemText root carries 4px top/bottom margins. Inside a fixed
+  // two-line 48px row those margins push the secondary line into the next
+  // row; flatten them and tighten both lines so the text cannot overlap.
+  '& .MuiListItemText-root': {
+    marginTop: 0,
+    marginBottom: 0,
+    minWidth: 0,
+    overflow: 'hidden',
+  },
+  '& .MuiListItemText-primary': { lineHeight: 1.3 },
+  '& .MuiListItemText-secondary': {
+    lineHeight: 1.3,
+    minWidth: 0,
+    overflow: 'hidden',
+  },
   transition: 'background-color 150ms',
   '&:hover': { backgroundColor: 'action.hover' },
   '&.Mui-selected': { backgroundColor: 'action.selected' },
@@ -1021,6 +1046,7 @@ const PANEL_ROW_SHELL_SX = {
   height: PANEL_ROW_HEIGHT,
   minHeight: PANEL_ROW_HEIGHT,
   maxHeight: PANEL_ROW_HEIGHT,
+  overflow: 'hidden',
 }
 
 interface PanelScrollState {
@@ -1514,7 +1540,7 @@ export const SCOPE_BAR_SX = {
   backgroundColor: 'background.paper',
 }
 
-const READ_ONLY_SX = { flex: 'none', fontSize: 11, paddingLeft: 1 }
+const READ_ONLY_SX = { flex: 'none', fontSize: '1rem', paddingLeft: 1 }
 
 const SCOPE_CHIP_SX = {
   maxWidth: '100%',
@@ -1528,7 +1554,7 @@ const CYCLE_BOX_SX = { marginTop: 0.5 }
 
 const MONO_SX = {
   fontFamily: 'monospace',
-  fontSize: 11,
+  fontSize: '1rem',
   lineHeight: 1.6,
   overflowWrap: 'anywhere',
 }
@@ -1568,14 +1594,14 @@ const SEARCH_HIT_META_SX = { fontFamily: 'monospace', fontSize: 11 }
 
 /** Shared prose styling for rendered Markdown and sanitized HTML. */
 const PREVIEW_PROSE_SX = {
-  fontSize: 12,
+  fontSize: '1rem',
   lineHeight: 1.6,
   overflowWrap: 'anywhere',
   '& p': { margin: '0 0 8px' },
   '& h1': { fontSize: 18, margin: '8px 0' },
   '& h2': { fontSize: 16, margin: '8px 0' },
-  '& h3': { fontSize: 14, margin: '8px 0' },
-  '& h4, & h5, & h6': { fontSize: 13, margin: '8px 0' },
+  '& h3': { fontSize: '1rem', margin: '8px 0' },
+  '& h4, & h5, & h6': { fontSize: '1rem', margin: '8px 0' },
   '& ul, & ol': { paddingLeft: 3, margin: '0 0 8px' },
   '& li': { marginBottom: 2 },
   '& a': { color: 'primary.main' },
@@ -1614,7 +1640,7 @@ const PREVIEW_PRE_SX = {
   borderRadius: 1,
   backgroundColor: 'action.hover',
   fontFamily: 'monospace',
-  fontSize: 11,
+  fontSize: '1rem',
   lineHeight: 1.5,
   whiteSpace: 'pre',
   tabSize: 2,
@@ -1629,7 +1655,7 @@ const PREVIEW_CODE_BOX_SX = {
 const TABS_SX = { minHeight: 36, borderBottom: '1px solid', borderColor: 'divider' }
 
 const TABLE_SX = {
-  '& td, & th': { padding: '3px 8px', fontSize: 11, borderBottom: '1px solid', borderColor: 'divider' },
+  '& td, & th': { padding: '3px 8px', fontSize: '1rem', borderBottom: '1px solid', borderColor: 'divider' },
 }
 
 const TABLE_HEAD_CELL_SX = { fontWeight: 600, backgroundColor: 'action.hover' }
@@ -1696,7 +1722,7 @@ const AGENT_RING_VALUE_SX = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  fontSize: 9,
+  fontSize: '1rem',
   lineHeight: 1,
 }
 
@@ -1719,7 +1745,7 @@ const AGENTS_FOOTER_SX = {
   borderColor: 'divider',
 }
 
-const AGENTS_FOOTER_TEXT_SX = { flex: 'none', fontSize: 11, whiteSpace: 'nowrap' }
+const AGENTS_FOOTER_TEXT_SX = { flex: 'none', fontSize: '1rem', whiteSpace: 'nowrap' }
 
 const AGENT_SKELETON_ROW_SX = { display: 'flex', alignItems: 'center', gap: 1, padding: 1 }
 
@@ -1807,7 +1833,7 @@ const MESSAGE_BUBBLE_SX = {
   flexDirection: 'column',
   borderRadius: 1,
   padding: 0.75,
-  fontSize: 12,
+  fontSize: '1rem',
   lineHeight: 1.5,
   overflow: 'hidden',
   overflowWrap: 'anywhere',
@@ -1841,7 +1867,7 @@ const MESSAGE_NOTICE_SX = {
   backgroundColor: 'transparent',
   borderColor: 'transparent',
   color: 'text.secondary',
-  fontSize: 11,
+  fontSize: '1rem',
 }
 
 /** Header line (role + timestamp), separated from the body by a divider. */
@@ -1855,7 +1881,7 @@ const MESSAGE_HEADER_SX = {
   marginBottom: 0.5,
   borderBottom: '1px solid',
   borderColor: 'divider',
-  fontSize: 10,
+  fontSize: '1rem',
   lineHeight: 1.2,
   color: 'text.secondary',
 }
@@ -1863,7 +1889,7 @@ const MESSAGE_HEADER_SX = {
 const MESSAGE_HEADER_USER_SX = { justifyContent: 'flex-end' }
 const MESSAGE_HEADER_CENTER_SX = { justifyContent: 'center' }
 const MESSAGE_ROLE_SX = { fontWeight: 600, fontSize: 10 }
-const MESSAGE_TIME_SX = { fontSize: 10, opacity: 0.75, flex: 'none' }
+const MESSAGE_TIME_SX = { fontSize: '1rem', opacity: 0.75, flex: 'none' }
 const MESSAGE_NOTICE_TEXT_SX = { fontStyle: 'italic', textAlign: 'center' }
 
 /**
@@ -1891,7 +1917,7 @@ const MESSAGE_EXPAND_SX = {
   flex: 'none',
   minWidth: 0,
   padding: '0 4px',
-  fontSize: 10,
+  fontSize: '1rem',
   marginTop: 0.25,
 }
 
@@ -2017,14 +2043,13 @@ type PanelSide = 'left' | 'right'
 
 /** The only persisted panel state: no coordinates, only expansion and width. */
 interface ColumnState {
-  openLeft: boolean
-  openRight: boolean
+  /** The single docked panel (AMP attention) is expanded. */
+  open: boolean
   width: number
 }
 
 const DEFAULT_COLUMN_STATE: ColumnState = {
-  openLeft: false,
-  openRight: true,
+  open: true,
   width: COLUMN_DEFAULT_WIDTH,
 }
 
@@ -2035,9 +2060,16 @@ function readColumnState(): ColumnState {
     if (raw === null) return { ...DEFAULT_COLUMN_STATE }
     const record = asRecord(JSON.parse(raw) as unknown)
     if (record === undefined) return { ...DEFAULT_COLUMN_STATE }
+    // Migration: the two-panel builds stored `openRight`; the merged panel
+    // inherits that expansion state so an upgrade does not re-open or close
+    // the panel behind the user's back.
+    const open = typeof record.open === 'boolean'
+      ? record.open
+      : typeof record.openRight === 'boolean'
+        ? record.openRight
+        : DEFAULT_COLUMN_STATE.open
     return {
-      openLeft: typeof record.openLeft === 'boolean' ? record.openLeft : DEFAULT_COLUMN_STATE.openLeft,
-      openRight: typeof record.openRight === 'boolean' ? record.openRight : DEFAULT_COLUMN_STATE.openRight,
+      open,
       width: Math.max(
         COLUMN_MIN_WIDTH,
         Math.min(COLUMN_MAX_WIDTH, Math.round(finiteNumber(record.width) ?? COLUMN_DEFAULT_WIDTH)),
@@ -2053,7 +2085,7 @@ function writeColumnState(state: ColumnState): void {
   try {
     window.localStorage.setItem(
       COLUMN_STORAGE_KEY,
-      JSON.stringify({ openLeft: state.openLeft, openRight: state.openRight, width: state.width }),
+      JSON.stringify({ open: state.open, width: state.width }),
     )
   } catch {
     // Blocked storage only loses the remembered expansion state.
@@ -3446,6 +3478,859 @@ function CycleAlert(props: { copy: PanelCopy; cycles: readonly string[][] }): Re
 }
 
 /* ------------------------------------------------------------------------- *
+ * AMP attention panel
+ *
+ * The workspace panel is no longer a file browser: it is one read-only view of
+ * the protocol artifacts the host already produces. Every value comes from the
+ * `/amp/*` routes and is rendered without reshaping it, so the digest/tip a user
+ * reads is the digest/tip a verifier checks.
+ * ------------------------------------------------------------------------- */
+
+interface AmpManifestData {
+  agent: string
+  name: string
+  digest: string
+  issued: string
+  expires: string
+  budget: string
+  capabilities: Array<{ id: string; tier: string; confidence: string }>
+  limits: string[]
+}
+
+interface AmpFrameSlot {
+  role: string
+  target: string
+  why: string
+  salience: string
+  cost: string
+}
+
+interface AmpFrameIgnored {
+  target: string
+  reason: string
+  revisitIf: string
+}
+
+interface AmpFrameData {
+  id: string
+  cycle: string
+  mode: string
+  digest: string
+  goal: string
+  slots: AmpFrameSlot[]
+  ignored: AmpFrameIgnored[]
+  allocated: string
+  spent: string
+}
+
+interface AmpReceiptData {
+  id: string
+  op: string
+  outcome: string
+  at: string
+  ms: string
+  target: string
+  usage: string
+}
+
+interface AmpLedgerEntry {
+  seq: string
+  kind: string
+  id: string
+  hash: string
+}
+
+interface AmpLedgerData {
+  count: string
+  tip: string
+  entries: AmpLedgerEntry[]
+}
+
+interface AmpVerifyData {
+  ok: boolean
+  reasons: string[]
+  count: string
+  tip: string
+}
+
+function ampRefLabel(value: unknown): string {
+  const record = asRecord(value)
+  if (record === undefined) return '—'
+  const label = asString(record.label)
+  if (label !== undefined && label.length > 0) return label
+  const kind = asString(record.kind)
+  const id = asString(record.id)
+  return kind !== undefined && id !== undefined ? `${kind}:${id}` : id ?? '—'
+}
+
+function ampBudgetText(value: unknown): string {
+  const record = asRecord(value)
+  if (record === undefined) return '—'
+  const keys = ['tokens', 'ms', 'calls', 'interrupts', 'money'] as const
+  const parts: string[] = []
+  for (const key of keys) {
+    const amount = finiteNumber(record[key])
+    if (amount !== undefined) parts.push(`${key} ${amount}`)
+  }
+  return parts.length === 0 ? '—' : parts.join(' · ')
+}
+
+function ampShort(value: string, length: number = 18): string {
+  return value.length <= length ? value : `${value.slice(0, length)}…`
+}
+
+function ampTime(value: string): string {
+  if (value.length === 0) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function parseAmpManifest(value: unknown): AmpManifestData | null {
+  const record = asRecord(value)
+  if (record === undefined) return null
+  const agent = asRecord(record.agent)
+  const attention = asRecord(record.attention)
+  const self = asRecord(record.self)
+  const capabilities: AmpManifestData['capabilities'] = []
+  for (const raw of firstArray(record, ['capabilities']) ?? []) {
+    const item = asRecord(raw)
+    if (item === undefined) continue
+    const id = asString(item.id)
+    if (id === undefined) continue
+    const confidence = finiteNumber(item.confidence)
+    capabilities.push({
+      id,
+      tier: asString(item.tier) ?? 'T0',
+      confidence: confidence === undefined ? '—' : confidence.toFixed(2),
+    })
+  }
+  return {
+    agent: asString(agent?.id) ?? '—',
+    name: asString(agent?.name) ?? asString(agent?.id) ?? '—',
+    digest: asString(record.digest) ?? '',
+    issued: asString(record.issued) ?? '',
+    expires: asString(record.expires) ?? '',
+    budget: ampBudgetText(attention?.budget),
+    capabilities,
+    limits: stringList(self?.limits),
+  }
+}
+
+function parseAmpFrame(value: unknown): AmpFrameData | null {
+  const record = asRecord(value)
+  if (record === undefined) return null
+  const budget = asRecord(record.budget)
+  const slots: AmpFrameSlot[] = []
+  for (const raw of firstArray(record, ['slots']) ?? []) {
+    const item = asRecord(raw)
+    if (item === undefined) continue
+    const salience = finiteNumber(item.salience)
+    slots.push({
+      role: asString(item.role) ?? '—',
+      target: ampRefLabel(item.target),
+      why: asString(item.why) ?? '',
+      salience: salience === undefined ? '—' : salience.toFixed(2),
+      cost: ampBudgetText(item.cost),
+    })
+  }
+  const ignored: AmpFrameIgnored[] = []
+  for (const raw of firstArray(record, ['ignored']) ?? []) {
+    const item = asRecord(raw)
+    if (item === undefined) continue
+    ignored.push({
+      target: ampRefLabel(item.target),
+      reason: asString(item.reason) ?? '—',
+      revisitIf: asString(item.revisit_if) ?? '',
+    })
+  }
+  return {
+    id: asString(record.id) ?? '—',
+    cycle: String(Math.max(0, Math.floor(finiteNumber(record.cycle) ?? 0))),
+    mode: asString(record.mode) ?? '—',
+    digest: asString(record.digest) ?? '',
+    goal: record.goal === undefined ? '' : ampRefLabel(record.goal),
+    slots,
+    ignored,
+    allocated: ampBudgetText(budget?.allocated),
+    spent: ampBudgetText(budget?.spent),
+  }
+}
+
+/** Concrete narrative facts from `/amp/story`; missing fields stay empty. */
+interface AmpStoryData {
+  turn: {
+    ordinal: number
+    status: string
+    profession: string
+    interaction: string
+    scene: string
+  } | null
+  prompt: { excerpt: string; truncated: boolean } | null
+  goal: { content: string } | null
+  plan: { steps: Array<{ intent: string; expect: string }> } | null
+  ignored: Array<{ target: string; reason: string; revisit: string }>
+}
+
+function parseAmpStory(value: unknown): AmpStoryData | null {
+  const record = asRecord(value)
+  if (record === undefined) return null
+  const turnRecord = asRecord(record.turn)
+  const promptRecord = asRecord(record.prompt)
+  const goalRecord = asRecord(record.goal)
+  const planRecord = asRecord(record.plan)
+  const ignored: AmpStoryData['ignored'] = []
+  for (const raw of firstArray(record, ['ignored']) ?? []) {
+    const item = asRecord(raw)
+    if (item === undefined) continue
+    ignored.push({
+      target: asString(item.target) ?? '—',
+      reason: asString(item.reason) ?? '—',
+      revisit: asString(item.revisit) ?? '',
+    })
+  }
+  const steps: Array<{ intent: string; expect: string }> = []
+  for (const raw of firstArray(planRecord, ['steps']) ?? []) {
+    const item = asRecord(raw)
+    if (item === undefined) continue
+    const intent = asString(item.intent) ?? ''
+    if (intent.length === 0) continue
+    steps.push({ intent, expect: asString(item.expect) ?? '' })
+  }
+  return {
+    turn: turnRecord === undefined
+      ? null
+      : {
+        ordinal: Math.max(0, Math.floor(finiteNumber(turnRecord.ordinal) ?? 0)),
+        status: asString(turnRecord.status) ?? '',
+        profession: asString(turnRecord.profession) ?? '',
+        interaction: asString(turnRecord.interaction) ?? '',
+        scene: asString(turnRecord.scene) ?? '',
+      },
+    prompt: promptRecord === undefined
+      ? null
+      : {
+        excerpt: asString(promptRecord.excerpt) ?? '',
+        truncated: promptRecord.truncated === true,
+      },
+    goal: goalRecord === undefined ? null : { content: asString(goalRecord.content) ?? '' },
+    plan: planRecord === undefined ? null : { steps },
+    ignored,
+  }
+}
+function parseAmpReceipts(value: unknown): AmpReceiptData[] {
+  const list = Array.isArray(value) ? value : firstArray(asRecord(value), ['receipts', 'items']) ?? []
+  const receipts: AmpReceiptData[] = []
+  for (const raw of list) {
+    const item = asRecord(raw)
+    if (item === undefined) continue
+    const id = asString(item.id)
+    if (id === undefined) continue
+    const ms = finiteNumber(item.ms)
+    receipts.push({
+      id,
+      op: asString(item.op) ?? '—',
+      outcome: asString(item.outcome) ?? '—',
+      at: asString(item.at) ?? '',
+      ms: ms === undefined ? '—' : `${Math.max(0, Math.round(ms))} ms`,
+      target: item.target === undefined ? '—' : ampRefLabel(item.target),
+      usage: ampBudgetText(item.usage),
+    })
+  }
+  return receipts
+}
+
+function parseAmpLedger(value: unknown): AmpLedgerData {
+  const record = asRecord(value)
+  const entries: AmpLedgerEntry[] = []
+  for (const raw of firstArray(record, ['entries']) ?? []) {
+    const item = asRecord(raw)
+    if (item === undefined) continue
+    const payload = asRecord(item.payload)
+    entries.push({
+      seq: String(Math.max(0, Math.floor(finiteNumber(item.seq) ?? 0))),
+      kind: asString(item.kind) ?? '—',
+      id: asString(payload?.id) ?? asString(payload?.kind) ?? '—',
+      hash: asString(item.hash) ?? '',
+    })
+  }
+  return {
+    count: String(Math.max(0, Math.floor(finiteNumber(record?.count) ?? entries.length))),
+    tip: asString(record?.tip) ?? '',
+    entries,
+  }
+}
+
+function parseAmpVerify(value: unknown): AmpVerifyData {
+  const record = asRecord(value)
+  return {
+    ok: record?.ok === true,
+    reasons: stringList(record?.reasons),
+    count: String(Math.max(0, Math.floor(finiteNumber(record?.count) ?? 0))),
+    tip: asString(record?.tip) ?? '',
+  }
+}
+
+function AmpSection(props: {
+  title: string
+  digest?: string
+  children?: React.ReactNode
+}): React.ReactElement {
+  return h(
+    MuiCard,
+    { variant: 'outlined', sx: { borderRadius: 2, overflow: 'hidden' } },
+    h(
+      MuiCardContent,
+      { sx: { padding: 1.5, '&:last-child': { paddingBottom: 1.5 } } },
+      h(
+        MuiBox,
+        { sx: { display: 'flex', alignItems: 'center', gap: 1, marginBottom: 1, minWidth: 0 } },
+        h(MuiTypography, { variant: 'subtitle2', sx: { flex: 1, minWidth: 0 } }, props.title),
+        props.digest !== undefined && props.digest.length > 0
+          ? h(MuiChip, {
+            size: 'small',
+            variant: 'outlined',
+            label: ampShort(props.digest, 22),
+            sx: { fontFamily: 'monospace', fontSize: '1rem', maxWidth: '60%' },
+          })
+          : null,
+      ),
+      props.children,
+    ),
+  )
+}
+
+function AmpRow(props: { label: string; value: React.ReactNode }): React.ReactElement {
+  return h(
+    MuiBox,
+    { sx: { display: 'flex', gap: 1, py: 0.25, minWidth: 0 } },
+    h(
+      MuiTypography,
+      { variant: 'caption', color: 'text.secondary', sx: { minWidth: 64, flex: '0 0 auto' } },
+      props.label,
+    ),
+    h(
+      MuiTypography,
+      { variant: 'body2', component: 'div', sx: { minWidth: 0, overflowWrap: 'anywhere' } },
+      props.value,
+    ),
+  )
+}
+
+/** Plain-language slot sentence; the technical `why` stays in the details block. */
+function ampSlotSentence(
+  slot: { role: string; target: string },
+  plain: PanelAmpCopy['plain'],
+  label: (kind: 'profession' | 'interaction' | 'scene', id: string) => string,
+): string {
+  if (slot.role === 'question') return plain.slotQuestion
+  if (slot.role === 'process') return plain.slotProcess
+  const id = slot.target
+  if (id.startsWith('profession-')) return fillTemplate(plain.slotProfession, { label: label('profession', id) })
+  if (id.startsWith('interaction-')) return fillTemplate(plain.slotInteraction, { label: label('interaction', id) })
+  if (id.startsWith('scene-')) return fillTemplate(plain.slotScene, { label: label('scene', id) })
+  return plain.slotOther
+}
+
+function ampIgnoredReason(reason: string, plain: PanelAmpCopy['plain']): string {
+  if (reason === 'blocked') return plain.ignoredBlocked
+  if (reason === 'out_of_scope') return plain.ignoredOutOfScope
+  return reason
+}
+
+function ampOpLabel(op: string, plain: PanelAmpCopy['plain']): string {
+  switch (op) {
+    case 'read':
+      return plain.opRead
+    case 'attend':
+      return plain.opAttend
+    case 'reflect':
+      return plain.opReflect
+    case 'ask':
+      return plain.opAsk
+    case 'tool':
+      return plain.opTool
+    default:
+      return plain.opOther
+  }
+}
+
+function ampOutcomeLabel(outcome: string, plain: PanelAmpCopy['plain']): string {
+  switch (outcome) {
+    case 'success':
+      return plain.outcomeSuccess
+    case 'blocked':
+      return plain.outcomeBlocked
+    case 'failed':
+      return plain.outcomeFailed
+    default:
+      return outcome
+  }
+}
+
+/**
+ * The three composer choices, read for the panel.
+ *
+ * The composer no longer renders dropdowns, so this is the only place the
+ * current profession/interaction/scene triple is visible; a failed read is an
+ * explicit "unavailable" line, never a default that would misreport the turn.
+ */
+function useAmpSelection(
+  sessionId: string | null,
+  refresh: number,
+): { status: 'loading' | 'ready' | 'unavailable'; value: SelectionState | null } {
+  const [result, setResult] = React.useState<{
+    status: 'loading' | 'ready' | 'unavailable'
+    value: SelectionState | null
+  }>({ status: 'loading', value: null })
+  React.useEffect(() => {
+    if (sessionId === null || sessionId.length === 0) {
+      setResult({ status: 'unavailable', value: null })
+      return
+    }
+    let cancelled = false
+    setResult((previous) => (previous.status === 'ready' ? previous : { status: 'loading', value: null }))
+    void loadSelection(sessionId)
+      .then((value) => {
+        if (cancelled) return
+        setResult(value === null ? { status: 'unavailable', value: null } : { status: 'ready', value })
+      })
+      .catch(() => {
+        if (!cancelled) setResult({ status: 'unavailable', value: null })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, refresh])
+  return result
+}
+
+function AmpView(props: ViewProps): React.ReactElement {
+  const copy = props.copy.amp
+  const plain = copy.plain
+  const full = useCopy()
+  const selection = useAmpSelection(props.sessionId, props.refresh)
+  const manifest = useGraph('/amp/manifest', parseAmpManifest, props.refresh, props.onSettled)
+  const storyPath = props.sessionId === null || props.sessionId.length === 0
+    ? null
+    : `/amp/story?session=${encodeURIComponent(props.sessionId)}`
+  const story = useGraph(storyPath, parseAmpStory, props.refresh, props.onSettled)
+  const framePath = props.sessionId === null || props.sessionId.length === 0
+    ? null
+    : `/amp/frame?session=${encodeURIComponent(props.sessionId)}`
+  const frame = useGraph(framePath, parseAmpFrame, props.refresh)
+  const receipts = useGraph('/amp/receipts?limit=20', parseAmpReceipts, props.refresh)
+  const ledger = useGraph('/amp/ledger?limit=20', parseAmpLedger, props.refresh)
+  const verify = useGraph('/amp/verify', parseAmpVerify, props.refresh)
+
+  const refreshAll = (): void => {
+    manifest.retry()
+    story.retry()
+    frame.retry()
+    receipts.retry()
+    ledger.retry()
+    verify.retry()
+  }
+
+  const manifestValue = manifest.state.status === 'ready' ? manifest.state.value : null
+  const storyValue = story.state.status === 'ready' ? story.state.value : null
+  const frameValue = frame.state.status === 'ready' ? frame.state.value : null
+  const receiptValues = receipts.state.status === 'ready' ? receipts.state.value : []
+  const ledgerValue = ledger.state.status === 'ready' ? ledger.state.value : null
+  const verifyValue = verify.state.status === 'ready' ? verify.state.value : null
+  const recentReceipts = receiptValues.slice(0, 5)
+  const labelOf = (map: Record<string, { label: string }>, value: string): string => map[value]?.label ?? value
+  const professionKey = storyValue?.turn?.profession ?? selection.value?.selection.profession ?? ''
+  const interactionKey = storyValue?.turn?.interaction ?? selection.value?.selection.interaction ?? ''
+  const sceneKey = storyValue?.turn?.scene ?? selection.value?.selection.scene ?? ''
+  const professionLabel = professionKey.length === 0
+    ? ''
+    : labelOf(full.professions as unknown as Record<string, { label: string }>, professionKey)
+  const interactionLabel = interactionKey.length === 0
+    ? ''
+    : labelOf(full.interactions as unknown as Record<string, { label: string }>, interactionKey)
+  const sceneLabel = sceneKey.length === 0
+    ? ''
+    : labelOf(full.scenes as unknown as Record<string, { label: string }>, sceneKey)
+  const tableSx = {
+    '& td, & th': { borderColor: 'divider', padding: '6px 4px', verticalAlign: 'top' },
+    '& th': { width: '30%', color: 'text.secondary', fontWeight: 500 },
+  }
+
+  return h(
+    MuiBox,
+    { sx: { display: 'flex', flexDirection: 'column', gap: 1.5, padding: 1.5, minWidth: 0 } },
+    h(
+      MuiBox,
+      { sx: { display: 'flex', alignItems: 'flex-start', gap: 1 } },
+      h(
+        MuiBox,
+        { sx: { flex: 1, minWidth: 0 } },
+        h(MuiTypography, { variant: 'h6' }, copy.title),
+        h(MuiTypography, { variant: 'body2', color: 'text.secondary', component: 'div', sx: { marginTop: 0.5 } }, plain.benefit),
+      ),
+      h(
+        Tip,
+        { label: props.copy.refresh },
+        h(
+          MuiButton,
+          { size: 'small', variant: 'outlined', onClick: refreshAll, sx: { flex: '0 0 auto' } },
+          props.copy.refresh,
+        ),
+      ),
+    ),
+    props.sessionId !== null && props.sessionId.length > 0
+      ? null
+      : h(MuiChip, { size: 'small', color: 'warning', variant: 'outlined', label: copy.noSession }),
+    manifest.state.status === 'error'
+      ? h(MuiAlert, { severity: 'error' }, `${copy.manifest}: ${manifest.state.httpStatus ?? 'offline'}`)
+      : null,
+
+    // 1. The actual request, the actual plan, and the rules that shaped them.
+    h(
+      AmpSection,
+      { title: plain.request },
+      storyValue === null || storyValue.turn === null
+        ? h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, story.state.status === 'loading' ? copy.selection.loading : plain.requestEmpty)
+        : h(
+          React.Fragment,
+          null,
+          storyValue.prompt === null
+            ? null
+            : h(
+              MuiTypography,
+              { variant: 'body1', sx: { fontWeight: 600, marginBottom: 0.5, overflowWrap: 'anywhere' } },
+              storyValue.prompt.excerpt,
+            ),
+          h(
+            MuiTypography,
+            { variant: 'body2', color: 'text.secondary', component: 'div' },
+            fillTemplate(plain.requestMeta, {
+              ordinal: String(storyValue.turn.ordinal),
+              profession: professionLabel,
+              interaction: interactionLabel,
+              scene: sceneLabel,
+            }),
+          ),
+          h(
+            MuiTableContainer,
+            { sx: { marginTop: 1 } },
+            h(
+              MuiTable,
+              { size: 'small', sx: tableSx },
+              h(
+                MuiTableBody,
+                null,
+                professionLabel.length === 0
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.selection.profession),
+                    h(
+                      MuiTableCell,
+                      null,
+                      `${professionLabel} — ${fillTemplate(plain.whyProfession, { label: professionLabel })}`,
+                    ),
+                  ),
+                interactionLabel.length === 0
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.selection.interaction),
+                    h(
+                      MuiTableCell,
+                      null,
+                      `${interactionLabel} — ${fillTemplate(plain.whyInteraction, { label: interactionLabel })}`,
+                    ),
+                  ),
+                sceneLabel.length === 0
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.selection.scene),
+                    h(MuiTableCell, null, sceneLabel),
+                  ),
+                storyValue.goal === null
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, plain.goalLabel),
+                    h(MuiTableCell, null, storyValue.goal.content),
+                  ),
+              ),
+            ),
+          ),
+          storyValue.plan === null
+            ? null
+            : h(
+              React.Fragment,
+              null,
+              h(
+                MuiTypography,
+                { variant: 'body2', sx: { marginTop: 1.5, marginBottom: 0.5 } },
+                fillTemplate(plain.planLine, { count: String(storyValue.plan.steps.length) }),
+              ),
+              h(
+                MuiTableContainer,
+                null,
+                h(
+                  MuiTable,
+                  { size: 'small', sx: tableSx },
+                  h(
+                    MuiTableBody,
+                    null,
+                    ...storyValue.plan.steps.slice(0, 6).map((step, index) =>
+                      h(
+                        MuiTableRow,
+                        { key: `plan-${index}` },
+                        h(MuiTableCell, { component: 'th' }, `${index + 1}`),
+                        h(
+                          MuiTableCell,
+                          null,
+                          h(MuiTypography, { variant: 'body2', sx: { overflowWrap: 'anywhere' } }, step.intent),
+                          step.expect.length === 0
+                            ? null
+                            : h(
+                              MuiTypography,
+                              { variant: 'caption', color: 'text.secondary', component: 'div', sx: { overflowWrap: 'anywhere' } },
+                              fillTemplate(plain.planExpect, { expect: step.expect }),
+                            ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ),
+    ),
+
+    // 2. What it deliberately set aside, named rather than counted.
+    storyValue !== null && storyValue.ignored.length > 0
+      ? h(
+        AmpSection,
+        { title: plain.ignoredTitle },
+        h(
+          MuiTableContainer,
+          null,
+          h(
+            MuiTable,
+            { size: 'small', sx: tableSx },
+            h(
+              MuiTableBody,
+              null,
+              ...storyValue.ignored.map((item, index) =>
+                h(
+                  MuiTableRow,
+                  { key: `ignored-${index}` },
+                  h(
+                    MuiTableCell,
+                    { component: 'th' },
+                    h(MuiTypography, { variant: 'body2', sx: { overflowWrap: 'anywhere' } }, item.target),
+                    h(
+                      MuiTypography,
+                      { variant: 'caption', color: 'text.secondary', component: 'div' },
+                      ampIgnoredReason(item.reason, plain),
+                    ),
+                  ),
+                  h(
+                    MuiTableCell,
+                    null,
+                    h(
+                      MuiTypography,
+                      { variant: 'body2', sx: { overflowWrap: 'anywhere' } },
+                      fillTemplate(plain.ignoredRevisitLabel, { condition: item.revisit }),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      )
+      : null,
+
+    // 3. What it did, in order.
+    h(
+      AmpSection,
+      { title: plain.actions },
+      recentReceipts.length === 0
+        ? h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, plain.actionsEmpty)
+        : h(
+          MuiTableContainer,
+          null,
+          h(
+            MuiTable,
+            { size: 'small', sx: tableSx },
+            h(
+              MuiTableBody,
+              null,
+              ...recentReceipts.map((receipt, index) =>
+                h(
+                  MuiTableRow,
+                  { key: receipt.id },
+                  h(MuiTableCell, { component: 'th' }, ampOpLabel(receipt.op, plain)),
+                  h(
+                    MuiTableCell,
+                    null,
+                    h(
+                      MuiTypography,
+                      {
+                        variant: 'body2',
+                        color: receipt.outcome === 'success' ? 'success.main' : 'warning.main',
+                      },
+                      ampOutcomeLabel(receipt.outcome, plain),
+                    ),
+                  ),
+                  h(MuiTableCell, { align: 'right' }, h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, ampTime(receipt.at))),
+                ),
+              ),
+            ),
+          ),
+        ),
+    ),
+
+    // 4. Can the record be trusted; raw evidence stays in one accordion.
+    h(
+      AmpSection,
+      { title: plain.trust },
+      h(
+        MuiBox,
+        { sx: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, marginBottom: 1 } },
+        verifyValue === null
+          ? h(MuiChip, { variant: 'outlined', label: copy.selection.loading })
+          : h(MuiChip, {
+            color: verifyValue.ok ? 'success' : 'error',
+            label: verifyValue.ok ? plain.trustOk : plain.trustBroken,
+          }),
+        verifyValue === null
+          ? null
+          : h(
+            MuiTypography,
+            { variant: 'body2', color: 'text.secondary' },
+            fillTemplate(plain.trustSummary, { count: String(verifyValue.count) }),
+          ),
+      ),
+      verifyValue !== null && verifyValue.reasons.length > 0
+        ? h(MuiAlert, { severity: 'error' }, ...verifyValue.reasons.slice(0, 4))
+        : null,
+      h(
+        MuiAccordion,
+        {
+          disableGutters: true,
+          elevation: 0,
+          sx: { background: 'transparent', '&:before': { display: 'none' } },
+        },
+        h(
+          MuiAccordionSummary,
+          { expandIcon: h(IconExpand, { fontSize: 'small' }), sx: { paddingLeft: 0, paddingRight: 0, minHeight: 40 } },
+          h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, plain.details),
+        ),
+        h(
+          MuiAccordionDetails,
+          { sx: { paddingLeft: 0, paddingRight: 0, paddingTop: 0 } },
+          h(
+            MuiTableContainer,
+            null,
+            h(
+              MuiTable,
+              { size: 'small', sx: tableSx },
+              h(
+                MuiTableBody,
+                null,
+                manifestValue === null
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.manifest),
+                    h(MuiTableCell, null, ampShort(manifestValue.digest, 30)),
+                  ),
+                manifestValue === null
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.agent),
+                    h(MuiTableCell, null, `${manifestValue.name} · ${manifestValue.agent}`),
+                  ),
+                frameValue === null
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.frame),
+                    h(MuiTableCell, null, ampShort(frameValue.digest, 30)),
+                  ),
+                frameValue === null
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.mode),
+                    h(MuiTableCell, null, frameValue.mode),
+                  ),
+                ...(frameValue === null ? [] : frameValue.slots.map((slot, index) =>
+                  h(
+                    MuiTableRow,
+                    { key: `why-${index}` },
+                    h(MuiTableCell, { component: 'th' }, `${slot.role} · ${slot.target}`),
+                    h(MuiTableCell, null, slot.why),
+                  ),
+                )),
+                ...(frameValue === null ? [] : frameValue.ignored.map((item, index) =>
+                  h(
+                    MuiTableRow,
+                    { key: `revisit-${index}` },
+                    h(MuiTableCell, { component: 'th' }, item.target),
+                    h(MuiTableCell, null, item.revisitIf),
+                  ),
+                )),
+                ledgerValue === null
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.tip),
+                    h(MuiTableCell, null, ampShort(ledgerValue.tip, 34)),
+                  ),
+                manifestValue === null
+                  ? null
+                  : h(
+                    MuiTableRow,
+                    null,
+                    h(MuiTableCell, { component: 'th' }, copy.budget),
+                    h(MuiTableCell, null, manifestValue.budget),
+                  ),
+                ...(manifestValue === null ? [] : manifestValue.capabilities.map((capability) =>
+                  h(
+                    MuiTableRow,
+                    { key: capability.id },
+                    h(MuiTableCell, { component: 'th' }, capability.id),
+                    h(MuiTableCell, null, `${capability.tier} · ${capability.confidence}`),
+                  ),
+                )),
+                ...(manifestValue === null ? [] : manifestValue.limits.map((limit, index) =>
+                  h(
+                    MuiTableRow,
+                    { key: `limit-${index}` },
+                    h(MuiTableCell, { component: 'th' }, copy.limits),
+                    h(MuiTableCell, null, limit),
+                  ),
+                )),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  )
+}
+
+/* ------------------------------------------------------------------------- *
  * Routed views
  * ------------------------------------------------------------------------- */
 
@@ -3453,6 +4338,8 @@ interface ViewProps {
   side: PanelSide
   copy: PanelCopy
   path: string | null
+  /** DSH session id, used by the AMP frame route. */
+  sessionId: string | null
   /** Agent id for the left panel's `agent` detail view. */
   id: string | null
   refresh: number
@@ -4297,7 +5184,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
                     size: 'small',
                     variant: 'outlined',
                     label: family,
-                    sx: { height: 18, fontSize: 10 },
+                    sx: { height: '1.5rem', fontSize: '1rem' },
                   })
                   : null,
                 h(
@@ -4898,7 +5785,7 @@ const LazyPreviewRenderer = React.lazy(async (): Promise<{
             overflowX: 'auto',
             background: 'transparent',
             fontFamily: 'monospace',
-            fontSize: 11,
+            fontSize: '1rem',
             lineHeight: 1.5,
             whiteSpace: 'pre',
             tabSize: 2,
@@ -7625,7 +8512,7 @@ function AgentProgressRing(props: {
         { sx: AGENT_RING_VALUE_SX },
         h(
           MuiTypography,
-          { variant: 'caption', sx: { fontSize: 9, lineHeight: 1, color: unknown ? 'text.disabled' : 'text.secondary' } },
+          { variant: 'caption', sx: { fontSize: '1rem', lineHeight: 1, color: unknown ? 'text.disabled' : 'text.secondary' } },
           unknown ? '—' : `${value}%`,
         ),
       ),
@@ -7815,7 +8702,7 @@ function AgentsView(props: ViewProps): React.ReactElement {
               sx: {
                 width: 28,
                 height: 28,
-                fontSize: 12,
+                fontSize: '1rem',
                 backgroundColor: agent.status === 'running' || agent.status === 'completed'
                   ? 'success.main'
                   : 'grey.500',
@@ -8255,22 +9142,7 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
 }
 
 const RIGHT_VIEW_REGISTRY: Readonly<Partial<Record<PanelView, React.ComponentType<ViewProps>>>> = {
-  files: FilesView,
-  outline: OutlineView,
-  dependencies: DependenciesView,
-  // Imports and exports are independent WebGL canvas pages on both sides.
-  imports: ImportsCanvasView,
-  exports: ExportsCanvasView,
-  preview: PreviewView,
-}
-
-const LEFT_VIEW_REGISTRY: Readonly<Partial<Record<PanelView, React.ComponentType<ViewProps>>>> = {
-  files: FilesView,
-  agents: AgentsView,
-  agent: AgentMessagesView,
-  dependencies: DependenciesCanvasView,
-  imports: ImportsCanvasView,
-  exports: ExportsCanvasView,
+  amp: AmpView,
 }
 
 /* ------------------------------------------------------------------------- *
@@ -8663,6 +9535,8 @@ interface DockedPanelProps {
   /** Every routable page for this side: `tabs` plus detail routes. */
   routes: readonly PanelView[]
   title: string
+  /** DSH session id for the AMP frame route. */
+  sessionId: string | null
   expanded: boolean
   reducedMotion: boolean
   onToggle: () => void
@@ -8671,6 +9545,7 @@ interface DockedPanelProps {
 
 function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const copy = useCopy().panel
+  const ampOnly = props.tabs.length === 1 && props.tabs[0] === 'amp'
   const panelError = React.useSyncExternalStore(subscribePanelError, getPanelError, getPanelError)
   const [menuAnchor, setMenuAnchor] = React.useState<HTMLElement | null>(null)
   const [refresh, setRefresh] = React.useState(0)
@@ -8738,6 +9613,15 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     lastViewRef.current = navigation.view === 'agent' ? 'agents' : navigation.view
     lastPathRef.current = navigation.path
   }, [navigation])
+
+  // The AMP dashboard replaces a scrollable file tree; a scroll offset kept
+  // from the previous view would hide the manifest at the top. Reset it when
+  // the single AMP route mounts or is re-entered.
+  React.useEffect(() => {
+    if (!ampOnly) return
+    const element = scrollRef.current
+    if (element !== null) element.scrollTop = 0
+  }, [ampOnly, navigation.view])
 
   // Minimized content is unmounted, so abandon any action spinner with it.
   React.useEffect(() => {
@@ -9013,7 +9897,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     if (props.expanded) props.onToggle()
   }
 
-  const ActiveView = (props.side === 'left' ? LEFT_VIEW_REGISTRY : RIGHT_VIEW_REGISTRY)[view] ?? FilesView
+  const ActiveView = RIGHT_VIEW_REGISTRY[view] ?? AmpView
   const scopeLabel = viewPath === null
     ? copy.scopeWorkspace
     : fillTemplate(copy.scopeFile, { path: viewPath })
@@ -9173,7 +10057,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     h(
       MuiCollapse,
       {
-        in: searchOpen && props.expanded,
+        in: searchOpen && props.expanded && !ampOnly,
         orientation: 'horizontal',
         collapsedSize: 0,
         timeout: props.reducedMotion ? 0 : SEARCH_ANIMATION_MS,
@@ -9240,7 +10124,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           sx: CRASH_CHIP_SX,
         }),
       ),
-    props.expanded
+    props.expanded && !ampOnly
       ? h(
         Tip,
         { label: searchOpen ? copy.tip.closeSearch : copy.tip.search },
@@ -9299,17 +10183,19 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     h(
       MuiBox,
       { sx: PANEL_CONTENT_SX },
-      h(
-        MuiBox,
-        { sx: SCOPE_BAR_SX },
-        outlineBack,
-        scopeChip,
-        h(
-          MuiTypography,
-          { variant: 'caption', color: 'text.secondary', noWrap: true, sx: READ_ONLY_SX },
-          copy.readOnly,
+      ampOnly
+        ? null
+        : h(
+          MuiBox,
+          { sx: SCOPE_BAR_SX },
+          outlineBack,
+          scopeChip,
+          h(
+            MuiTypography,
+            { variant: 'caption', color: 'text.secondary', noWrap: true, sx: READ_ONLY_SX },
+            copy.readOnly,
+          ),
         ),
-      ),
       h(
         MuiCard,
         { elevation: 0, square: true, sx: CARD_SX },
@@ -9334,6 +10220,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
                 side: props.side,
                 copy,
                 path: viewPath,
+                sessionId: props.sessionId,
                 id,
                 refresh,
                 onSettled: handleSettled,
@@ -9344,7 +10231,9 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           ),
         ),
       ),
-      h(
+      ampOnly
+        ? null
+        : h(
         MuiBottomNavigation,
         {
           showLabels: true,
@@ -9419,7 +10308,9 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
         ),
       ),
     ),
-    h(
+    ampOnly
+      ? null
+      : h(
       MuiMenuItem,
       { onClick: rebuild, disabled: actionBusy !== null || !props.expanded },
       h(
@@ -9615,6 +10506,29 @@ export function splitPanelHeights(
  * rotation/resize ever growing it. Both panels plus the gap therefore always fit
  * inside the column's own box.
  */
+/**
+ * Panel typography: rem-based with a **1rem (16 px) floor**.
+ *
+ * The dock sits beside a 14 px chat and its dense rows were 9–12 px, which is
+ * unreadable at a glance. Every text style the panel renders is expressed in
+ * rem and clamped to at least 1rem; the descendant rules outrank MUI's own
+ * variant styles (and the inline `sx` values that used to pin 10 px chips).
+ */
+export const PANEL_TYPE_SX = {
+  fontSize: '1rem',
+  lineHeight: 1.5,
+  '& .MuiTypography-body1, & .MuiTypography-body2, & .MuiTypography-caption, & .MuiTypography-overline': {
+    fontSize: '1rem',
+    lineHeight: 1.5,
+  },
+  '& .MuiTypography-subtitle1, & .MuiTypography-subtitle2': { fontSize: '1.0625rem', lineHeight: 1.5 },
+  '& .MuiTypography-h6': { fontSize: '1.25rem', lineHeight: 1.4 },
+  '& .MuiTypography-h5': { fontSize: '1.375rem', lineHeight: 1.4 },
+  '& .MuiChip-root': { fontSize: '1rem' },
+  '& .MuiChip-label': { fontSize: '1rem', paddingInline: '0.5rem' },
+  '& .MuiButton-root, & .MuiTab-root, & .MuiInputBase-input, & .MuiMenuItem-root': { fontSize: '1rem' },
+}
+
 export const COLUMN_SX = {
   position: 'fixed',
   top: COLUMN_TOP,
@@ -9633,10 +10547,32 @@ export const COLUMN_SX = {
   gap: `${COLUMN_GAP}px`,
   overflow: 'hidden',
   pointerEvents: 'none',
+  ...PANEL_TYPE_SX,
 }
 
-/** The fixed right-hand column: relationship panel above, workspace below. */
-function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement | React.ReactPortal {
+/**
+ * Minimized state: one floating affordance in the top-right of the
+ * conversation, under the header actions and clear of the composer.
+ */
+const FLOATING_PANEL_TOGGLE_SX = {
+  position: 'fixed',
+  top: 96,
+  right: 20,
+  zIndex: theme.zIndex.tooltip - 1,
+  display: 'flex',
+  pointerEvents: 'auto',
+}
+
+const FLOATING_PANEL_BUTTON_SX = {
+  backgroundColor: 'background.paper',
+  border: '1px solid',
+  borderColor: 'divider',
+  boxShadow: 1,
+  '&:hover': { backgroundColor: 'action.hover' },
+}
+
+/** The fixed right-hand column: one AMP attention panel. */
+function CoordinationPanelsColumn(props: PanelProps): React.ReactElement | React.ReactPortal {
   const copy = useCopy().panel
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const [column, setColumn] = React.useState<ColumnState>(readColumnState)
@@ -9665,53 +10601,67 @@ function CoordinationPanelsColumn(_props: PanelProps): React.ReactElement | Reac
   }, [])
   const spaceConstrained = columnHeight > 0 && columnHeight < PANEL_MIN_CONTAINER_HEIGHT
 
-  const toggle = (key: 'openLeft' | 'openRight'): void => {
-    setColumn((previous) => ({ ...previous, [key]: !previous[key] }))
+  const toggleOpen = (): void => {
+    setColumn((previous) => ({ ...previous, open: !previous.open }))
   }
 
   const resetWidth = (): void => {
     setColumn((previous) => ({ ...previous, width: COLUMN_DEFAULT_WIDTH }))
   }
 
+  const expanded = column.open && !spaceConstrained
+  const toggleTip = fillTemplate(copy.expandTitle, { title: copy.amp.title })
+
+  // One panel, two mountings. Expanded it is the docked column; minimized it is
+  // a single floating button at the top-right of the conversation (the empty
+  // area under the header actions), never a strip that pushes the transcript.
   const fixedColumn = h(
     MuiThemeProvider,
     { theme },
-    h(
-      MuiBox,
-      { ref: columnRef, sx: COLUMN_SX },
-      h(
+    expanded
+      ? h(
+        MuiBox,
+        { ref: columnRef, sx: COLUMN_SX },
+        h(
+          PanelErrorBoundary,
+          null,
+          h(DockedPanel, {
+            side: 'right',
+            tabs: RIGHT_PANEL_TABS,
+            routes: RIGHT_PANEL_ROUTES,
+            title: copy.amp.title,
+            sessionId: props.sessionId ?? null,
+            expanded,
+            reducedMotion,
+            onToggle: (): void => {
+              toggleOpen()
+            },
+            onResetWidth: resetWidth,
+          }),
+        ),
+      )
+      : h(
         PanelErrorBoundary,
         null,
-        h(DockedPanel, {
-          side: 'left',
-          tabs: LEFT_PANEL_TABS,
-          routes: LEFT_PANEL_ROUTES,
-          title: copy.leftTitle,
-          expanded: column.openLeft && !spaceConstrained,
-          reducedMotion,
-          onToggle: (): void => {
-            toggle('openLeft')
-          },
-          onResetWidth: resetWidth,
-        }),
+        h(
+          MuiBox,
+          { sx: FLOATING_PANEL_TOGGLE_SX },
+          h(
+            Tip,
+            { label: toggleTip },
+            h(
+              MuiIconButton,
+              {
+                size: 'small',
+                'aria-label': toggleTip,
+                onClick: toggleOpen,
+                sx: FLOATING_PANEL_BUTTON_SX,
+              },
+              h(IconRestore, { fontSize: 'small' }),
+            ),
+          ),
+        ),
       ),
-      h(
-        PanelErrorBoundary,
-        null,
-        h(DockedPanel, {
-          side: 'right',
-          tabs: RIGHT_PANEL_TABS,
-          routes: RIGHT_PANEL_ROUTES,
-          title: copy.rightTitle,
-          expanded: column.openRight && !spaceConstrained,
-          reducedMotion,
-          onToggle: (): void => {
-            toggle('openRight')
-          },
-          onResetWidth: resetWidth,
-        }),
-      ),
-    ),
   )
 
   // SSR has no `document` (and no portals): render the column inline there. In
@@ -9745,3 +10695,9 @@ function sameSession(previous: PanelProps, next: PanelProps): boolean {
  * keystroke) must not re-render this column.
  */
 export const CoordinationPanels = React.memo(CoordinationPanelsInner, sameSession)
+
+
+
+
+
+

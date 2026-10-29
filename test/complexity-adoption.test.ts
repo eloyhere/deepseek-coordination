@@ -197,7 +197,15 @@ test('turn ordinals come from the indexed MAX(ordinal), not a row count', (conte
   assert.match(plan, /USING (COVERING )?INDEX/)
   assert.doesNotMatch(plan, /SCAN turn/)
 
-  const turns = new TurnModule(host.host)
+  const turns = new TurnModule({
+    config: host.host.config,
+    clock: host.host.clock,
+    handles: host.host.handles,
+    executionStore: host.host.executionStore!,
+    turnStore: host.host.turnStore!,
+    trace: host.host.trace,
+    profession: new ProfessionModule(host.host),
+  })
   const created = turns.create(session, {
     content: 'the next prompt',
     profession: 'execution',
@@ -212,7 +220,15 @@ test('turn ordinals come from the indexed MAX(ordinal), not a row count', (conte
   const capped = createTestHost({ config: { maxTurnPerSession: 2 } })
   context.after(() => capped.close())
   const cappedSession = insertSession(capped.db)
-  const cappedTurns = new TurnModule(capped.host)
+  const cappedTurns = new TurnModule({
+    config: capped.host.config,
+    clock: capped.host.clock,
+    handles: capped.host.handles,
+    executionStore: capped.host.executionStore!,
+    turnStore: capped.host.turnStore!,
+    trace: capped.host.trace,
+    profession: new ProfessionModule(capped.host),
+  })
   for (let index = 0; index < 2; index += 1) {
     cappedTurns.create(cappedSession, {
       content: `prompt ${index}`,

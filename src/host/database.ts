@@ -15,7 +15,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { DatabaseError, NotFoundError } from '../shared/error.js'
 
-export const SCHEMA_VERSION = 24
+export const SCHEMA_VERSION = 25
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -1056,6 +1056,113 @@ CREATE TABLE IF NOT EXISTS snapshot (
   FOREIGN KEY (node) REFERENCES node(identity)
 );
 CREATE INDEX IF NOT EXISTS idx_snapshot_path ON snapshot(path, modified, size, parser);
+
+/*
+ * v25 AMP protocol store (attention-manifest-protocol v0.1).
+ *
+ * Additive only: every statement is CREATE ... IF NOT EXISTS, so opening a
+ * schema-24 database creates these four tables and their triggers without
+ * touching an existing row, and PRAGMA user_version becomes 25.
+ *
+ * Four artifacts live here, and each is write-once:
+ *  - amp_object is the append-only hash chain. One row per settlement object
+ *    (frame, receipt, event, claim, unknown, goal, plan); seq is contiguous
+ *    from 0, digest = sha256(canonical{seq,kind,payload,prev}) and prev is the
+ *    previous row's digest with 64 zeros at genesis. Triggers reject UPDATE and
+ *    DELETE, so X-1 (append-only) is enforced by the database and not only by
+ *    the code that happens to use it.
+ *  - amp_key holds this installation's Ed25519 identity. The private key never
+ *    crosses the HTTP surface; only public_key is exposed.
+ *  - amp_manifest keeps every issued manifest (append-only, latest wins for
+ *    reads) so a signed self-declaration stays auditable after a restart.
+ *  - amp_checkpoint keeps the signed chain of ledger tips.
+ *
+ * body is canonical JSON text, not a JSON column: a reader re-canonicalises the
+ * parsed value and compares the digest, which is exactly the verification the
+ * protocol specifies. No content, prompt or file body is stored here.
+ */
+CREATE TABLE IF NOT EXISTS amp_object (
+  seq INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  digest TEXT NOT NULL,
+  prev TEXT NOT NULL,
+  body TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_amp_object_kind ON amp_object(kind, seq);
+CREATE INDEX IF NOT EXISTS idx_amp_object_digest ON amp_object(digest);
+CREATE TRIGGER IF NOT EXISTS trg_amp_object_immutable_update
+BEFORE UPDATE ON amp_object
+BEGIN
+  SELECT RAISE(ABORT, 'amp_object is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_amp_object_immutable_delete
+BEFORE DELETE ON amp_object
+BEGIN
+  SELECT RAISE(ABORT, 'amp_object is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS amp_key (
+  kid TEXT PRIMARY KEY,
+  alg TEXT NOT NULL,
+  public_key TEXT NOT NULL,
+  private_key TEXT NOT NULL,
+  created INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_amp_key_immutable_update
+BEFORE UPDATE ON amp_key
+BEGIN
+  SELECT RAISE(ABORT, 'amp_key is write-once');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_amp_key_immutable_delete
+BEFORE DELETE ON amp_key
+BEGIN
+  SELECT RAISE(ABORT, 'amp_key is write-once');
+END;
+
+CREATE TABLE IF NOT EXISTS amp_manifest (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  digest TEXT NOT NULL,
+  kid TEXT NOT NULL,
+  issued TEXT NOT NULL,
+  expires TEXT NOT NULL,
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_amp_manifest_issued ON amp_manifest(issued);
+CREATE TRIGGER IF NOT EXISTS trg_amp_manifest_immutable_update
+BEFORE UPDATE ON amp_manifest
+BEGIN
+  SELECT RAISE(ABORT, 'amp_manifest is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_amp_manifest_immutable_delete
+BEFORE DELETE ON amp_manifest
+BEGIN
+  SELECT RAISE(ABORT, 'amp_manifest is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS amp_checkpoint (
+  seq INTEGER PRIMARY KEY,
+  tenant TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  tip TEXT NOT NULL,
+  prev TEXT,
+  issued TEXT NOT NULL,
+  kid TEXT NOT NULL,
+  sig TEXT NOT NULL,
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_amp_checkpoint_tip ON amp_checkpoint(tip);
+CREATE TRIGGER IF NOT EXISTS trg_amp_checkpoint_immutable_update
+BEFORE UPDATE ON amp_checkpoint
+BEGIN
+  SELECT RAISE(ABORT, 'amp_checkpoint is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_amp_checkpoint_immutable_delete
+BEFORE DELETE ON amp_checkpoint
+BEGIN
+  SELECT RAISE(ABORT, 'amp_checkpoint is append-only');
+END;
 `
 
 export interface RunResult {
@@ -1243,4 +1350,5 @@ export function resolveDatabasePath(configPath: string, databaseName: string): s
 export function openDatabase(path: string): CoordinationDatabase {
   return new CoordinationDatabase(path)
 }
+
 

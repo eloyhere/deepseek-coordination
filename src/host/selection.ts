@@ -128,7 +128,11 @@ export class SelectionModule {
       ...(turn === undefined ? {} : { turn }),
       presets,
       ...(preset === undefined ? {} : { preset }),
-      ...(this.host.sandboxPolicy === undefined
+      // The live port is typed `string`, but a foreign object can omit it; a
+      // present-but-undefined key would make the tool result non-lossless.
+      ...(this.host.sandboxPolicy === undefined ||
+      typeof this.host.sandboxPolicy.defaultMode !== 'string' ||
+      this.host.sandboxPolicy.defaultMode.length === 0
         ? {}
         : { defaultMode: this.host.sandboxPolicy.defaultMode }),
       tooltip: config.showTooltip,
@@ -482,10 +486,14 @@ export class SelectionModule {
         : option.value in PermissionLabel
           ? PermissionLabel[option.value as keyof typeof PermissionLabel]
           : option.value
+      const description = option.description ?? spec.description
+      // A key whose value is `undefined` is dropped by JSON, which makes the
+      // tool result non-lossless and DSH rejects it at the boundary. Omit
+      // absent fields instead of carrying them as holes.
       return {
         value: option.value,
         name,
-        description: option.description ?? spec.description,
+        ...(description === undefined ? {} : { description }),
         ...(spec.sandbox === undefined ? {} : { sandbox: spec.sandbox }),
         ...(spec.approval === undefined ? {} : { approval: spec.approval }),
       }

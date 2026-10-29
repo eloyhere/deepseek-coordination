@@ -33,6 +33,7 @@ import { OrganizationModule } from '../src/host/organization.js'
 import { PlanModule } from '../src/host/plan.js'
 import { PredictModule } from '../src/host/predict.js'
 import { TurnModule } from '../src/host/turn.js'
+import { ProfessionModule } from '../src/host/profession.js'
 import type { TurnRequest } from '../src/host/turn.js'
 import { CoordinationService, TurnPipeline, resolveSceneProfile } from '../src/host/coordination.js'
 import { installTurnLifecycle, promptTextOfMessages } from '../src/host/dsh.js'
@@ -124,7 +125,15 @@ function buildPipelineFixture(options: PipelineFixtureOptions = {}): PipelineFix
   return {
     host,
     db: base.db,
-    turn: new TurnModule(host),
+    turn: new TurnModule({
+      config: host.config,
+      clock: host.clock,
+      handles: host.handles,
+      executionStore: host.executionStore!,
+      turnStore: host.turnStore!,
+      trace: host.trace,
+      profession: new ProfessionModule(host),
+    }),
     plan,
     predict,
     pipeline,

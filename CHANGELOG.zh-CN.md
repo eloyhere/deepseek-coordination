@@ -17,6 +17,15 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.21.0 | 2026-10-29 | — | /amp/story、具体请求/计划/忽略项、全 MUI 面板 |
+| 0.20.0 | 2026-10-29 | — | 面向普通读者的面板、移除输入框下拉框、16px 下限 |
+| 0.19.0 | 2026-10-29 | — | 由已记录验收标准生成的 `Goal` + `Plan` 制品 |
+| 0.18.0 | 2026-10-29 | — | 单一 AMP 面板、浮动最小化按钮、`coordination_profession_lock` |
+| 0.17.3 | 2026-10-29 | — | 工具 schema 补齐 frozen 与 config.compaction（真机验证） |
+| 0.17.2 | 2026-10-29 | — | 真机边界修复：工具输出无损 JSON、/ping 带版本 |
+| 0.17.0 | 2026-10-29 | — | 接管窗口变成 AMP 注意请求、中断记录与 ask 回执 |
+| 0.16.0 | 2026-10-29 | — | comprehension → warrant 校验的 claim 与 unknown（只有逐字锚定才升 T1） |
+| 0.15.0 | 2026-10-29 | — | AMP v0.1 协议层：清单、注意帧、回执、账本、检查点与 `/amp/*` 路由 |
 | 0.14.10 | 2026-10-18 | `8c9ff34` | 项目级依赖、文件级导入各自成环、纯文本聊天、右键菜单 |
 | 0.14.9 | 2026-10-18 | `12115b5` | 面板崩溃与 portal/内缩布局 |
 | 0.14.8 | 2026-10-18 | `26936c1` | 面板虚拟化、路由页签、大纲/预览页、四个图工具 |
@@ -56,6 +65,197 @@
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
 
 ## [未发布]
+
+## [0.21.0] — 2026-10-29
+
+### 新增
+
+- **`GET /amp/story?session=…`** —— 一个只读、非协议视图，把最新 turn 与它自己的请求摘录（折叠空白、截断 220 字）、目标文本、解码后的计划步骤（`intent` + 已记录 `expect`）以及最新注意帧的忽略列表拼在一起。注意帧本身只有 id 和理由，所以面板此前说不出“问的是什么、计划做什么”。
+- 面板第一张卡片现在显示**真实请求**、轮次、职责/交互/情景标签及其理由、目标，以及一张**计划表**（步骤 · 内容 · 验收）。忽略项改成表格：具名条目 + 原因 + “何时会重新考虑”的具体条件。动作与可信度也用表格。
+
+### 变更
+
+- **面板内部全部改用 MUI 组件。** 原来的 `details`/`summary`、裸 `div`/`span` 与手写 flex 行，换成 `Card`/`CardContent`、`Table`/`TableContainer`/`TableBody`/`TableRow`/`TableCell`、`Accordion`/`AccordionSummary`/`AccordionDetails`、`Chip`、`Alert`、`Button`、`Typography`、`Box`。技术细节收在一个折叠的 MUI `Accordion` 里。
+- 技术细节表把每个注意槽的 `role · target` 与原始 `why` 并排保留，原文不被丢掉。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（873 项，872 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+- 测试：真实 turn 上验证 `/amp/story` 的请求摘录、目标与计划；面板源码使用 `parseAmpStory`、`MuiTable`、`MuiAccordion`，且不再有 `h('details')`/`h('summary')`。
+
+### 已知限制（明说，不隐藏）
+
+- 请求摘录截断在 220 字，是面板里唯一的请求文本；完整消息仍在对话记录里。
+- `expect.check` 仍是记录下来的验收文本，不是可执行命令（P3b）。
+## [0.20.0] — 2026-10-29
+
+### 变更
+
+- **底部不再有协调下拉框。** 输入框左侧的四个下拉框（职能、交互、情景、验证）以及权限接管下拉框都已移除，`conversation.input.left` 只保留接管对话框与停靠面板；DSH 自己的控件不受影响。职能 / 交互 / 情景 通过 `coordination_selection` 或主机配置默认值设定，现在**在面板里展示**。
+- **面板改成写给普通读者看。** 一个只读、已本地化的叙述取代了原来的清单/注意帧/账本原始字段堆叠：*这次回答用了什么设置*（职能/交互/情景三项日常标签）、*它关注了什么、又主动放下了什么*（注意槽翻译成句子，被忽略项注明“条件变化时会重新考虑”）、*它做了什么*（最近五条回执用 读取/关注/回顾/询问/工具调用 表达）、*这份记录是否可信*（一行“完整/未通过”加校验器原因）。摘要、id、槽的 `why` 原文、`revisit_if`、能力等级与限制都收进可折叠的**技术细节**。
+- **面板排版以 rem 为基础并设 1rem（16px）下限**（`PANEL_TYPE_SX`）。停靠面板里所有 9–14px 的小字号（chip、注释、摘要）统一提升到至少 16px；chip 高度改为 `1.5rem`。
+
+### 新增
+
+- `panel.selection` 与 `panel.plain` 两组中英文 copy：新面板的每个标签、句子与占位符（`{cycle}`、`{slots}`、`{count}`、`{label}`）都走 i18n，面板里没有硬编码文案。
+- `useAmpSelection` 读取 `GET /selection?session=…`，随面板刷新按钮重新加载；读取失败显示“选择不可用”，不用默认值冒充这一轮的真实选择。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（872 项，871 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+- 新增源码测试：输入框不再挂载 `ComposerControls`；面板读取 selection 且使用 plain copy；`panel.ts` 中不再有 `fontSize: 9–14`。
+
+### 已知限制（明说，不隐藏）
+
+- **验证等级不再在任何界面显示。** 它仍在服务端生效并按会话存储，只是没有展示；将来在面板加一行即可恢复可见性，无需恢复下拉框。
+- 16px 下限会让面板的行距变宽，信息密集时滚动会比以前多。
+## [0.19.0] — 2026-10-29
+
+### 新增
+
+- **`Goal` 与 `Plan` 制品，以“已记录验收标准”为闸门。** turn 结束且 plan 行可监控时，账本写入一条 `goal`（statement 与每个步骤一条 success criterion）和一条 `plan`（每个步骤一个带必填 `expect` 的 task、顺序边、由 plan 约束文本生成的 `abandon_if`、`commitment_window: 1`）。id 与注意帧引用的 ref 一致（`goal-<handle>`、`plan-<handle>`）。
+- **闸门是显式的。** 只有同时满足：存在 goal 行、每个解码出的步骤都有 acceptance、plan 有约束、`validateGoal`/`validatePlan` 均通过，才写入这对制品；否则写一条 `plan.deferred` 事件说明原因（`missing-goal`、`no-steps`、`missing-expect`、`missing-abandon-if`、`invalid-artifact`），且不落库。
+- **两种步骤形态都计入。** 普通 plan 步骤（`{ step, acceptance? }`）与编排草稿（`{ task, acceptance }`）都是同一 plan 的 task，一起供给制品。
+- **协议移植**：`src/protocol/plan.ts`，含 `Goal`、`Expectation`、`PlanTask`、`Plan`、`validateGoal`、`validatePlan` 以及会抛错的 `assertGoal`/`assertPlan`。
+- **测试**：goal/plan 校验（缺 criterion、缺 expect、空 check、重复 task id、非法 irreversibility、缺 `abandon_if`）、写入器的三种延后原因，以及真实 `CoordinationService` 上带 acceptance 的 turn。
+
+### 已知限制（明说，不隐藏）
+
+- `expect.check` 是记录下来的验收文本，不是可执行命令；插件没有 check 运行器，因此 plan 可被人监控、暂不能被内核监控（路线 P3b）。
+- `Goal.value` / `priority` 取中性值（`0.5` / `1`），因为插件不对目标排序；`PlanTask.irreversibility` 默认 `1`（可撤销且有明确回退）。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（870 项，869 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+## [0.18.0] — 2026-10-29
+
+### 变更
+
+- **只保留一个停靠面板：AMP 注意面板。** 原来的上下两个面板（关系 + 工作区）合并为一个只读面板，展示签名清单、当前注意帧（槽、排除项、预算）、最新回执，以及带校验结果的账本链头。工作区页签（文件/大纲/依赖/导入/导出/职能）不再挂载；它们的 hash 路由与视图仍留在模块里，但没有任何入口。
+- **最小化后面板变成一个浮动按钮，而不再是一条标题栏。** 收起后只在会话右上角（头部操作按钮下方、对话区上方）留一个圆形按钮，点击即恢复停靠列。持久化状态改为 `{ open, width }`，旧的 `{ openRight, width }` 会被迁移，升级不会改变用户原有的展开状态。
+- **工具重命名：`coordination_professionlock` → `coordination_profession_lock`。** 模型可见名称、copy 键、AMP capability id 与所有引用同步改名；工具行为与 schema 不变。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（864 项，863 通过，1 跳过）、`npm run build`。
+## [0.17.3] — 2026-10-29
+
+### 修复
+
+- **工具声明的输出 schema 与实际值脱节。** JSON 边界修好后，DSH 的下一道检查立刻命中：`coordination_selection` 返回了 `value.frozen` 与 `value.config.compaction`，而 `SELECTION_STATE_SCHEMA` 两者都没声明（两个对象都是 `additionalProperties: false`）。于是路由、客户端和单测都正常，真机调用却每次都失败。
+  - `SELECTION_STATE_SCHEMA` 现在声明 `frozen`（逐维冻结表）。
+  - `SELECTION_CONFIG_SCHEMA` 现在声明 `compaction`（auto/soft/hard/reserve/recentTurns/cooldown/maxPerSession）。
+- **防回归**：`test/json-safety.test.ts` 遍历投影出的 `SelectionState`（顶层与 `config`），断言每个键都在声明的 schema 中，投影字段不可能再跑在 schema 前面。
+
+### 真机验证（桌面客户端，0.17.3）
+
+- `coordination_selection` 在运行中的客户端返回完整 `SelectionState`，包含 `frozen` 映射与 `config.compaction`。
+- 该调用写入 `attend success` 回执；同一链上还有一条已关闭 turn 的 `reflect success` 回执（`ms = 135246`）。
+- `GET /amp/verify` → `{ ok: true, reasons: [], tip: sha256:063e1e1…, count: 40, checkpoint: { seq: 0, count: 19 } }`——后续追加相对更早的检查点仍然合法，正是 §3.6 的行为。
+- `GET /amp/manifest` 中 `coordination_selection` 为 **T2 / 置信度 0.833**，证据引用三条回执 id，即 M-1 推导在真机上成立。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（864 项，863 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+## [0.17.2] — 2026-10-29
+
+### 修复
+
+- **真实客户端里一次工具调用被 harness 的 JSON 边界拒绝。** `coordination_selection` 在运行中的桌面客户端返回 “value is not lossless JSON”：DSH 会把每个工具结果解构成纯 JSON，一旦有损就拒绝整次调用。插件有两处投影可能携带“存在但值为 undefined”的键（`presets[].description` 与 `defaultMode`），外部 port 还可能引入新的。
+  - `SelectionModule.listPreset` 在 `description` 缺失时直接省略，不再写入 `undefined`。
+  - `SelectionModule.state` 只在 `defaultMode` 是非空字符串时才投影它。
+  - **边界保证**：`withAmpReceipts` 现在把每个成功返回值先经 `jsonSafe`（`src/shared/json-safe.ts`）解构——嵌套 `undefined` 丢弃、`NaN`/`Infinity` → `null`、`-0` → `0`、`bigint` → 字符串、`Date` → ISO、`Map`/`Set` → 对象/数组、环被切断；发生改动只记 debug 日志，而不是让模型的调用失败。
+- **`GET /deepseek-coordination/ping` 现在返回正在运行的插件版本**（`version: "0.17.2"`），无需重启即可确认到底加载了哪个构建。
+
+### 新增
+
+- `test/json-safety.test.ts`：真实形态（外部预设目录 + 缺 `defaultMode` 的 sandbox port）、完全缺失 sandbox port、`jsonSafe` 覆盖各类有损值，以及工具包装器在有损时仍写成功回执。
+- `test/helpers.ts` 支持可选 `sandboxPolicy` port。
+
+### 真机验证（桌面客户端，2026-10-29）
+
+用 `dsh plugin --profile desktop add` 安装进 `%DSH_HOME%\profiles\desktop`。运行中的 harness 热加载了该包，以下均在**当前客户端**实测：
+
+- `GET /deepseek-coordination/ping` → `{plugin, pong, locale}`；`GET /amp/identity` → 真实 Ed25519 `kid`。
+- `GET /amp/manifest` → 11 个 capability、1 个 self 签名；在插件之外用独立的规范 JSON + WebCrypto 实现验证：`digestMatches: true`、`signatureValid: true`、`kidMatches: true`。
+- 账本里已有真实会话：19 条记录、三张注意帧（各 4 槽、2 条排除）、`turn.opened` 映射、工具回执（`attend`/`read`）、一个已关闭 turn 的 `reflect` 回执，以及镜像的 `pipeline.report` 事件（其文本字段为 `[text omitted]`）。
+- `GET /amp/frame?session=…` 返回真实注意帧（mode、cycle、digest、带 `why` 的槽、带 `revisit_if` 的 `ignored`）。
+- `POST /amp/checkpoint` 在 `count 19`、tip `sha256:c9c3a69…` 上封出 `seq 0` 检查点；`GET /amp/verify` → `{ok: true, reasons: [], checkpoint: {seq: 0, count: 19}}`。
+- 客户端模块 `plugins/??deepseek-coordination/client.js&rev=…` 为 3,441,910 字节，并出现在 `__DSH_BOOT__.entries` 中。
+
+### 已知发现
+
+- **包更新不会热替换**：应用运行时安装 0.17.1，内存里仍是旧模块，因此 0.17.2 的修复需要重启后生效（用 `/ping` 的版本确认当前生效构建）。
+- 插件声明 `inject: ['webServer']`，所以**无 webserver 的 headless profile** 中该条目会一直 pending。组合服务本身不需要路由，但激活会等待该服务；headless 部署需要挂载 webserver 插件或放宽 inject。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（864 项，863 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+## [0.17.0] — 2026-10-29
+
+### 新增
+
+- **接管窗口成为 AMP 注意事务。** gate 的可选 observer 在窗口开启时以 `attention.requested` 事件承载 `AttentionRequest`（`kind: "attention-request"`），在结算时以 `interrupt.settled` 事件承载 `InterruptRecord`（`kind: "interrupt"`），并恰好写入一条 `ask` 回执。
+- **对象策略固定且写入文档。** 审批是 `commitment`、紧急度 4、目标为工具；提问是 `curiosity`、紧急度 3、目标为窗口。`cost: { interrupts: 1 }`、`fallback: escalate`，`expires` 使用 gate 自己的 `clarifyTimeout`，对象与定时器一致。
+- **诚实的结算映射。** `allowed-once → granted/success`、已回答提问 → `answered/success`、`rejected → denied/blocked`、取消/卸载 → `withdrawn/partial`、超时 → `expired/partial`；`usage.interrupts` 仅在 `granted`/`answered` 时为 1，`usage.ms` 是实测窗口时长。`granted` 由 builder 从 `status` 推导，二者不可能互相矛盾。
+- **协议移植**：`src/protocol/social.ts`，含 `AttentionRequest`、`InterruptRecord`、校验/构造器与 `interruptOutcome`。
+- **测试**：对象校验（紧急度/fallback/状态矛盾）、gate observer（requested 与 granted/denied/withdrawn/expired）、AMP 写入器，以及真实 `CoordinationService` 上经 `handleApproval` → `answerPendingTakeover` 的窗口。
+
+### 变更
+
+- `TakeoverGate` 接受可选 `observer`，并把 `expired` 与 `withdrawn` 分开上报；没有 observer 时行为不变（既有测试全部原样通过）。
+- `AmpService` 提前到 gate 之前构造，便于 gate 上报窗口；只移动了构造位置，公开 API 未变。
+- `docs/amp-conformance.md` 新增 §3.10 并把 P2 标为完成；剩余缺口只是 interrupt **策略**（上限、免打扰、债务），不再是对象本身。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（859 项，858 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+## [0.16.0] — 2026-10-29
+
+### 新增
+
+- **comprehension 产出经 warrant 校验的 claim。** turn 结束时，comprehension 行被转成最多四条 `claim`（`intent`、`requirement`、`constraint`、`assumption`）与一条 `unknown`（歧义），写入 AMP 账本，并用一条 `cognition.recorded` 事件汇总。
+- **分级诚实规则。** 只有语句**逐字**出现在用户提示词中（大小写/空白不敏感；整句或其中一句）才升到 `T1`；证据是一条 `testimony` 项：`trust: asserted`、`independence: 1`、`entails: true`、`origin: prompt:<turn>`、`memory` 引用、≤200 字摘录及其 `digest`。改写/转述保持 `T0` 且无证据。
+- **置信度只推导、不读取。** 每条 claim 的 `confidence` 都是 `deriveConfidence({tier, warrant})`（T1 为 `0.7`，受 asserted 信任上限约束；T0 为 `0.35`）。comprehension 行自己的 `confidence` 只用于 unknown 的 `importance`（`1 − confidence`）。
+- **非法 claim 直接丢弃。** 写入前先跑 `validateClaim`；不通过只记日志、不入账。占位值（`none`、`n/a`、`-`、`无`、`暂无`、`不适用`、`null`、`undefined`）不产生任何对象。
+- **测试**：两个内核接线用例（T1/T0 分界、证据形状、unknown importance、所有已存 claim 均可校验）以及一个真实流水线的生命周期断言。
+
+### 变更
+
+- `AmpTurnFacts` 增加可选的 `cognition` 块；`CoordinationService.ampFactsFor` 从 comprehension 行与提示词填充。
+- `docs/amp-conformance.md`：Warrant 一节从“仅内核”改为“已接线”，新增 §3.9 记录 claim/unknown 规则，不变量表新增 W-4b，路线图把 P1 标为完成并列出 P1b。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（853 项，852 通过，1 跳过）、`npm run build`、`npm run pack:check`。
+
+## [0.15.0] — 2026-10-29
+
+### 新增
+
+- **AMP v0.1 协议层**（`src/protocol/`）：公共原语、规范 JSON 与 `sha256` 摘要、id 语法、AMP 错误族、Ed25519 封签信封及其接收运行时、签名清单、注意帧构造边界（9 槽上限、必填 `why`、自算摘要、溢出排除返回 `deferred`、引用必须可解析）、回执与事件、warrant 推导规则（分级门槛、置信度推导、修订保留旧值）以及带签名检查点的 append-only 账本。移植自 `attention-manifest-protocol` v0.4.1，归属见 `NOTICE`。
+- **`AmpService`**（`src/host/amp.ts`）：插件状态被投影成协议制品。签名清单的 capability 分级/置信度由已记录回执推导；每个 turn 一张注意帧，`ignored` 列出本宿主故意不执行的场景策略项；turn 结束写一条 `reflect` 回执，`usage.ms` 为实测时长；每次工具调用经 `withAmpReceipts` 写一条回执；模块事件按白名单脱敏后进入账本。
+- **Schema 25**（`src/host/database.ts`）：新增 `amp_object`（哈希链）、`amp_key`（Ed25519 身份）、`amp_manifest`、`amp_checkpoint`，以及八个使 AMP 表只能写一次的触发器。纯增量：schema 24 的库一行不动。
+- **`/amp/*` 路由**：`GET /amp/identity`、`/amp/manifest`、`/amp/frame?session=`、`/amp/receipts`、`/amp/ledger`、`/amp/verify`，以及 `POST /amp/checkpoint`。沿用 `{ ok, value | error }` 信封；私钥永不出现在响应中。
+- **`docs/amp-conformance.md`**：逐制品映射、带参考规则编号（A-1、F-2、M-1、W-4、X-1 …）的不变量表、插件概念映射、刻意未实现的清单与 P1–P5 路线图。
+- **测试**：`test/amp-protocol.test.ts`（内核：规范 JSON、id、帧边界、warrant、信封篡改/过期/FIFO、账本/快照/检查点、清单）、`test/amp-wiring.test.ts`（推导分级、帧排除、实测回执、SQLite 不可改写、篡改检测、检查点前缀语义、工具装饰器、事件脱敏）、`test/amp-lifecycle.test.ts`（临时库上的真实 `CoordinationService`）与 `test/amp-routes.test.ts`（`/amp/*` 路由表及其 400/404 形状）。
+
+### 变更
+
+- **Schema 版本 25，68 张表、15 个触发器、67 个索引。** `test/persistence.test.ts` 现在断言 schema-23 库会补上 AMP 表。
+- **`ConfigPatchResult` 补上 `normalised` 字段**（`POST /config` 早已返回它）。
+- **`GET /ping` 要求 GET 方法**，其它动词落到 404 信封。
+- **`BUSY` 与 `UNSUPPORTED_MEDIA` 纳入 `CoordinationErrorCode`** 并补齐中英文案，类型消费者可以穷举联合。
+
+### 修复
+
+- **`npm run typecheck` 恢复通过。** `src/host/adapters/sqlite/turn-store.ts` 使用了未导入的 `PromptSnapshot`/`CommandSnapshot`。
+- **`/graph/intra` 与其它图路由一样按请求解析工作区根**；此前它回退到默认根，同一文件可能与 `/graph/outline` 描述的不是同一个工作区。
+- **数据库 schema 注释不再截断模板字符串**（SQL 注释里的反引号曾提前结束字符串）。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（851 项，850 通过，1 跳过）、`npm run build`、`npm run pack:check`。
 
 ## [0.14.10] — 2026-10-18
 
@@ -802,3 +1002,15 @@ host 半提供路由，client 半提供设置页。
 ### 修复
 
 - 发布前修复了本会随版本发布的缺陷（`faaa0b7`）。
+
+
+
+
+
+
+
+
+
+
+
+

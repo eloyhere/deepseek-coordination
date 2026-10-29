@@ -27,8 +27,6 @@ import {
   COLUMN_SX,
   CoordinationPanels,
   HEADER_SX,
-  LEFT_PANEL_ROUTES,
-  LEFT_PANEL_TABS,
   MESSAGE_COLLAPSED_HEIGHT,
   MESSAGE_EXPANDED_MAX_HEIGHT,
   MESSAGE_TEXT_SX,
@@ -511,7 +509,7 @@ test('PanelErrorBoundary renders healthy children normally', async () => {
   }
 })
 
-test('mounting both docked panels does not crash the MUI transitions', async () => {
+test('mounting the AMP panel does not crash the MUI transitions', async () => {
   const restoreDom = installDom()
   const logged: unknown[][] = []
   const originalError = console.error
@@ -541,8 +539,7 @@ test('mounting both docked panels does not crash the MUI transitions', async () 
       'mounting the fixed column must not throw',
     )
     assert.doesNotMatch(document.body.textContent, /Panel crashed/)
-    assert.ok(document.body.textContent.includes(DEFAULT_COPY.panel.leftTitle))
-    assert.ok(document.body.textContent.includes(DEFAULT_COPY.panel.rightTitle))
+    assert.ok(document.body.textContent.includes(DEFAULT_COPY.panel.amp.title))
     // The column is portaled out of the composer slot into document.body.
     assert.equal(container.childNodes.length, 0)
   } finally {
@@ -554,7 +551,7 @@ test('mounting both docked panels does not crash the MUI transitions', async () 
   }
 })
 
-test('a throwing child renders null, reports once, and records the error', async () => {
+test('a throwing child renders a bounded alert, reports once, and records the error', async () => {
   const restoreDom = installDom()
   const boom = new Error('panel rendering exploded')
   const logged: unknown[][] = []
@@ -576,8 +573,10 @@ test('a throwing child renders null, reports once, and records the error', async
         ),
       )
     })
-    assert.equal(container.textContent, '')
-    assert.equal(container.childNodes.length, 0)
+    // A failed panel is contained but visible: the boundary renders one alert
+    // instead of disappearing, so the dock never silently loses its content.
+    assert.equal(container.textContent, 'Panel failed: panel rendering exploded')
+    assert.equal(container.childNodes.length, 1)
 
     const reports = logged.filter((args) => args[0] === '[coordination] panel failed')
     assert.equal(reports.length, 1, 'boundary must report the failure exactly once')
@@ -1050,6 +1049,15 @@ test('panel rows use the MUI dense ListItemButton recipe', () => {
   assert.equal(PANEL_ROW_SX['&:hover'].backgroundColor, 'action.hover')
   assert.equal(PANEL_ROW_SX['&.Mui-selected'].backgroundColor, 'action.selected')
 
+  // The fixed 48 px row must clip and flatten MUI's ListItemText margins,
+  // otherwise the secondary line paints over the next row.
+  assert.equal(PANEL_ROW_SX.overflow, 'hidden')
+  assert.equal(PANEL_ROW_SX['& .MuiListItemText-root'].marginTop, 0)
+  assert.equal(PANEL_ROW_SX['& .MuiListItemText-root'].marginBottom, 0)
+  assert.equal(PANEL_ROW_SX['& .MuiListItemText-primary'].lineHeight, 1.3)
+  assert.equal(PANEL_ROW_SX['& .MuiListItemText-secondary'].lineHeight, 1.3)
+  assert.equal(PANEL_ROW_SX['& .MuiListItemText-secondary'].overflow, 'hidden')
+
   // Inset 2 px primary focus ring.
   assert.equal(PANEL_ROW_SX['&:focus-visible'].outline, '2px solid')
   assert.equal(PANEL_ROW_SX['&:focus-visible'].outlineColor, 'primary.main')
@@ -1084,91 +1092,40 @@ test('every list row is a ListItemButton with icon + two-line text', () => {
   assert.match(source, /className: 'coordination-row-action'/)
 })
 
-test('the two panels keep separate tab and route sets', () => {
-  assert.deepEqual([...RIGHT_PANEL_TABS], [
-    'files',
-    'outline',
-    'dependencies',
-    'imports',
-    'exports',
-  ])
-  assert.deepEqual([...LEFT_PANEL_TABS], [
-    'files',
-    'agents',
-    'dependencies',
-    'imports',
-    'exports',
-  ])
-  // `preview` / `agent` are routed detail pages, never tabs.
-  assert.equal(RIGHT_PANEL_TABS.includes('preview'), false)
-  assert.equal(LEFT_PANEL_TABS.includes('agent'), false)
-  assert.equal(RIGHT_PANEL_ROUTES.includes('preview'), true)
-  assert.equal(LEFT_PANEL_ROUTES.includes('agent'), true)
+test('the workspace is one AMP panel with one route', () => {
+  assert.deepEqual([...RIGHT_PANEL_TABS], ['amp'])
+  assert.deepEqual([...RIGHT_PANEL_ROUTES], ['amp'])
 
-  // Each tab is its own hash route.
-  for (const tab of RIGHT_PANEL_TABS) {
-    assert.equal(
-      initialPanelNavigation(
-        `#coordination/panel/right/${tab}`,
-        'right',
-        RIGHT_PANEL_ROUTES,
-        'files',
-      ).view,
-      tab,
-    )
-  }
-
-  // The detail routes deep-link when validated against `routes`...
   assert.deepEqual(
+    initialPanelNavigation(
+      '#coordination/panel/right/amp',
+      'right',
+      RIGHT_PANEL_ROUTES,
+      'amp',
+    ),
+    { view: 'amp', path: null, id: null },
+  )
+  // Old file-browser deep links are rejected by the route validator.
+  assert.equal(
     initialPanelNavigation(
       '#coordination/panel/right/preview?path=src%2Fa.ts',
       'right',
       RIGHT_PANEL_ROUTES,
-      'files',
-    ),
-    { view: 'preview', path: 'src/a.ts', id: null },
-  )
-  assert.deepEqual(
-    initialPanelNavigation(
-      '#coordination/panel/left/agent?id=agent-1',
-      'left',
-      LEFT_PANEL_ROUTES,
-      'files',
-    ),
-    { view: 'agent', path: null, id: 'agent-1' },
-  )
-  // ...and are rejected when a caller cheats by validating against tabs only.
-  assert.equal(
-    initialPanelNavigation(
-      '#coordination/panel/right/preview?path=src%2Fa.ts',
-      'right',
-      RIGHT_PANEL_TABS,
-      'files',
+      'amp',
     ).view,
-    'files',
-  )
-  assert.equal(
-    initialPanelNavigation(
-      '#coordination/panel/left/agent?id=agent-1',
-      'left',
-      LEFT_PANEL_TABS,
-      'files',
-    ).view,
-    'files',
+    'amp',
   )
 })
 
-test('imports and exports are WebGL canvas pages on both panels', () => {
+test('the AMP panel replaces the file-browser tabs', () => {
   const source = panelSource()
-  assert.doesNotMatch(source, /function ImportsView\(/)
-  assert.doesNotMatch(source, /imports: ImportsView/)
-  assert.equal((source.match(/imports: ImportsCanvasView/g) ?? []).length, 2)
-  assert.equal((source.match(/exports: ExportsCanvasView/g) ?? []).length, 2)
-  // The imports tab icon differs from exports.
-  assert.match(source, /IconImports = CallReceivedIcon/)
-  assert.match(source, /IconExports = CallMadeIcon/)
-  assert.match(source, /tabImportsGraph/)
-  assert.match(source, /tabExportsGraph/)
+  assert.match(source, /function AmpView\(/)
+  assert.match(source, /amp: AmpView/)
+  assert.match(source, /useGraph\('\/amp\/manifest'/)
+  assert.match(source, /\/amp\/frame\?session=/)
+  assert.match(source, /\/amp\/receipts\?limit=20/)
+  assert.match(source, /\/amp\/ledger\?limit=20/)
+  assert.match(source, /\/amp\/verify/)
 })
 
 /* ------------------------------------------------------------------------- *
@@ -1264,13 +1221,6 @@ test('agent detail is virtualized, truncation-aware and has no composer', () => 
   assert.match(bubble, /formatAgentTime/)
   assert.match(bubble, /copy\.messageExpand/)
   assert.match(bubble, /copy\.messageCollapse/)
-})
-
-test('agent detail is a routed page and Escape returns to the roster', () => {
-  const source = panelSource()
-  assert.match(source, /agent: AgentMessagesView/)
-  assert.match(source, /if \(view === 'agent'\) \{\s*go\('agents'\)/)
-  assert.match(source, /navigate\(props\.side, 'agents'\)/)
 })
 
 /* ------------------------------------------------------------------------- *
@@ -2111,3 +2061,36 @@ test('the task queue is a module-level singleton', () => {
   // Exactly one construction site in the whole panel module.
   assert.equal((panelSource().match(/new Task\(/g) ?? []).length, 1)
 })
+
+
+test('the composer has no coordination dropdowns and the panel carries the triple', () => {
+  const index = readFileSync(resolve('src/client/index.ts'), 'utf8')
+  assert.doesNotMatch(index, /import \{ ComposerControls/)
+  assert.doesNotMatch(index, /React\.createElement\(ComposerControls/)
+  const panel = panelSource()
+  // The three choices are read where they are now shown.
+  assert.match(panel, /loadSelection\(/)
+  assert.match(panel, /copy\.selection\.profession/)
+  // The narrative is concrete: prompt excerpt, plan steps, ignored items.
+  assert.match(panel, /parseAmpStory\(/)
+  assert.match(panel, /plain\.requestMeta/)
+  assert.match(panel, /plain\.planExpect/)
+  // The panel is MUI end to end: cards, tables, accordion, no raw HTML blocks.
+  assert.match(panel, /h\(\s*MuiTable,/)
+  assert.match(panel, /h\(\s*MuiAccordion,/)
+  assert.match(panel, /h\(\s*AmpSection,/)
+  assert.doesNotMatch(panel, /h\('details'/)
+  assert.doesNotMatch(panel, /h\('summary'/)
+})
+
+test('panel typography is rem-based with a 1rem floor', () => {
+  const panel = panelSource()
+  assert.match(panel, /export const PANEL_TYPE_SX/)
+  assert.match(panel, /fontSize: '1rem'/)
+  assert.match(panel, /MuiTypography-caption/)
+  assert.doesNotMatch(panel, /fontSize: (9|10|11|12|13|14)[,}]/)
+  assert.match(panel, /export const PANEL_TYPE_SX/)
+})
+
+
+

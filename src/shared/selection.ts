@@ -400,7 +400,9 @@ export interface ConfigPatchResult {
   applied: string[]
   /** Known but non-editable paths (forced/read-only/planned); not written. */
   ignored: string[]
-  /** True when the host persisted the patch through DSH settings. */
+  /** Paths whose supplied value was clamped or coerced before it was applied. */
+  normalised: string[]
+  /** True when the host persisted the patch to its own override document. */
   persisted: boolean
   config: ConfigView
 }

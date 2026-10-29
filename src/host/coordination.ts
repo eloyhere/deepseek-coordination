@@ -19,108 +19,139 @@
  * module or port exists; every knob that cannot be enforced is recorded in the
  * report as a deferred policy gap instead of being silently ignored.
  */
-import { Service, type Context } from '@deepseek-ai/cordis'
-import type { CoordinationConfig } from './config.js'
-import type { DshRuntime } from './dsh.js'
-import { CoordinationDatabase, SCHEMA_VERSION, resolveDatabasePath } from './database.js'
-import { HandleGenerator, SystemClock } from './handle.js'
-import { createModuleHost, type AgentView, type ModuleHost } from './module.js'
-import { TokenGovernor, normaliseCompactionPatch } from './token.js'
-import type { TokenPlan } from './token.js'
-import type { CompactionPolicyConfig } from './config.js'
-import { TraceModule } from './trace.js'
-import { SessionModule } from './session.js'
+import { Service, type Context } from "@deepseek-ai/cordis";
+import type { CoordinationConfig } from "./config.js";
+import type { DshRuntime } from "./dsh.js";
+import {
+  CoordinationDatabase,
+  SCHEMA_VERSION,
+  resolveDatabasePath,
+} from "./database.js";
+import {
+  AmpService,
+  COORDINATION_CAPABILITIES,
+  type AmpCognitionInput,
+  type AmpPlanFacts,
+  type AmpTurnFacts,
+} from "./amp.js";
+import { SqliteExecutionStore } from "./adapters/sqlite/execution-store.js";
+import { SqliteTraceStore } from "./adapters/sqlite/trace-store.js";
+import { SqliteTurnStore } from "./adapters/sqlite/turn-store.js";
+import { SqliteProfessionStore } from "./adapters/sqlite/profession-store.js";
+import { HandleGenerator, SystemClock } from "./handle.js";
+import { createModuleHost, type AgentView, type ModuleHost } from "./module.js";
+import { TokenGovernor, normaliseCompactionPatch } from "./token.js";
+import type { TokenPlan } from "./token.js";
+import type { CompactionPolicyConfig } from "./config.js";
+import { TraceModule } from "./trace.js";
+import { SessionModule } from "./session.js";
 import {
   SelectionModule,
   abandonProfession as abandonProfessionTurn,
   rebuildProfession as rebuildProfessionTurn,
-} from './selection.js'
-import { TurnModule } from './turn.js'
-import { ProfessionModule } from './profession.js'
-import { CommandModule } from './command.js'
-import { GoalModule } from './goal.js'
-import { CompactModule } from './compact.js'
-import { DirectiveModule } from './directive.js'
-import { PlanModule, decodePlanStep } from './plan.js'
-import { PermissionModule } from './permission.js'
-import { TakeoverModule } from './takeover.js'
-import { TakeoverGate } from './takeover-gate.js'
-import type { PendingTakeoverView, TakeoverGateAnswer } from './takeover-gate.js'
-import { ProviderModule } from './provider.js'
-import { CacheModule } from './cache.js'
-import { CompactionStateStore } from './compaction-state.js'
-import type { CommandHandlers } from './command.js'
-import { ComprehensionModule } from './comprehension.js'
-import type { ComprehensionPolicyPatch } from './comprehension.js'
-import { OrganizationModule, WritingStageMarkers } from './organization.js'
-import { PredictModule } from './predict.js'
-import type { Comprehension, Plan, PermissionResult, Selection, Turn, CoordinationMetrics } from '../shared/entity.js'
-import type { CommandType, Profession, Scene, Validation } from '../shared/enum.js'
-import { SceneProfiles } from '../shared/enum.js'
-import type { SceneProfile } from '../shared/enum.js'
-import type { SelectionPatch, SelectionState } from '../shared/selection.js'
+} from "./selection.js";
+import { TurnModule } from "./turn.js";
+import { ProfessionModule } from "./profession.js";
+import { CommandModule } from "./command.js";
+import { GoalModule } from "./goal.js";
+import { CompactModule } from "./compact.js";
+import { DirectiveModule } from "./directive.js";
+import { PlanModule, decodePlanStep } from "./plan.js";
+import { PermissionModule } from "./permission.js";
+import { TakeoverModule } from "./takeover.js";
+import { TakeoverGate } from "./takeover-gate.js";
+import type {
+  PendingTakeoverView,
+  TakeoverGateAnswer,
+} from "./takeover-gate.js";
+import { ProviderModule } from "./provider.js";
+import { CacheModule } from "./cache.js";
+import { CompactionStateStore } from "./compaction-state.js";
+import type { CommandHandlers } from "./command.js";
+import { ComprehensionModule } from "./comprehension.js";
+import type { ComprehensionPolicyPatch } from "./comprehension.js";
+import { OrganizationModule, WritingStageMarkers } from "./organization.js";
+import { PredictModule } from "./predict.js";
+import type {
+  Comprehension,
+  Plan,
+  PermissionResult,
+  Selection,
+  Turn,
+  CoordinationMetrics,
+} from "../shared/entity.js";
+import type {
+  CommandType,
+  Profession,
+  Scene,
+  Validation,
+} from "../shared/enum.js";
+import { SceneProfiles } from "../shared/enum.js";
+import type { SceneProfile } from "../shared/enum.js";
+import type { SelectionPatch, SelectionState } from "../shared/selection.js";
 
 interface TurnSlot {
-  dshTurn: number
-  identity: number
+  dshTurn: number;
+  identity: number;
 }
 
 /** How many settled pipeline reports are kept for diagnostics/tests. */
-const PipelineReportCapacity = 256
+const PipelineReportCapacity = 256;
 
 /* ------------------------------------------------------------------------- *
  * Turn pipeline (v24 §19): comprehension -> organization -> plan/score
  * ------------------------------------------------------------------------- */
 
 /** The part of the pipeline that produced a diagnostic. */
-export type PipelineStage = 'pipeline' | 'comprehension' | 'organization' | 'plan' | 'predict' | 'policy'
+export type PipelineStage =
+  "pipeline" | "comprehension" | "organization" | "plan" | "predict" | "policy";
 
 /** One recorded degradation; a diagnostic never becomes a fabricated result. */
 export interface PipelineDiagnostic {
-  stage: PipelineStage
-  code: string
-  message: string
+  stage: PipelineStage;
+  code: string;
+  message: string;
 }
 
 /** One scene-policy knob that the composed pipeline could not enforce. */
 export interface ScenePolicyGap {
-  field: keyof SceneProfile
-  reason: string
+  field: keyof SceneProfile;
+  reason: string;
 }
 
 /** How the scene policy was applied on one turn. */
 export interface ScenePolicyReport {
-  scene: Scene
-  profile: SceneProfile
+  scene: Scene;
+  profile: SceneProfile;
   /** The turn's persisted effort; the only DSH-adjacent execution knob we hold. */
-  effort: string
+  effort: string;
   /** Policy requirements that were actually satisfied by a module or port. */
-  applied: string[]
+  applied: string[];
   /** Policy requirements with no consumer/port; recorded, never invented. */
-  deferred: ScenePolicyGap[]
+  deferred: ScenePolicyGap[];
 }
 
 /** The plan measurement the pipeline persisted. */
 export interface PlanPipelineScore {
-  total: number
-  pass: boolean
-  failing: string[]
-  threshold: number
+  total: number;
+  pass: boolean;
+  failing: string[];
+  threshold: number;
 }
 
 /** The result of driving one turn through the deterministic pipeline. */
 export interface TurnPipelineReport {
-  turn: number
-  command: CommandType
-  scene: Scene
-  status: 'completed' | 'skipped' | 'failed'
-  comprehension?: number
-  organization?: number
-  plan?: number
-  score?: PlanPipelineScore
-  predict?: number
-  policy: ScenePolicyReport
-  diagnostics: PipelineDiagnostic[]
+  turn: number;
+  command: CommandType;
+  scene: Scene;
+  status: "completed" | "skipped" | "failed";
+  comprehension?: number;
+  organization?: number;
+  plan?: number;
+  score?: PlanPipelineScore;
+  predict?: number;
+  policy: ScenePolicyReport;
+  diagnostics: PipelineDiagnostic[];
 }
 
 /**
@@ -133,17 +164,23 @@ const NoSearchPolicy: Partial<Record<Validation, ComprehensionPolicyPatch>> = {
   low: { search: false },
   medium: { search: false },
   high: { search: false },
-}
+};
 
 /** A configured scene profile, repaired to the documented bounds. */
-export function resolveSceneProfile(config: CoordinationConfig, scene: Scene): SceneProfile {
-  const base = SceneProfiles[scene] ?? SceneProfiles.dialogue
-  const configured = config.scenes?.[scene]
-  const merged: SceneProfile = configured === undefined ? base : { ...base, ...configured }
+export function resolveSceneProfile(
+  config: CoordinationConfig,
+  scene: Scene,
+): SceneProfile {
+  const base = SceneProfiles[scene] ?? SceneProfiles.dialogue;
+  const configured = config.scenes?.[scene];
+  const merged: SceneProfile =
+    configured === undefined ? base : { ...base, ...configured };
   return {
     ...merged,
     thinking:
-      merged.thinking === 'enabled' || merged.thinking === 'disabled' ? merged.thinking : base.thinking,
+      merged.thinking === "enabled" || merged.thinking === "disabled"
+        ? merged.thinking
+        : base.thinking,
     reasoningEffort: textOr(merged.reasoningEffort, base.reasoningEffort),
     requirePlan: booleanOr(merged.requirePlan, base.requirePlan),
     requireScore: booleanOr(merged.requireScore, base.requireScore),
@@ -154,21 +191,31 @@ export function resolveSceneProfile(config: CoordinationConfig, scene: Scene): S
     allowBash: booleanOr(merged.allowBash, base.allowBash),
     allowWeb: booleanOr(merged.allowWeb, base.allowWeb),
     sandboxOnly: booleanOr(merged.sandboxOnly, base.sandboxOnly),
-    maxIteration: boundedInteger(merged.maxIteration, base.maxIteration, 1, 1000),
-    scoreThreshold: boundedNumber(merged.scoreThreshold, base.scoreThreshold, 0, 1),
-  }
+    maxIteration: boundedInteger(
+      merged.maxIteration,
+      base.maxIteration,
+      1,
+      1000,
+    ),
+    scoreThreshold: boundedNumber(
+      merged.scoreThreshold,
+      base.scoreThreshold,
+      0,
+      1,
+    ),
+  };
 }
 
 /** The modules and ports the pipeline needs; the service supplies them once. */
 export interface TurnPipelineDependencies {
-  host: ModuleHost
-  comprehension: ComprehensionModule
-  offlineComprehension: ComprehensionModule
-  organization: OrganizationModule
-  plan: PlanModule
-  predict: PredictModule
+  host: ModuleHost;
+  comprehension: ComprehensionModule;
+  offlineComprehension: ComprehensionModule;
+  organization: OrganizationModule;
+  plan: PlanModule;
+  predict: PredictModule;
   /** The live DSH session, for ports that take the session object whole. */
-  rawSession?(sessionId: string): unknown
+  rawSession?(sessionId: string): unknown;
 }
 
 /**
@@ -180,62 +227,66 @@ export interface TurnPipelineDependencies {
  * That is what lets the turn lifecycle schedule it without guarding `next()`.
  */
 export class TurnPipeline {
-  private readonly deps: TurnPipelineDependencies
+  private readonly deps: TurnPipelineDependencies;
 
   constructor(deps: TurnPipelineDependencies) {
-    this.deps = deps
+    this.deps = deps;
   }
 
-  async run(turn: Turn, prompt: string, sessionId: string): Promise<TurnPipelineReport> {
-    const profile = resolveSceneProfile(this.deps.host.config, turn.scene)
+  async run(
+    turn: Turn,
+    prompt: string,
+    sessionId: string,
+  ): Promise<TurnPipelineReport> {
+    const profile = resolveSceneProfile(this.deps.host.config, turn.scene);
     const policy: ScenePolicyReport = {
       scene: turn.scene,
       profile,
       effort: turn.effort,
       applied: [],
       deferred: [],
-    }
+    };
     const report: TurnPipelineReport = {
       turn: turn.identity,
       command: turn.command,
       scene: turn.scene,
-      status: 'completed',
+      status: "completed",
       policy,
       diagnostics: [],
-    }
+    };
 
     /* ---- Command face and prompt guard --------------------------------- */
-    if (turn.command !== 'none') {
-      report.status = 'skipped'
+    if (turn.command !== "none") {
+      report.status = "skipped";
       report.diagnostics.push({
-        stage: 'pipeline',
-        code: 'command-face',
+        stage: "pipeline",
+        code: "command-face",
         message: `turn ${turn.identity} carries the "${turn.command}" command face; the full pipeline is skipped`,
-      })
-      return report
+      });
+      return report;
     }
     if (turn.prompt === undefined) {
-      report.status = 'skipped'
+      report.status = "skipped";
       report.diagnostics.push({
-        stage: 'pipeline',
-        code: 'prompt-missing',
+        stage: "pipeline",
+        code: "prompt-missing",
         message: `turn ${turn.identity} has no prompt row; comprehension cannot run`,
-      })
-      return report
+      });
+      return report;
     }
 
     // The persisted prompt wins: the turn row is the audit record, while the
     // caller's argument is only a fallback for a turn created outside `create`.
-    const storedPrompt = this.promptContent(turn.prompt)
-    const promptText = storedPrompt.trim().length > 0 ? storedPrompt : prompt
+    const storedPrompt = this.promptContent(turn.prompt);
+    const promptText = storedPrompt.trim().length > 0 ? storedPrompt : prompt;
     if (promptText.trim().length === 0) {
-      report.status = 'skipped'
+      report.status = "skipped";
       report.diagnostics.push({
-        stage: 'pipeline',
-        code: 'prompt-empty',
-        message: 'the turn prompt is empty; comprehension would have no input',
-      })
-      return report
+        stage: "pipeline",
+        code: "prompt-empty",
+        message: "the turn prompt is empty; comprehension would have no input",
+      });
+      return report;
     }
 
     /* ---- Scene policy knobs with no execution port --------------------- */
@@ -245,24 +296,37 @@ export class TurnPipeline {
     // existing file still parses, but no code path reads them any more.
     // Bash permission is a DSH permission-preset decision; this pipeline must
     // not silently rewrite the human's preset.
-    this.defer(policy, report, 'allowBash', 'no execution-policy port: bash permission is left to the DSH permission preset')
+    this.defer(
+      policy,
+      report,
+      "allowBash",
+      "no execution-policy port: bash permission is left to the DSH permission preset",
+    );
     // No composed loop consumes the scene iteration budget yet.
-    this.defer(policy, report, 'maxIteration', 'no iterative driver consumes scene.maxIteration yet')
+    this.defer(
+      policy,
+      report,
+      "maxIteration",
+      "no iterative driver consumes scene.maxIteration yet",
+    );
 
     /* ---- allowWeb: the one policy knob that changes a module call ------ */
-    policy.applied.push('allowWeb')
-    const searchEnabled = this.deps.host.config.comprehension.searchEnabled
+    policy.applied.push("allowWeb");
+    const searchEnabled = this.deps.host.config.comprehension.searchEnabled;
     if (profile.allowWeb && searchEnabled && this.deps.host.web === undefined) {
       report.diagnostics.push({
-        stage: 'comprehension',
-        code: 'web-port-missing',
-        message: 'web search is allowed but no web port is present; comprehension runs without search evidence',
-      })
+        stage: "comprehension",
+        code: "web-port-missing",
+        message:
+          "web search is allowed but no web port is present; comprehension runs without search evidence",
+      });
     }
-    const comprehensionModule = profile.allowWeb ? this.deps.comprehension : this.deps.offlineComprehension
+    const comprehensionModule = profile.allowWeb
+      ? this.deps.comprehension
+      : this.deps.offlineComprehension;
 
     /* ---- Comprehension ------------------------------------------------ */
-    let comprehension: Comprehension
+    let comprehension: Comprehension;
     try {
       comprehension = await comprehensionModule.comprehend({
         turn: turn.identity,
@@ -271,135 +335,187 @@ export class TurnPipeline {
         interaction: turn.interaction,
         scene: turn.scene,
         validation: turn.validation,
-      })
-      report.comprehension = comprehension.identity
+      });
+      report.comprehension = comprehension.identity;
     } catch (error) {
-      report.status = 'failed'
+      report.status = "failed";
       report.diagnostics.push({
-        stage: 'comprehension',
-        code: 'comprehension-failed',
+        stage: "comprehension",
+        code: "comprehension-failed",
         message: describeError(error),
-      })
-      return report
+      });
+      return report;
     }
 
     /* ---- Organization ------------------------------------------------- */
-    let plan: Plan
+    let plan: Plan;
     try {
-      plan = this.deps.organization.organize(comprehension.identity)
-      report.plan = plan.identity
-      report.organization = this.deps.organization.forPlan(plan.identity)?.identity
-      if (profile.requirePlan) policy.applied.push('requirePlan')
+      plan = this.deps.organization.organize(comprehension.identity);
+      report.plan = plan.identity;
+      report.organization = this.deps.organization.forPlan(
+        plan.identity,
+      )?.identity;
+      if (profile.requirePlan) policy.applied.push("requirePlan");
     } catch (error) {
-      report.status = 'failed'
+      report.status = "failed";
       report.diagnostics.push({
-        stage: 'organization',
-        code: 'organization-failed',
+        stage: "organization",
+        code: "organization-failed",
         message: describeError(error),
-      })
-      return report
+      });
+      return report;
     }
 
     /* ---- Plan score --------------------------------------------------- */
     try {
-      const score = this.deps.plan.score(plan.identity)
-      const threshold = this.deps.plan.threshold(plan.identity)
-      report.score = { total: score.total, pass: score.pass, failing: score.failing, threshold }
-      if (profile.requireScore) policy.applied.push('requireScore')
+      const score = this.deps.plan.score(plan.identity);
+      const threshold = this.deps.plan.threshold(plan.identity);
+      report.score = {
+        total: score.total,
+        pass: score.pass,
+        failing: score.failing,
+        threshold,
+      };
+      if (profile.requireScore) policy.applied.push("requireScore");
       if (!score.pass) {
         report.diagnostics.push({
-          stage: 'plan',
-          code: 'plan-below-threshold',
-          message: `plan ${plan.identity} scored ${score.total} below the ${threshold} threshold (${score.failing.join(', ') || 'no failing dimension listed'})`,
-        })
+          stage: "plan",
+          code: "plan-below-threshold",
+          message: `plan ${plan.identity} scored ${score.total} below the ${threshold} threshold (${score.failing.join(", ") || "no failing dimension listed"})`,
+        });
       }
       // `plan.ts` already applies the writing threshold; a scene-only threshold
       // has no reader yet and is reported, not silently claimed.
-      if (Math.abs(profile.scoreThreshold - threshold) < 1e-9) policy.applied.push('scoreThreshold')
+      if (Math.abs(profile.scoreThreshold - threshold) < 1e-9)
+        policy.applied.push("scoreThreshold");
       else {
         this.defer(
           policy,
           report,
-          'scoreThreshold',
+          "scoreThreshold",
           `plan.ts applies ${threshold} for this scene; config.scenes.${turn.scene}.scoreThreshold is ${profile.scoreThreshold} (only writing is wired)`,
-        )
+        );
       }
     } catch (error) {
-      report.status = 'failed'
-      report.diagnostics.push({ stage: 'plan', code: 'plan-score-failed', message: describeError(error) })
-      return report
+      report.status = "failed";
+      report.diagnostics.push({
+        stage: "plan",
+        code: "plan-score-failed",
+        message: describeError(error),
+      });
+      return report;
     }
 
     /* ---- Content requirements: outline, revision ---------------------- */
-    const parsed = decodePlanStep(plan.step)
+    const parsed = decodePlanStep(plan.step);
     const stepTexts = [
       ...parsed.steps.map((step) => step.step),
       ...parsed.drafts.map((draft) => draft.task),
-    ]
+    ];
     if (profile.requireOutline) {
-      if (stepTexts.some((text) => text.includes(WritingStageMarkers.outline))) policy.applied.push('requireOutline')
-      else this.defer(policy, report, 'requireOutline', 'the composed plan has no outline (大纲) step')
+      if (stepTexts.some((text) => text.includes(WritingStageMarkers.outline)))
+        policy.applied.push("requireOutline");
+      else
+        this.defer(
+          policy,
+          report,
+          "requireOutline",
+          "the composed plan has no outline (大纲) step",
+        );
     }
     if (profile.requireRevision) {
-      if (stepTexts.some((text) => text.includes(WritingStageMarkers.revision))) policy.applied.push('requireRevision')
-      else this.defer(policy, report, 'requireRevision', 'the composed plan has no revision (修订) step')
+      if (stepTexts.some((text) => text.includes(WritingStageMarkers.revision)))
+        policy.applied.push("requireRevision");
+      else
+        this.defer(
+          policy,
+          report,
+          "requireRevision",
+          "the composed plan has no revision (修订) step",
+        );
     }
 
     /* ---- requirePredict: persist one prediction row ------------------- */
     if (profile.requirePredict) {
-      const stepLabel = parsed.steps[0]?.step ?? parsed.drafts[0]?.task
+      const stepLabel = parsed.steps[0]?.step ?? parsed.drafts[0]?.task;
       if (stepLabel === undefined) {
-        this.defer(policy, report, 'requirePredict', 'the composed plan has no step to predict')
+        this.defer(
+          policy,
+          report,
+          "requirePredict",
+          "the composed plan has no step to predict",
+        );
       } else {
         try {
-          const prediction = this.deps.predict.predict(plan.identity, stepLabel)
-          report.predict = prediction.identity
-          policy.applied.push('requirePredict')
+          const prediction = this.deps.predict.predict(
+            plan.identity,
+            stepLabel,
+          );
+          report.predict = prediction.identity;
+          policy.applied.push("requirePredict");
         } catch (error) {
           report.diagnostics.push({
-            stage: 'predict',
-            code: 'predict-failed',
+            stage: "predict",
+            code: "predict-failed",
             message: describeError(error),
-          })
-          this.defer(policy, report, 'requirePredict', 'the prediction row could not be written')
+          });
+          this.defer(
+            policy,
+            report,
+            "requirePredict",
+            "the prediction row could not be written",
+          );
         }
       }
     }
 
     /* ---- requireCitation: evidence is a comprehension fact ------------ */
     if (profile.requireCitation) {
-      if (evidenceCount(comprehension.evidence) > 0) policy.applied.push('requireCitation')
+      if (evidenceCount(comprehension.evidence) > 0)
+        policy.applied.push("requireCitation");
       else {
         this.defer(
           policy,
           report,
-          'requireCitation',
-          'the comprehension produced no evidence; no citation can be attached without a result to cite',
-        )
+          "requireCitation",
+          "the comprehension produced no evidence; no citation can be attached without a result to cite",
+        );
       }
     }
 
     /* ---- sandboxOnly: verify through the read-only sandbox port ------- */
     if (profile.sandboxOnly) {
-      const port = this.deps.host.sandboxPolicy
+      const port = this.deps.host.sandboxPolicy;
       if (port === undefined) {
-        this.defer(policy, report, 'sandboxOnly', 'no sandbox policy port is present; the current mode cannot be verified')
+        this.defer(
+          policy,
+          report,
+          "sandboxOnly",
+          "no sandbox policy port is present; the current mode cannot be verified",
+        );
       } else {
         try {
-          const session = this.deps.rawSession?.(sessionId)
-          const view = port.resolve(session === undefined ? undefined : { session })
-          if (view.mode === 'danger-full-access') {
-            this.defer(policy, report, 'sandboxOnly', `the current sandbox mode is "${view.mode}"`)
+          const session = this.deps.rawSession?.(sessionId);
+          const view = port.resolve(
+            session === undefined ? undefined : { session },
+          );
+          if (view.mode === "danger-full-access") {
+            this.defer(
+              policy,
+              report,
+              "sandboxOnly",
+              `the current sandbox mode is "${view.mode}"`,
+            );
           } else {
-            policy.applied.push('sandboxOnly')
+            policy.applied.push("sandboxOnly");
           }
         } catch (error) {
-          this.defer(policy, report, 'sandboxOnly', describeError(error))
+          this.defer(policy, report, "sandboxOnly", describeError(error));
         }
       }
     }
 
-    return report
+    return report;
   }
 
   /** Record one policy gap in both the report's policy view and diagnostics. */
@@ -409,153 +525,251 @@ export class TurnPipeline {
     field: keyof SceneProfile,
     reason: string,
   ): void {
-    policy.deferred.push({ field, reason })
-    report.diagnostics.push({ stage: 'policy', code: `scene-policy.deferred.${field}`, message: reason })
+    policy.deferred.push({ field, reason });
+    report.diagnostics.push({
+      stage: "policy",
+      code: `scene-policy.deferred.${field}`,
+      message: reason,
+    });
   }
 
   /** The persisted prompt text; the turn row is authoritative over the caller. */
   private promptContent(identity: number): string {
     const row = this.deps.host.db.get<{ content?: unknown }>(
-      'SELECT content FROM prompt WHERE identity = ?',
+      "SELECT content FROM prompt WHERE identity = ?",
       identity,
-    )
-    return typeof row?.content === 'string' ? row.content : ''
+    );
+    return typeof row?.content === "string" ? row.content : "";
   }
 }
 
 /** A report for a pipeline that threw outside the per-stage guards. */
-function failedPipelineReport(turn: Turn, config: CoordinationConfig, error: unknown): TurnPipelineReport {
-  const profile = resolveSceneProfile(config, turn.scene)
+function failedPipelineReport(
+  turn: Turn,
+  config: CoordinationConfig,
+  error: unknown,
+): TurnPipelineReport {
+  const profile = resolveSceneProfile(config, turn.scene);
   return {
     turn: turn.identity,
     command: turn.command,
     scene: turn.scene,
-    status: 'failed',
-    policy: { scene: turn.scene, profile, effort: turn.effort, applied: [], deferred: [] },
-    diagnostics: [{ stage: 'pipeline', code: 'pipeline-failed', message: describeError(error) }],
-  }
+    status: "failed",
+    policy: {
+      scene: turn.scene,
+      profile,
+      effort: turn.effort,
+      applied: [],
+      deferred: [],
+    },
+    diagnostics: [
+      {
+        stage: "pipeline",
+        code: "pipeline-failed",
+        message: describeError(error),
+      },
+    ],
+  };
 }
 
 function describeError(error: unknown): string {
-  if (error instanceof Error) return error.message.length > 0 ? error.message : error.name
-  return String(error)
+  if (error instanceof Error)
+    return error.message.length > 0 ? error.message : error.name;
+  return String(error);
+}
+
+/** The tool name an approval window is about; a question window has none. */
+function toolOfView(view: { type: string; payload: unknown }): string | undefined {
+  if (view.type !== 'approval') return undefined;
+  const payload =
+    typeof view.payload === 'object' && view.payload !== null
+      ? (view.payload as Record<string, unknown>)
+      : undefined;
+  const tool = payload?.toolName;
+  return typeof tool === 'string' && tool.length > 0 ? tool : undefined;
 }
 
 function evidenceCount(value: string | undefined): number {
-  if (value === undefined || value.trim() === '') return 0
+  if (value === undefined || value.trim() === "") return 0;
   try {
-    const parsed: unknown = JSON.parse(value)
+    const parsed: unknown = JSON.parse(value);
     if (Array.isArray(parsed)) {
-      return parsed.filter((entry) => typeof entry === 'string' && entry.trim() !== '').length
+      return parsed.filter(
+        (entry) => typeof entry === "string" && entry.trim() !== "",
+      ).length;
     }
-    return typeof parsed === 'string' && parsed.trim() !== '' ? 1 : 0
+    return typeof parsed === "string" && parsed.trim() !== "" ? 1 : 0;
   } catch {
-    return 1
+    return 1;
   }
 }
 
 /** The neutral effort recorded when DSH has not committed a route yet. */
-const DefaultEffort = 'medium'
+const DefaultEffort = "medium";
 
 /** Narrow an unknown to a plain record without throwing. */
 function recordOf(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 function textOr(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallback
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : fallback;
 }
 
 function booleanOr(value: unknown, fallback: boolean): boolean {
-  return typeof value === 'boolean' ? value : fallback
+  return typeof value === "boolean" ? value : fallback;
 }
 
-function boundedNumber(value: unknown, fallback: number, minimum: number, maximum: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
+function boundedNumber(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value)
     ? Math.min(maximum, Math.max(minimum, value))
-    : fallback
+    : fallback;
 }
 
-function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
-  return typeof value === 'number' && Number.isFinite(value)
+function boundedInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value)
     ? Math.min(maximum, Math.max(minimum, Math.round(value)))
-    : fallback
+    : fallback;
 }
 
 export class CoordinationService extends Service {
-  readonly db: CoordinationDatabase
-  readonly config: CoordinationConfig
-  readonly host: ModuleHost
-  readonly session: SessionModule
-  readonly selection: SelectionModule
-  readonly turn: TurnModule
-  readonly profession: ProfessionModule
-  readonly plan: PlanModule
-  readonly comprehension: ComprehensionModule
-  readonly organization: OrganizationModule
-  readonly predict: PredictModule
-  readonly goal: GoalModule
-  readonly compact: CompactModule
-  readonly directive: DirectiveModule
-  readonly command: CommandModule
-  readonly permission: PermissionModule
-  readonly takeover: TakeoverModule
+  readonly db: CoordinationDatabase;
+  readonly config: CoordinationConfig;
+  readonly host: ModuleHost;
+  readonly session: SessionModule;
+  readonly selection: SelectionModule;
+  readonly turn: TurnModule;
+  readonly profession: ProfessionModule;
+  readonly plan: PlanModule;
+  readonly comprehension: ComprehensionModule;
+  readonly organization: OrganizationModule;
+  readonly predict: PredictModule;
+  readonly goal: GoalModule;
+  readonly compact: CompactModule;
+  readonly directive: DirectiveModule;
+  readonly command: CommandModule;
+  readonly permission: PermissionModule;
+  readonly takeover: TakeoverModule;
   /** Intercepts DSH approval/question waterfalls while `ui.takeover` is on. */
-  readonly takeoverGate: TakeoverGate
-  readonly provider: ProviderModule
-  readonly cache: CacheModule
+  readonly takeoverGate: TakeoverGate;
+  readonly provider: ProviderModule;
+  readonly cache: CacheModule;
+  /** AMP v0.1 artifacts: manifest, frames, receipts, events and the ledger. */
+  readonly amp: AmpService;
 
-  private readonly dshTurns = new Map<string, TurnSlot>()
+  private readonly dshTurns = new Map<string, TurnSlot>();
   /** In-flight deterministic pipelines, one per DSH session. */
-  private readonly pipelines = new Map<string, { dshTurn: number; promise: Promise<TurnPipelineReport> }>()
+  private readonly pipelines = new Map<
+    string,
+    { dshTurn: number; promise: Promise<TurnPipelineReport> }
+  >();
   /** The latest settled report, kept for diagnostics and tests. */
-  private readonly pipelineReports = new Map<string, { dshTurn: number; report: TurnPipelineReport }>()
-  private readonly offlineComprehension: ComprehensionModule
-  private readonly turnPipeline: TurnPipeline
-  private readonly runtime: DshRuntime
-  private disposed = false
-  private governor: TokenGovernor
-  private readonly compactionState = new CompactionStateStore()
-  private compactionPolicy: CompactionPolicyConfig
-  private localeValue: string
+  private readonly pipelineReports = new Map<
+    string,
+    { dshTurn: number; report: TurnPipelineReport }
+  >();
+  private readonly offlineComprehension: ComprehensionModule;
+  private readonly turnPipeline: TurnPipeline;
+  private readonly runtime: DshRuntime;
+  private disposed = false;
+  private governor: TokenGovernor;
+  private readonly compactionState = new CompactionStateStore();
+  private compactionPolicy: CompactionPolicyConfig;
+  private localeValue: string;
 
-  constructor(context: Context, config: CoordinationConfig, runtime: DshRuntime) {
-    super(context, 'coordination')
-    this.config = config
-    this.runtime = runtime
-    this.compactionPolicy = { ...config.compaction }
-    this.governor = new TokenGovernor({ config, contextWindow: 128_000 })
-    this.localeValue = config.ui.locale === 'auto' ? 'zh-CN' : config.ui.locale
-    this.db = new CoordinationDatabase(resolveDatabasePath(config.databasePath, config.database))
-    const handles = new HandleGenerator()
-    const clock = SystemClock
-    const trace = new TraceModule(bootHost(this.db, config, handles, clock))
+  constructor(
+    context: Context,
+    config: CoordinationConfig,
+    runtime: DshRuntime,
+  ) {
+    super(context, "coordination");
+    this.config = config;
+    this.runtime = runtime;
+    this.compactionPolicy = { ...config.compaction };
+    this.governor = new TokenGovernor({ config, contextWindow: 128_000 });
+    this.localeValue = config.ui.locale === "auto" ? "zh-CN" : config.ui.locale;
+    this.db = new CoordinationDatabase(
+      resolveDatabasePath(config.databasePath, config.database),
+    );
+    const handles = new HandleGenerator();
+    const clock = SystemClock;
+    const trace = new TraceModule(
+      new SqliteTraceStore(this.db),
+      handles,
+      clock,
+    );
     this.host = createModuleHost({
       db: this.db,
       config,
       trace,
+      executionStore: new SqliteExecutionStore(this.db),
+      turnStore: new SqliteTurnStore(this.db),
+      professionStore: new SqliteProfessionStore(this.db),
       handles,
       clock,
       ...(runtime.llm === undefined ? {} : { llm: runtime.llm }),
       ...(runtime.goals === undefined ? {} : { goals: runtime.goals }),
-      ...(runtime.compaction === undefined ? {} : { compaction: runtime.compaction }),
+      ...(runtime.compaction === undefined
+        ? {}
+        : { compaction: runtime.compaction }),
       ...(runtime.web === undefined ? {} : { web: runtime.web }),
       ...(runtime.agents === undefined ? {} : { agents: runtime.agents }),
       ...(runtime.sessions === undefined ? {} : { sessions: runtime.sessions }),
       ...(runtime.approval === undefined ? {} : { approval: runtime.approval }),
-      ...(runtime.permissionPresets === undefined ? {} : { permissionPresets: runtime.permissionPresets }),
-      ...(runtime.sandboxPolicy === undefined ? {} : { sandboxPolicy: runtime.sandboxPolicy }),
+      ...(runtime.permissionPresets === undefined
+        ? {}
+        : { permissionPresets: runtime.permissionPresets }),
+      ...(runtime.sandboxPolicy === undefined
+        ? {}
+        : { sandboxPolicy: runtime.sandboxPolicy }),
       ...(runtime.logger === undefined ? {} : { logger: runtime.logger }),
-    })
-    this.session = new SessionModule(this.host)
-    this.selection = new SelectionModule(this.host)
-    this.turn = new TurnModule(this.host)
-    this.profession = new ProfessionModule(this.host)
-    this.plan = new PlanModule(this.host)
-    this.comprehension = new ComprehensionModule(this.host)
-    this.offlineComprehension = new ComprehensionModule(this.host, NoSearchPolicy)
-    this.organization = new OrganizationModule(this.host)
-    this.predict = new PredictModule(this.host)
+    });
+    // AMP v0.1: the facade owns the signing identity and the append-only
+    // ledger. Construction is synchronous; the key is loaded (or minted) on the
+    // first artifact, so a host that never observes a turn never writes one.
+    // It is created before the takeover gate so the gate can report windows.
+    this.amp = new AmpService({
+      db: this.db,
+      config: this.config,
+      handles: this.host.handles,
+      clock: this.host.clock,
+      capabilities: COORDINATION_CAPABILITIES,
+      ...(this.host.logger === undefined ? {} : { logger: this.host.logger }),
+    });
+    this.session = new SessionModule(this.host.executionStore!, config, clock);
+    this.selection = new SelectionModule(this.host);
+    this.profession = new ProfessionModule(this.host);
+    this.turn = new TurnModule({
+      config,
+      clock,
+      handles,
+      executionStore: this.host.executionStore!,
+      turnStore: this.host.turnStore!,
+      trace,
+      profession: this.profession,
+    });
+    this.plan = new PlanModule(this.host);
+    this.comprehension = new ComprehensionModule(this.host);
+    this.offlineComprehension = new ComprehensionModule(
+      this.host,
+      NoSearchPolicy,
+    );
+    this.organization = new OrganizationModule(this.host);
+    this.predict = new PredictModule(this.host);
     this.turnPipeline = new TurnPipeline({
       host: this.host,
       comprehension: this.comprehension,
@@ -564,22 +778,56 @@ export class CoordinationService extends Service {
       plan: this.plan,
       predict: this.predict,
       rawSession: (sessionId: string) => this.runtime.rawSession(sessionId),
-    })
-    this.goal = new GoalModule(this.host)
-    this.compact = new CompactModule(this.host)
-    this.directive = new DirectiveModule(this.host)
-    this.permission = new PermissionModule(this.host)
-    this.takeover = new TakeoverModule(this.host)
+    });
+    this.goal = new GoalModule(this.host);
+    this.compact = new CompactModule(this.host);
+    this.directive = new DirectiveModule(this.host);
+    this.permission = new PermissionModule(this.host);
+    this.takeover = new TakeoverModule(this.host);
     this.takeoverGate = new TakeoverGate({
       takeover: this.takeover,
       sessions: this.session,
       config: this.config,
       events: this.host.events,
       clock: this.host.clock,
-    })
-    this.provider = new ProviderModule(this.host)
-    this.cache = new CacheModule(this.host)
-    this.command = new CommandModule(this.host, this.handlers())
+      // AMP v0.1: every window is announced as an `AttentionRequest` and
+      // settled as an `InterruptRecord` plus one `ask` receipt. The observer is
+      // write-behind: the gate never waits for it and never breaks if it fails.
+      observer: {
+        requested: (view, at) => {
+          this.recordAmp(
+            this.amp.requestAttention({
+              handle: view.handle,
+              ...(this.sessionHandleOf(view.session) === undefined
+                ? {}
+                : { session: this.sessionHandleOf(view.session) as string }),
+              type: view.type,
+              ...(toolOfView(view) === undefined ? {} : { tool: toolOfView(view) as string }),
+              requestedAt: at,
+              expiresAt: at + this.config.clarifyTimeout,
+            }),
+          );
+        },
+        settled: (view, outcome, at) => {
+          this.recordAmp(
+            this.amp.recordInterrupt({
+              handle: view.handle,
+              ...(this.sessionHandleOf(view.session) === undefined
+                ? {}
+                : { session: this.sessionHandleOf(view.session) as string }),
+              type: view.type,
+              ...(toolOfView(view) === undefined ? {} : { tool: toolOfView(view) as string }),
+              requestedAt: view.created,
+              settledAt: at,
+              outcome,
+            }),
+          );
+        },
+      },
+    });
+    this.provider = new ProviderModule(this.host);
+    this.cache = new CacheModule(this.host);
+    this.command = new CommandModule(this.host, this.handlers());
   }
 
   /* --------------------------------------------------------------------- *
@@ -587,32 +835,32 @@ export class CoordinationService extends Service {
    * --------------------------------------------------------------------- */
 
   state(session: string): SelectionState {
-    return this.selection.state(session)
+    return this.selection.state(session);
   }
 
   setSelection(session: string, patch: SelectionPatch): SelectionState {
-    return this.selection.set(session, patch)
+    return this.selection.set(session, patch);
   }
 
-  presets(): ReturnType<SelectionModule['listPreset']> {
-    return this.selection.listPreset()
+  presets(): ReturnType<SelectionModule["listPreset"]> {
+    return this.selection.listPreset();
   }
 
   setPermission(session: string, preset: string): string {
-    return this.selection.applyPermission(session, preset)
+    return this.selection.applyPermission(session, preset);
   }
 
   /* --------------------------------------------------------------------- *
    * Turns and the profession lock
    * --------------------------------------------------------------------- */
 
-  activeTurn(session: string): ReturnType<SelectionModule['activeTurn']> {
-    return this.selection.activeTurn(session)
+  activeTurn(session: string): ReturnType<SelectionModule["activeTurn"]> {
+    return this.selection.activeTurn(session);
   }
 
   /** The turn with this ordinal in the session, when it exists (lock tool). */
   turnByOrdinal(session: string, ordinal: number): Turn | undefined {
-    return this.selection.turnByOrdinal(session, ordinal)
+    return this.selection.turnByOrdinal(session, ordinal);
   }
 
   /**
@@ -625,32 +873,39 @@ export class CoordinationService extends Service {
       { selection: this.selection, profession: this.profession },
       session,
       profession,
-    )
+    );
   }
 
   /** `POST /profession/abandon`: close the active task without a replacement. */
   abandonProfession(session: string): SelectionState {
-    return abandonProfessionTurn({ selection: this.selection, profession: this.profession }, session)
+    return abandonProfessionTurn(
+      { selection: this.selection, profession: this.profession },
+      session,
+    );
   }
 
   getTurn(identity: number): Turn {
-    return this.turn.get(identity)
+    return this.turn.get(identity);
   }
 
   selectProfession(turn: number, profession: Profession): Turn {
-    return this.profession.selectProfession(turn, profession)
+    return this.profession.selectProfession(turn, profession);
   }
 
   checkProfessionLock(turn: number): boolean {
-    return this.profession.checkProfessionLock(turn)
+    return this.profession.checkProfessionLock(turn);
   }
 
-  getProfessionRecord(turn: number): ReturnType<ProfessionModule['getProfessionRecord']> {
-    return this.profession.getProfessionRecord(turn)
+  getProfessionRecord(
+    turn: number,
+  ): ReturnType<ProfessionModule["getProfessionRecord"]> {
+    return this.profession.getProfessionRecord(turn);
   }
 
-  listProfessionRecord(session: number): ReturnType<ProfessionModule['listProfessionRecord']> {
-    return this.profession.listProfessionRecord(session)
+  listProfessionRecord(
+    session: number,
+  ): ReturnType<ProfessionModule["listProfessionRecord"]> {
+    return this.profession.listProfessionRecord(session);
   }
 
   /**
@@ -663,53 +918,197 @@ export class CoordinationService extends Service {
    */
   private observedEffort(sessionId: string): string {
     try {
-      const raw = recordOf(this.runtime.rawSession(sessionId))
-      const read = raw?.requestHeader
-      if (typeof read !== 'function') return DefaultEffort
-      const header = recordOf(read.call(raw))
-      const config = recordOf(header?.config)
-      const effort = typeof config?.reasoningEffort === 'string' ? config.reasoningEffort.trim() : ''
-      return effort.length > 0 ? effort : DefaultEffort
+      const raw = recordOf(this.runtime.rawSession(sessionId));
+      const read = raw?.requestHeader;
+      if (typeof read !== "function") return DefaultEffort;
+      const header = recordOf(read.call(raw));
+      const config = recordOf(header?.config);
+      const effort =
+        typeof config?.reasoningEffort === "string"
+          ? config.reasoningEffort.trim()
+          : "";
+      return effort.length > 0 ? effort : DefaultEffort;
     } catch {
-      return DefaultEffort
+      return DefaultEffort;
     }
   }
 
   /** Open (or reuse) the coordination turn for one DSH turn. */
-  async beginTurn(sessionId: string, dshTurn: number, promptText = ''): Promise<Turn> {
-    const session = this.session.ensure(sessionId)
-    const existing = this.dshTurns.get(sessionId)
+  async beginTurn(
+    sessionId: string,
+    dshTurn: number,
+    promptText = "",
+  ): Promise<Turn> {
+    const session = this.session.ensure(sessionId);
+    const existing = this.dshTurns.get(sessionId);
     if (existing !== undefined && existing.dshTurn === dshTurn) {
-      return this.turn.get(existing.identity)
+      return this.turn.get(existing.identity);
     }
     if (existing !== undefined) {
-      this.finishQuietly(existing.identity, 'done')
+      this.finishQuietly(existing.identity, "done");
     }
-    const selection = this.selection.get(sessionId)
+    const selection = this.selection.get(sessionId);
     const turn = this.turn.create(session.identity, {
       content: promptText,
       profession: selection.profession,
       interaction: selection.interaction,
       scene: selection.scene,
       validation: selection.validation,
-      command: 'none',
+      command: "none",
       // DSH owns the reasoning effort: the model page selects it and this plugin
       // never overrides it. The row records what the session route carries so
       // the audit stays honest, and falls back to the neutral default only when
       // no route has been committed yet.
       effort: this.observedEffort(sessionId),
-    })
-    this.dshTurns.set(sessionId, { dshTurn, identity: turn.identity })
+    });
+    this.dshTurns.set(sessionId, { dshTurn, identity: turn.identity });
     if (promptText.trim().length > 0) {
       try {
-        await this.command.execute(turn.identity, promptText)
+        await this.command.execute(turn.identity, promptText);
       } catch {
         // A command face never breaks the agent turn; the command row records the refusal.
       }
     }
-    const current = this.turn.get(turn.identity)
-    this.schedulePipeline(sessionId, dshTurn, current)
-    return current
+    const current = this.turn.get(turn.identity);
+    this.recordAmp(this.amp.openTurn(this.ampFactsFor(current)));
+    this.schedulePipeline(sessionId, dshTurn, current);
+    return current;
+  }
+
+  /**
+   * The state one AMP artifact needs.
+   *
+   * Frames and receipts are content-free: no prompt text, no tool output, no
+   * file body. The one exception is `cognition`: a claim is an epistemic object
+   * whose evidence must quote the anchor it rests on, so the comprehension row
+   * and the prompt are passed to the AMP layer, which decides what (at most 200
+   * characters) becomes an excerpt. Nothing is stored here directly.
+   */
+  private ampFactsFor(turn: Turn): AmpTurnFacts {
+    const session = this.host.executionStore?.get(turn.session);
+    const goal = this.goal.current(turn.identity);
+    const plan = this.plan.forTurn(turn.identity);
+    const cognition = this.ampCognitionFor(turn);
+    const planFacts = this.ampPlanFor(turn);
+    return {
+      session: session?.handle ?? String(turn.session),
+      turn: turn.handle,
+      ordinal: turn.ordinal,
+      profession: turn.profession,
+      interaction: turn.interaction,
+      scene: turn.scene,
+      validation: turn.validation,
+      sceneProfile: resolveSceneProfile(this.config, turn.scene),
+      created: turn.created,
+      ...(goal === undefined ? {} : { goal: { handle: goal.handle } }),
+      ...(plan === undefined ? {} : { plan: { handle: plan.handle } }),
+      status: turn.status,
+      ...(turn.finished === undefined ? {} : { finished: turn.finished }),
+      ...(cognition === undefined ? {} : { cognition }),
+      ...(planFacts === undefined ? {} : { planFacts }),
+    };
+  }
+
+  /**
+   * The plan row and its decoded steps, when the turn has one.
+   *
+   * Acceptance is only what the plan actually recorded per step; a step without
+   * it is passed through with an empty `expect`, which makes the AMP emitter
+   * defer the plan artifact instead of inventing a check.
+   */
+  private ampPlanFor(turn: Turn): AmpPlanFacts | undefined {
+    const plan = this.plan.forTurn(turn.identity);
+    if (plan === undefined) return undefined;
+    const parsed = decodePlanStep(plan.step);
+    // A plan row carries two step shapes: plain steps (`{ step, acceptance? }`)
+    // and orchestration drafts (`{ task, acceptance }`). Both are tasks of the
+    // same plan, so both feed the artifact.
+    const steps = [
+      ...parsed.steps.map((step) => ({
+        statement: step.step.trim(),
+        expect: (step.acceptance ?? '').trim(),
+      })),
+      ...parsed.drafts.map((draft) => ({
+        statement: draft.task.trim(),
+        expect: draft.acceptance.trim(),
+      })),
+    ].filter((step) => step.statement.length > 0);
+    const goal = this.goal.current(turn.identity);
+    return {
+      plan: {
+        handle: plan.handle,
+        created: plan.created,
+        status: plan.status,
+        constraint: plan.constraint.trim(),
+      },
+      ...(goal === undefined ? {} : { goal: { handle: goal.handle, content: goal.content } }),
+      steps,
+    };
+  }
+
+  /**
+   * The comprehension row as claim input, when the turn ran one.
+   *
+   * Returns `undefined` for a turn with no comprehension, no prompt text, or an
+   * empty row — a claim built on nothing would be an opinion, not a claim.
+   */
+  private ampCognitionFor(turn: Turn): AmpCognitionInput | undefined {
+    if (turn.comprehension === undefined) return undefined;
+    const row = this.db.get<{
+      handle: string;
+      intent: string;
+      requirement: string;
+      constraint: string;
+      assumption: string;
+      ambiguity: string;
+      confidence: number;
+      created: number;
+    }>(
+      'SELECT handle, intent, requirement, "constraint", assumption, ambiguity, confidence, created FROM comprehension WHERE identity = ?',
+      turn.comprehension,
+    );
+    if (row === undefined) return undefined;
+    const prompt = this.promptContent(turn.prompt);
+    if (prompt.trim().length === 0) return undefined;
+    return {
+      id: row.handle,
+      prompt,
+      intent: typeof row.intent === 'string' ? row.intent : '',
+      requirement: typeof row.requirement === 'string' ? row.requirement : '',
+      constraint: typeof row.constraint === 'string' ? row.constraint : '',
+      assumption: typeof row.assumption === 'string' ? row.assumption : '',
+      ambiguity: typeof row.ambiguity === 'string' ? row.ambiguity : '',
+      confidence: Number.isFinite(row.confidence) ? Number(row.confidence) : 0.5,
+      created: Number(row.created),
+    };
+  }
+
+  /**
+   * The DSH session handle behind a coordination identity, when one exists.
+   * A window whose session row is gone keeps `session` out of the event rather
+   * than inventing one.
+   */
+  private sessionHandleOf(identity: number | undefined): string | undefined {
+    if (identity === undefined) return undefined;
+    try {
+      return this.host.executionStore?.get(identity)?.handle;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Record one AMP artifact without blocking the caller.
+   *
+   * The turn lifecycle and the takeover gate are hooks in the agent loop: a slow
+   * key load or a locked database must never delay `next()`. Failures are logged
+   * at debug level and the ledger simply has one entry fewer — it never reports
+   * a fabricated one.
+   */
+  private recordAmp(promise: Promise<unknown>): void {
+    this.amp.track(promise).catch((error: unknown) => {
+      this.host.logger?.debug?.(`amp artifact was not recorded: ${describeError(error)}`);
+    });
   }
 
   /**
@@ -720,25 +1119,32 @@ export class CoordinationService extends Service {
    * map keeps at most one in-flight run per DSH session, so repeated steps do
    * not accumulate tasks.
    */
-  private schedulePipeline(sessionId: string, dshTurn: number, turn: Turn): void {
-    if (this.disposed) return
-    const prompt = this.promptContent(turn.prompt)
+  private schedulePipeline(
+    sessionId: string,
+    dshTurn: number,
+    turn: Turn,
+  ): void {
+    if (this.disposed) return;
+    const prompt = this.promptContent(turn.prompt);
     const promise = this.turnPipeline
       .run(turn, prompt, sessionId)
-      .catch((error: unknown) => failedPipelineReport(turn, this.config, error))
-    this.pipelines.set(sessionId, { dshTurn, promise })
+      .catch((error: unknown) =>
+        failedPipelineReport(turn, this.config, error),
+      );
+    this.pipelines.set(sessionId, { dshTurn, promise });
     void promise
       .then((report) => {
-        if (this.disposed) return
+        if (this.disposed) return;
         // Keep only in-flight runs in `pipelines`; the settled copy lives in
         // the bounded report map below.
-        if (this.pipelines.get(sessionId)?.promise === promise) this.pipelines.delete(sessionId)
-        this.rememberPipelineReport(sessionId, { dshTurn, report })
-        this.recordPipelineDiagnostics(report)
+        if (this.pipelines.get(sessionId)?.promise === promise)
+          this.pipelines.delete(sessionId);
+        this.rememberPipelineReport(sessionId, { dshTurn, report });
+        this.recordPipelineDiagnostics(report);
       })
       .catch(() => {
         // `run` is total; this guard only protects the observer.
-      })
+      });
   }
 
   /** Store the latest report per session, evicting the oldest settlement. */
@@ -747,12 +1153,12 @@ export class CoordinationService extends Service {
     entry: { dshTurn: number; report: TurnPipelineReport },
   ): void {
     // Re-insert so an active session moves to the newest position.
-    this.pipelineReports.delete(sessionId)
-    this.pipelineReports.set(sessionId, entry)
+    this.pipelineReports.delete(sessionId);
+    this.pipelineReports.set(sessionId, entry);
     while (this.pipelineReports.size > PipelineReportCapacity) {
-      const oldest = this.pipelineReports.keys().next().value
-      if (oldest === undefined) break
-      this.pipelineReports.delete(oldest)
+      const oldest = this.pipelineReports.keys().next().value;
+      if (oldest === undefined) break;
+      this.pipelineReports.delete(oldest);
     }
   }
 
@@ -764,66 +1170,91 @@ export class CoordinationService extends Service {
    * the bounded in-memory map for the service lifetime.
    */
   private recordPipelineDiagnostics(report: TurnPipelineReport): void {
-    const logger = this.host.logger
+    const logger = this.host.logger;
     for (const diagnostic of report.diagnostics) {
-      const message = `deepseek-coordination pipeline: ${diagnostic.code}: ${diagnostic.message}`
-      if (report.status === 'failed' || diagnostic.code.endsWith('missing')) logger?.warn(message)
-      else logger?.debug(message)
+      const message = `deepseek-coordination pipeline: ${diagnostic.code}: ${diagnostic.message}`;
+      if (report.status === "failed" || diagnostic.code.endsWith("missing"))
+        logger?.warn(message);
+      else logger?.debug(message);
     }
-    this.host.events.emit('pipeline/report', report)
+    this.host.events.emit("pipeline/report", report);
   }
 
   /** Await the in-flight pipeline of one DSH turn (tests/diagnostics only). */
-  async awaitPipeline(sessionId: string, dshTurn?: number): Promise<TurnPipelineReport | undefined> {
-    const pending = this.pipelines.get(sessionId)
-    if (pending !== undefined && (dshTurn === undefined || pending.dshTurn === dshTurn)) {
-      return await pending.promise
+  async awaitPipeline(
+    sessionId: string,
+    dshTurn?: number,
+  ): Promise<TurnPipelineReport | undefined> {
+    const pending = this.pipelines.get(sessionId);
+    if (
+      pending !== undefined &&
+      (dshTurn === undefined || pending.dshTurn === dshTurn)
+    ) {
+      return await pending.promise;
     }
-    const settled = this.pipelineReports.get(sessionId)
-    if (settled !== undefined && (dshTurn === undefined || settled.dshTurn === dshTurn)) return settled.report
-    return undefined
+    const settled = this.pipelineReports.get(sessionId);
+    if (
+      settled !== undefined &&
+      (dshTurn === undefined || settled.dshTurn === dshTurn)
+    )
+      return settled.report;
+    return undefined;
   }
 
   /** The latest settled pipeline report of one session, if any. */
-  lastPipeline(sessionId: string, dshTurn?: number): TurnPipelineReport | undefined {
-    const settled = this.pipelineReports.get(sessionId)
-    if (settled === undefined) return undefined
-    return dshTurn === undefined || settled.dshTurn === dshTurn ? settled.report : undefined
+  lastPipeline(
+    sessionId: string,
+    dshTurn?: number,
+  ): TurnPipelineReport | undefined {
+    const settled = this.pipelineReports.get(sessionId);
+    if (settled === undefined) return undefined;
+    return dshTurn === undefined || settled.dshTurn === dshTurn
+      ? settled.report
+      : undefined;
   }
 
   /** The persisted prompt text of a turn; `''` when the row is absent. */
   private promptContent(identity: number | undefined): string {
-    if (identity === undefined) return ''
-    const row = this.db.get<{ content?: unknown }>('SELECT content FROM prompt WHERE identity = ?', identity)
-    return typeof row?.content === 'string' ? row.content : ''
+    if (identity === undefined) return "";
+    const row = this.db.get<{ content?: unknown }>(
+      "SELECT content FROM prompt WHERE identity = ?",
+      identity,
+    );
+    return typeof row?.content === "string" ? row.content : "";
   }
 
   /** Close the coordination turn of one DSH turn; the profession unlocks. */
-  endTurn(sessionId: string, outcome: 'done' | 'failed' | 'cancelled' = 'done'): void {
-    const slot = this.dshTurns.get(sessionId)
-    if (slot === undefined) return
-    this.dshTurns.delete(sessionId)
-    this.finishQuietly(slot.identity, outcome)
+  endTurn(
+    sessionId: string,
+    outcome: "done" | "failed" | "cancelled" = "done",
+  ): void {
+    const slot = this.dshTurns.get(sessionId);
+    if (slot === undefined) return;
+    this.dshTurns.delete(sessionId);
+    this.finishQuietly(slot.identity, outcome);
   }
 
   /** Fail the current coordination turn (an agent step/turn errored). */
   failTurn(sessionId: string): void {
-    const slot = this.dshTurns.get(sessionId)
-    if (slot === undefined) return
-    this.dshTurns.delete(sessionId)
-    this.finishQuietly(slot.identity, 'failed')
+    const slot = this.dshTurns.get(sessionId);
+    if (slot === undefined) return;
+    this.dshTurns.delete(sessionId);
+    this.finishQuietly(slot.identity, "failed");
   }
 
   /* --------------------------------------------------------------------- *
    * Commands, permission and lifecycle
    * --------------------------------------------------------------------- */
 
-  executeCommand(turn: number, content: string): ReturnType<CommandModule['execute']> {
-    return this.command.execute(turn, content)
+  executeCommand(
+    turn: number,
+    content: string,
+  ): ReturnType<CommandModule["execute"]> {
+    return this.command.execute(turn, content);
   }
 
   executePermission(turn: number, content: string): PermissionResult {
-    return this.permission.execute(turn, content)
+    return this.permission.execute(turn, content);
   }
 
   /* --------------------------------------------------------------------- *
@@ -836,45 +1267,48 @@ export class CoordinationService extends Service {
    * that coordination has never seen has nothing pending.
    */
   listPendingTakeover(sessionId: string): PendingTakeoverView[] {
-    const record = this.session.byHandle(sessionId)
-    return record === undefined ? [] : this.takeoverGate.list(record.identity)
+    const record = this.session.byHandle(sessionId);
+    return record === undefined ? [] : this.takeoverGate.list(record.identity);
   }
 
   /** Deliver a human answer to a pending window; `false` leaves it open. */
   answerPendingTakeover(handle: string, answer: TakeoverGateAnswer): boolean {
-    return this.takeoverGate.answer(handle, answer)
+    return this.takeoverGate.answer(handle, answer);
   }
 
   /** Cancel a pending window and delegate to the host default. */
   cancelPendingTakeover(handle: string): boolean {
-    return this.takeoverGate.cancel(handle)
+    return this.takeoverGate.cancel(handle);
   }
 
   get locale(): string {
-    return this.localeValue
+    return this.localeValue;
   }
 
   setLocale(locale: string): string {
-    if (locale === 'en-US' || locale === 'zh-CN') this.localeValue = locale
-    return this.localeValue
+    if (locale === "en-US" || locale === "zh-CN") this.localeValue = locale;
+    return this.localeValue;
   }
 
   metrics(): CoordinationMetrics {
     return {
-      session: this.db.count('session'),
-      turn: this.db.count('turn'),
-      plan: this.db.count('plan'),
-      subtask: this.db.count('subtask'),
-      trace: this.db.count('orchestration_trace'),
-      takeover: this.db.count('takeover'),
+      session: this.db.count("session"),
+      turn: this.db.count("turn"),
+      plan: this.db.count("plan"),
+      subtask: this.db.count("subtask"),
+      trace: this.db.count("orchestration_trace"),
+      takeover: this.db.count("takeover"),
       database: this.db.path,
       schema: SCHEMA_VERSION,
-    }
+    };
   }
 
   cleanupExpired(): void {
     try {
-      this.db.run('DELETE FROM lock WHERE ended IS NOT NULL AND ended < ?', Date.now() - this.config.defaultLease)
+      this.db.run(
+        "DELETE FROM lock WHERE ended IS NOT NULL AND ended < ?",
+        Date.now() - this.config.defaultLease,
+      );
     } catch {
       // Cleanup is best-effort; a locked database is retried on the next tick.
     }
@@ -885,17 +1319,24 @@ export class CoordinationService extends Service {
    * --------------------------------------------------------------------- */
 
   compaction(): CompactionPolicyConfig {
-    return { ...this.compactionPolicy }
+    return { ...this.compactionPolicy };
   }
 
   /** Settings-page patch: live policy, validated and re-applied to the governor. */
-  applyCompactionPolicy(patch: unknown): { auto: boolean; soft: number; hard: number } {
-    const next = normaliseCompactionPatch(patch, this.compactionPolicy)
-    this.compactionPolicy = { ...this.compactionPolicy, ...next }
-    this.config.compaction = this.compactionPolicy
-    this.governor = new TokenGovernor({ config: this.config, contextWindow: 128_000 })
-    this.compactionState.clear()
-    return next
+  applyCompactionPolicy(patch: unknown): {
+    auto: boolean;
+    soft: number;
+    hard: number;
+  } {
+    const next = normaliseCompactionPatch(patch, this.compactionPolicy);
+    this.compactionPolicy = { ...this.compactionPolicy, ...next };
+    this.config.compaction = this.compactionPolicy;
+    this.governor = new TokenGovernor({
+      config: this.config,
+      contextWindow: 128_000,
+    });
+    this.compactionState.clear();
+    return next;
   }
 
   /**
@@ -908,70 +1349,90 @@ export class CoordinationService extends Service {
     sessionId: string,
     messages: ReadonlyArray<{ role: string; content: unknown }>,
     signal?: AbortSignal,
-  ): Promise<{ action: 'none' | 'compacted' | 'skipped'; plan?: TokenPlan }> {
-    if (!this.compactionPolicy.auto) return { action: 'none' }
-    if (signal?.aborted === true) return { action: 'none' }
-    if (!Array.isArray(messages) || messages.length === 0) return { action: 'none' }
-    const port = this.host.compaction
-    if (port?.compactIfNeeded === undefined) return { action: 'none' }
+  ): Promise<{ action: "none" | "compacted" | "skipped"; plan?: TokenPlan }> {
+    if (!this.compactionPolicy.auto) return { action: "none" };
+    if (signal?.aborted === true) return { action: "none" };
+    if (!Array.isArray(messages) || messages.length === 0)
+      return { action: "none" };
+    const port = this.host.compaction;
+    if (port?.compactIfNeeded === undefined) return { action: "none" };
 
-    const now = Date.now()
-    const state = this.compactionState.get(sessionId)
+    const now = Date.now();
+    const state = this.compactionState.get(sessionId);
     if (state !== undefined) {
-      if (state.count >= this.compactionPolicy.maxPerSession) return { action: 'none' }
-      if (now - state.lastAt < this.compactionPolicy.cooldown) return { action: 'none' }
+      if (state.count >= this.compactionPolicy.maxPerSession)
+        return { action: "none" };
+      if (now - state.lastAt < this.compactionPolicy.cooldown)
+        return { action: "none" };
     }
 
-    let plan: TokenPlan
+    let plan: TokenPlan;
     try {
-      plan = this.governor.plan(messages)
+      plan = this.governor.plan(messages);
     } catch {
-      return { action: 'none' }
+      return { action: "none" };
     }
-    if (plan.decision === 'none') return { action: 'none', plan }
+    if (plan.decision === "none") return { action: "none", plan };
 
-    const controller = new AbortController()
-    const timeout = Math.min(this.config.clarifyTimeout, 30000)
-    const timer = setTimeout(() => controller.abort(), timeout)
-    const onAbort = (): void => controller.abort()
-    signal?.addEventListener('abort', onAbort, { once: true })
+    const controller = new AbortController();
+    const timeout = Math.min(this.config.clarifyTimeout, 30000);
+    const timer = setTimeout(() => controller.abort(), timeout);
+    const onAbort = (): void => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const result = await port.compactIfNeeded(
         { id: sessionId } satisfies AgentView,
-        plan.decision === 'hard-prune' ? 'context-overflow' : 'pressure',
+        plan.decision === "hard-prune" ? "context-overflow" : "pressure",
         controller.signal,
-      )
-      if (result === null || result === undefined) return { action: 'none', plan }
-      this.governor.recordCompaction()
-      this.compactionState.set(sessionId, { lastAt: now, count: (state?.count ?? 0) + 1 })
-      this.host.events.emit('compaction/auto', { session: sessionId, plan })
-      return { action: 'compacted', plan }
+      );
+      if (result === null || result === undefined)
+        return { action: "none", plan };
+      this.governor.recordCompaction();
+      this.compactionState.set(sessionId, {
+        lastAt: now,
+        count: (state?.count ?? 0) + 1,
+      });
+      this.host.events.emit("compaction/auto", { session: sessionId, plan });
+      return { action: "compacted", plan };
     } catch {
-      return { action: 'skipped', plan }
+      return { action: "skipped", plan };
     } finally {
-      clearTimeout(timer)
-      signal?.removeEventListener('abort', onAbort)
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 
   dispose(): void {
-    this.disposed = true
-    this.compactionState.clear()
-    this.dshTurns.clear()
-    this.pipelines.clear()
-    this.pipelineReports.clear()
+    this.disposed = true;
+    this.compactionState.clear();
+    this.dshTurns.clear();
+    this.pipelines.clear();
+    this.pipelineReports.clear();
     try {
-      this.db.close()
+      this.db.close();
     } catch {
       // Closing twice is harmless.
     }
   }
 
-  private finishQuietly(identity: number, outcome: 'done' | 'failed' | 'cancelled'): void {
+  private finishQuietly(
+    identity: number,
+    outcome: "done" | "failed" | "cancelled",
+  ): void {
     try {
-      const current = this.turn.get(identity)
-      if (current.status === 'done' || current.status === 'failed' || current.status === 'cancelled' || current.status === 'abandoned') return
-      this.turn.finish(identity, outcome)
+      const current = this.turn.get(identity);
+      if (
+        current.status === "done" ||
+        current.status === "failed" ||
+        current.status === "cancelled" ||
+        current.status === "abandoned"
+      )
+        return;
+      this.turn.finish(identity, outcome);
+      // One settlement object per turn: a `reflect` receipt whose `usage.ms` is
+      // the measured turn duration, plus the `turn.closed` event.
+      const closed = this.turn.get(identity);
+      this.recordAmp(this.amp.closeTurn(this.ampFactsFor(closed)));
     } catch {
       // A turn closed by another path is already terminal.
     }
@@ -981,36 +1442,30 @@ export class CoordinationService extends Service {
   private handlers(): CommandHandlers {
     return {
       goal: (turn, content) => {
-        const result = this.goal.execute(turn, content)
-        return JSON.stringify({ goal: result.goal, rescored: result.rescored })
+        const result = this.goal.execute(turn, content);
+        return JSON.stringify({ goal: result.goal, rescored: result.rescored });
       },
       plan: (turn) => {
-        const plan = this.plan.forTurn(turn)
-        return plan === undefined ? 'no plan for this turn yet' : JSON.stringify(plan)
+        const plan = this.plan.forTurn(turn);
+        return plan === undefined
+          ? "no plan for this turn yet"
+          : JSON.stringify(plan);
       },
-      feedback: (turn, content) => JSON.stringify(this.directive.execute(turn, content)),
+      feedback: (turn, content) =>
+        JSON.stringify(this.directive.execute(turn, content)),
       compact: async (turn, content) => {
-        const result = await this.compact.execute(turn, content)
-        return JSON.stringify(result.compact)
+        const result = await this.compact.execute(turn, content);
+        return JSON.stringify(result.compact);
       },
       permission: (turn, content) => {
-        const result = this.permission.execute(turn, content)
-        return result.reason ?? (result.allowed ? 'allowed' : 'denied')
+        const result = this.permission.execute(turn, content);
+        return result.reason ?? (result.allowed ? "allowed" : "denied");
       },
-    }
+    };
   }
 }
 
 function resolvePath(config: CoordinationConfig): string {
-  return resolveDatabasePath(config.databasePath, config.database)
+  return resolveDatabasePath(config.databasePath, config.database);
 }
 
-/** TraceModule only reads db/handles/clock; bootstrap it before the full host exists. */
-function bootHost(
-  db: CoordinationDatabase,
-  config: CoordinationConfig,
-  handles: HandleGenerator,
-  clock: typeof SystemClock,
-): ModuleHost {
-  return { db, config, handles, clock, trace: undefined as never, events: undefined as never }
-}

@@ -48,6 +48,27 @@ export interface PendingTakeoverView {
   created: number
 }
 
+/** How a window settled, as the AMP layer records it. */
+export type TakeoverSettlement =
+  | 'granted'
+  | 'denied'
+  | 'answered'
+  | 'expired'
+  | 'withdrawn'
+
+/**
+ * Optional protocol observer.
+ *
+ * The gate stays usable without it (the unit tests construct one with no
+ * observer), and an observer exception must never break the waterfall — every
+ * call is wrapped. `requested` fires when the durable window opens, `settled`
+ * exactly once when it closes.
+ */
+export interface TakeoverObserver {
+  requested(view: PendingTakeoverView, at: number): void
+  settled(view: PendingTakeoverView, outcome: TakeoverSettlement, at: number): void
+}
+
 /** One open waterfall request: its view, validation data and settlement hook. */
 interface PendingEntry {
   readonly view: PendingTakeoverView
@@ -88,6 +109,7 @@ export class TakeoverGate {
   private readonly config: CoordinationConfig
   private readonly events: CoordinationEventBus | undefined
   private readonly clock: { now(): number }
+  private readonly observer: TakeoverObserver | undefined
   private readonly pending = new Map<string, PendingEntry>()
 
   constructor(input: {
@@ -96,12 +118,14 @@ export class TakeoverGate {
     config: CoordinationConfig
     events?: CoordinationEventBus
     clock?: { now(): number }
+    observer?: TakeoverObserver
   }) {
     this.takeover = input.takeover
     this.sessions = input.sessions
     this.config = input.config
     this.events = input.events
     this.clock = input.clock ?? { now: () => Date.now() }
+    this.observer = input.observer
   }
 
   /**
@@ -196,9 +220,11 @@ export class TakeoverGate {
         // Already terminal.
       }
       entry.resolve(undefined)
+      this.notifySettled(entry.view, 'withdrawn')
       return false
     }
     entry.resolve(validated)
+    this.notifySettled(entry.view, settlementOf(validated))
     return true
   }
 
@@ -217,6 +243,7 @@ export class TakeoverGate {
       // Already terminal.
     }
     entry.resolve(undefined)
+    this.notifySettled(entry.view, 'withdrawn')
     return true
   }
 
@@ -334,7 +361,7 @@ export class TakeoverGate {
 
     if (signal !== undefined) {
       const onAbort = (): void => {
-        this.delegate(entry)
+        this.delegate(entry, 'withdrawn')
       }
       try {
         signal.addEventListener('abort', onAbort, { once: true })
@@ -348,18 +375,24 @@ export class TakeoverGate {
     }
 
     entry.timer = setTimeout(() => {
-      this.delegate(entry)
+      this.delegate(entry, 'expired')
     }, this.timeoutMilliseconds())
     unrefTimer(entry.timer)
 
     // Announce last: a listener may answer synchronously, and settlement then
     // clears the timer and abort listener installed above.
+    this.notifyRequested(view)
     this.events?.emit('takeover/pending', { ...view })
     return promise
   }
 
-  /** Cancel the row, detach every listener and let the handler call `next()`. */
-  private delegate(entry: PendingEntry): void {
+  /**
+   * Cancel the row, detach every listener and let the handler call `next()`.
+   *
+   * `outcome` distinguishes a window that ran out of time (`expired`) from one
+   * that was aborted or unloaded (`withdrawn`); both delegate identically.
+   */
+  private delegate(entry: PendingEntry, outcome: TakeoverSettlement = 'withdrawn'): void {
     if (!this.settle(entry)) return
     try {
       this.takeover.cancel(entry.view.handle)
@@ -367,6 +400,27 @@ export class TakeoverGate {
       // The row is already terminal; delegation is still the correct outcome.
     }
     entry.resolve(undefined)
+    this.notifySettled(entry.view, outcome)
+  }
+
+  /** Report an opening window; an observer failure never blocks the gate. */
+  private notifyRequested(view: PendingTakeoverView): void {
+    if (this.observer === undefined) return
+    try {
+      this.observer.requested({ ...view }, this.clock.now())
+    } catch {
+      // The AMP layer is write-behind: its failure must not break the waterfall.
+    }
+  }
+
+  /** Report a settled window exactly once (the caller has already settled it). */
+  private notifySettled(view: PendingTakeoverView, outcome: TakeoverSettlement): void {
+    if (this.observer === undefined) return
+    try {
+      this.observer.settled({ ...view }, outcome, this.clock.now())
+    } catch {
+      // Same rule as notifyRequested.
+    }
   }
 
   /**
@@ -394,7 +448,7 @@ export class TakeoverGate {
 
   /** Delegate every open request; used when the plugin unloads. */
   private disposeAll(): void {
-    for (const entry of [...this.pending.values()]) this.delegate(entry)
+    for (const entry of [...this.pending.values()]) this.delegate(entry, 'withdrawn')
   }
 
   /** `clarifyTimeout` bounds a real event; a non-finite value falls back to 30s. */
@@ -420,6 +474,18 @@ export class TakeoverGate {
       return undefined
     }
   }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Settlement mapping
+ * ------------------------------------------------------------------------- */
+
+/** A validated human answer → its AMP settlement. */
+function settlementOf(answer: TakeoverGateAnswer): TakeoverSettlement {
+  if (answer.kind === 'question') return 'answered'
+  if (answer.outcome === 'allowed-once') return 'granted'
+  if (answer.outcome === 'rejected') return 'denied'
+  return 'withdrawn'
 }
 
 /* ------------------------------------------------------------------------- *

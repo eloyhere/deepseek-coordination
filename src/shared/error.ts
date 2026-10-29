@@ -20,6 +20,10 @@ export type CoordinationErrorCode =
   | 'CONFIG'
   | 'UPSTREAM'
   | 'NOT_IMPLEMENTED'
+  /** One bounded background action is already running (`409`). */
+  | 'BUSY'
+  /** The payload is binary, undecodable or an unreadable Office package (`415`). */
+  | 'UNSUPPORTED_MEDIA'
 
 export interface ErrorJson {
   code: CoordinationErrorCode

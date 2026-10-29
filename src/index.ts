@@ -30,6 +30,8 @@ import { CoordinationService } from './host/coordination.js'
 import { resolveDatabasePath } from './host/database.js'
 import { createRuntime, installTurnLifecycle } from './host/dsh.js'
 import { applyConfigPatch } from './host/selection.js'
+import { withAmpReceipts } from './host/amp.js'
+import { handleAmpRoute } from './host/amp-routes.js'
 import { readOverrides, settingsPath, writeOverrides } from './host/settings-store.js'
 import { createProxyService } from './host/proxy-service.js'
 import { brandProfileOf, shouldDecorate } from './host/model-brand.js'
@@ -85,6 +87,7 @@ import {
 import type { TakeoverGateAnswer } from './host/takeover-gate.js'
 import { CoordinationError, InvalidArgumentError, InvalidStateError, NotFoundError, toErrorJson } from './shared/error.js'
 import { normaliseLocale, type Locale } from './shared/i18n.js'
+import { ABOUT } from './shared/about.js'
 import type { Profession } from './shared/enum.js'
 import type { ConfigPatch, ConfigScalar } from './shared/selection.js'
 import { writeConfigPath } from './shared/selection.js'
@@ -712,6 +715,14 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
   context.effect(() => service.takeoverGate.install(context), `${name}: takeover gate`)
 
   /*
+   * AMP observer: a whitelist of module-bus events is mirrored into the
+   * append-only ledger. Only structure is copied (ids, counts, decisions), so no
+   * prompt, question or tool-output text enters the chain. The observer is an
+   * effect: unloading the plugin unsubscribes every listener.
+   */
+  context.effect(() => service.amp.observe(service.host.events), `${name}: amp ledger`)
+
+  /*
    * Tool descriptions are part of the model-facing prompt, so they are read at
    * registration time. A locale change therefore disposes the set and registers
    * it again; `ctx.effect` owns the final teardown, and the HTTP route owns the
@@ -722,14 +733,18 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
     const install = (locale: Locale): void => {
       dispose?.()
       const registry = toolRegistryOf(context)
+      // AMP v0.1: every tool call settles as a receipt in the ledger. The
+      // decorator passes the definition through unchanged, so the model sees
+      // exactly the same name, description and schemas.
+      const receipted = withAmpReceipts(registry, service.amp)
       // Two sets with independent lifetimes: the documented seven-tool file
       // surface and the four read-only graph tools. The graph set gets the
       // apply-time context so its per-call workspace-root resolution follows
       // the same session workspace the `/graph/*` routes use.
-      const disposeFileTools = registerCoordinationTools(registry, service, locale)
+      const disposeFileTools = registerCoordinationTools(receipted, service, locale)
       let disposeGraphTools: () => void
       try {
-        disposeGraphTools = registerCoordinationGraphTools(registry, service, locale, { context })
+        disposeGraphTools = registerCoordinationGraphTools(receipted, service, locale, { context })
       } catch (error) {
         // Never leave the first set registered when the second one fails.
         disposeFileTools()
@@ -765,8 +780,11 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
         const method = request.method ?? 'GET'
 
         try {
-          if (path === '/ping') {
-            json(response, { ok: true, value: { plugin: name, pong: true, locale: service.locale } })
+          if (path === '/ping' && method === 'GET') {
+            json(response, {
+              ok: true,
+              value: { plugin: name, version: ABOUT.version, pong: true, locale: service.locale },
+            })
             return
           }
 
@@ -776,6 +794,34 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
           // forwarded, never what the model was told.
           if (path === '/proxy/status' && method === 'GET') {
             json(response, { ok: true, value: proxy.status() })
+            return
+          }
+
+          /*
+           * AMP v0.1 surface (attention-manifest-protocol 0.1).
+           *
+           * The route table lives in `host/amp-routes.ts` so it is testable
+           * without a Cordis context or a webserver. The body is still the
+           * plugin's `{ ok, value }` envelope, but `value` is the AMP object as
+           * the protocol defines it — the same bytes whose canonical form is
+           * signed or digested, never a reshaped copy.
+           *
+           *   GET  /amp/identity            -> { kid, alg, publicKey }
+           *   GET  /amp/manifest            -> signed Manifest (reissued on expiry)
+           *   GET  /amp/frame?session=<id>  -> latest Frame for one session
+           *   GET  /amp/receipts[?limit=n]  -> newest-first Receipts
+           *   GET  /amp/ledger[?limit=n][&full=1] -> chain head + entries
+           *   GET  /amp/verify              -> recomputed chain verdict
+           *   POST /amp/checkpoint          -> signed LedgerCheckpoint
+           *
+           * No response carries the private key or any content body.
+           */
+          const ampRoute = await handleAmpRoute(
+            { path, method, url, session: sessionOf(url) },
+            service,
+          )
+          if (ampRoute !== undefined) {
+            json(response, ampRoute.body, ampRoute.status)
             return
           }
 
@@ -1057,7 +1103,10 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
               invalidGraphPath(response)
               return
             }
-            const snapshot = graphSnapshotOf(service)
+            // Same per-request workspace root as every sibling graph read: a
+            // file-scoped view must never be projected from another root.
+            const root = await graphRootResolver(service, context, url).resolve()
+            const snapshot = graphSnapshotOf(service, root)
             json(response, { ok: true, value: buildIntra(graphQueryOf(snapshot, 'file'), requested) })
             return
           }
@@ -1306,3 +1355,4 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
     return () => { dispose() }
   }, `${name}: ${ROUTE_PREFIX} routes`)
 }
+

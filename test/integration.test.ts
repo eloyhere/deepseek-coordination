@@ -612,7 +612,7 @@ test('tool definitions have the registry shape and render a text block', () => {
     const definitions = coordinationToolDefinitions(service, 'zh-CN')
     assert.deepEqual(
       definitions.map((definition) => definition.name).sort(),
-      ['coordination_profession', 'coordination_professionlock', 'coordination_selection'],
+      ['coordination_profession', 'coordination_profession_lock', 'coordination_selection'],
     )
 
     const handle = 'session-tool-shape'
@@ -620,7 +620,7 @@ test('tool definitions have the registry shape and render a text block', () => {
     const state = fixture.selection.state(handle)
     const samples: Record<string, unknown> = {
       coordination_profession: { session: handle, ok: true, locked: false, selection: state.selection },
-      coordination_professionlock: { locked: false },
+      coordination_profession_lock: { locked: false },
       coordination_selection: state,
     }
 
@@ -724,7 +724,7 @@ test('profession lock tool reports the active turn and resolves an ordinal', asy
 
     const tool = toolOf(
       coordinationToolDefinitions(toolService(fixture), 'en-US'),
-      'coordination_professionlock',
+      'coordination_profession_lock',
     )
 
     const active = (await tool.execute({ session: handle }, {})) as ProfessionLockToolValue
@@ -1426,3 +1426,4 @@ test('graph tools project an empty graph when nothing has been indexed', async (
   assert.deepEqual(value.entries, [])
   assert.equal(value.truncated, false)
 })
+

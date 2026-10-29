@@ -34,7 +34,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import { ComposerControls, clearComposerCaches } from './controls.js'
+import { clearComposerCaches } from './controls.js'
 import { CoordinationSettings } from './settings.js'
 import { TakeoverDialog } from './takeover.js'
 import { currentCopy, installLocale } from './i18n.js'
@@ -216,11 +216,12 @@ const MemoControls = React.memo(
   function MemoControlsInner(props: MemoControlsProps): React.ReactElement {
     // The takeover dialog and the docked panel column are siblings, not
     // children of the composer row: their own state (polling, routing) never
-    // re-renders the composer.
+    // re-renders the composer. The four composer dropdowns are gone: the
+    // profession/interaction/scene triple is read in the docked AMP panel, so
+    // the composer keeps only the host's own controls.
     return React.createElement(
       React.Fragment,
       null,
-      React.createElement(ComposerControls, { sessionId: props.sessionId }),
       React.createElement(TakeoverDialog, { sessionId: props.sessionId }),
       React.createElement(
         PanelLoadBoundary,
@@ -272,3 +273,4 @@ export function apply(ctx: ClientContext): void {
     order: 40,
   }, MemoControls))
 }
+

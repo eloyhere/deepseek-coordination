@@ -230,7 +230,7 @@ export const PANEL_TAB_IDS = ['files', 'outline', 'dependencies', 'imports'] as 
 export type PanelTab = (typeof PANEL_TAB_IDS)[number]
 
 /** Every routed panel view; `preview`/`exports` are not right-panel tabs. */
-export const PANEL_VIEW_IDS = [...PANEL_TAB_IDS, 'preview', 'exports', 'agents', 'agent'] as const
+export const PANEL_VIEW_IDS = [...PANEL_TAB_IDS, 'preview', 'exports', 'agents', 'agent', 'amp'] as const
 
 export type PanelView = (typeof PANEL_VIEW_IDS)[number]
 
@@ -281,11 +281,105 @@ export interface PanelDependenciesCopy {
   readonly empty: string
 }
 
-/** 导入与导出 view. */
+/** 导入 view. */
 export interface PanelImportsCopy {
   readonly empty: string
   readonly imported: string
   readonly exported: string
+}
+
+/** AMP attention-panel copy (the single workspace panel). */
+export interface PanelAmpCopy {
+  readonly title: string
+  readonly subtitle: string
+  readonly readOnly: string
+  readonly manifest: string
+  readonly frame: string
+  readonly receipts: string
+  readonly ledger: string
+  readonly verify: string
+  readonly verified: string
+  readonly broken: string
+  readonly noFrame: string
+  readonly noReceipts: string
+  readonly noLedger: string
+  readonly agent: string
+  readonly issued: string
+  readonly expires: string
+  readonly budget: string
+  readonly capabilities: string
+  readonly limits: string
+  readonly cycle: string
+  readonly mode: string
+  readonly slots: string
+  readonly ignored: string
+  readonly why: string
+  readonly revisitIf: string
+  readonly allocated: string
+  readonly spent: string
+  readonly outcome: string
+  readonly target: string
+  readonly digest: string
+  readonly tip: string
+  readonly count: string
+  readonly session: string
+  readonly noSession: string
+  /** The composer triple, read here because the composer has no dropdowns. */
+  readonly selection: {
+    readonly title: string
+    readonly profession: string
+    readonly interaction: string
+    readonly scene: string
+    readonly loading: string
+    readonly unavailable: string
+  }
+  /** Plain-language narrative for the read-only panel. */
+  readonly plain: {
+    readonly benefit: string
+    readonly settings: string
+    readonly settingsHint: string
+    readonly focus: string
+    readonly focusSummary: string
+    readonly ignoredTitle: string
+    readonly ignoredSummary: string
+    readonly ignoredRevisit: string
+    readonly ignoredBlocked: string
+    readonly ignoredOutOfScope: string
+    readonly actions: string
+    readonly actionsEmpty: string
+    readonly trust: string
+    readonly trustOk: string
+    readonly trustBroken: string
+    readonly trustSummary: string
+    readonly details: string
+    readonly slotQuestion: string
+    readonly slotProcess: string
+    readonly slotProfession: string
+    readonly slotInteraction: string
+    readonly slotScene: string
+    readonly slotOther: string
+    readonly opRead: string
+    readonly opAttend: string
+    readonly opReflect: string
+    readonly opAsk: string
+    readonly opTool: string
+    readonly opOther: string
+    readonly outcomeSuccess: string
+    readonly outcomeBlocked: string
+    readonly outcomeFailed: string
+    readonly request: string
+    readonly requestMeta: string
+    readonly requestEmpty: string
+    readonly goalLine: string
+    readonly goalLabel: string
+    readonly planLine: string
+    readonly planStep: string
+    readonly planExpect: string
+    readonly whyProfession: string
+    readonly whyInteraction: string
+    readonly ignoredRevisitLabel: string
+    readonly ignoredItem: string
+  }
 }
 
 /** One tooltip per interactive control; `scope` carries `{path}`. */
@@ -362,6 +456,8 @@ export interface PanelCopy {
   readonly outline: PanelOutlineCopy
   readonly dependencies: PanelDependenciesCopy
   readonly imports: PanelImportsCopy
+  /** The single AMP attention panel that replaces the tabbed workspace. */
+  readonly amp: PanelAmpCopy
   /** Preview view heading and the per-row preview affordance. */
   readonly preview: string
   readonly openPreview: string
@@ -703,7 +799,7 @@ export interface ToolCopy {
 export type ToolName =
   | 'coordination_selection'
   | 'coordination_profession'
-  | 'coordination_professionlock'
+  | 'coordination_profession_lock'
 
 /**
  * The four file-layer tools (v0.9). They use the same description/parameter
@@ -1059,7 +1155,7 @@ const ZH_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
       profession: '要设置的职能；省略时只查询当前职能。',
     },
   },
-  coordination_professionlock: {
+  coordination_profession_lock: {
     // v23 §18.2 table wording, verbatim.
     description: '查询职能锁定状态',
     parameters: {
@@ -1162,7 +1258,7 @@ const ZH_PANEL: PanelCopy = {
     files: '文件',
     outline: '大纲',
     dependencies: '依赖',
-    imports: '导入与导出',
+    imports: '导入',
   },
   families: {
     book: '书籍',
@@ -1188,9 +1284,99 @@ const ZH_PANEL: PanelCopy = {
     empty: '尚无依赖关系。',
   },
   imports: {
-    empty: '尚无导入与导出记录。',
+    empty: '尚无导入记录。',
     imported: '导入',
     exported: '导出',
+  },
+  amp: {
+    title: '协作记录',
+    subtitle: '清单 · 注意帧 · 回执 · 账本',
+    readOnly: '只读 · 数据来自 /amp/*',
+    manifest: '清单',
+    frame: '注意帧',
+    receipts: '回执',
+    ledger: '账本',
+    verify: '账本校验',
+    verified: '通过',
+    broken: '失败',
+    noFrame: '当前会话还没有注意帧。',
+    noReceipts: '暂无回执。',
+    noLedger: '账本为空。',
+    agent: '代理',
+    issued: '签发',
+    expires: '过期',
+    budget: '预算',
+    capabilities: '能力',
+    limits: '限制',
+    cycle: '周期',
+    mode: '模式',
+    slots: '焦点',
+    ignored: '忽略',
+    why: '理由',
+    revisitIf: '重访条件',
+    allocated: '分配',
+    spent: '已用',
+    outcome: '结果',
+    target: '目标',
+    digest: '摘要',
+    tip: '链尖',
+    count: '条目',
+    session: '会话',
+    noSession: '没有会话 ID，无法读取注意帧。',
+    selection: {
+      title: '职责 · 交互 · 情景',
+      profession: '职责',
+      interaction: '交互',
+      scene: '情景',
+      loading: '读取中…',
+      unavailable: '选择不可用',
+    },
+    plain: {
+      benefit: '每次回答都留下记录：它关注了什么、忽略了什么、做了什么。',
+      settings: '本次设置',
+      settingsHint: '职责决定它扮演的角色，交互决定它怎么和你配合，情景决定它按什么场景的标准工作。',
+      focus: '这次回答关注了什么',
+      focusSummary: '第 {cycle} 轮 · 共 {slots} 项',
+      ignoredTitle: '这次主动忽略的事',
+      ignoredSummary: '为了聚焦，这次有 {count} 件事没有纳入',
+      ignoredRevisit: '条件变化时会重新考虑',
+      ignoredBlocked: '当前受限',
+      ignoredOutOfScope: '不在本次范围',
+      actions: '它做了什么',
+      actionsEmpty: '还没有记录到操作。',
+      trust: '这份记录可信吗',
+      trustOk: '记录完整，未被修改',
+      trustBroken: '记录校验未通过',
+      trustSummary: '共 {count} 条 · 只追加、带签名',
+      details: '技术细节（给想深究的人）',
+      slotQuestion: '你的这次请求',
+      slotProcess: '这一轮的任务',
+      slotProfession: '职责：{label}',
+      slotInteraction: '交互：{label}',
+      slotScene: '情景：{label}',
+      slotOther: '其他关注项',
+      opRead: '读取',
+      opAttend: '关注',
+      opReflect: '回顾',
+      opAsk: '询问',
+      opTool: '工具调用',
+      opOther: '操作',
+      outcomeSuccess: '成功',
+      outcomeBlocked: '被阻止',
+      outcomeFailed: '失败',
+      request: '这次要解决什么',
+      requestMeta: '第 {ordinal} 轮 · 职责 {profession} · 交互 {interaction} · 情景 {scene}',
+      requestEmpty: '这一轮还没有记录到请求。',
+      goalLine: '目标：{goal}',
+      goalLabel: '目标',
+      planLine: '计划共 {count} 步',
+      planStep: '第 {n} 步：{intent}',
+      planExpect: '验收：{expect}',
+      whyProfession: '职责「{label}」决定了这次回答必须通过哪些检查。',
+      whyInteraction: '交互「{label}」决定了回答怎么组织。',
+      ignoredRevisitLabel: '何时会重新考虑：{condition}',
+      ignoredItem: '{target}（{reason}）',
+    },
   },
   preview: '预览',
   openPreview: '预览文件',
@@ -1294,7 +1480,7 @@ const ZH_PANEL: PanelCopy = {
     tabFiles: '浏览工作区文件',
     tabOutline: '查看文档结构',
     tabDependencies: '以关系图查看文件依赖',
-    tabImports: '查看导入与导出',
+    tabImports: '查看导入',
     tabPreview: '只读预览文件内容',
     tabExports: '以关系图查看导出关系',
     tabImportsGraph: '以关系图查看导入关系',
@@ -1762,6 +1948,8 @@ const ZH: Copy = {
     CONFIG: '插件配置有问题，请检查配置项。',
     UPSTREAM: '模型服务返回了错误，请稍后重试。',
     NOT_IMPLEMENTED: '当前部署没有提供这个功能。',
+    BUSY: '已经有一个后台任务在跑，请等它结束再试。',
+    UNSUPPORTED_MEDIA: '这个文件是二进制、无法解码，或 Office 包读不出来。',
   },
   tools: ZH_TOOLS,
   fileTools: ZH_FILE_TOOLS,
@@ -2088,7 +2276,7 @@ const EN_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
       profession: 'Profession to set; omit it to read the current profession.',
     },
   },
-  coordination_professionlock: {
+  coordination_profession_lock: {
     description: 'Read the profession lock state.',
     parameters: {
       session: 'Target DSH session id; the current session when omitted.',
@@ -2191,7 +2379,7 @@ const EN_PANEL: PanelCopy = {
     files: 'Files',
     outline: 'Outline',
     dependencies: 'Dependencies',
-    imports: 'Imports & exports',
+    imports: 'Imports',
   },
   families: {
     book: 'Book',
@@ -2217,9 +2405,99 @@ const EN_PANEL: PanelCopy = {
     empty: 'No dependencies yet.',
   },
   imports: {
-    empty: 'No import or export records yet.',
+    empty: 'No import records yet.',
     imported: 'Imported',
     exported: 'Exported',
+  },
+  amp: {
+    title: 'Work log',
+    subtitle: 'Manifest · Frame · Receipts · Ledger',
+    readOnly: 'Read-only · data from /amp/*',
+    manifest: 'Manifest',
+    frame: 'Frame',
+    receipts: 'Receipts',
+    ledger: 'Ledger',
+    verify: 'Ledger check',
+    verified: 'Verified',
+    broken: 'Broken',
+    noFrame: 'This session has no attention frame yet.',
+    noReceipts: 'No receipts yet.',
+    noLedger: 'The ledger is empty.',
+    agent: 'Agent',
+    issued: 'Issued',
+    expires: 'Expires',
+    budget: 'Budget',
+    capabilities: 'Capabilities',
+    limits: 'Limits',
+    cycle: 'Cycle',
+    mode: 'Mode',
+    slots: 'Slots',
+    ignored: 'Ignored',
+    why: 'Why',
+    revisitIf: 'Revisit if',
+    allocated: 'Allocated',
+    spent: 'Spent',
+    outcome: 'Outcome',
+    target: 'Target',
+    digest: 'Digest',
+    tip: 'Tip',
+    count: 'Entries',
+    session: 'Session',
+    noSession: 'No session id; the attention frame cannot be read.',
+    selection: {
+      title: 'Profession · Interaction · Scene',
+      profession: 'Profession',
+      interaction: 'Interaction',
+      scene: 'Scene',
+      loading: 'Loading…',
+      unavailable: 'Selection unavailable',
+    },
+    plain: {
+      benefit: 'Every answer leaves a record: what it focused on, what it set aside, and what it did.',
+      settings: 'This answer used',
+      settingsHint: 'Profession is the role it plays, interaction is how it works with you, and scene is the standard it works to.',
+      focus: 'What this answer focused on',
+      focusSummary: 'Cycle {cycle} · {slots} items',
+      ignoredTitle: 'What it deliberately set aside',
+      ignoredSummary: 'To stay focused, {count} items were left out this time',
+      ignoredRevisit: 'It will reconsider when conditions change',
+      ignoredBlocked: 'blocked for now',
+      ignoredOutOfScope: 'out of scope this time',
+      actions: 'What it did',
+      actionsEmpty: 'No actions recorded yet.',
+      trust: 'Can this record be trusted?',
+      trustOk: 'The record is complete and unmodified',
+      trustBroken: 'The record failed verification',
+      trustSummary: '{count} entries · append-only and signed',
+      details: 'Technical details (for the curious)',
+      slotQuestion: 'Your request',
+      slotProcess: 'This turn’s task',
+      slotProfession: 'Profession: {label}',
+      slotInteraction: 'Interaction: {label}',
+      slotScene: 'Scene: {label}',
+      slotOther: 'Other focus',
+      opRead: 'read',
+      opAttend: 'focus',
+      opReflect: 'review',
+      opAsk: 'ask',
+      opTool: 'tool call',
+      opOther: 'action',
+      outcomeSuccess: 'succeeded',
+      outcomeBlocked: 'blocked',
+      outcomeFailed: 'failed',
+      request: 'What this answer had to solve',
+      requestMeta: 'Turn {ordinal} · {profession} · {interaction} · {scene}',
+      requestEmpty: 'No request was recorded for this turn.',
+      goalLine: 'Goal: {goal}',
+      goalLabel: 'Goal',
+      planLine: 'Plan: {count} steps',
+      planStep: 'Step {n}: {intent}',
+      planExpect: 'Acceptance: {expect}',
+      whyProfession: 'The {label} profession fixes which checks this answer must pass.',
+      whyInteraction: 'The {label} interaction fixes how the answer is organised.',
+      ignoredRevisitLabel: 'Reconsidered when {condition}',
+      ignoredItem: '{target} ({reason})',
+    },
   },
   preview: 'Preview',
   openPreview: 'Preview file',
@@ -2323,7 +2601,7 @@ const EN_PANEL: PanelCopy = {
     tabFiles: 'Browse workspace files',
     tabOutline: 'View the document outline',
     tabDependencies: 'View file dependencies as a graph',
-    tabImports: 'View imports and exports',
+    tabImports: 'View imports',
     tabPreview: 'Preview file content (read-only)',
     tabExports: 'View export relationships as a graph',
     tabImportsGraph: 'View import relationships as a graph',
@@ -2791,6 +3069,8 @@ const EN: Copy = {
     CONFIG: 'The plugin configuration has a problem; check its settings.',
     UPSTREAM: 'The model service returned an error; try again later.',
     NOT_IMPLEMENTED: 'This deployment does not provide that feature.',
+    BUSY: 'A background action is already running; wait for it to finish.',
+    UNSUPPORTED_MEDIA: 'The file is binary, not decodable text, or the Office package cannot be read.',
   },
   tools: EN_TOOLS,
   fileTools: EN_FILE_TOOLS,
@@ -2809,3 +3089,6 @@ export function copyFor(locale: Locale): Copy {
 
 /** The default-language copy, used before a host locale has ever been read. */
 export const DEFAULT_COPY: Copy = COPY_BY_LOCALE[DEFAULT_LOCALE]
+
+
+

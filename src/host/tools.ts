@@ -4,7 +4,7 @@
  * The plugin exposes eleven tools to the model:
  *
  *  - `coordination_selection`, `coordination_profession`,
- *    `coordination_professionlock` — the composer surface (v0.7/v0.8);
+ *    `coordination_profession_lock` — the composer surface (v0.7/v0.8);
  *  - `coordination_parse`, `coordination_describe`, `coordination_chain`,
  *    `coordination_read` — the file layer wired in v0.9 (the P0 parser, the
  *    `NodeCard` projection, the host-only `Chain` projection and the single
@@ -262,7 +262,7 @@ export interface ProfessionToolValue {
   error?: { code: 'PROFESSION_LOCKED'; message: string }
 }
 
-/** Value of `coordination_professionlock`. */
+/** Value of `coordination_profession_lock`. */
 export interface ProfessionLockToolValue {
   locked: boolean
   profession?: Profession
@@ -330,6 +330,23 @@ const SELECTION_CONFIG_SCHEMA: Record<string, unknown> = {
     errorHint: { type: 'boolean' },
     rebuildCanReselect: { type: 'boolean' },
     abandonCanReselect: { type: 'boolean' },
+    // The token-governor projection the settings page and the composer read.
+    // DSH validates tool output with `additionalProperties: false`, so a field
+    // that exists in the value but not here fails the whole call.
+    compaction: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['auto', 'soft', 'hard', 'reserve', 'recentTurns', 'cooldown', 'maxPerSession'],
+      properties: {
+        auto: { type: 'boolean' },
+        soft: { type: 'number' },
+        hard: { type: 'number' },
+        reserve: { type: 'number' },
+        recentTurns: { type: 'number' },
+        cooldown: { type: 'number' },
+        maxPerSession: { type: 'number' },
+      },
+    },
   },
 }
 
@@ -347,6 +364,9 @@ const SELECTION_STATE_SCHEMA: Record<string, unknown> = {
     defaultMode: { type: 'string' },
     tooltip: { type: 'boolean' },
     config: SELECTION_CONFIG_SCHEMA,
+    // Frozen composer dimensions, keyed by dimension; present only while a
+    // turn / plan / goal is open.
+    frozen: { type: 'object', additionalProperties: true },
   },
 }
 
@@ -402,7 +422,7 @@ export function coordinationToolDefinitions(
   const copy = copyFor(locale)
   return [
     professionTool(service, copy.tools.coordination_profession),
-    professionLockTool(service, copy.tools.coordination_professionlock),
+    professionLockTool(service, copy.tools.coordination_profession_lock),
     selectionTool(service, copy.tools.coordination_selection),
   ]
 }
@@ -517,7 +537,7 @@ function professionTool(service: CoordinationToolService, copy: ToolCopy): Coord
 }
 
 /* ------------------------------------------------------------------------- *
- * coordination_professionlock
+ * coordination_profession_lock
  * ------------------------------------------------------------------------- */
 
 function professionLockTool(
@@ -525,7 +545,7 @@ function professionLockTool(
   copy: ToolCopy,
 ): CoordinationToolDefinition<ProfessionLockToolValue> {
   return {
-    name: 'coordination_professionlock',
+    name: 'coordination_profession_lock',
     description: copy.description,
     parameters: {
       type: 'object',
@@ -3301,3 +3321,4 @@ const EXPORTATION_TOOL_SCHEMA: Record<string, unknown> = {
     GRAPH_TOOL_ERROR_SCHEMA,
   ],
 }
+

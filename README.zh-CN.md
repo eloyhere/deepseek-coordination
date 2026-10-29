@@ -2,9 +2,9 @@
 
 [English](README.md) · **简体中文** · [更新日志](CHANGELOG.zh-CN.md) · [English changelog](CHANGELOG.md)
 
-一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、7 个模型可见工具和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
+一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、11 个模型可见工具、AMP v0.1 协议层和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.14.10（2026-10-18）。** 本版新增右侧两个只读工作区面板（canvas 关系图、预览矩阵：Markdown 与数学、净化 HTML、Prism 代码、docx/xlsx/pptx、带预计进度的代理名册），并做了崩溃隔离——任一面板失败都不会拖垮宿主。它建立在 v0.12.0 的领域层与 v0.11.0 的设置/缓存代理之上。包版本、更新日志和发布 tarball 来自同一棵树；下文按源码核对，不以设计文档代替实现。
+**当前版本：v0.20.0（2026-10-29）。** 底部不再有协调下拉框；停靠面板改用普通读者能看懂的说法——这次回答用了什么设置（职能/交互/情景）、关注了什么又放下了什么、做了什么、记录是否完整——并设 16px 字号下限。本版建立在 v0.19.0（带闸门的 Goal/Plan 制品）与 v0.17.2（真机边界修复）之上。
 
 | 状态 | 含义 |
 |---|---|
@@ -17,9 +17,10 @@
 | 组成 | 位置 | 作用 |
 |---|---|---|
 | Bundle | `cordis.patch.yml`、`package.json` 的 `dsh.bundle` | 把一行 `deepseek-coordination` 插入 DSH profile 的 bundle 列表。 |
-| 宿主端 | `lib/index.mjs`（ESM，Node） | `CoordinationService`、`coordination` SQLite 库、7 个工具、14 条路由路径和 agent 钩子。 |
+| 宿主端 | `lib/index.mjs`（ESM，Node） | `CoordinationService`、`coordination` SQLite 库、11 个工具、33 条路由路径 / 36 个方法处理器和 agent 钩子。 |
+| 协议层 | `src/protocol/`、`src/host/amp.ts`、`src/host/amp-store.ts` | AMP v0.1：签名清单、每个 turn 一张带显式排除项的注意帧、turn 与工具调用各一条回执、append-only 账本、签名检查点。 |
 | 浏览器端 | `lib/client.js`（CJS，浏览器，`__ModuleLoader__` 包装） | React 18 + Material UI 9：输入框下拉框、设置页、接管对话框。 |
-| 数据库 | 默认 `%DSH_HOME%\coordination\coordination.db` | 插件自有 SQLite 文件；63 张表、7 个触发器、63 个索引，schema 版本 24。从不打开 DSH 的 `harness` 库。 |
+| 数据库 | 默认 `%DSH_HOME%\coordination\coordination.db` | 插件自有 SQLite 文件；68 张表、15 个触发器、67 个索引，schema 版本 25。从不打开 DSH 的 `harness` 库。 |
 
 插件不替代 DSH 的 agent 循环。它记录协调状态、为每个任务锁定一个职能、提供输入框选择与文件元数据、在上下文压力越过阈值时请求 DSH 压缩，并把审批/提问转给人工对话框。
 
@@ -60,7 +61,7 @@ npm pack                # 先执行 prepack，生成可安装 tarball
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.14.10.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.15.0.tgz
 dsh --profile <name> --dump-config   # 应出现 deepseek-coordination 层
 ```
 
@@ -95,11 +96,11 @@ Material UI、emotion 与 `react-dom` 被打进 `lib/client.js`，React 本身�
 宿主端（`src/index.ts`）：
 
 - 导出 `name`、`inject = ['webServer', 'tools']` 和 `Config`；`apply()` 解析配置、创建 service、恢复被中断的 Turn，并通过 `ctx.effect` 安装所有 effect。
-- `CoordinationService`（`src/host/coordination.ts`）是 Cordis 的 `coordination` service，持有数据库、module host 和已组合模块：session、selection、turn、profession、plan、goal、compact、directive、permission、takeover/gate、provider、cache、command。
-- SQLite 使用 `node:sqlite` 的 `DatabaseSync`，开启外键、5 秒 busy timeout，非 `:memory:` 时使用 WAL。触发器拒绝修改已锁定职能，`orchestration_trace` 只允许追加。
-- `/deepseek-coordination` 前缀路由返回 JSON `{ ok, value | error }`；请求体上限 1 MiB；未知路径返回 404 路由信封。
-- 7 个工具通过 `ctx.tools` 注册；三个输入框工具在 `POST /locale` 后重新注册，因为工具描述属于模型提示词。
-- 钩子：`agent/pre-step` 打开协调 Turn 并运行压缩治理器；`agent/turn-stopping` 以 `done` 关闭；`agent/error` 以失败关闭；`approval/request` 与 `user-questions/request` 进入接管闸门。60 秒定时器清理过期 lock 行。
+- `CoordinationService`（`src/host/coordination.ts`）是 Cordis 的 `coordination` service，持有数据库、module host 和已组合模块：session、selection、turn、profession、plan、comprehension、organization、predict、goal、compact、directive、permission、takeover/gate、provider、cache、command，以及 `TurnPipeline` 与 `AmpService`。
+- SQLite 使用 `node:sqlite` 的 `DatabaseSync`，开启外键、5 秒 busy timeout，非 `:memory:` 时使用 WAL。触发器拒绝修改已锁定职能，`orchestration_trace` 只允许追加；另有八个触发器让 AMP 各表只能写一次。
+- `/deepseek-coordination` 前缀路由返回 JSON `{ ok, value | error }`；请求体上限 1 MiB；未知路径返回 404 路由信封。七条 `/amp/*` 路由在同一信封下提供协议制品。
+- 11 个工具通过 `ctx.tools` 注册（三个输入框、四个文件层、四个只读图工具），每个都被包装成一次 AMP 回执；`POST /locale` 后全部重新注册，因为工具描述属于模型提示词。
+- 钩子：`agent/pre-step` 打开协调 Turn（及其 AMP 注意帧）并运行压缩治理器；`agent/turn-stopping` 以 `done` 关闭（并写入 `reflect` 回执）；`agent/error` 以失败关闭；`approval/request` 与 `user-questions/request` 进入接管闸门。60 秒定时器清理过期 lock 行。
 
 浏览器端（`src/client/index.ts`）：
 
@@ -113,33 +114,89 @@ Material UI、emotion 与 `react-dom` 被打进 `lib/client.js`，React 本身�
 deepseek-coordination/
 ├─ src/
 │  ├─ index.ts                 # 宿主组合根：service、路由、工具、钩子
+│  ├─ protocol/                # AMP v0.1 移植：类型、规范 JSON、id、信封、
+│  │                           #   清单、注意帧、回执、warrant、账本
 │  ├─ host/
 │  │  ├─ coordination.ts      # CoordinationService（Cordis service "coordination"）
 │  │  ├─ config.ts             # Schemastery schema + resolveConfig()
-│  │  ├─ database.ts           # SQLite schema（24），63 表，触发器
+│  │  ├─ database.ts           # SQLite schema（25），68 表，15 触发器
+│  │  ├─ amp.ts               # AmpService：清单/注意帧/回执/事件与校验
+│  │  ├─ amp-store.ts         # AMP 的 SQLite 链、密钥、清单、检查点
+│  │  ├─ amp-routes.ts        # /amp/* 路由表（纯函数，可单测）
 │  │  ├─ dsh.ts                # 窄 DSH port + Turn 生命周期
-│  │  ├─ tools.ts              # 7 个模型可见工具
+│  │  ├─ tools.ts              # 11 个模型可见工具
 │  │  ├─ chain.ts              # 有界 Chain 投影引擎
 │  │  ├─ node-registry.ts      # NodeCard 注册表与 describe()
 │  │  ├─ parse-service.ts      # 工作区内的解析与读取服务
 │  │  ├─ token.ts              # TokenGovernor 与纯策略
 │  │  ├─ takeover-gate.ts      # 审批/提问瀑布闸门
-│  │  ├─ selection.ts turn.ts profession.ts …   # 选择、锁定、生命周期
+│  │  ├─ selection.ts turn.ts profession.ts session.ts …  # 选择、锁定、生命周期
+│  │  ├─ module.ts             # ModuleHost ports 与事件总线
+│  │  ├─ adapters/sqlite/      # execution/turn/profession/trace 存储
 │  │  ├─ bayesian.ts comprehension.ts organization.ts … # 库级引擎
 │  │  └─ text/                 # P0 解析器：JS/TS、CSS/HTML/MD、TeX、公式、依赖图
 │  ├─ client/
 │  │  ├─ index.ts              # slots、语言 store、导航图标、接管 CSS
 │  │  ├─ controls.ts           # 五个输入框下拉框、tooltip、离线重放
-│  │  ├─ settings.ts           # 13 组、151 控件的设置目录页
+│  │  ├─ settings.ts           # 13 组、139 控件的设置目录页
 │  │  ├─ takeover.ts           # 审批/提问对话框
 │  │  ├─ bridge.ts store.ts i18n.ts theme.ts selection-cache.ts
 │  └─ shared/                  # entity/enum/selection/i18n/error + 数据结构
-├─ test/                       # 24 个 *.test.ts + helpers.ts
+├─ test/                       # 52 个 *.test.ts + helpers.ts
+├─ docs/amp-conformance.md     # 协议映射、不变量、刻意缺口
 ├─ lib/                        # 构建产物；gitignore，不手改
 ├─ cordis.patch.yml            # 插入 profile 的 bundle 行
 ├─ scripts/check-pack.mjs      # tarball 运行时文件校验
 └─ .github/workflows/release.yml
 ```
+
+## AMP v0.1 协议层
+
+宿主端在各个边界实现 [Attention Manifest Protocol](https://github.com/eloyhere/attention-manifest-protocol)。移植代码在 `src/protocol/`（归属见 [`NOTICE`](NOTICE)），由 `src/host/amp.ts` 驱动；完整映射——包括刻意**未**实现的部分——见 [`docs/amp-conformance.md`](docs/amp-conformance.md)。
+
+| 制品 | 产生时机 | 路由 | 签名 |
+|---|---|---|---|
+| 清单 Manifest | 首次读取；每 12 小时或策略摘要变化后重签 | `GET /amp/manifest` | Ed25519 覆盖规范 JSON，排除 `signatures`、包含 `digest` |
+| 注意帧 Frame | `beginTurn` | `GET /amp/frame?session=` | `digest` 覆盖帧体（完整性，非认证） |
+| 回执 Receipt | turn 结束（`reflect`）与每次工具调用（`read`/`attend`/`act`） | `GET /amp/receipts` | 无——完整性来自账本链 |
+| 断言 Claim | turn 结束时由 comprehension 行生成（`intent`/`requirement`/`constraint`/`assumption`） | `GET /amp/ledger` | 无——`confidence` 靠推导，证据带摘要 |
+| 未知 Unknown | turn 结束时由 comprehension 的歧义生成 | `GET /amp/ledger` | 无 |
+| 目标 Goal | turn 结束且存在 goal 行与逐步验收标准时 | `GET /amp/ledger` | 无 |
+| 计划 Plan | 同一闸门：每个步骤都有 `expect` 且 plan 有约束 | `GET /amp/ledger` | 无 |
+| 事件 Event | `turn.opened`、`turn.closed`、`tool.invoked`，以及白名单内的模块总线事件 | `GET /amp/ledger` | `digest` 覆盖事件体 |
+| 账本 Ledger | 持续 | `GET /amp/ledger`、`GET /amp/verify` | 哈希链；触发器拒绝 UPDATE/DELETE |
+| 检查点 Checkpoint | `POST /amp/checkpoint` | 同上 | Ed25519 覆盖 `amp:ledger-checkpoint:0.1\n` + 规范体 |
+| 身份 Identity | 首个制品产生时 | `GET /amp/identity` | 仅公钥；私钥留在 `amp_key` |
+
+协议带来的具体变化：
+
+- **每个 turn 都有一张带显式排除项的注意帧。** 本宿主故意不执行的场景策略项（`allowBash`、`maxIteration`，以及关闭时的 `allowWeb`）在 turn 开始前就以 `ignored` 记录，并附 `revisit_if` 回访条件；此前它们只存在于内存中的流水线报告里。
+- **每个 turn 与每次工具调用都有回执。** turn 时长由 turn 行实测（`usage.ms`）；token 用量不写，因为那是宿主的口径。`done`/`failed`/`cancelled`/`abandoned` 映射为 `success`/`failure`/`blocked`/`partial`。
+- **可监控才叫计划。** 只有每个解码出的步骤都记录了验收标准、且 plan 有约束时，才写入 `Goal`/`Plan`；否则写一条 `plan.deferred` 说明缺什么，不落库。`expect.check` 就是那段验收文本——目前可由人监控，内核还不能执行（没有 check 运行器）。
+- **把解释与事实分开。** comprehension 的四段结论成为 claim，但只有**逐字**出现在提示词中的语句才升到 `T1` 并附 `entails: true` 的证据；转述保持 `T0` 且无证据。置信度一律 `deriveConfidence(tier, evidence)`，绝不采用阶段自报的数字；歧义变成 `unknown`，其 `importance` 为 `1 − confidence`。`validateClaim` 不通过的 claim 直接丢弃、不入账。
+- **置信度只推导，不自报。** 清单里 capability 只有在出现成功工具回执后才升到 `T2`，置信度是回执上的拉普拉斯平滑成功率。
+- **审计链可签名、可复算。** `GET /amp/verify` 从存储重算每个哈希，并把最新检查点与它所见证的前缀比对；即使触发器被删掉，改写行也会被报出来。
+- **账本只存指针，不存散文。** 镜像事件经 `ledgerProjection`：形如 id 的字符串与数字保留，其余字符串替换为 `[text omitted]`。
+
+封签的 A 面信封已实现并有测试但未接线：本部署没有可对话的对端。表中其余制品都由真实 turn 生命周期驱动；剩余缺口及其理由见一致性文档 §7。
+
+### 真机验证（2026-10-29）
+
+用 `dsh plugin --profile desktop add` 安装进 `%DSH_HOME%\profiles\desktop`，并在运行中的客户端验证：
+
+| 检查 | 结果 |
+|---|---|
+| 宿主端在运行中的应用里加载 | `GET /deepseek-coordination/ping` → `{ ok: true, … }`；`GET /amp/identity` 返回真实 Ed25519 `kid` |
+| 清单已签名，且能在插件之外验证 | 用独立的规范 JSON + WebCrypto 实现得到 `digestMatches: true`、`signatureValid: true`、`kidMatches: true` |
+| 真实 turn 产出制品 | 账本 19 条：3 张注意帧（各 4 槽、2 条排除）、`turn.opened` 映射、工具回执、一个已关闭 turn 的 `reflect` 回执，以及文本被省略的镜像 `pipeline.report` 事件 |
+| 注意帧可读取 | `GET /amp/frame?session=…` → mode、cycle、digest、带 `why` 的槽、带 `revisit_if` 的 `ignored` |
+| 检查点封住真实链 | `POST /amp/checkpoint` → 在 `count 19` 上封出 `seq 0`；`GET /amp/verify` → `{ ok: true, reasons: [] }` |
+| 客户端模块被下发 | `plugins/??deepseek-coordination/client.js&rev=…` → 3,441,910 字节，出现在 `__DSH_BOOT__.entries` |
+
+真机运行还抓到一个真实缺陷：`coordination_selection` 返回的值被 DSH 判为 “not lossless JSON”。0.17.2 不再投影缺省字段，并让每个工具结果先过 `jsonSafe` 再跨边界。两个运行事实值得记住：
+
+- **更新不会热替换。** 新增包会热加载；在应用运行时替换已安装构建，内存里仍是旧模块。`GET /ping` 现在返回 `version`，可直接确认当前生效的构建；加载新构建需要重启应用。
+- **headless profile 不会激活本插件**，因为它声明 `inject: ['webServer']`，而 headless 不挂载 webserver。修法是挂载 `@deepseek-ai/dsh-host-webserver`（及其 startup 行）或放宽 inject；组合服务本身并不需要这些路由。
 
 ## 输入框控件
 
@@ -231,9 +288,15 @@ deepseek-coordination/
 
 图通过 `coordination_parse`、`coordination_describe`、`coordination_chain` 回答"工作区里有什么"。chain 查询在所有返回节点的动作上支持可选 `kind`（去空格、大小写不敏感），因此"所有 lemma""所有 chapter"是一次调用而不是全量扫描。目录节点从无歧义的工作区路径派生并以 `contains`/`part_of` 连接；不变量是**`part_of`（子→父）精确、`contains`（父→子）尽力而为**。
 
-## 工作区面板
+## 协作记录面板（只读）
 
-两个只读面板停靠在右侧并纵向堆叠：关系面板（文件/职能/依赖/导入/导出）与工作面板（文件/大纲/依赖/导入与导出/预览）。每个面板保留 48px 标题栏（菜单、搜索、最小化/还原），展开一个会把另一个顶上去。关系 tab 用原生 canvas 画关系图（方向流动、环脉动、hover tooltip、点击选中）；职能 tab 列出主代理与子代理、预计进度环，并可打开只读消息页。预览 tab 渲染 Markdown/数学、净化后的 HTML、`docx` HTML、Prism 高亮代码、`xlsx` 表格与 `pptx` 卡片——全部只读、有界、`no-store`。状态只在 `localStorage` 存 `{ openLeft, openRight, width }`，视图是 hash 路由（`#coordination/panel/right/<view>?path=…`）。打包体积约 +2 MB（KaTeX、react-markdown、Prism、MUI icons），gzip 后约 700 KB。
+右侧停靠着一个只读面板，写给普通读者而不是协议工程师。面板内部全部是 MUI 组件——`Card` 分区、计划/忽略项/动作/技术字段都放在 `Table` 里，原始证据收在一个折叠的 `Accordion` 中。它按顺序回答三个问题：
+
+- **这次要解决什么** —— 这一轮**真实的请求摘录**（`/amp/story`）、轮次、职能 / 交互 / 情景三个标签及各自定下的规则、目标文本，以及一张带验收标准的计划步骤表。底部下拉框已移除，这里就是查看这些值的地方。
+- **它主动放下了什么** —— 一张表：被忽略条目的名字、原因类别，以及“何时会重新考虑”的具体条件。原始的 `why` / `revisit_if`、摘要和 id 收在折叠的**技术细节**手风琴里。
+- **它做了什么、这份记录是否可信** —— 最近五条回执用日常说法展示（读取 / 关注 / 回顾 / 询问 / 工具调用），再加一行信任结论：“记录完整，未被修改 · 共 N 条 · 只追加、带签名”；校验失败时则列出校验器给出的原因。
+
+面板排版以 rem 为基础并设 **1rem（16px）下限**（`PANEL_TYPE_SX`）：面板里没有任何小于 16px 的文字。展示值不做重排——技术细节里的摘要和链尖就是校验器会重算的值。没有会话或还没有注意帧时显示明确的空态，不回退到文件浏览。收起后只剩会话右上角一个浮动按钮；视图是 `amp` hash 路由（`#coordination/panel/right/amp`）。
 
 ## 设置与配置
 
@@ -313,7 +376,7 @@ soft 阈值可按 0.30–0.90 的比例编辑；hard 为 0.30–0.98，且必须
 
 ## 文件工具、解析器与 Chain
 
-文件层以四个模型可见工具接线，加上三个输入框/职能工具，共 7 个：
+文件层以四个模型可见工具接线，加上三个输入框工具与四个只读图工具，共 11 个（见[工具与路由](#工具与路由)）：
 
 | 工具 | 用途 |
 |---|---|
@@ -362,17 +425,22 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 |---|---|
 | `coordination_selection` | 读取或修改某 session 的五个选择（含 `command` 与 DSH `preset`）；返回带锁、预设和配置投影的 `SelectionState`。 |
 | `coordination_profession` | 读取当前职能记录；仅在活动任务之前/不存在时设置职能。任务已锁时返回 `PROFESSION_LOCKED`，不改选择。 |
-| `coordination_professionlock` | 读取活动 Turn 的锁定状态/职能，或指定序号 Turn 的状态。 |
+| `coordination_profession_lock` | 读取活动 Turn 的锁定状态/职能，或指定序号 Turn 的状态。 |
 | `coordination_parse` | 无正文的解析投影（引用、诊断、字符集、截断、卡片）。 |
 | `coordination_describe` | 无正文的 `NodeCard` 和请求的元数据字段。 |
 | `coordination_chain` | 只返回有界 `ChainProjection`。 |
 | `coordination_read` | 唯一返回内容的工具；有上限的字节/行范围。 |
+| `coordination_file` | 已索引路径的有界工作区树。 |
+| `coordination_outline` | 单个文件或整个工作区的结构大纲。 |
+| `coordination_importation` | 单个文件或工作区的导入行。 |
+| `coordination_exportation` | 单个文件或工作区的导出行。 |
 
-所有路由都在 `/deepseek-coordination` 下，共 **14 条路径 / 16 个方法处理器**：
+所有路由都在 `/deepseek-coordination` 下，共 **33 条路径 / 36 个方法处理器**：
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/ping` | 存活检查；返回插件名、`pong`、当前语言。 |
+| GET | `/proxy/status` | 缓存代理状态：只有计数、id 与哈希（无正文）。 |
 | POST | `/echo` | 回显 JSON body（诊断用）。 |
 | GET, POST | `/selection` | 读 `SelectionState`；修改五个选择。 |
 | GET | `/presets` | 投影 DSH 权限预设目录。 |
@@ -386,15 +454,33 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 | POST | `/profession/abandon` | 结束活动任务，不创建替代。 |
 | POST | `/locale` | 上报客户端语言；重新注册本地化工具描述。 |
 | GET | `/state` | 选择 + 协调指标（`session`、`turn`、`plan`、`subtask`、`trace`、`takeover`、`schema`）。 |
+| GET | `/amp/identity` | 公开 Ed25519 身份 `{ kid, alg, publicKey }`。 |
+| GET | `/amp/manifest` | 签名 AMP 清单。 |
+| GET | `/amp/frame` | 某 `?session=` 的最新注意帧。 |
+| GET | `/amp/receipts` | 最新回执（`?limit=`）。 |
+| GET | `/amp/ledger` | 链头与条目（`?limit=`、`?full=1`）。 |
+| GET | `/amp/verify` | 重算链结论与最新检查点。 |
+| POST | `/amp/checkpoint` | 对当前链头签检查点。 |
+| GET | `/graph/tree` | 有界工作区树（`?root=` 覆盖）。 |
+| GET | `/graph/outline` | 文件或工作区结构大纲。 |
+| GET | `/graph/intra` | 文件内符号与边。 |
+| GET | `/graph/dependencies` | 文件/工作区依赖与环（`?level=file\|intra`）。 |
+| GET | `/graph/imports` | 文件/工作区导入行。 |
+| GET | `/graph/search` | 搜索已持久化的图。 |
+| GET | `/graph/agents` | 只读代理名册与预计进度。 |
+| GET | `/graph/agents/messages` | 有界、`no-store` 的代理对话记录。 |
+| GET | `/graph/preview` | 唯一承载正文的文件路由；有界、`no-store`。 |
+| POST | `/graph/index` | 索引新工作区（运行中返回 `409 BUSY`）。 |
+| POST | `/graph/rebuild` | 重新解析已索引路径（运行中返回 `409 BUSY`）。 |
 
-没有 `coordination_write`、`coordination_refresh`、`outline`、`findSymbol`、`searchSummary`、`commentsOf` 工具。四个文件工具的说明目前是内联中英双语，因为共享 `ToolName` 表还没有它们的键；三个输入框/职能工具使用共享 copy 表。
+没有 `coordination_write` 或 `coordination_refresh` 工具。四个文件工具与四个图工具的说明目前是内联中英双语，因为共享 `ToolName` 表还没有它们的键；三个输入框工具使用共享 copy 表。
 
 ## 数据、隐私与安全
 
 - 插件使用独立 SQLite 库，从不打开 DSH 的 `harness` 库。默认路径是 `%DSH_HOME%\coordination\coordination.db`；`database`/`databasePath` 只属于部署配置，既不投影也不允许 `/config` 写入。
 - 解析节点、`NodeCard`、`ChainLink` 及其工具结果都不带文件正文、附件或 AST。只有 `coordination_read` 返回文本，而且只返回请求的范围。
 - **预览是唯一承载正文的路由**：仅工作区相对路径、正文上限 64 KiB、由用户主动触发、`no-store`、不缓存也不写日志。其余 `/graph/*` 路由保持 body-free。Office 预览在服务端转换并限制大小，不写任何文件。
-- **工作区面板是只读的**：不编辑、不重命名、不删除、不新建、不构建；唯一的非 GET 图路由是 `POST /graph/rebuild`，它只重新解析已索引路径。
+- **工作区面板是只读的**：不编辑、不重命名、不删除、不新建、不构建；唯一的非 GET 图路由是 `POST /graph/rebuild`（重新解析已知路径）与 `POST /graph/index`（扫描并索引新工作区）。
 - 文件路径必须是工作区相对路径；绝对路径、盘符路径、UNC、`..` 逃逸与符号链接逃逸在读取前拒绝。二进制/NUL/不可解码内容直接拒绝，不猜。
 - Turn 钩子只写 Turn 元数据和一条空 prompt 行，不镜像 DSH 对话，也不把文件内容复制进协调库。
 - 权限预设立即写给 DSH（完全权限需二次确认），从不进入离线 localStorage；离线重放只覆盖五个已存选择字段。
@@ -407,7 +493,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 | 检查 | 结果 |
 |---|---|
-| `npm test` | **615 tests，614 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 3 s |
+| `npm test` | **872 tests，871 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 9 s |
 | `npm run typecheck` / `npm run test:tsc` | 通过 |
 | `npm run build` | 宿主 + 客户端 bundle 通过；MUI 的 `"use client"` directive 警告不致命 |
 | `npm run pack:check` | OK：运行时 tarball 含四个发布文件 |
@@ -417,7 +503,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 已知限制，直接列出而不是隐藏：
 
-1. **持久图有边界。** `node`/`edge`/`snapshot` 已是 schema 24，跨运行时保留；但重水化只取最新 10k 节点 / 50k 边，删除的符号不会清理，超出窗口的旧 handle 返回 `NOT_FOUND`。
+1. **持久图有边界。** `node`/`edge`/`snapshot` 已是 schema 25，跨运行时保留；但重水化只取最新 10k 节点 / 50k 边，删除的符号不会清理，超出窗口的旧 handle 返回 `NOT_FOUND`。
 2. **领域提取在解析器层，部分投影仍不完整。** Book/Article/Part/Chapter/Section/Paragraph、Person/Venue、Condition、Sheet/Cell/Range、TeX 证明状态和 CSV/TSV 表格已产出并投影到节点卡；docx/xlsx/pptx 现在通过有界 ZIP+OOXML 读取器解析，Publisher/Access 明确不支持。`partOf`/`condition` 边已可通过 `coordination_chain` 查询；跨文件 Book 组合与 Sign 提升仍未实现。
 3. **核心 Turn 流水线已接线，更宽的引擎没有。** `command=none` 的 Turn 会运行 Comprehension → Organization → Plan/score，以及需要的 Predict 行；有端口的 scene 策略会生效。独立 Emotion/Bayesian/Cognition/Orchestration/Learning/Resource/Score、计划重建循环和 decompose/dispatch/verify/synthesize 仍是库级。`thinking`、`allowBash`、`maxIteration` 和非写作阈值记录为延迟诊断，不伪造。
 4. **配置上限已生效。** `parser.maxAstDepth`、两个依赖图上限和 `tools.maxResultBytes` 都有消费者；parser/chain 上限会 retune 已存在运行时，不再留下陈旧运行时。
@@ -425,11 +511,33 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 6. **`parser.enabled` 仍需重新注册。** 其他文件层上限会即时 retune；关闭 parser 会立即失败关闭，但从工具列表增删四个工具仍要等下一次注册（重启）。
 7. **没有浏览器 E2E。** UI 由类型、构建、settings-catalog 测试以及 takeover/bridge/集成测试覆盖；视觉验证仍是人工/截图。
 8. **Node 引擎为 `>=22.13.0`。** `node:sqlite` 从 22.13.0/23.4.0 起不再需要实验开关；CI 与本次验证使用 24.21.0。
-9. **profile 里可能仍记录着旧的包 spec。** 请核对实际安装的版本（`dsh --profile <name> --dump-config` 或 profile 的 `package.json`）；安装 0.11.0 tarball 或链接已构建的 checkout，不要假定上一次安装已被升级。
+9. **profile 里可能仍记录着旧的包 spec。** 请核对实际安装的版本（`dsh --profile <name> --dump-config` 或 profile 的 `package.json`）；安装 0.15.0 tarball 或链接已构建的 checkout，不要假定上一次安装已被升级。
 10. **缓存代理是实验性的、默认关闭。** 品牌 profile 是策略默认值而不是实测值，且只对自动前缀缓存的家族改内容；在已经稳定的会话上收益可能接近零——这正是它藏在开关和状态端点后面的原因。
+11. **AMP 一致性是边界级、不是全量。** 清单、注意帧、回执、事件、claim/unknown、goal/plan（以已记录验收标准为闸门）、账本与检查点已接线并校验；封签信封、warrant 的 hypothesis/修订/授权函数已实现且有测试但没有运行时驱动；hypothesis、治理清单、凭据、联邦与 interrupt 预算尚未实现。[`docs/amp-conformance.md`](docs/amp-conformance.md) §7 逐项列出理由，清单的 `self.limits` 也写明两个未测量字段（校准、token 用量）。
 
 ## 仓库历史与许可
 
-`0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball；`0.11.0` 加入持久设置、推理交还 DSH，以及带品牌策略的实验性缓存代理；`0.12.0` 加入按体系拆分的领域层、chain `kind` 过滤、目录层与 `NodeRecord`。旧状态仍在 git 历史和 tag 中。
+`0.1.x` 是另一个项目 **dsh-os**，已不在分支顶端；`0.2.0` 变成 DSH 插件 bundle；`0.3`–`0.6` 的 UI 从 Angular 经 MDUI、纯 React 迁到 Material UI；`0.7`–`0.9` 加入五个下拉框、i18n、职能锁定、接管、压缩、P0 解析器、领域模型和共享数据结构；`0.10.0` 加入设置目录、四个文件工具、第二轮数据结构采用和可验证 tarball；`0.11.0` 加入持久设置、推理交还 DSH，以及带品牌策略的实验性缓存代理；`0.12.0` 加入按体系拆分的领域层、chain `kind` 过滤、目录层与 `NodeRecord`；`0.15.0` 加入 AMP v0.1 协议层及其一致性文档。旧状态仍在 git 历史和 tag 中。
 
 Apache-2.0 © 2026 Eloy Kim。见 [LICENSE](LICENSE)。源码：[github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination)。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.14.10",
+  "version": "0.21.0",
   "description": "A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.",
   "keywords": [
     "deepseek-harness",
@@ -36,7 +36,9 @@
     "lib/index.mjs",
     "lib/index.d.mts",
     "lib/client.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "NOTICE",
+    "docs/amp-conformance.md"
   ],
   "dsh": {
     "bundle": {
@@ -108,3 +110,13 @@
     "remark-math": "^6.0.0"
   }
 }
+
+
+
+
+
+
+
+
+
+

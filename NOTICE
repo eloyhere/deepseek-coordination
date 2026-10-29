@@ -1,0 +1,15 @@
+deepseek-coordination
+Copyright 2026 Eloy Kim
+
+This product includes a port of the Attention Manifest Protocol (AMP v0.1),
+originally published in the attention-manifest-protocol project
+(https://github.com/eloyhere/attention-manifest-protocol), version 0.4.1,
+Copyright 2026 Eloy Kim, licensed under the Apache License, Version 2.0.
+
+The port lives in `src/protocol/` and `src/host/amp-store.ts` / `src/host/amp.ts`.
+It re-implements the protocol's normative artifacts against this repository's
+runtime; the wire shapes, invariants and rejection vocabulary are taken from the
+reference implementation, while the implementation language and host bindings
+(Ed25519 through `node:crypto`, SQLite persistence, ISO-8601 timestamps) differ.
+`docs/amp-conformance.md` records which artifacts are wired, which are kernel-only
+and which are deliberately not implemented.

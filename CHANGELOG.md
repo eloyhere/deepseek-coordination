@@ -19,6 +19,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.21.0 | 2026-10-29 | — | /amp/story, concrete request/plan/ignored, all-MUI panel |
+| 0.20.0 | 2026-10-29 | — | Plain-language panel, no composer dropdowns, 16 px floor |
+| 0.19.0 | 2026-10-29 | — | Gated `Goal` + `Plan` artifacts from recorded acceptance |
+| 0.18.0 | 2026-10-29 | — | Single AMP panel, floating minimize control, `coordination_profession_lock` |
+| 0.17.3 | 2026-10-29 | — | Declared tool schema covers `frozen` and `config.compaction` (live-verified) |
+| 0.17.2 | 2026-10-29 | — | Live-boundary fix: lossless-JSON tool output, version in /ping |
+| 0.17.0 | 2026-10-29 | — | Takeover windows become AMP attention requests, interrupt records and ask receipts |
+| 0.16.0 | 2026-10-29 | — | Comprehension → warrant-validated claims and unknowns (T1 only on a verbatim anchor) |
+| 0.15.0 | 2026-10-29 | — | AMP v0.1 protocol layer: manifests, frames, receipts, ledger, checkpoints, `/amp/*` |
 | 0.14.10 | 2026-10-18 | `8c9ff34` | Project-level dependencies, imports own file cycles, plain-text transcript, context menus |
 | 0.14.9 | 2026-10-18 | `12115b5` | Panel mount crash and portal/inset layout |
 | 0.14.8 | 2026-10-18 | `26936c1` | Virtualized panels, routed tabs, outline/preview pages, four graph tools |
@@ -59,6 +68,197 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
 ## [Unreleased]
+
+## [0.21.0] — 2026-10-29
+
+### Added
+
+- **`GET /amp/story?session=…`** — a read-only, non-protocol view that joins the latest turn with its own prompt excerpt (bounded to 220 chars, whitespace-collapsed), goal text, decoded plan steps (`intent` + recorded `expect`) and the latest frame's ignored list. The frame alone carries ids and rationale only, so the panel could not previously say what was asked or planned.
+- The panel's first card now shows the **actual request**, the turn ordinal, the profession/interaction/scene labels with their rationale, the goal, and a **plan table** (step no. · intent · acceptance). The ignored card is a table of named items with reason and the exact "reconsidered when …" condition. Actions and trust are tables too.
+
+### Changed
+
+- **The whole panel is MUI components.** Raw `details`/`summary`, `div`/`span` blocks and ad-hoc flex rows are replaced with `Card`/`CardContent`, `Table`/`TableContainer`/`TableBody`/`TableRow`/`TableCell`, `Accordion`/`AccordionSummary`/`AccordionDetails`, `Chip`, `Alert`, `Button`, `Typography` and `Box`. The technical details live in one collapsed MUI `Accordion`.
+- The technical-details table now pairs every frame slot's `role · target` with its original `why`, so the rationale text is preserved next to the plain-language summary.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (873 tests, 872 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+- Tests: `/amp/story` is joined in a real turn (prompt excerpt, goal, plan); the panel source uses `parseAmpStory`, `MuiTable`, `MuiAccordion` and contains no `h('details')`/`h('summary')`.
+
+### Known limits (stated, not hidden)
+
+- The prompt excerpt is truncated at 220 characters and is the only request text in the panel; the full message stays in the transcript.
+- `expect.check` is still recorded acceptance text, not a runnable command (P3b).
+## [0.20.0] — 2026-10-29
+
+### Changed
+
+- **The composer no longer carries coordination dropdowns.** The four selects (profession, interaction, scene, validation) and the permission takeover select are removed from `conversation.input.left`; only the takeover dialog and the docked panel remain. DSH's own controls are untouched. Profession / interaction / scene are set through `coordination_selection` or the host config defaults, and are now **displayed in the panel**.
+- **The panel is written for a general reader.** One read-only, localized narrative replaces the raw manifest/frame/ledger dump: *what this answer used* (the 职能/交互/情景 triple in plain labels), *what it focused on and set aside* (attention slots as sentences, ignored items with a "will reconsider when conditions change" note), *what it did* (the five latest receipts as read / focus / review / ask / tool call), and *whether the record can be trusted* (one success/broken line plus the verifier's reasons). Digests, ids, slot `why` text, `revisit_if`, capability tiers and limits collapse into a **technical details** block.
+- **Panel typography is rem-based with a 1 rem (16 px) floor** (`PANEL_TYPE_SX`). Every small px size in the dock (9–14 px chips, captions, digests) is now at least 16 px; chips grew to `1.5rem` height.
+
+### Added
+
+- `panel.selection` and `panel.plain` copy blocks in zh-CN and en-US, so every new label, sentence and placeholder (`{cycle}`, `{slots}`, `{count}`, `{label}`) is localized; no hardcoded prose in the panel.
+- `useAmpSelection` reads `GET /selection?session=…` and reloads with the panel's refresh button; a failed read renders "selection unavailable" instead of a default that would misreport the turn.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (872 tests, 871 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+- New source tests: the composer no longer mounts `ComposerControls`; the panel reads the selection and the plain-copy keys; no `fontSize: 9–14` remains in `panel.ts`.
+
+### Known limits (stated, not hidden)
+
+- **Validation is no longer displayed anywhere in the UI.** The level is still enforced server-side and stored per session; it is simply not shown. A future row in the panel would restore visibility without a dropdown.
+- The 16 px floor widens the panel's vertical rhythm, so dense content scrolls more than before.
+## [0.19.0] — 2026-10-29
+
+### Added
+
+- **`Goal` and `Plan` artifacts, gated on recorded acceptance.** When a turn closes and its plan row is monitorable, the ledger receives a `goal` entry (statement, one success criterion per step) and a `plan` entry (one task per step with a mandatory `expect`, sequential edges, `abandon_if` from the plan's constraint, `commitment_window: 1`). Ids match the refs the frame already cites (`goal-<handle>`, `plan-<handle>`).
+- **The gate is explicit.** The pair is emitted only when a goal row exists, every decoded step carries acceptance, the plan carries a constraint, and `validateGoal`/`validatePlan` pass. Otherwise one `plan.deferred` event names the reason (`missing-goal`, `no-steps`, `missing-expect`, `missing-abandon-if`, `invalid-artifact`) and nothing is stored.
+- **Both step shapes count.** Plain plan steps (`{ step, acceptance? }`) and orchestration drafts (`{ task, acceptance }`) are tasks of the same plan; both feed the artifact.
+- **Protocol port**: `src/protocol/plan.ts` with `Goal`, `Expectation`, `PlanTask`, `Plan`, `validateGoal`, `validatePlan` and the throwing `assertGoal`/`assertPlan` wrappers.
+- **Tests**: goal/plan validators (missing criterion, missing expect, empty check, duplicate task id, invalid irreversibility, missing `abandon_if`), the three deferral reasons at the emitter, and a real `CoordinationService` turn whose plan row records acceptance.
+
+### Known limits (stated, not hidden)
+
+- `expect.check` is the recorded acceptance text, not a runnable command; the plugin has no check runner, so the plan is human-monitorable but not yet kernel-monitorable (roadmap P3b).
+- `Goal.value` / `priority` are neutral (`0.5` / `1`) because the plugin ranks no goals; `PlanTask.irreversibility` defaults to `1` (undoable with a clear reversal).
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (870 tests, 869 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+## [0.18.0] — 2026-10-29
+
+### Changed
+
+- **One docked panel: the AMP attention panel.** The two stacked panels (relationship + workspace) are merged into a single read-only panel that shows the signed manifest, the current frame (slots, exclusions, budget), the latest receipts and the ledger tip with its verification result. The workspace tabs (files/outline/dependencies/imports/exports/agents) are no longer mounted; their hash routes and views stay in the module but nothing opens them.
+- **The minimized panel is a floating button, not a title strip.** Collapsing the panel now leaves one round button at the top-right of the conversation (under the header actions, above the transcript); expanding restores the docked column. The persisted state is `{ open, width }`, and a pre-merge `{ openRight, width }` document is migrated so the upgrade keeps the user's expansion choice.
+- **Renamed tool `coordination_professionlock` → `coordination_profession_lock`.** The model-facing name, its copy keys, the AMP capability id and every reference follow the new spelling; the tool's behaviour and schema are unchanged.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (864 tests, 863 pass, 1 skipped), `npm run build`.
+## [0.17.3] — 2026-10-29
+
+### Fixed
+
+- **The declared tool output schema had drifted from the value.** With the JSON boundary fixed, DSH's next check fired: `coordination_selection` returned `value.frozen` and `value.config.compaction`, and `SELECTION_STATE_SCHEMA` declared neither (both objects are `additionalProperties: false`). The tool therefore failed every call in the live client even though the route, the client and the unit tests were fine.
+  - `SELECTION_STATE_SCHEMA` now declares `frozen` (the per-dimension freeze map).
+  - `SELECTION_CONFIG_SCHEMA` now declares `compaction` (auto/soft/hard/reserve/recentTurns/cooldown/maxPerSession).
+- **Guard**: `test/json-safety.test.ts` walks the projected `SelectionState` (top level and `config`) and asserts the declared schema declares every key, so a projection field can no longer outrun its schema.
+
+### Live verification (desktop client, 0.17.3)
+
+- `coordination_selection` returned a complete `SelectionState` in the running client, including the `frozen` map and `config.compaction`.
+- Its call produced an `attend success` receipt; the same chain shows a `reflect success` receipt for a closed turn (`ms = 135246`) as well.
+- `GET /amp/verify` → `{ ok: true, reasons: [], tip: sha256:063e1e1…, count: 40, checkpoint: { seq: 0, count: 19 } }` — later appends stay legal against an earlier checkpoint, exactly as §3.6 describes.
+- `GET /amp/manifest` reports `coordination_selection` at **T2 / confidence 0.833** with three receipt ids as evidence, i.e. M-1 derivation observed live.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (864 tests, 863 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+## [0.17.2] — 2026-10-29
+
+### Fixed
+
+- **A live tool call failed the harness's JSON boundary.** `coordination_selection` returned "value is not lossless JSON" in the running desktop client: DSH detaches every tool result into plain JSON and rejects the whole call when that is lossy. Two plugin projections could carry a present-but-`undefined` key (`presets[].description` and `defaultMode`), and any foreign port shape could add another.
+  - `SelectionModule.listPreset` now omits an absent `description` instead of storing it as `undefined`.
+  - `SelectionModule.state` only projects `defaultMode` when it is a non-empty string.
+  - **A boundary guarantee**: `withAmpReceipts` now detaches every successful tool value through `jsonSafe` (`src/shared/json-safe.ts`) before returning it — nested `undefined` dropped, `NaN`/`Infinity` → `null`, `-0` → `0`, `bigint` → string, `Date` → ISO, `Map`/`Set` → object/array, cycles cut. A changed value is logged at debug level instead of failing the model's call.
+- **`GET /deepseek-coordination/ping` now reports the running plugin version** (`version: "0.17.2"`), so a client can tell which build is actually loaded without a restart.
+
+### Added
+
+- `test/json-safety.test.ts`: the live shape (foreign preset catalog + sandbox port without `defaultMode`), a fully absent sandbox port, `jsonSafe` on every lossy type, and the tool wrapper coercing a lossy value while still writing its success receipt.
+- `test/helpers.ts` accepts an optional `sandboxPolicy` port.
+
+### Live verification (desktop client, 2026-10-29)
+
+Installed into `%DSH_HOME%\profiles\desktop` with `dsh plugin --profile desktop add`. The running harness hot-loaded the package, and the following was observed **in the live client**:
+
+- `GET /deepseek-coordination/ping` → `{plugin, pong, locale}`; `GET /amp/identity` → a real Ed25519 `kid`.
+- `GET /amp/manifest` → 11 capabilities, 1 self-signature, and — verified by an independent canonical-JSON + WebCrypto implementation outside the plugin — `digestMatches: true`, `signatureValid: true`, `kidMatches: true`.
+- The ledger already holds real sessions: 19 entries with three frames (4 slots, 2 exclusions each), `turn.opened` mappings, tool receipts (`attend`/`read`), a `reflect` receipt for a closed turn, and mirrored `pipeline.report` events whose prose fields read `[text omitted]`.
+- `GET /amp/frame?session=…` returns the live frame (mode, cycle, digest, slots with `why`, `ignored` with `revisit_if`).
+- `POST /amp/checkpoint` sealed checkpoint `seq 0` over `count 19`, tip `sha256:c9c3a69…`; `GET /amp/verify` → `{ok: true, reasons: [], checkpoint: {seq: 0, count: 19}}`.
+- The served client module `plugins/??deepseek-coordination/client.js&rev=…` is 3,441,910 bytes and appears in `__DSH_BOOT__.entries`.
+
+### Known finding
+
+- A package **update** is not hot-swapped: installing 0.17.1 while the app was running left the old module in memory, so the 0.17.2 fixes take effect after a restart. (`/ping`'s version is the way to confirm which build is live.)
+- The plugin declares `inject: ['webServer']`, so a **headless** profile (which mounts no webserver) leaves the entry pending. The composed service does not need the routes, but activation waits for the service; a headless deployment needs a webserver plugin mounted or the inject relaxed.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (864 tests, 863 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+## [0.17.0] — 2026-10-29
+
+### Added
+
+- **Takeover windows are AMP attention transactions.** The gate's optional observer announces every window as an `AttentionRequest` (`kind: "attention-request"`) inside an `attention.requested` event, and settles it as an `InterruptRecord` (`kind: "interrupt"`) inside an `interrupt.settled` event plus exactly one `ask` receipt.
+- **Fixed, documented policy for the objects.** An approval is `commitment`/urgency 4 targeting the tool; a question is `curiosity`/urgency 3 targeting the window. `cost: { interrupts: 1 }`, `fallback: escalate`, and `expires` is the gate's own `clarifyTimeout`, so the object and the timer agree.
+- **Honest settlement mapping.** `allowed-once → granted/success`, answered question → `answered/success`, `rejected → denied/blocked`, cancel/unload → `withdrawn/partial`, timeout → `expired/partial`; `usage.interrupts` is 1 only for `granted`/`answered`, and `usage.ms` is the measured window duration. `granted` is derived from `status` inside the builder, so the two can never disagree.
+- **Protocol port**: `src/protocol/social.ts` with `AttentionRequest`, `InterruptRecord`, their validators/builders and `interruptOutcome`.
+- **Tests**: object validation (urgency/fallback/status-contradiction), the gate observer (requested + granted/denied/withdrawn/expired), the AMP emitter, and a real `CoordinationService` window driven through `handleApproval` → `answerPendingTakeover`.
+
+### Changed
+
+- `TakeoverGate` accepts an optional `observer` and reports `expired` vs `withdrawn` separately; without an observer its behaviour is unchanged (all existing tests pass untouched).
+- `AmpService` is constructed before the gate so the gate can report windows; the construction moved, no public API changed.
+- `docs/amp-conformance.md` gains §3.10 and marks P2 done; the gap is now only interrupt *policy* (caps, quiet hours, debt), not the objects.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (859 tests, 858 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+## [0.16.0] — 2026-10-29
+
+### Added
+
+- **Comprehension becomes warrant-validated claims.** When a turn closes, its comprehension row is turned into up to four `claim` entries (`intent`, `requirement`, `constraint`, `assumption`) and one `unknown` (the ambiguity), appended to the AMP ledger and summarised by one `cognition.recorded` event.
+- **Tier honesty rule.** A claim is promoted to `T1` only when its statement appears **verbatim** in the user's prompt (case/whitespace-insensitive; whole statement or one sentence). Evidence is one `testimony` item with `trust: asserted`, `independence: 1`, `entails: true`, `origin: prompt:<turn>`, a `memory` ref, a ≤200-character excerpt and its `digest`. A paraphrase stays `T0` with no evidence.
+- **Confidence is derived, never read.** Every claim's `confidence` is `deriveConfidence({tier, warrant})` (`0.7` for the T1 case, capped by the asserted trust ceiling; `0.35` for T0). The comprehension row's own `confidence` only feeds the unknown's `importance` (`1 − confidence`).
+- **Invalid claims are dropped.** `validateClaim` runs before the append; a failing claim is logged and not stored. Placeholders (`none`, `n/a`, `-`, `无`, `暂无`, `不适用`, `null`, `undefined`) produce nothing.
+- **Tests**: two kernel-level wiring cases (T1/T0 split, evidence shape, unknown importance, every stored claim validates) and a lifecycle assertion that the real pipeline produces claims.
+
+### Changed
+
+- `AmpTurnFacts` gains an optional `cognition` block; `CoordinationService.ampFactsFor` fills it from the comprehension row and the prompt.
+- `docs/amp-conformance.md`: the Warrant section moves from *kernel only* to *wired*, a new §3.9 documents the claim/unknown rules, the invariant table gains W-4b, and the roadmap now marks P1 done with a P1b follow-up.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (853 tests, 852 pass, 1 skipped), `npm run build`, `npm run pack:check`.
+
+## [0.15.0] — 2026-10-29
+
+### Added
+
+- **AMP v0.1 protocol layer** in `src/protocol/`: common primitives, canonical JSON + `sha256` digests, the id grammar, the AMP error family, the sealed Ed25519 A-surface envelope with its receiver runtime, signed manifests, the frame construction boundary (nine-slot ceiling, required `why`, computed digest, deferred exclusions, ref resolution), receipts/events, the warrant derivation rules (tier gates, confidence derivation, revision) and the append-only ledger with signed, domain-separated checkpoints. Ported from `attention-manifest-protocol` v0.4.1; see `NOTICE`.
+- **`AmpService`** (`src/host/amp.ts`): the plugin's state becomes protocol artifacts. A signed manifest whose capability tier/confidence derive from recorded receipts; one frame per turn with an explicit `ignored` list built from the scene-policy knobs this host does not enforce; one `reflect` receipt per turn whose `usage.ms` is measured; one receipt per tool call through `withAmpReceipts`; a whitelisted, redacted projection of module-bus events into the ledger.
+- **Schema 25** (`src/host/database.ts`): `amp_object` (hash chain), `amp_key` (Ed25519 identity), `amp_manifest`, `amp_checkpoint`, plus eight triggers that make every AMP table write-once. Additive only — a schema-24 database keeps every row.
+- **`/amp/*` routes**: `GET /amp/identity`, `/amp/manifest`, `/amp/frame?session=`, `/amp/receipts`, `/amp/ledger`, `/amp/verify`, and `POST /amp/checkpoint`. Same `{ ok, value | error }` envelope; the private key is never returned.
+- **`docs/amp-conformance.md`**: the artifact-by-artifact map, the invariant table with the reference rule ids (A-1, F-2, M-1, W-4, X-1 …), the plugin-concept mapping, the deliberate gaps and a P1–P5 roadmap.
+- **Tests**: `test/amp-protocol.test.ts` (kernel: canonical JSON, ids, frame boundary, warrant, envelope tamper/expiry/FIFO, ledger/snapshot/checkpoint, manifest), `test/amp-wiring.test.ts` (derived capability tiers, frame exclusions, measured receipts, SQLite immutability, tamper detection, checkpoint prefix semantics, tool decorator, event redaction), `test/amp-lifecycle.test.ts` (the real `CoordinationService` over a temporary database) and `test/amp-routes.test.ts` (the `/amp/*` route table, including its 400/404 shapes).
+
+### Changed
+
+- **Schema version 25, 68 tables, 15 triggers, 67 indexes.** `test/persistence.test.ts` now asserts the AMP tables arrive on a schema-23 database.
+- **`ConfigPatchResult` gains `normalised`**, which `POST /config` already emitted.
+- **`GET /ping` requires the GET method**; other verbs now fall through to the 404 envelope.
+- **`BUSY` and `UNSUPPORTED_MEDIA` are part of `CoordinationErrorCode`** and have zh-CN/en-US copy, so a typed consumer can exhaust the union.
+
+### Fixed
+
+- **`npm run typecheck` is green again.** `src/host/adapters/sqlite/turn-store.ts` used `PromptSnapshot`/`CommandSnapshot` without importing them.
+- **`/graph/intra` resolves the same per-request workspace root as every sibling graph route**; it previously fell back to the default root, so a file could be projected from a different workspace than `/graph/outline` described.
+- **The database schema comment no longer breaks the template literal** (a backtick inside the SQL comment terminated the string).
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (851 tests, 850 pass, 1 skipped), `npm run build`, `npm run pack:check`.
 
 ## [0.14.10] — 2026-10-18
 
@@ -953,3 +1153,17 @@ Initial publication, preceded by the build-out that began on 2026-10-12 (`c2dae0
 - Tags: `v0.1.5`, `v0.1.6`, `v0.1.7`, `v0.1.8`, `v0.1.9`
 - Last commit of the dsh-os tree: `3ba4a45`
 - First commit: `c2dae0c` (2026-10-12)
+
+
+
+
+
+
+
+
+
+
+
+
+
+

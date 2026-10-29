@@ -23,8 +23,12 @@
  * lawful way to leave a locked profession early is `markAbandoned`, which is
  * delegated to `ProfessionModule` so the lock rules live in a single module.
  */
-import type { ModuleHost } from './module.js'
-import type { Session, Turn } from '../shared/entity.js'
+import type { CoordinationConfig } from "./config.js";
+import type { Clock, HandleGenerator } from "./handle.js";
+import type { ExecutionStore } from "./execution-store.js";
+import type { TurnStore } from "./turn-store.js";
+import type { TraceWriter } from "./trace-port.js";
+import type { Session, Turn } from "../shared/entity.js";
 import type {
   CommandType,
   Interaction,
@@ -32,7 +36,7 @@ import type {
   Scene,
   TurnStatus,
   Validation,
-} from '../shared/enum.js'
+} from "../shared/enum.js";
 import {
   CommandValues,
   InteractionValues,
@@ -40,56 +44,77 @@ import {
   TurnStatusLabel,
   ValidationValues,
   isOneOf,
-} from '../shared/enum.js'
-import { InvalidArgumentError, InvalidStateError } from '../shared/error.js'
-import { ProfessionModule, assertProfession } from './profession.js'
-import { SessionModule } from './session.js'
-import { mapTurn } from './row.js'
-import type { Row } from './row.js'
+} from "../shared/enum.js";
+import { InvalidArgumentError, InvalidStateError } from "../shared/error.js";
+import { ProfessionModule, assertProfession } from "./profession.js";
+import { SessionModule } from "./session.js";
 
 /** Every field one new turn needs. */
 export interface TurnRequest {
-  content: string
-  profession: Profession
-  interaction: Interaction
-  scene: Scene
-  validation: Validation
-  command?: CommandType
-  effort?: string
+  content: string;
+  profession: Profession;
+  interaction: Interaction;
+  scene: Scene;
+  validation: Validation;
+  command?: CommandType;
+  effort?: string;
   /** Accepted for symmetry with SubTask; the v23 turn table has no column. */
-  model?: string
+  model?: string;
+}
+
+export interface TurnModuleDependencies {
+  config: CoordinationConfig;
+  clock: Clock;
+  handles: HandleGenerator;
+  executionStore: ExecutionStore;
+  turnStore: TurnStore;
+  trace: TraceWriter;
+  profession: ProfessionModule;
 }
 
 /** The statuses that end a task; no transition out of them is lawful. */
-const TERMINAL_TURN: ReadonlySet<string> = new Set(['done', 'failed', 'cancelled', 'abandoned'])
-
-/** The active-turn predicate shared with `SessionModule` and `SelectionModule`. */
-const ACTIVE_TURN = `status NOT IN ('done', 'failed', 'cancelled', 'abandoned')`
+const TERMINAL_TURN: ReadonlySet<string> = new Set([
+  "done",
+  "failed",
+  "cancelled",
+  "abandoned",
+]);
 
 /**
  * A profession record has no `cancelled` status. A cancelled turn did not
  * complete its task, so `abandoned` is the closest truthful record status;
  * `failed` would claim the task failed on its own merits.
  */
-const FINISH_RECORD: Readonly<Record<'done' | 'failed' | 'cancelled', string>> = {
-  done: 'done',
-  failed: 'failed',
-  cancelled: 'abandoned',
-}
+const FINISH_RECORD: Readonly<Record<"done" | "failed" | "cancelled", string>> =
+  {
+    done: "done",
+    failed: "failed",
+    cancelled: "abandoned",
+  };
 
 /** Written into the profession record when a host restart interrupts a task. */
-const INTERRUPTED_REASON = 'turn was interrupted by a host restart'
+const INTERRUPTED_REASON = "turn was interrupted by a host restart";
 
 /** The columns `attach` may fill in; the order is the pipeline order (§9.7). */
-const ATTACH_FIELD = ['comprehension', 'organization', 'plan', 'goal', 'compact'] as const
+const ATTACH_FIELD = [
+  "comprehension",
+  "organization",
+  "plan",
+  "goal",
+  "compact",
+] as const;
 
 export class TurnModule {
-  private readonly host: ModuleHost
-  private sessions?: SessionModule
-  private professions?: ProfessionModule
+  private readonly deps: TurnModuleDependencies;
+  private readonly sessions: SessionModule;
 
-  constructor(host: ModuleHost) {
-    this.host = host
+  constructor(deps: TurnModuleDependencies) {
+    this.deps = deps;
+    this.sessions = new SessionModule(
+      deps.executionStore,
+      deps.config,
+      deps.clock,
+    );
   }
 
   /**
@@ -101,8 +126,8 @@ export class TurnModule {
     sessionHandle: string,
     metadata?: { cwd?: string; profile?: string; principal?: string },
   ): Session {
-    assertSessionHandle(sessionHandle)
-    return this.sessionModule().ensure(sessionHandle, metadata ?? {})
+    assertSessionHandle(sessionHandle);
+    return this.sessionModule().ensure(sessionHandle, metadata ?? {});
   }
 
   /**
@@ -111,89 +136,78 @@ export class TurnModule {
    * no later call to this module can rewrite `turn.profession` (§3.3).
    */
   create(sessionIdentity: number, request: TurnRequest): Turn {
-    assertSessionIdentity(sessionIdentity)
-    assertRequest(request)
-    const command = request.command ?? 'none'
-    assertOneOf('command', command, CommandValues)
-    const session = this.host.db.require<Row>('session', sessionIdentity, 'session')
+    assertSessionIdentity(sessionIdentity);
+    assertRequest(request);
+    const command = request.command ?? "none";
+    assertOneOf("command", command, CommandValues);
+    const session = this.deps.executionStore.get(sessionIdentity);
     const effort =
-      typeof request.effort === 'string' && request.effort.trim().length > 0 ? request.effort : 'medium'
+      typeof request.effort === "string" && request.effort.trim().length > 0
+        ? request.effort
+        : "medium";
 
-    const identity = this.host.db.transaction(() => {
-      /*
-       * `ordinal` is assigned from the highest existing ordinal rather than from
-       * a row count. Turn rows are append-only (no module deletes one), so the
-       * two are equal; the difference is the cost: `COUNT(*)` walks every turn
-       * of the session (O(n) per creation, O(n^2) over a session), while
-       * `MAX(ordinal)` is one seek on the `UNIQUE(session, ordinal)` index.
-       */
-      const highest = this.host.db.get<{ ordinal: number }>(
-        'SELECT COALESCE(MAX(ordinal), 0) AS ordinal FROM turn WHERE session = ?',
-        sessionIdentity,
-      )
-      const existing = Number(highest?.ordinal ?? 0)
-      if (existing >= this.host.config.maxTurnPerSession) {
-        throw new InvalidStateError(
-          `session ${String(session.handle)} reached maxTurnPerSession`,
-          { session: sessionIdentity, maxTurnPerSession: this.host.config.maxTurnPerSession },
-        )
-      }
-      const ordinal = existing + 1
-      const now = this.host.clock.now()
-
-      const turnIdentity = this.host.db.insert('turn', {
-        handle: this.host.handles.next('turn'),
-        session: sessionIdentity,
-        ordinal,
-        command,
-        interaction: request.interaction,
-        scene: request.scene,
-        validation: request.validation,
-        profession: request.profession,
-        locked: 1,
-        lockedAt: now,
-        effort,
-        iteration: 1,
-        rebuild: 0,
-        status: 'pending',
-        created: now,
-      })
-
-      const promptIdentity = this.host.db.insert('prompt', {
-        handle: this.host.handles.next('prompt'),
-        turn: turnIdentity,
+    const existing = this.turnStore().maxOrdinal(sessionIdentity);
+    if (existing >= this.deps.config.maxTurnPerSession) {
+      throw new InvalidStateError(
+        `session ${String(session.handle)} reached maxTurnPerSession`,
+        {
+          session: sessionIdentity,
+          maxTurnPerSession: this.deps.config.maxTurnPerSession,
+        },
+      );
+    }
+    const ordinal = existing + 1;
+    const now = this.deps.clock.now();
+    const created = this.turnStore().create({
+      handle: this.deps.handles.next("turn"),
+      session: sessionIdentity,
+      ordinal,
+      command,
+      interaction: request.interaction,
+      scene: request.scene,
+      validation: request.validation,
+      profession: request.profession,
+      lockedAt: now,
+      effort,
+      created: now,
+      prompt: {
+          handle: this.deps.handles.next("prompt"),
         content: request.content,
         created: now,
-      })
-      this.host.db.update('turn', { prompt: promptIdentity }, 'identity = ?', turnIdentity)
+      },
+      ...(command === "none"
+        ? {}
+        : {
+            commandFace: {
+                handle: this.deps.handles.next("command"),
+              type: command,
+              content: request.content,
+              created: now,
+            },
+          }),
+    });
+    const turnIdentity = created.identity;
 
-      if (command !== 'none') {
-        this.host.db.insert('command', {
-          handle: this.host.handles.next('command'),
-          turn: turnIdentity,
-          type: command,
-          content: request.content,
-          created: now,
-        })
-      }
-
-      /* The single profession record of this task (v23 §3.5, §11.14). */
-      this.professionModule().recordProfession(turnIdentity, request.profession, 'host', 'running', {
+    /* The single profession record of this task (v23 §3.5, §11.14). */
+    this.professionModule().recordProfession(
+      turnIdentity,
+      request.profession,
+      "host",
+      "running",
+      {
         input: request.content,
-      })
+      },
+    );
 
-      this.host.trace.append({
-        turn: turnIdentity,
-        event: 'lock',
-        actor: 'host',
-        profession: request.profession,
-        detail: { phase: 'turn-create' },
-      })
+    this.deps.trace.append({
+      turn: turnIdentity,
+      event: "lock",
+      actor: "host",
+      profession: request.profession,
+      detail: { phase: "turn-create" },
+    });
 
-      return turnIdentity
-    })
-
-    return this.requireTurn(identity)
+    return this.requireTurn(turnIdentity);
   }
 
   /**
@@ -202,20 +216,18 @@ export class TurnModule {
    * handle can never be mistaken for a session identity.
    */
   createForHandle(sessionHandle: string, request: TurnRequest): Turn {
-    const session = this.ensureSession(sessionHandle)
-    return this.create(session.identity, request)
+    const session = this.ensureSession(sessionHandle);
+    return this.create(session.identity, request);
   }
 
   get(identity: number): Turn {
-    return this.requireTurn(identity)
+    return this.requireTurn(identity);
   }
 
   /** Every turn of one session, in ordinal order. */
   list(sessionIdentity: number): Turn[] {
-    assertSessionIdentity(sessionIdentity)
-    return this.host.db
-      .all<Row>('SELECT * FROM turn WHERE session = ? ORDER BY ordinal ASC, identity ASC', sessionIdentity)
-      .map(mapTurn)
+    assertSessionIdentity(sessionIdentity);
+    return this.turnStore().list(sessionIdentity);
   }
 
   /**
@@ -223,12 +235,8 @@ export class TurnModule {
    * predicate: an active turn is what keeps the profession dropdown read-only.
    */
   active(sessionIdentity: number): Turn | undefined {
-    assertSessionIdentity(sessionIdentity)
-    const row = this.host.db.get<Row>(
-      `SELECT * FROM turn WHERE session = ? AND ${ACTIVE_TURN} ORDER BY identity DESC LIMIT 1`,
-      sessionIdentity,
-    )
-    return row === undefined ? undefined : mapTurn(row)
+    assertSessionIdentity(sessionIdentity);
+    return this.turnStore().active(sessionIdentity);
   }
 
   /**
@@ -237,21 +245,23 @@ export class TurnModule {
    * trail can never drift from the turn row. Unknown values are refused.
    */
   setStatus(identity: number, status: TurnStatus): Turn {
-    assertTurnStatus(status)
-    const current = this.requireTurn(identity)
-    if (current.status === status) return current
-    if (status === 'done' || status === 'failed' || status === 'cancelled') {
-      return this.finish(identity, status)
+    assertTurnStatus(status);
+    const current = this.requireTurn(identity);
+    if (current.status === status) return current;
+    if (status === "done" || status === "failed" || status === "cancelled") {
+      return this.finish(identity, status);
     }
-    if (status === 'abandoned') return this.markAbandoned(identity)
+    if (status === "abandoned") return this.markAbandoned(identity);
     if (TERMINAL_TURN.has(current.status)) {
-      throw new InvalidStateError(`turn ${identity} is already ${current.status}`, {
-        turn: identity,
-        status: current.status,
-      })
+      throw new InvalidStateError(
+        `turn ${identity} is already ${current.status}`,
+        {
+          turn: identity,
+          status: current.status,
+        },
+      );
     }
-    this.host.db.update('turn', { status }, 'identity = ?', identity)
-    return this.requireTurn(identity)
+    return this.turnStore().update(identity, { status });
   }
 
   /**
@@ -261,21 +271,29 @@ export class TurnModule {
    */
   attach(
     identity: number,
-    patch: { comprehension?: number; organization?: number; plan?: number; goal?: number; compact?: number },
+    patch: {
+      comprehension?: number;
+      organization?: number;
+      plan?: number;
+      goal?: number;
+      compact?: number;
+    },
   ): Turn {
-    const current = this.requireTurn(identity)
-    const values: Record<string, number> = {}
+    const current = this.requireTurn(identity);
+    const values: Record<string, number> = {};
     for (const field of ATTACH_FIELD) {
-      const value = patch[field]
-      if (value === undefined) continue
+      const value = patch[field];
+      if (value === undefined) continue;
       if (!Number.isInteger(value) || value <= 0) {
-        throw new InvalidArgumentError(`turn.${field} must be a positive integer identity`, { field, value })
+        throw new InvalidArgumentError(
+          `turn.${field} must be a positive integer identity`,
+          { field, value },
+        );
       }
-      values[field] = value
+      values[field] = value;
     }
-    if (Object.keys(values).length === 0) return current
-    this.host.db.update('turn', values, 'identity = ?', identity)
-    return this.requireTurn(identity)
+    if (Object.keys(values).length === 0) return current;
+    return this.turnStore().update(identity, values);
   }
 
   /**
@@ -283,26 +301,39 @@ export class TurnModule {
    * finish, and no trace event is written here: the orchestration bridge owns
    * `synthesize` / `abandon` so an event is never duplicated (§3.8).
    */
-  finish(identity: number, status: 'done' | 'failed' | 'cancelled'): Turn {
-    const requested = status as TurnStatus
-    if (requested !== 'done' && requested !== 'failed' && requested !== 'cancelled') {
-      throw new InvalidArgumentError(`unknown finish status: ${String(status)}`, {
-        allowed: ['done', 'failed', 'cancelled'],
-      })
+  finish(identity: number, status: "done" | "failed" | "cancelled"): Turn {
+    const requested = status as TurnStatus;
+    if (
+      requested !== "done" &&
+      requested !== "failed" &&
+      requested !== "cancelled"
+    ) {
+      throw new InvalidArgumentError(
+        `unknown finish status: ${String(status)}`,
+        {
+          allowed: ["done", "failed", "cancelled"],
+        },
+      );
     }
-    const current = this.requireTurn(identity)
+    const current = this.requireTurn(identity);
     if (TERMINAL_TURN.has(current.status)) {
-      throw new InvalidStateError(`turn ${identity} is already ${current.status}`, {
-        turn: identity,
-        status: current.status,
-      })
+      throw new InvalidStateError(
+        `turn ${identity} is already ${current.status}`,
+        {
+          turn: identity,
+          status: current.status,
+        },
+      );
     }
-    const now = this.host.clock.now()
-    this.host.db.transaction(() => {
-      this.host.db.update('turn', { status: requested, finished: now }, 'identity = ?', identity)
-      this.professionModule().recordProfession(identity, current.profession, 'host', FINISH_RECORD[requested])
-    })
-    return this.requireTurn(identity)
+    const now = this.deps.clock.now();
+    this.turnStore().update(identity, { status: requested, finished: now });
+    this.professionModule().recordProfession(
+      identity,
+      current.profession,
+      "host",
+      FINISH_RECORD[requested],
+    );
+    return this.requireTurn(identity);
   }
 
   /**
@@ -311,18 +342,24 @@ export class TurnModule {
    * action of the agent. Returns the number of turns recovered.
    */
   recoverInterrupted(): number {
-    const now = this.host.clock.now()
-    return this.host.db.transaction(() => {
-      const rows = this.host.db.all<Row>(`SELECT * FROM turn WHERE ${ACTIVE_TURN} ORDER BY identity ASC`)
-      for (const row of rows) {
-        const turn = mapTurn(row)
-        this.host.db.update('turn', { status: 'failed', finished: now }, 'identity = ?', turn.identity)
-        this.professionModule().recordProfession(turn.identity, turn.profession, 'host', 'failed', {
+    const now = this.deps.clock.now();
+    const rows = this.turnStore().activeAll();
+    for (const turn of rows) {
+      this.turnStore().update(turn.identity, {
+        status: "failed",
+        finished: now,
+      });
+      this.professionModule().recordProfession(
+        turn.identity,
+        turn.profession,
+        "host",
+        "failed",
+        {
           reason: INTERRUPTED_REASON,
-        })
-      }
-      return rows.length
-    })
+        },
+      );
+    }
+    return rows.length;
   }
 
   /**
@@ -332,68 +369,82 @@ export class TurnModule {
    * is kept for audit.
    */
   markAbandoned(identity: number): Turn {
-    return this.professionModule().abandonTurn(identity)
+    return this.professionModule().abandonTurn(identity);
   }
 
   private requireTurn(identity: number): Turn {
-    return mapTurn(this.host.db.require<Row>('turn', identity, 'turn'))
+    return this.turnStore().get(identity);
   }
 
   private sessionModule(): SessionModule {
-    this.sessions ??= new SessionModule(this.host)
-    return this.sessions
+    return this.sessions;
   }
 
   private professionModule(): ProfessionModule {
-    this.professions ??= new ProfessionModule(this.host)
-    return this.professions
+    return this.deps.profession;
+  }
+
+  private turnStore() {
+    return this.deps.turnStore;
   }
 }
 
 /** A session identity is a coordination integer, never a DSH session id. */
 function assertSessionIdentity(identity: unknown): asserts identity is number {
-  if (typeof identity !== 'number' || !Number.isInteger(identity) || identity <= 0) {
+  if (
+    typeof identity !== "number" ||
+    !Number.isInteger(identity) ||
+    identity <= 0
+  ) {
     throw new InvalidArgumentError(
-      'session identity must be the coordination session number; use createForHandle for a DSH session id',
+      "session identity must be the coordination session number; use createForHandle for a DSH session id",
       { session: identity },
-    )
+    );
   }
 }
 
 /** A session handle is a DSH session id string, never a coordination identity. */
 function assertSessionHandle(handle: unknown): asserts handle is string {
-  if (typeof handle !== 'string' || handle.trim().length === 0) {
+  if (typeof handle !== "string" || handle.trim().length === 0) {
     throw new InvalidArgumentError(
-      'session handle must be the DSH session id string; use create for a coordination session number',
+      "session handle must be the DSH session id string; use create for a coordination session number",
       { session: handle },
-    )
+    );
   }
 }
 
 function assertTurnStatus(value: unknown): asserts value is TurnStatus {
-  if (typeof value !== 'string' || !Object.hasOwn(TurnStatusLabel, value)) {
+  if (typeof value !== "string" || !Object.hasOwn(TurnStatusLabel, value)) {
     throw new InvalidArgumentError(`unknown turn status: ${String(value)}`, {
       allowed: Object.keys(TurnStatusLabel),
-    })
+    });
   }
 }
 
-function assertOneOf<T extends string>(field: string, value: unknown, allowed: readonly T[]): asserts value is T {
+function assertOneOf<T extends string>(
+  field: string,
+  value: unknown,
+  allowed: readonly T[],
+): asserts value is T {
   if (!isOneOf(value, allowed)) {
-    throw new InvalidArgumentError(`unknown ${field}: ${String(value)}`, { allowed })
+    throw new InvalidArgumentError(`unknown ${field}: ${String(value)}`, {
+      allowed,
+    });
   }
 }
 
 /** Refuse an incomplete or mistyped request before any row is written. */
 function assertRequest(request: TurnRequest): void {
-  if (typeof request !== 'object' || request === null) {
-    throw new InvalidArgumentError('turn request must be an object')
+  if (typeof request !== "object" || request === null) {
+    throw new InvalidArgumentError("turn request must be an object");
   }
-  if (typeof request.content !== 'string') {
-    throw new InvalidArgumentError('turn content must be a string', { content: request.content })
+  if (typeof request.content !== "string") {
+    throw new InvalidArgumentError("turn content must be a string", {
+      content: request.content,
+    });
   }
-  assertProfession(request.profession)
-  assertOneOf('interaction', request.interaction, InteractionValues)
-  assertOneOf('scene', request.scene, SceneValues)
-  assertOneOf('validation', request.validation, ValidationValues)
+  assertProfession(request.profession);
+  assertOneOf("interaction", request.interaction, InteractionValues);
+  assertOneOf("scene", request.scene, SceneValues);
+  assertOneOf("validation", request.validation, ValidationValues);
 }

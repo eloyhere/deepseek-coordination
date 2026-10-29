@@ -148,12 +148,12 @@ function syntheticParse(domain: NodeMetadata['domain']): ParsedFile {
  * Schema migration
  * ------------------------------------------------------------------------- */
 
-test('schema 24 adds node/edge/snapshot to a schema-23 database without losing rows', () => {
+test('schema 25 adds the graph and AMP tables to a schema-23 database without losing rows', () => {
   const workspace = new TempWorkspace()
   const path = join(workspace.root, 'legacy.db')
   try {
     // Simulate a database created by 0.9.x: one old table plus a row and the
-    // old user_version. `CoordinationDatabase` must create the v24 tables and
+    // old user_version. `CoordinationDatabase` must create the v25 tables and
     // bump the version without touching this row.
     const legacy = new DatabaseSync(path)
     legacy.exec(`
@@ -177,8 +177,8 @@ test('schema 24 adds node/edge/snapshot to a schema-23 database without losing r
 
     const db = new CoordinationDatabase(path)
     try {
-      assert.equal(SCHEMA_VERSION, 24)
-      assert.equal(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version, 24)
+      assert.equal(SCHEMA_VERSION, 25)
+      assert.equal(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version, 25)
       assert.equal(db.count('session'), 1)
       assert.equal(
         db.get<{ principal: string }>("SELECT principal FROM session WHERE handle = 'legacy-session'")?.principal,
@@ -187,7 +187,9 @@ test('schema 24 adds node/edge/snapshot to a schema-23 database without losing r
       const tables = new Set(
         db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name),
       )
-      for (const table of ['node', 'edge', 'snapshot']) assert.ok(tables.has(table), `${table} table is missing`)
+      for (const table of ['node', 'edge', 'snapshot', 'amp_object', 'amp_key', 'amp_manifest', 'amp_checkpoint']) {
+        assert.ok(tables.has(table), `${table} table is missing`)
+      }
       const indexes = new Set(
         db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'index'").map((row) => row.name),
       )

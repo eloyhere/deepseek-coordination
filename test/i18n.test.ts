@@ -53,7 +53,7 @@ const CONTROL_NAMES = ['profession', 'interaction', 'scene', 'validation', 'perm
 const TOOL_NAMES = [
   'coordination_selection',
   'coordination_profession',
-  'coordination_professionlock',
+  'coordination_profession_lock',
 ] as const
 const ERROR_CODES: readonly CoordinationErrorCode[] = [
   'PROFESSION_LOCKED',
@@ -69,6 +69,8 @@ const ERROR_CODES: readonly CoordinationErrorCode[] = [
   'CONFIG',
   'UPSTREAM',
   'NOT_IMPLEMENTED',
+  'BUSY',
+  'UNSUPPORTED_MEDIA',
 ]
 const REQUIRED_COMPOSER_KEYS = [
   'currentLabel',
@@ -734,14 +736,14 @@ test('tool copy exists for every coordination tool, names stay English', () => {
     }
     assert.match(copy.tools.coordination_selection.description, /职能|scene|interaction/i)
     assert.match(copy.tools.coordination_profession.description, /职能|profession/i)
-    assert.match(copy.tools.coordination_professionlock.description, /锁定|lock/i)
+    assert.match(copy.tools.coordination_profession_lock.description, /锁定|lock/i)
   }
   // The two v23 §18.2 tool descriptions are reproduced verbatim in Chinese.
   assert.equal(
     copyFor('zh-CN').tools.coordination_profession.description,
     '查询/设置职能（仅任务开始前可设置）',
   )
-  assert.equal(copyFor('zh-CN').tools.coordination_professionlock.description, '查询职能锁定状态')
+  assert.equal(copyFor('zh-CN').tools.coordination_profession_lock.description, '查询职能锁定状态')
 })
 
 test('fillTemplate replaces known names and leaves unknown ones visible', () => {
@@ -853,3 +855,17 @@ test('buildQuestionAnswers rejects incomplete or invalid input', () => {
   assert.equal(isQuestionAnswerComplete([single], { scope: { selected: [], custom: 'x' } }), true)
   assert.equal(isQuestionAnswerComplete([single], { scope: { selected: ['outside'], custom: '' } }), true)
 })
+
+test('workspace panel names the import tab 导入 / Imports, not a combined label', () => {
+  const zh = copyFor('zh-CN').panel
+  const en = copyFor('en-US').panel
+  assert.equal(zh.tabs.imports, '导入')
+  assert.equal(en.tabs.imports, 'Imports')
+  assert.equal(zh.imports.empty, '尚无导入记录。')
+  assert.equal(en.imports.empty, 'No import records yet.')
+  assert.equal(zh.tip.tabImports, '查看导入')
+  assert.equal(en.tip.tabImports, 'View imports')
+  assert.ok(!zh.tabs.imports.includes('导出'))
+  assert.ok(!en.tabs.imports.includes('export'))
+})
+
