@@ -45,7 +45,7 @@ import type { NodeStatus, ParsedFile } from './parse-service.js'
 import type { ConceptMetadata } from '../shared/entity.js'
 
 /** Rehydrate at most this many newest nodes (matches the registry default). */
-export const DEFAULT_HYDRATE_NODES = 10_000
+export const DEFAULT_HYDRATE_NODES = 50_000
 /** Rehydrate at most this many newest edges. */
 export const DEFAULT_HYDRATE_EDGES = 50_000
 
@@ -139,7 +139,7 @@ export class GraphStore {
       ? project
       : this.identityOf(record.ownerHandle) ?? project
     const values: Record<string, unknown> = {
-      handle: record.handle,
+      handle: this.storedHandle(record.handle),
       kind: record.kind,
       locator: record.locator ?? `node:${record.handle}`,
       project,
@@ -180,7 +180,7 @@ export class GraphStore {
     const project = this.ensureProject()
     const now = Date.now()
     const values: Record<string, unknown> = {
-      handle: node.handle,
+      handle: this.storedHandle(node.handle),
       kind: node.kind,
       locator: `node:${node.handle}`,
       project,
@@ -290,20 +290,42 @@ export class GraphStore {
     this.db.insert('snapshot', values)
   }
 
+  /**
+   * The project row this store reads for, when it exists.
+   *
+   * Every node/edge row carries `project`; without this filter a store rooted at
+   * workspace A would return workspace B's nodes (the whole database mixes
+   * projects). A store whose project was never indexed returns nothing rather
+   * than another workspace's graph.
+   */
+  private projectForRead(): number | undefined {
+    if (this.projectIdentity !== undefined) return this.projectIdentity
+    const row = this.db.get<{ identity: number }>(
+      'SELECT identity FROM node WHERE handle = ?',
+      this.projectHandle,
+    )
+    if (row === undefined) return undefined
+    this.projectIdentity = row.identity
+    return row.identity
+  }
+
   /** Newest-first persisted nodes, bounded; the rehydration input. */
   loadNodes(): NodePersistenceRecord[] {
+    const project = this.projectForRead()
+    if (project === undefined) return []
     const rows = this.db.all<NodeRow>(
       `SELECT identity, handle, kind, locator, path, name, label, byteStart, byteEnd,
               lineStart, lineEnd, fingerprint, charset, status, summary, brief,
               description, usage, purpose, reference, detail, ordinal, created, changed
          FROM node
-        WHERE kind <> 'project' AND kind <> 'unknown'
+        WHERE project = ? AND kind <> 'project' AND kind <> 'unknown'
         ORDER BY changed DESC, identity DESC
         LIMIT ?`,
+      project,
       this.hydrateNodes,
     )
     return rows.map((row) => ({
-      handle: row.handle,
+      handle: this.domainHandle(row.handle),
       kind: row.kind,
       locator: row.locator,
       ...(row.path === null ? {} : { path: row.path }),
@@ -351,15 +373,18 @@ export class GraphStore {
 
   /** Newest-first persisted edges, bounded; endpoints are joined by handle. */
   loadEdges(): ChainEdgeSnapshot[] {
+    const project = this.projectForRead()
+    if (project === undefined) return []
     const rows = this.db.all<EdgeRow>(
       `SELECT e.kind AS relation, e.status, e.baselineVersion, e.targetVersion,
               e.evidenceHandle, e.created, e.changed,
               s.handle AS sourceHandle, t.handle AS targetHandle
          FROM edge e
-         JOIN node s ON s.identity = e.source
+         JOIN node s ON s.identity = e.source AND s.project = ?
          LEFT JOIN node t ON t.identity = e.target
         ORDER BY e.identity DESC
         LIMIT ?`,
+      project,
       this.hydrateEdges,
     )
     const edges: ChainEdgeSnapshot[] = []
@@ -367,8 +392,8 @@ export class GraphStore {
       if (row.targetHandle === null) continue
       edges.push({
         relation: row.relation as ChainEdgeSnapshot['relation'],
-        from: row.sourceHandle,
-        to: row.targetHandle,
+        from: this.domainHandle(row.sourceHandle),
+        to: this.domainHandle(row.targetHandle),
         status: chainStatus(row.status),
         ...(row.baselineVersion === null ? {} : { baselineVersion: row.baselineVersion }),
         ...(row.targetVersion === null ? {} : { targetVersion: row.targetVersion }),
@@ -431,7 +456,7 @@ export class GraphStore {
     const project = this.ensureProject()
     const now = Date.now()
     const identity = this.db.insert('node', {
-      handle,
+      handle: this.storedHandle(handle),
       kind: 'unknown',
       locator: `node:${handle}`,
       project,
@@ -448,10 +473,32 @@ export class GraphStore {
   private identityOf(handle: string): number | undefined {
     const cached = this.identities.get(handle)
     if (cached !== undefined) return cached
-    const row = this.db.get<{ identity: number }>('SELECT identity FROM node WHERE handle = ?', handle)
+    const row = this.db.get<{ identity: number }>(
+      'SELECT identity FROM node WHERE handle = ?',
+      this.storedHandle(handle),
+    )
     if (row === undefined) return undefined
     this.identities.set(handle, row.identity)
     return row.identity
+  }
+
+  /**
+   * The stored node handle is scoped to this store's project.
+   *
+   * `node.handle` is UNIQUE and `node.project` is a column, so two workspaces
+   * containing the same relative path produced the same handle; the second
+   * workspace's write then updated the first workspace's row (moving it to the
+   * new project). Prefixing the stored handle keeps the domain handle stable in
+   * the API while making the row unique per workspace.
+   */
+  private storedHandle(handle: string): string {
+    return `${this.projectHandle}\u0000${handle}`
+  }
+
+  /** Reverse of {@link storedHandle}: the handle callers and the chain see. */
+  private domainHandle(stored: string): string {
+    const prefix = `${this.projectHandle}\u0000`
+    return stored.startsWith(prefix) ? stored.slice(prefix.length) : stored
   }
 }
 
@@ -507,3 +554,5 @@ function chainStatus(value: string): ChainEdgeSnapshot['status'] {
     ? value
     : 'unknown'
 }
+
+

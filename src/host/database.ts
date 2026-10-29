@@ -15,7 +15,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { DatabaseError, NotFoundError } from '../shared/error.js'
 
-export const SCHEMA_VERSION = 25
+export const SCHEMA_VERSION = 26
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -991,7 +991,7 @@ CREATE TABLE IF NOT EXISTS node (
   FOREIGN KEY (formula) REFERENCES node(identity),
   FOREIGN KEY (evidence) REFERENCES node(identity)
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_node_locator ON node(kind, locator);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_locator ON node(project, kind, locator);
 CREATE INDEX IF NOT EXISTS idx_node_project ON node(project, kind);
 CREATE INDEX IF NOT EXISTS idx_node_owner ON node(owner, kind, ordinal);
 CREATE INDEX IF NOT EXISTS idx_node_parent ON node(parent, ordinal);
@@ -1192,6 +1192,10 @@ export class CoordinationDatabase {
       this.raw.exec('PRAGMA foreign_keys = ON;')
       this.raw.exec('PRAGMA busy_timeout = 5000;')
       if (path !== ':memory:') this.raw.exec('PRAGMA journal_mode = WAL;')
+      // v26: the node locator index is project-scoped; a v25 database still
+      // carries the two-column index, so drop it before the schema recreates it.
+      const version = Number((this.raw.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0)
+      if (version > 0 && version < 26) this.raw.exec('DROP INDEX IF EXISTS idx_node_locator;')
       this.raw.exec(SCHEMA_SQL)
       this.raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`)
     } catch (error) {
@@ -1350,5 +1354,6 @@ export function resolveDatabasePath(configPath: string, databaseName: string): s
 export function openDatabase(path: string): CoordinationDatabase {
   return new CoordinationDatabase(path)
 }
+
 
 

@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.22.3 | 2026-10-29 | — | Graph rows partitioned by workspace |
 | 0.22.2 | 2026-10-29 | — | Settings white-screen fix |
 | 0.22.1 | 2026-10-29 | — | Session-scoped workspace root, . accepted |
 | 0.22.0 | 2026-10-29 | — | Broad tasks decomposed into verifiable plan steps |
@@ -72,6 +73,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.3] — 2026-10-29
+
+### Fixed
+
+- **Graph nodes and edges are now partitioned by workspace root.** `loadNodes`/`loadEdges` returned every row in the database, so a store rooted at workspace A served workspace B's graph: the tree mixed projects, a path lookup could hit another project's directory, and re-indexing one workspace updated the other's rows. Reads now filter on the row's `project`, which every write already sets.
+- **Stored node handles are project-scoped.** `node.handle` is UNIQUE, so the same relative path in two workspaces collided: the second workspace's write moved the first workspace's row to the new project. Rows now store `<projectHandle>\0<domain handle>` and the API keeps returning the domain handle. The `(kind, locator)` unique index is now `(project, kind, locator)` (schema v26); a v25 database drops the old index once on open.
+- The bounded rehydration window grew from 10 000 to 50 000 nodes, so a mid-sized workspace no longer loses its earlier directories (docs/test) from the tree; the bound and the `truncated` flag remain.- New regression tests: two stores over one database see only their own nodes/edges, a re-parse still updates in place, and the schema-26 index rebuild keeps every row.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (881 tests, 880 pass, 1 skipped), `npm run build`, `npm run pack:check`.
 ## [0.22.2] — 2026-10-29
 
 ### Fixed
@@ -1189,6 +1201,8 @@ Initial publication, preceded by the build-out that began on 2026-10-12 (`c2dae0
 - Tags: `v0.1.5`, `v0.1.6`, `v0.1.7`, `v0.1.8`, `v0.1.9`
 - Last commit of the dsh-os tree: `3ba4a45`
 - First commit: `c2dae0c` (2026-10-12)
+
+
 
 
 

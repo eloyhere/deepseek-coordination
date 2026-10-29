@@ -23,7 +23,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { CoordinationDatabase, SCHEMA_VERSION } from '../src/host/database.js'
 import { fileHandleFor, NodeRegistry } from '../src/host/node-registry.js'
 import type { DescribeResult, NodeCard } from '../src/host/node-registry.js'
-import { GraphStore } from '../src/host/graph-store.js'
+import { GraphStore, projectHandleFor } from '../src/host/graph-store.js'
 import type { ChainProjection } from '../src/host/chain.js'
 import { registerCoordinationTools } from '../src/host/tools.js'
 import type {
@@ -148,7 +148,7 @@ function syntheticParse(domain: NodeMetadata['domain']): ParsedFile {
  * Schema migration
  * ------------------------------------------------------------------------- */
 
-test('schema 25 adds the graph and AMP tables to a schema-23 database without losing rows', () => {
+test('schema 26 adds the graph and AMP tables to a schema-23 database without losing rows', () => {
   const workspace = new TempWorkspace()
   const path = join(workspace.root, 'legacy.db')
   try {
@@ -177,8 +177,8 @@ test('schema 25 adds the graph and AMP tables to a schema-23 database without lo
 
     const db = new CoordinationDatabase(path)
     try {
-      assert.equal(SCHEMA_VERSION, 25)
-      assert.equal(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version, 25)
+      assert.equal(SCHEMA_VERSION, 26)
+      assert.equal(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version, 26)
       assert.equal(db.count('session'), 1)
       assert.equal(
         db.get<{ principal: string }>("SELECT principal FROM session WHERE handle = 'legacy-session'")?.principal,
@@ -336,7 +336,9 @@ test('re-parsing refreshes the persisted card instead of duplicating the handle'
       assert.equal(db.count('snapshot'), snapshots)
       assert.ok(db.count('node') >= nodes)
       assert.ok(db.count('edge') >= edges)
-      const row = db.get<{ fingerprint: string }>('SELECT fingerprint FROM node WHERE handle = ?', handle)
+      // Node rows are keyed by a project-scoped handle; the API handle stays stable.
+      const storedHandle = `${projectHandleFor(workspace.root)}\u0000${handle}`
+      const row = db.get<{ fingerprint: string }>('SELECT fingerprint FROM node WHERE handle = ?', storedHandle)
       assert.equal(row?.fingerprint, second.cards[0]?.fingerprint)
     } finally {
       dispose()
@@ -385,3 +387,39 @@ test('an explicit domain concept is projected onto the card and persisted withou
     db.close()
   }
 })
+
+test('a graph store reads only its own workspace project', () => {
+  const db = new CoordinationDatabase(':memory:')
+  try {
+    const alpha = new GraphStore(db, { workspaceRoot: 'R:/workspace/alpha' })
+    const beta = new GraphStore(db, { workspaceRoot: 'R:/workspace/beta' })
+
+    // Before either workspace is indexed, neither store may borrow the other's rows.
+    assert.deepEqual(beta.loadNodes(), [])
+    assert.deepEqual(beta.loadEdges(), [])
+
+    new NodeRegistry({ persist: alpha }).register(syntheticParse({
+      kind: 'chapter',
+      locator: 'document:alpha.md/chapter:1',
+      partOf: 'document:alpha.md',
+    }))
+    assert.ok(alpha.loadNodes().length > 0)
+    assert.deepEqual(beta.loadNodes(), [], 'beta must not see alpha nodes')
+    assert.deepEqual(beta.loadEdges(), [], 'beta must not see alpha edges')
+
+    const alphaCount = alpha.loadNodes().length
+    new NodeRegistry({ persist: beta }).register(syntheticParse({
+      kind: 'chapter',
+      locator: 'document:beta.md/chapter:1',
+      partOf: 'document:beta.md',
+    }))
+    // Domain handles are per workspace path, so they may legitimately repeat
+    // across workspaces; isolation is proven by the row count, not by the name.
+    assert.equal(alpha.loadNodes().length, alphaCount, 'alpha must not grow when beta indexes')
+    assert.ok(beta.loadNodes().length > 0)
+  } finally {
+    db.close()
+  }
+})
+
+
