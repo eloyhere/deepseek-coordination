@@ -100,11 +100,11 @@ function persistentService(
 }
 
 /** A synthetic, body-free parse used for the domain-projection test. */
-function syntheticParse(domain: NodeMetadata['domain']): ParsedFile {
+function syntheticParse(domain: NodeMetadata['domain'], path = 'docs/spec.md'): ParsedFile {
   const file: NodeMetadata = {
     kind: 'document',
-    name: 'spec.md',
-    path: 'docs/spec.md',
+    name: path.slice(path.lastIndexOf('/') + 1),
+    path,
     byteStart: 0,
     byteEnd: 100,
     lineStart: 1,
@@ -116,7 +116,7 @@ function syntheticParse(domain: NodeMetadata['domain']): ParsedFile {
   const chapter: NodeMetadata = {
     kind: 'heading',
     name: 'Chapter One',
-    path: 'docs/spec.md',
+    path,
     byteStart: 10,
     byteEnd: 30,
     lineStart: 2,
@@ -127,7 +127,7 @@ function syntheticParse(domain: NodeMetadata['domain']): ParsedFile {
     span: { start: 10, end: 30, line: 2, column: 1 },
   }
   return {
-    path: 'docs/spec.md',
+    path,
     parserId: 'markdown',
     charset: 'utf-8',
     bomBytes: 0,
@@ -417,6 +417,41 @@ test('a graph store reads only its own workspace project', () => {
     // across workspaces; isolation is proven by the row count, not by the name.
     assert.equal(alpha.loadNodes().length, alphaCount, 'alpha must not grow when beta indexes')
     assert.ok(beta.loadNodes().length > 0)
+  } finally {
+    db.close()
+  }
+})
+
+
+
+
+test('a scoped node load pushes the path prefix into SQL', () => {
+  const db = new CoordinationDatabase(':memory:')
+  try {
+    // Two rows per file; a global window of 2 would keep only one path.
+    const store = new GraphStore(db, { workspaceRoot: 'R:/workspace/scoped', hydrateNodes: 2 })
+    const registry = new NodeRegistry({ persist: store })
+    registry.register(syntheticParse({
+      kind: 'chapter',
+      locator: 'document:src/big.ts/chapter:1',
+      partOf: 'document:src/big.ts',
+    }, 'src/big.ts'))
+    registry.register(syntheticParse({
+      kind: 'chapter',
+      locator: 'document:docs/spec.md/chapter:1',
+      partOf: 'document:docs/spec.md',
+    }, 'docs/spec.md'))
+
+    const docs = store.loadNodes('docs')
+    assert.ok(docs.length > 0, 'the docs subtree must be hydrated even past the global window')
+    assert.ok(docs.every((node) => node.path === undefined || node.path.startsWith('docs/')))
+
+    const src = store.loadNodes('src')
+    assert.ok(src.length > 0)
+    assert.ok(src.every((node) => node.path === undefined || node.path.startsWith('src/')))
+
+    assert.ok(store.loadNodes().length > 0, 'the unscoped read keeps working')
+    assert.deepEqual(store.loadNodes('missing'), [])
   } finally {
     db.close()
   }

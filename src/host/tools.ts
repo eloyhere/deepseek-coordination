@@ -2262,7 +2262,7 @@ function fileTreeTool(
             { path: requested },
           )
         }
-        const read = await graphReadOf(service, options, exec)
+        const read = await graphReadOf(service, options, exec, scope)
         return fileTreeValue(read.snapshot, read.root, scope, depth, limit)
       } catch (error) {
         return graphToolFailure(error)
@@ -2296,7 +2296,9 @@ function outlineTool(
         const args = asArguments(rawArgs)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_OUTLINE_TOOL_NODES, MAX_OUTLINE_TOOL_NODES)
         const requested = optionalGraphPath(args)
-        const read = await graphReadOf(service, options, exec)
+        // Push the file scope into SQL so only that subtree is hydrated.
+        const readScope = requested === undefined ? undefined : normaliseGraphPath(requested)
+        const read = await graphReadOf(service, options, exec, readScope)
         const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
         return structureOutlineValue(query, requested, limit)
       } catch (error) {
@@ -2331,7 +2333,9 @@ function importationTool(
         const args = asArguments(rawArgs)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_RELATION_TOOL_ROWS, MAX_RELATION_TOOL_ROWS)
         const requested = optionalGraphPath(args)
-        const read = await graphReadOf(service, options, exec)
+        // Push the file scope into SQL so only that subtree is hydrated.
+        const readScope = requested === undefined ? undefined : normaliseGraphPath(requested)
+        const read = await graphReadOf(service, options, exec, readScope)
         const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
         return importationValue(query, requested, limit)
       } catch (error) {
@@ -2366,7 +2370,9 @@ function exportationTool(
         const args = asArguments(rawArgs)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_RELATION_TOOL_ROWS, MAX_RELATION_TOOL_ROWS)
         const requested = optionalGraphPath(args)
-        const read = await graphReadOf(service, options, exec)
+        // Push the file scope into SQL so only that subtree is hydrated.
+        const readScope = requested === undefined ? undefined : normaliseGraphPath(requested)
+        const read = await graphReadOf(service, options, exec, readScope)
         const query = graphQueryOf(read.snapshot, read.root, requested === undefined ? 'workspace' : 'file')
         return exportationValue(query, requested, limit)
       } catch (error) {
@@ -2456,9 +2462,10 @@ async function graphReadOf(
   service: CoordinationToolService,
   options: CoordinationToolOptions,
   exec?: ToolExecution,
+  scope?: string,
 ): Promise<GraphRead> {
   const root = await graphWorkspaceRootOf(service, options, exec)
-  return { root, snapshot: await graphSnapshotOf(service, options, root) }
+  return { root, snapshot: await graphSnapshotOf(service, options, root, scope) }
 }
 
 /**
@@ -2472,6 +2479,7 @@ async function graphSnapshotOf(
   service: CoordinationToolService,
   options: CoordinationToolOptions,
   root: string,
+  scope?: string,
 ): Promise<CoordinationGraphSnapshot> {
   if (options.graphSnapshot !== undefined) {
     const snapshot = await options.graphSnapshot(root)
@@ -2488,7 +2496,7 @@ async function graphSnapshotOf(
     return { root, version: graphVersionOf([], []), nodes: [], edges: [] }
   }
   const store = new GraphStore(database, { workspaceRoot: root })
-  const nodes: GraphNode[] = store.loadNodes().map((record) => ({
+  const nodes: GraphNode[] = store.loadNodes(scope).map((record) => ({
     handle: record.handle,
     kind: record.kind,
     ...(record.name === undefined ? {} : { name: record.name }),
@@ -3417,6 +3425,8 @@ const EXPORTATION_TOOL_SCHEMA: Record<string, unknown> = {
     GRAPH_TOOL_ERROR_SCHEMA,
   ],
 }
+
+
 
 
 

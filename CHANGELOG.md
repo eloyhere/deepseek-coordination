@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.22.4 | 2026-10-29 | — | Scoped SQL hydration for graph reads |
 | 0.22.3 | 2026-10-29 | — | Graph rows partitioned by workspace |
 | 0.22.2 | 2026-10-29 | — | Settings white-screen fix |
 | 0.22.1 | 2026-10-29 | — | Session-scoped workspace root, . accepted |
@@ -73,6 +74,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.4] — 2026-10-29
+
+### Changed
+
+- **Scoped graph reads push the path prefix into SQL.** `GraphStore.loadNodes(scope)` now filters `path = ? OR path LIKE ? ESCAPE '\'` before applying the hydration limit, and the four graph tools pass their requested file/directory as the scope (`coordination_file` its directory, `coordination_outline` / `_importation` / `_exportation` their file). A directory query no longer competes with the whole workspace for the 50 000-row window, so a subtree is complete even when the workspace-wide tree is truncated. The workspace-level read keeps the bounded window and the `truncated` flag.
+- New test: with a two-row hydration window, both `docs` and `src` still load their own subtree, and a missing prefix returns an empty list.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (882 tests, 881 pass, 1 skipped), `npm run build`, `npm run pack:check`.
 ## [0.22.3] — 2026-10-29
 
 ### Fixed
@@ -1201,6 +1212,7 @@ Initial publication, preceded by the build-out that began on 2026-10-12 (`c2dae0
 - Tags: `v0.1.5`, `v0.1.6`, `v0.1.7`, `v0.1.8`, `v0.1.9`
 - Last commit of the dsh-os tree: `3ba4a45`
 - First commit: `c2dae0c` (2026-10-12)
+
 
 
 

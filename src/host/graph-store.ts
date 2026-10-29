@@ -309,21 +309,43 @@ export class GraphStore {
     return row.identity
   }
 
-  /** Newest-first persisted nodes, bounded; the rehydration input. */
-  loadNodes(): NodePersistenceRecord[] {
+  /**
+   * Newest-first persisted nodes, bounded; the rehydration input.
+   *
+   * `scope` pushes a workspace-relative prefix down to SQL: only that subtree
+   * is hydrated, so a directory query does not compete with the whole graph for
+   * the hydration window. Without it the newest rows of the project are read,
+   * which is the bounded "whole workspace" mode.
+   */
+  loadNodes(scope?: string): NodePersistenceRecord[] {
     const project = this.projectForRead()
     if (project === undefined) return []
-    const rows = this.db.all<NodeRow>(
-      `SELECT identity, handle, kind, locator, path, name, label, byteStart, byteEnd,
-              lineStart, lineEnd, fingerprint, charset, status, summary, brief,
-              description, usage, purpose, reference, detail, ordinal, created, changed
-         FROM node
-        WHERE project = ? AND kind <> 'project' AND kind <> 'unknown'
-        ORDER BY changed DESC, identity DESC
-        LIMIT ?`,
-      project,
-      this.hydrateNodes,
-    )
+    const rows = scope === undefined
+      ? this.db.all<NodeRow>(
+        `SELECT identity, handle, kind, locator, path, name, label, byteStart, byteEnd,
+                lineStart, lineEnd, fingerprint, charset, status, summary, brief,
+                description, usage, purpose, reference, detail, ordinal, created, changed
+           FROM node
+          WHERE project = ? AND kind <> 'project' AND kind <> 'unknown'
+          ORDER BY changed DESC, identity DESC
+          LIMIT ?`,
+        project,
+        this.hydrateNodes,
+      )
+      : this.db.all<NodeRow>(
+        `SELECT identity, handle, kind, locator, path, name, label, byteStart, byteEnd,
+                lineStart, lineEnd, fingerprint, charset, status, summary, brief,
+                description, usage, purpose, reference, detail, ordinal, created, changed
+           FROM node
+          WHERE project = ? AND kind <> 'project' AND kind <> 'unknown'
+            AND (path = ? OR path LIKE ? ESCAPE '\\')
+          ORDER BY changed DESC, identity DESC
+          LIMIT ?`,
+        project,
+        scope,
+        `${escapeLike(scope)}/%`,
+        this.hydrateNodes,
+      )
     return rows.map((row) => ({
       handle: this.domainHandle(row.handle),
       kind: row.kind,
@@ -516,6 +538,10 @@ export function edgeHandleFor(projectHandle: string, edge: { relation: string; f
   return `e${hash(`${projectHandle}\u0000${edge.relation}\u0000${edge.from}\u0000${edge.to}`)}`
 }
 
+/** Escape LIKE metacharacters so a path prefix matches literally. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`)
+}
 function hash(seed: string): string {
   return createHash('sha256').update(seed).digest('hex').slice(0, 24)
 }
@@ -554,5 +580,6 @@ function chainStatus(value: string): ChainEdgeSnapshot['status'] {
     ? value
     : 'unknown'
 }
+
 
 
