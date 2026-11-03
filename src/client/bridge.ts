@@ -45,6 +45,8 @@ import type { Profession } from '../shared/enum.js'
 import { toCommandType, toInteraction, toProfession, toScene, toValidation } from '../shared/enum.js'
 import type { ConfigPatch, ConfigView, SelectionPatch, SelectionState } from '../shared/selection.js'
 import type { Locale } from '../shared/i18n.js'
+import { isControlRegistry, isControlScope } from '../shared/control.js'
+import type { ControlRegistry, ControlScope } from '../shared/control.js'
 
 const ROUTE_PREFIX = '/deepseek-coordination'
 const LOCAL_PREFIX = 'deepseek-coordination:selection:'
@@ -762,9 +764,10 @@ export type RebuildOutcome =
  * A concurrent rebuild answers 409 (`BUSY`); the panel turns that into its
  * "already running" notice rather than a generic failure. Never throws.
  */
-export async function rebuildGraph(): Promise<RebuildOutcome> {
+export async function rebuildGraph(sessionId?: string | null): Promise<RebuildOutcome> {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''
   const { status, wire } = await call<unknown>(
-    '/graph/rebuild',
+    `/graph/rebuild${query}`, 
     { method: 'POST' },
     REBUILD_TIMEOUT,
   )
@@ -814,9 +817,10 @@ export type IndexOutcome =
  * (or a rebuild collision reported by the host) answers 409 (`BUSY`); the panel
  * turns that into its "already running" notice. Never throws.
  */
-export async function indexGraph(): Promise<IndexOutcome> {
+export async function indexGraph(sessionId?: string | null): Promise<IndexOutcome> {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''
   const { status, wire } = await call<unknown>(
-    '/graph/index',
+    `/graph/index${query}`,
     { method: 'POST' },
     INDEX_TIMEOUT,
   )
@@ -842,6 +846,283 @@ export async function indexGraph(): Promise<IndexOutcome> {
       root: typeof report?.root === 'string' ? report.root : '',
     },
   }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Knowledge files and scoped control
+ * ------------------------------------------------------------------------- */
+
+/** One knowledge mark as `/graph/knowledge` reports it. */
+export interface KnowledgeRow {
+  path: string
+  title: string
+  note: string
+  tags: string[]
+  scope: 'workspace' | 'session'
+  indexed?: boolean
+  updated: number
+}
+
+/** One effective interaction/scenario setting as `/control/settings` reports it. */
+export interface ControlSettingRow {
+  domain: 'interaction' | 'scenario'
+  scope: string
+  value: string | null
+  mix: Record<string, number> | null
+  source: string
+  version: number
+  effectiveVersion: number
+}
+
+/** Outcome of one knowledge/control call: data or the host's typed failure. */
+export type ControlOutcome<T> =
+  | { ok: true; value: T }
+  | { ok: false; status: number | null; code?: string; message?: string }
+
+const asString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value : undefined
+
+const asNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined
+
+function asTags(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+/** Read the knowledge marks of one session's workspace. */
+export async function fetchKnowledge(sessionId?: string | null): Promise<ControlOutcome<KnowledgeRow[]>> {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''
+  const { status, wire } = await call<unknown>(`/graph/knowledge${query}`, undefined, GRAPH_TIMEOUT)
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  const value = asRecord(wire.value)
+  const entries = Array.isArray(value?.entries) ? value.entries : []
+  const rows: KnowledgeRow[] = []
+  for (const raw of entries) {
+    const row = asRecord(raw)
+    const path = asString(row?.path)
+    if (row === undefined || path === undefined) continue
+    rows.push({
+      path,
+      title: asString(row.title) ?? path,
+      note: typeof row.note === 'string' ? row.note : '',
+      tags: asTags(row.tags),
+      scope: row.scope === 'session' ? 'session' : 'workspace',
+      ...(typeof row.indexed === 'boolean' ? { indexed: row.indexed } : {}),
+      updated: asNumber(row.updated) ?? 0,
+    })
+  }
+  return { ok: true, value: rows }
+}
+
+/** Mark one file as knowledge, or remove the mark. */
+export async function writeKnowledge(
+  sessionId: string | null | undefined,
+  body: { action: 'mark' | 'update' | 'unmark'; path: string; title?: string; note?: string; tags?: string[] },
+): Promise<ControlOutcome<{ path: string }>> {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''
+  const { status, wire } = await call<unknown>(
+    `/graph/knowledge${query}`,
+    { method: 'POST', body: JSON.stringify(body) },
+    GRAPH_TIMEOUT,
+  )
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  const value = asRecord(wire.value)
+  return { ok: true, value: { path: asString(value?.path) ?? body.path } }
+}
+
+/** Read one effective setting (`interaction` or `scenario`). */
+export async function fetchControlSetting(
+  domain: 'interaction' | 'scenario',
+  sessionId?: string | null,
+): Promise<ControlOutcome<ControlSettingRow>> {
+  const query = new URLSearchParams({ domain })
+  if (sessionId) query.set('session', sessionId)
+  const { status, wire } = await call<unknown>(`/control/settings?${query.toString()}`, undefined, GRAPH_TIMEOUT)
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  const value = asRecord(wire.value)
+  return {
+    ok: true,
+    value: {
+      domain,
+      scope: asString(value?.scope) ?? 'workspace',
+      value: asString(value?.value) ?? null,
+      mix: (() => {
+        const raw = asRecord(value?.mix)
+        if (raw === undefined) return null
+        const mix: Record<string, number> = {}
+        for (const [key, weight] of Object.entries(raw)) {
+          const numeric = asNumber(weight)
+          if (numeric !== undefined) mix[key] = numeric
+        }
+        return Object.keys(mix).length === 0 ? null : mix
+      })(),
+      source: asString(value?.source) ?? 'global',
+      version: asNumber(value?.version) ?? 0,
+      effectiveVersion: asNumber(value?.effectiveVersion) ?? 0,
+    },
+  }
+}
+
+/** Reset one setting to its inherited value. */
+export async function resetControlSetting(
+  domain: 'interaction' | 'scenario',
+  sessionId?: string | null,
+): Promise<ControlOutcome<{ version: number }>> {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''
+  const { status, wire } = await call<unknown>(
+    `/control/settings${query}`,
+    { method: 'POST', body: JSON.stringify({ scope: 'workspace', domain, action: 'reset' }) },
+    GRAPH_TIMEOUT,
+  )
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  const value = asRecord(wire.value)
+  return { ok: true, value: { version: asNumber(value?.version) ?? 0 } }
+}
+
+/** One effective control-registry row as `/control/registry` reports it. */
+export interface ControlRegistryRow {
+  id: string
+  /** `value.title`, falling back to `value.name`; the panel falls back to `id`. */
+  title?: string
+  summary?: string
+  enabled: boolean
+  version: number
+  source: string
+  registry: ControlRegistry
+}
+
+/**
+ * Narrow one `/control/registry` payload into renderable rows.
+ *
+ * The host owns the typed view (`ControlRecordView`); the panel only trusts the
+ * fields it renders. A malformed record, a tombstone, an unknown registry or a
+ * row belonging to a different registry than the one requested is dropped
+ * instead of being rendered with invented values.
+ */
+export function parseControlRegistryRows(value: unknown): ControlRegistryRow[] {
+  const record = asRecord(value)
+  const registry = isControlRegistry(record?.registry) ? record.registry : undefined
+  const scope: ControlScope = isControlScope(record?.scope) ? record.scope : 'workspace'
+  const records = Array.isArray(record?.records) ? record.records : []
+  const rows: ControlRegistryRow[] = []
+  for (const raw of records) {
+    const entry = asRecord(raw)
+    if (entry === undefined || entry.deleted === true) continue
+    const id = asString(entry.id)
+    if (id === undefined) continue
+    const entryRegistry = isControlRegistry(entry.registry) ? entry.registry : registry
+    if (entryRegistry === undefined) continue
+    if (registry !== undefined && entryRegistry !== registry) continue
+    const metadata = asRecord(entry.value) ?? {}
+    const title = asString(metadata.title) ?? asString(metadata.name)
+    const summary = asString(metadata.summary)
+    rows.push({
+      id,
+      ...(title === undefined ? {} : { title }),
+      ...(summary === undefined ? {} : { summary }),
+      enabled: entry.enabled !== false,
+      version: asNumber(entry.version) ?? 0,
+      source: asString(entry.source) ?? scope,
+      registry: entryRegistry,
+    })
+  }
+  return rows
+}
+
+/** Read one control registry's effective rows in one scope. */
+export async function fetchControlRegistry(
+  registry: ControlRegistry,
+  scope: ControlScope,
+  sessionId?: string | null,
+): Promise<ControlOutcome<ControlRegistryRow[]>> {
+  const query = new URLSearchParams({ registry, scope })
+  if (sessionId) query.set('session', sessionId)
+  const { status, wire } = await call<unknown>(`/control/registry?${query.toString()}`, undefined, GRAPH_TIMEOUT)
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  return { ok: true, value: parseControlRegistryRows(wire.value) }
+}
+
+/**
+ * Enable or disable one control record.
+ *
+ * The host keeps the row and flips `value.enabled`, so the caller may pass the
+ * row's `version` as the CAS guard and replace it with the returned version.
+ * Never throws: a refused CAS is an ordinary `ControlOutcome` failure.
+ */
+export async function toggleControlRecord(
+  registry: ControlRegistry,
+  id: string,
+  enabled: boolean,
+  scope: ControlScope,
+  sessionId?: string | null,
+  expectedVersion?: number,
+): Promise<ControlOutcome<{ version: number }>> {
+  const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''
+  const { status, wire } = await call<unknown>(
+    `/control/registry${query}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        scope,
+        registry,
+        action: enabled ? 'enable' : 'disable',
+        id,
+        ...(expectedVersion === undefined ? {} : { expectedVersion }),
+      }),
+    },
+    GRAPH_TIMEOUT,
+  )
+  if (wire === null) return { ok: false, status }
+  if (!wire.ok) {
+    return {
+      ok: false,
+      status,
+      ...(wire.error?.code === undefined ? {} : { code: wire.error.code }),
+      ...(wire.error?.message === undefined ? {} : { message: wire.error.message }),
+    }
+  }
+  const value = asRecord(wire.value)
+  return { ok: true, value: { version: asNumber(value?.version) ?? 0 } }
 }
 
 /** True when a value is a non-empty, usable DSH session id. */

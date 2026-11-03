@@ -1,7 +1,8 @@
 /**
  * Model-facing coordination tools (v23 §18.2, v24 §3 + §2.5).
  *
- * The plugin exposes eleven tools to the model:
+ * The plugin exposes composer, file and graph tools to the model, plus three
+ * optional AMP planning tools:
  *
  *  - `coordination_selection`, `coordination_profession`,
  *    `coordination_profession_lock` — the composer surface (v0.7/v0.8);
@@ -12,15 +13,19 @@
  *  - `coordination_file`, `coordination_outline`, `coordination_importation`,
  *    `coordination_exportation` — four **read-only** workspace-graph tools that
  *    project the persisted graph: a bounded directory tree, the structure
- *    outline, and the import/export rows.
+ *    outline, and the import/export rows;
+ *  - `coordination_mission`, `coordination_goal`, `coordination_plan` — session
+ *    AMP planning, present only when the service provides `planning`.
  *
  * Names stay English and stable. The seven composer/file tools take their
  * description and parameter copy from the shared tables (`src/shared/i18n.ts`):
  * the composer tools from `copy.tools`, the file layer from `copy.fileTools`.
- * The four graph tools keep their EN + zh-CN copy **inline** in this module
- * ({@link GRAPH_TOOL_COPY}) so the shared locale table needed no new keys.
- * Switching the host locale therefore changes what the model sees without
- * forking the tool surface.
+ * `coordination_selection` appends one locale-specific save/refusal sentence
+ * from this module ({@link SELECTION_SAVE_COPY}) so the shared table keeps one
+ * stable copy per surface. The four graph tools keep their EN + zh-CN copy
+ * **inline** in this module ({@link GRAPH_TOOL_COPY}) so the shared locale table
+ * needed no new keys. Switching the host locale therefore changes what the model
+ * sees without forking the tool surface.
  *
  * The definitions are authored in the registry's canonical `ToolDefinition`
  * shape: a JSON-Schema `parameters` object, an `output` with its own schema and
@@ -75,16 +80,20 @@ import type {
   ChainRelation,
   ChainRetuneOptions,
 } from './chain.js'
-import { NodeRegistry } from './node-registry.js'
-import type { DescribeResult, NodeCard } from './node-registry.js'
-import { ParseService, viewReference } from './parse-service.js'
+import { NodeRegistry } from './nodeRegistry.js'
+import type { DescribeResult, NodeCard } from './nodeRegistry.js'
+import { OutlineRangeError, outlineAddress, readByteRequest, readLineRequest } from 'attention-manifest-protocol/file'
+import type { Charset as AmpCharset, SourceRange } from 'attention-manifest-protocol/syntax'
+import { ParseService, viewReference } from './parseService.js'
+import type { ShellPort } from './module.js'
 import type {
   DependencyGraphSummary,
   ParsedFile,
   ParseServiceOptions,
   ReferenceView,
-} from './parse-service.js'
-import { GraphStore } from './graph-store.js'
+} from './parseService.js'
+import { GraphStore } from './graphStore.js'
+import { assertGraphIndexEnabled, graphIndexOperations, validateIndexPaths } from './graphIndex.js'
 import type { CoordinationDatabase } from './database.js'
 import {
   buildImports,
@@ -104,7 +113,12 @@ import {
   type ImportRow,
   type OutlineNode,
   type TreeNode,
-} from './graph-view.js'
+} from './graphView.js'
+import type { AmpPlanning } from './ampPlanning.js'
+import type { AmpCollaboration } from './ampCollaboration.js'
+import type { NativeSubagentsPort } from './ampSubagents.js'
+import { coordinationCollaborationToolDefinitions, type CoordinationCollaborationToolName } from './ampCollaborationTools.js'
+import { coordinationPlanningToolDefinitions, type CoordinationPlanningToolName } from './ampPlanningTools.js'
 import { stat } from 'node:fs/promises'
 import { isAbsolute, resolve } from 'node:path'
 
@@ -135,7 +149,7 @@ export type CoordinationGraphToolName =
   | 'coordination_exportation'
 
 /** Every tool name this module can register. */
-export type CoordinationAnyToolName = ToolName | CoordinationFileToolName | CoordinationGraphToolName
+export type CoordinationAnyToolName = ToolName | CoordinationFileToolName | CoordinationGraphToolName | CoordinationPlanningToolName | CoordinationCollaborationToolName | 'coordination_index' | 'coordination_control' | 'coordination_workspace' | 'coordination_workspace_adjust' | 'coordination_knowledge' | 'coordination_environment' | 'coordination_notification' | 'coordination_approve' | 'coordination_search'
 
 /** The registry's definition shape, narrowed to the fields this plugin uses. */
 export interface CoordinationToolDefinition<T = unknown> {
@@ -149,6 +163,7 @@ export interface CoordinationToolDefinition<T = unknown> {
 /** The part of one DSH tool call this module reads. `agent.id` is the session id. */
 export interface ToolExecution {
   readonly agent?: { readonly id?: string }
+  readonly signal?: AbortSignal
 }
 
 /** The `ctx.tools` surface: register one definition, get one disposer. */
@@ -183,6 +198,14 @@ export function toolRegistryOf(context: unknown): CoordinationToolRegistry {
 export interface CoordinationToolService {
   /** Current host copy locale (`zh-CN` / `en-US`). */
   readonly locale: string
+  /** Optional AMP planning service; narrow composer facades omit it. */
+  readonly planning?: AmpPlanning
+  /** Durable owner/assignee duties; actor identity is bound to tool execution. */
+  readonly collaboration?: AmpCollaboration
+  /** Optional DSH subagent roster, used only to discover real child session IDs. */
+  readonly nativeSubagents?: NativeSubagentsPort
+  /** Materialize a verified native child session before recording its assignment. */
+  readonly session?: { ensure(sessionId: string): unknown }
   state(session: string): SelectionState
   setSelection(session: string, patch: SelectionPatch): SelectionState
   activeTurn(session: string): SelectionLockView | undefined
@@ -210,11 +233,13 @@ export interface CoordinationToolService {
    * supplies DSH's actual workspace root for the common default-mode case.
    */
   readonly host?: {
-    readonly workspaceRoot?: string
-    readonly sandboxPolicy?: {
-      resolve(request?: { session?: unknown; mode?: string }): { workspaceRoot?: string }
+      readonly workspaceRoot?: string
+      readonly sandboxPolicy?: {
+        resolve(request?: { session?: unknown; mode?: string }): { workspaceRoot?: string }
+      }
+      /** Host shell seam; absent when the profile mounts no shell service. */
+      readonly shell?: ShellPort
     }
-  }
 }
 
 /** Options for the file-backed tools; every field is optional. */
@@ -267,6 +292,44 @@ export interface ProfessionLockToolValue {
   locked: boolean
   profession?: Profession
 }
+
+/** Value of `coordination_selection` once a patch has been attempted. */
+export interface SelectionSaveValue {
+  session: string
+  /** True when the patch was stored; false when the freeze refused it. */
+  ok: boolean
+  /** The session's current lock state, mirrored from the state read after the call. */
+  locked: boolean
+  /** The selection after the write, or the unchanged current selection. */
+  selection: Selection
+  /**
+   * Present only when the patch was refused. The selection is not mutated in
+   * that case; the model gets the stable code as data instead of a tool error.
+   */
+  error?: { code: 'PROFESSION_LOCKED' | 'INVALID_STATE' | 'INVALID_ARGUMENT'; message: string }
+}
+
+/**
+ * Token-light read of `coordination_selection` (the default view).
+ *
+ * The full `SelectionState` also carries the permission-preset catalog objects,
+ * the config projection and the frozen dimensions — necessary for a UI, but for
+ * "what is selected" they tripled a ~700-token answer. The summary keeps the six
+ * dimensions, the lock, the preset id and id/name pairs; `view: "full"` returns
+ * the previous shape unchanged for callers that need the config.
+ */
+export interface SelectionSummaryValue {
+  view: 'summary'
+  session: string
+  selection: Selection
+  locked: boolean
+  preset?: string
+  defaultMode?: string
+  presets: Array<{ value: string; name: string }>
+}
+
+/** Value of `coordination_selection`: a summary read, a full read or a save. */
+export type SelectionToolValue = SelectionState | SelectionSaveValue | SelectionSummaryValue
 
 /* ------------------------------------------------------------------------- *
  * JSON Schemas (the registry's enforced subset: no $ref, no min/max)
@@ -370,6 +433,97 @@ const SELECTION_STATE_SCHEMA: Record<string, unknown> = {
   },
 }
 
+/**
+ * Value of `coordination_selection` when it changes or refuses a patch.
+ *
+ * A pure read keeps returning the full {@link SELECTION_STATE_SCHEMA}; this
+ * smaller envelope is only for the write path, so a frozen dimension can be
+ * reported as data instead of a thrown tool error.
+ */
+const SELECTION_SAVE_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['session', 'ok', 'locked', 'selection'],
+  properties: {
+    session: { type: 'string' },
+    ok: { type: 'boolean' },
+    locked: { type: 'boolean' },
+    selection: SELECTION_VIEW_SCHEMA,
+    error: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['code', 'message'],
+      properties: {
+        code: {
+          type: 'string',
+          enum: ['PROFESSION_LOCKED', 'INVALID_STATE', 'INVALID_ARGUMENT'],
+        },
+        message: { type: 'string' },
+      },
+    },
+  },
+}
+
+/**
+ * The selection tool answers in one of two shapes. DSH's enforced schema subset
+ * forbids `type` beside `oneOf`, so the union is a bare `oneOf` of the read
+ * state and the save envelope (the same pattern as the graph tools below).
+ */
+/**
+ * Token-light view of a `SelectionState`: identity, dimensions, lock, preset id
+ * and preset names. `config`, `tooltip` and `frozen` stay in the full view.
+ */
+export function selectionSummaryOf(state: SelectionState): SelectionSummaryValue {
+  return {
+    view: 'summary',
+    session: state.session,
+    selection: state.selection,
+    locked: state.selection.locked,
+    ...(state.preset === undefined ? {} : { preset: state.preset }),
+    ...(state.defaultMode === undefined ? {} : { defaultMode: state.defaultMode }),
+    presets: state.presets.map((preset) => ({ value: preset.value, name: preset.name })),
+  }
+}
+
+/** `coordination_selection`'s read projection; unknown values are INVALID_ARGUMENT. */
+function selectionViewOf(args: Record<string, unknown>): 'summary' | 'full' {
+  const value = args.view
+  if (value === undefined) return 'summary'
+  if (value === 'summary' || value === 'full') return value
+  throw new InvalidArgumentError('view must be "summary" or "full"', { view: value })
+}
+
+/**
+ * Schema for the summary view. Declared as its own `oneOf` branch so the full
+ * state stays a valid, unchanged alternative.
+ */
+const SELECTION_SUMMARY_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['view', 'session', 'selection', 'locked', 'presets'],
+  properties: {
+    view: { type: 'string', enum: ['summary'] },
+    session: { type: 'string' },
+    selection: SELECTION_VIEW_SCHEMA,
+    locked: { type: 'boolean' },
+    preset: { type: 'string' },
+    defaultMode: { type: 'string' },
+    presets: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['value', 'name'],
+        properties: { value: { type: 'string' }, name: { type: 'string' } },
+      },
+    },
+  },
+}
+
+const SELECTION_TOOL_SCHEMA: Record<string, unknown> = {
+  oneOf: [SELECTION_STATE_SCHEMA, SELECTION_SAVE_SCHEMA, SELECTION_SUMMARY_SCHEMA],
+}
+
 const PROFESSION_RECORD_SCHEMA: Record<string, unknown> = { type: 'object', additionalProperties: true }
 
 const PROFESSION_TOOL_SCHEMA: Record<string, unknown> = {
@@ -409,11 +563,10 @@ const PROFESSION_LOCK_TOOL_SCHEMA: Record<string, unknown> = {
  * ------------------------------------------------------------------------- */
 
 /**
- * Build the three composer definitions for one locale. Pure: no registry and no
- * host context touched, which is what makes the locale switch testable. The
- * file-backed tools live in {@link coordinationFileToolDefinitions}; keeping the
- * two sets separate preserves the documented three-tool composer surface (and
- * the narrow test facade that only implements it).
+ * Build the composer definitions and, when `service.planning` is present, the
+ * three AMP planning definitions for one locale. Pure: no registry and no host
+ * context touched. The file-backed tools remain separate; narrow facades that
+ * omit planning preserve the documented three-tool composer surface.
  */
 export function coordinationToolDefinitions(
   service: CoordinationToolService,
@@ -423,7 +576,14 @@ export function coordinationToolDefinitions(
   return [
     professionTool(service, copy.tools.coordination_profession),
     professionLockTool(service, copy.tools.coordination_profession_lock),
-    selectionTool(service, copy.tools.coordination_selection),
+    selectionTool(service, copy.tools.coordination_selection, locale),
+    ...coordinationPlanningToolDefinitions(service, locale, {
+      resolveSession,
+      render: (value) => renderJson(value, toolResultMaxBytes(service)),
+    }),
+    ...coordinationCollaborationToolDefinitions(service, locale, {
+      render: (value) => renderJson(value, toolResultMaxBytes(service)),
+    }),
   ]
 }
 
@@ -437,8 +597,8 @@ export function coordinationToolDefinitions(
  * host config has not disabled the parser (`parser.enabled !== false`), or when
  * the caller passes `fileTools: true`. A narrow facade — the selection and
  * profession modules composed for a unit test — keeps exactly the three
- * composer tools, so the existing integration contract is unchanged while the
- * real host gets all seven. `parser.enabled` is read at registration time;
+ * composer tools unless it explicitly supplies `planning`, which adds the three
+ * AMP planning tools independently of parser availability. `parser.enabled` is read at registration time;
  * toggling it live takes effect on the next tool re-registration (locale
  * switch) because the tool set itself changes.
  *
@@ -588,10 +748,68 @@ function professionLockTool(
  * coordination_selection
  * ------------------------------------------------------------------------- */
 
-function selectionTool(service: CoordinationToolService, copy: ToolCopy): CoordinationToolDefinition<SelectionState> {
+/**
+ * What the selection tool promises beyond the shared copy table.
+ *
+ * The shared `copy.tools.coordination_selection.description` describes the
+ * composer surface; this addendum states the two behaviours the tool now owns:
+ * while the session is not frozen the agent may edit its own dimensions, and a
+ * frozen a save is reported as structured data rather than a thrown error.
+ * It lives here (not in `src/shared/i18n.ts`) so the shared locale table keeps
+ * one stable copy per surface.
+ */
+const SELECTION_SAVE_COPY: Readonly<Record<Locale, string>> = {
+  'en-US':
+    'While no turn, plan or goal freezes a dimension, the agent may change its own profession / interaction / scene here; ' +
+    'a change refused by a running goal, plan or turn comes back as a structured { ok: false, error } value instead of a thrown tool error.',
+  'zh-CN':
+    '未被运行中的 Turn / 计划 / 目标冻结时，代理可以在这里修改自己的职能 / 交互 / 情景；' +
+    '被 goal/plan 冻结而拒绝修改时返回结构化的 { ok: false, error } 结果，不会抛出工具错误。',
+}
+
+/** Map one selection failure onto the save envelope's stable code. */
+function selectionFailureCode(error: unknown): 'PROFESSION_LOCKED' | 'INVALID_STATE' | 'INVALID_ARGUMENT' {
+  const code = (error as { code?: unknown } | null)?.code
+  if (code === 'PROFESSION_LOCKED' || code === 'INVALID_STATE') return code
+  return 'INVALID_ARGUMENT'
+}
+
+/**
+ * Build the refusal envelope for one failed patch.
+ *
+ * The current selection is read after the failure so the caller can see what
+ * stayed in force. `locked` mirrors that state instead of being asserted: a
+ * frozen profession/dimension implies an active turn and reports `true`, while
+ * an argument error in an unlocked session must not claim a freeze. If even the
+ * state read fails, the original error is rethrown: there is no honest envelope
+ * to return.
+ */
+function selectionFailure(
+  service: CoordinationToolService,
+  session: string,
+  error: unknown,
+): SelectionSaveValue {
+  const state = service.state(session)
+  return {
+    session,
+    ok: false,
+    locked: state.locked,
+    selection: state.selection,
+    error: {
+      code: selectionFailureCode(error),
+      message: error instanceof Error ? error.message : 'selection change was refused',
+    },
+  }
+}
+
+function selectionTool(
+  service: CoordinationToolService,
+  copy: ToolCopy,
+  locale: Locale,
+): CoordinationToolDefinition<SelectionToolValue> {
   return {
     name: 'coordination_selection',
-    description: copy.description,
+    description: `${copy.description} ${SELECTION_SAVE_COPY[locale]}`,
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -603,18 +821,36 @@ function selectionTool(service: CoordinationToolService, copy: ToolCopy): Coordi
         validation: { ...stringParameter(copy, 'validation'), enum: VALIDATION_ENUM },
         command: { ...stringParameter(copy, 'command'), enum: COMMAND_ENUM },
         preset: stringParameter(copy, 'preset'),
+        view: { ...stringParameter(copy, 'view'), enum: ['summary', 'full'] },
       },
     },
     output: {
-      schema: SELECTION_STATE_SCHEMA,
+      schema: SELECTION_TOOL_SCHEMA,
       render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
     },
     async execute(rawArgs, exec) {
       const args = asArguments(rawArgs)
       const session = resolveSession(args, exec)
-      const patch = selectionPatchOf(args)
-      // A pure read is the common case; a patch is stored for the next turn.
-      return Object.keys(patch).length === 0 ? service.state(session) : service.setSelection(session, patch)
+      const view = selectionViewOf(args)
+      let patch: SelectionPatch
+      try {
+        patch = selectionPatchOf(args)
+      } catch (error) {
+        return selectionFailure(service, session, error)
+      }
+      // A pure read defaults to the summary; `view: "full"` keeps the complete
+      // SelectionState for callers that need presets/config. A patch answers
+      // with the save envelope and ignores the view.
+      if (Object.keys(patch).length === 0) {
+        const state = service.state(session)
+        return view === 'full' ? state : selectionSummaryOf(state)
+      }
+      try {
+        const state = service.setSelection(session, patch)
+        return { session, ok: true, locked: state.locked, selection: state.selection }
+      } catch (error) {
+        return selectionFailure(service, session, error)
+      }
     },
   }
 }
@@ -868,7 +1104,7 @@ export interface ToolWorkspaceRootRequest {
    * typo as "the workspace is empty".
    */
   root?: string | null
-  /** The active session object, when the caller already resolved it. */
+  /** The active session object, or explicit session id selected by a graph read. */
   session?: unknown
   /**
    * The Cordis context, read structurally for `agents`, `workingDirectory`,
@@ -888,18 +1124,16 @@ export interface ToolWorkspaceRootOptions {
  *
  *  1. an explicit `root` query parameter — absolute, normalised, existing
  *     directory; anything else is `InvalidArgumentError` (→ 400);
- *  2. `options.workspaceRoot` / `service.workspaceRoot`;
- *  3. `service.host.workspaceRoot`;
- *  4. `service.host.sandboxPolicy.resolve({ session }).workspaceRoot` — DSH's
- *     sandbox policy resolves the active session's recorded cwd, which is the
- *     session workspace rather than the desktop install directory;
- *  5. `workingDirectory.ensure(rootAgent, signal)` — the live session's
+ *  2. the explicitly requested session's recorded cwd, sandbox workspace, then
+ *     its recorded working-directory projection;
+ *  3. `options.workspaceRoot` / `service.workspaceRoot`;
+ *  4. `service.host.workspaceRoot`;
+ *  5. `service.host.sandboxPolicy.resolve({ session }).workspaceRoot` — DSH's
+ *     sandbox policy resolves the active session's recorded cwd;
+ *  6. `workingDirectory.ensure(rootAgent, signal)` — the live session's
  *     effective directory, guarded by a short timeout and a try/catch;
- *  6. the root agent's session observation `workingDirectory` (read
- *     structurally from `session.workingDirectory`,
- *     `observation.projections.values.workingDirectory`, or the projection
- *     registry's `stateOf`; a recorded `null` is not a root);
- *  7. `process.cwd()` only when nothing else yields a usable directory.
+ *  7. the root agent's session observation `workingDirectory`;
+ *  8. `process.cwd()` only when nothing else yields a usable directory.
  *
  * Every candidate is `stat`-validated and must be an existing directory; a
  * non-directory candidate is skipped rather than returned. The resolved root
@@ -932,12 +1166,25 @@ export class ToolWorkspaceRootResolver {
   }
 
   private async computeRoot(): Promise<string> {
-    const explicit = await this.explicitRoot()
-    if (explicit !== undefined) return explicit
+    const explicitSession = typeof this.request.session === 'string' ? this.request.session.trim() : undefined
+    if (explicitSession && this.request.root !== undefined && this.request.root !== null) {
+      throw new InvalidArgumentError('root cannot be combined with an explicit session', { session: explicitSession })
+    }
+    if (!explicitSession) {
+      const explicit = await this.explicitRoot()
+      if (explicit !== undefined) return explicit
+    }
 
     const context = this.request.context
     const agent = rootAgentOf(context)
-    const session = this.activeSession(agent)
+    const session = explicitSession || this.activeSession(agent)
+    if (explicitSession) {
+      const selectedSessionRoot = await this.sessionRoot(explicitSession)
+      if (selectedSessionRoot === undefined) {
+        throw new InvalidArgumentError(`session ${explicitSession} has no resolvable workspace directory`, { session: explicitSession })
+      }
+      return selectedSessionRoot
+    }
     const candidates = [
       nonEmptyRoot(this.options.workspaceRoot),
       nonEmptyRoot(this.service.workspaceRoot),
@@ -968,6 +1215,57 @@ export class ToolWorkspaceRootResolver {
    * default workspace; the session's own `header.cwd` is the directory the user
    * actually opened, so it outranks the policy answer.
    */
+  private async sessionRoot(session: string): Promise<string | undefined> {
+    const query = contextGet(this.request.context, 'sessionQuery')
+    const observe = callableOf(query, 'observeSession')
+    if (observe === undefined) return undefined
+
+    let observation: unknown
+    try {
+      observation = await observe.call(query, session, { projectionMode: 'all' })
+      const header = recordOfValue(recordOfValue(observation)?.['header'])
+      if (nonEmptyRoot(header?.['id']) !== session) return undefined
+      const cwd = await existingDirectoryRoot(nonEmptyRoot(header?.['cwd']))
+      if (cwd !== undefined) {
+        const registry = contextGet(this.request.context, 'workspaceRegistry')
+        const resolveByPath = callableOf(registry, 'resolveByPath')
+        if (resolveByPath !== undefined) {
+          try {
+            const workspace = recordOfValue(await resolveByPath.call(registry, cwd))
+            const workspaceRoot = await existingDirectoryRoot(nonEmptyRoot(workspace?.['path']))
+            if (workspaceRoot !== undefined) return workspaceRoot
+          } catch {
+            // A cwd outside a registered workspace remains its own graph root.
+          }
+        }
+        return cwd
+      }
+      const projected = await existingDirectoryRoot(recordedWorkingDirectory(observation))
+      if (projected !== undefined) return projected
+      const registry = contextGet(this.request.context, 'workspaceRegistry')
+      const list = callableOf(registry, 'list')
+      if (list !== undefined) {
+        const workspaces = list.call(registry)
+        if (Array.isArray(workspaces)) {
+          for (const workspace of workspaces) {
+            const value = recordOfValue(workspace)
+            const ids = value?.['sessionIds']
+            if (Array.isArray(ids) && ids.includes(session)) {
+              const workspaceRoot = await existingDirectoryRoot(nonEmptyRoot(value?.['path']))
+              if (workspaceRoot !== undefined) return workspaceRoot
+            }
+          }
+        }
+      }
+      return await existingDirectoryRoot(this.sandboxRoot(session))
+    } catch {
+      // Missing or unreadable sessions do not inherit another session's root.
+      return undefined
+    } finally {
+      disposeSessionObservation(observation)
+    }
+  }
+
   private async sessionCwd(session: unknown): Promise<string | undefined> {
     if (typeof session !== 'string' || session.length === 0) return undefined
     const query = contextGet(this.request.context, 'sessionQuery')
@@ -1343,6 +1641,54 @@ class ToolRuntime {
   }
 
   /**
+   * Describe one node, falling back to the persisted graph when the bounded
+   * registry does not hold it.
+   *
+   * The LRU hydrates only the newest rows, so an `coordination_outline` handle
+   * for an older file used to fail `coordination_describe` with "node not
+   * found" even though the node is indexed. This targeted read restores that
+   * one row (which also re-registers it) and describes it normally; nothing is
+   * fabricated when the handle truly does not exist.
+   */
+  describeNode(handle: string, fields: readonly string[] = []): DescribeResult {
+    this.assertLive()
+    try {
+      return this.registry.describe(handle, fields)
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error
+    }
+    const record = this.storeValue?.nodeByHandle(handle)
+    if (record === undefined) throw new NotFoundError('node', handle)
+    this.ensureRegistry().restore([record])
+    return this.registry.describe(handle, fields)
+  }
+
+  /** Path/Ranges of one persisted node, for handle-addressed reads. */
+  nodeRanges(handle: string): {
+    path: string
+    charset?: string
+    lineStart?: number
+    lineEnd?: number
+    byteStart?: number
+    byteEnd?: number
+  } {
+    this.assertLive()
+    const record = this.storeValue?.nodeByHandle(handle)
+    if (record === undefined) throw new NotFoundError('node', handle)
+    if (record.path === undefined) {
+      throw new InvalidArgumentError('handle has no workspace file path', { handle })
+    }
+    return {
+      path: record.path,
+      ...(record.charset === undefined ? {} : { charset: record.charset }),
+      ...(record.lineStart === undefined ? {} : { lineStart: record.lineStart }),
+      ...(record.lineEnd === undefined ? {} : { lineEnd: record.lineEnd }),
+      ...(record.byteStart === undefined ? {} : { byteStart: record.byteStart }),
+      ...(record.byteEnd === undefined ? {} : { byteEnd: record.byteEnd }),
+    }
+  }
+
+  /**
    * Register + index one parse, persisting nodes/edges and the snapshot in one
    * transaction when a database is present. Returns the bounded card list the
    * tool projects.
@@ -1536,7 +1882,7 @@ function configNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
 }
 
-function parseOptionsOf(service: CoordinationToolService, options: CoordinationToolOptions): ParseServiceOptions {
+export function parseOptionsOf(service: CoordinationToolService, options: CoordinationToolOptions = {}): ParseServiceOptions {
   const parser = fileLayerConfig(service).parser ?? {}
   const fromConfig: ParseServiceOptions = {
     ...(configNumber(parser.maxFileBytes) === undefined ? {} : { maxFileBytes: configNumber(parser.maxFileBytes) }),
@@ -1601,6 +1947,23 @@ function coordinationDatabaseOf(value: unknown): CoordinationDatabase | undefine
  * File-layer tool values
  * ------------------------------------------------------------------------- */
 
+/**
+ * One token-light card in `verbosity: "compact"` (the default).
+ *
+ * The full `NodeCard` repeats its `reference` (hash, mediaType, mtime, byte and
+ * column spans) on every node, which on a 1.3 KB file turned a 5.5 KB answer
+ * into 4.3× amplification. The compact projection keeps identity, kind, name
+ * and the line span; `verbosity: "full"` still returns complete cards.
+ */
+export interface ParseCompactCard {
+  identity: string
+  kind: string
+  name: string
+  path?: string
+  lineStart?: number
+  lineEnd?: number
+}
+
 /** Value of `coordination_parse` (metadata only; never a body). */
 export interface ParseToolValue {
   path?: string
@@ -1623,15 +1986,19 @@ export interface ParseToolValue {
     column?: number
   }>
   diagnosticsTruncated: boolean
-  cards: NodeCard[]
+  /** Compact or full cards, selected by `verbosity` (default compact). */
+  cards: Array<NodeCard | ParseCompactCard>
   cardsTruncated: boolean
+  verbosity?: 'compact' | 'full'
   /** Bounded workspace dependency summary (counts only; no graph/edges). */
   dependencies: DependencyGraphSummary
   counts: { nodes: number; references: number; diagnostics: number; external: number }
 }
 
-/** Value of `coordination_chain`: a ChainProjection, nothing else. */
-export type ChainToolValue = ChainProjection
+/** Value of `coordination_chain`: a ChainProjection, plus the empty-relation note. */
+export type ChainToolValue =
+  | ChainProjection
+  | (ChainProjection & { diagnostic: { code: 'no_links'; hint: string } })
 
 /** Value of `coordination_read`: the only tool value with real file text. */
 export interface ReadToolValue {
@@ -1709,6 +2076,7 @@ function parseTool(
         path: fileStringParameter(copy, 'path'),
         text: fileStringParameter(copy, 'text'),
         parserId: fileStringParameter(copy, 'parserId'),
+        verbosity: { ...fileStringParameter(copy, 'verbosity'), enum: ['compact', 'full'] },
       },
     },
     output: {
@@ -1720,6 +2088,7 @@ function parseTool(
       const path = optionalToken(args, 'path')
       const text = optionalText(args, 'text')
       const parserId = optionalToken(args, 'parserId')
+      const verbosity = parseVerbosityOf(args)
       if ((path === undefined) === (text === undefined)) {
         throw new InvalidArgumentError('coordination_parse requires exactly one of path or text')
       }
@@ -1732,9 +2101,17 @@ function parseTool(
       // Register + index + persist in one step; a text-only parse has no
       // workspace identity, so only the registry sees it.
       const cards = runtime.recordParse(parsed)
-      return parseValue(parsed, cards, runtime.dependencySummary())
+      return parseValue(parsed, cards, runtime.dependencySummary(), verbosity)
     },
   }
+}
+
+/** `coordination_parse`'s card projection; unknown values are INVALID_ARGUMENT. */
+function parseVerbosityOf(args: Record<string, unknown>): 'compact' | 'full' {
+  const value = args.verbosity
+  if (value === undefined) return 'compact'
+  if (value === 'compact' || value === 'full') return value
+  throw new InvalidArgumentError('verbosity must be "compact" or "full"', { verbosity: value })
 }
 
 function describeTool(
@@ -1766,7 +2143,7 @@ function describeTool(
       const args = asArguments(rawArgs)
       const handle = requiredToken(args, 'handle')
       const fields = optionalStringList(args, 'fields')
-      return (await toolRuntimeFor(service, options, exec)).registry.describe(handle, fields)
+      return (await toolRuntimeFor(service, options, exec)).describeNode(handle, fields)
     },
   }
 }
@@ -1814,27 +2191,110 @@ function chainDefinition(
         ...(args.kind === undefined ? {} : { kind: requiredToken(args, 'kind') }),
       }
       const engine = (await toolRuntimeFor(service, options, exec)).chain
+      let projection!: ChainProjection
       switch (action) {
         case 'dependencies':
-          return engine.dependenciesOf(handle, query)
+          projection = engine.dependenciesOf(handle, query)
+          break
         case 'dependents':
-          return engine.dependentsOf(handle, query)
+          projection = engine.dependentsOf(handle, query)
+          break
         case 'satisfies':
-          return engine.satisfiesOf(handle, query)
+          projection = engine.satisfiesOf(handle, query)
+          break
         case 'satisfied_by':
-          return engine.satisfiedBy(handle, query)
+          projection = engine.satisfiedBy(handle, query)
+          break
         case 'baseline':
-          return engine.baselineOf(handle, query)
+          projection = engine.baselineOf(handle, query)
+          break
         case 'prerequisites':
-          return engine.prerequisitesOf(handle, query)
+          projection = engine.prerequisitesOf(handle, query)
+          break
         case 'unmet':
-          return engine.unmet(handle, query)
+          projection = engine.unmet(handle, query)
+          break
         case 'path':
-          return engine.path(handle, requiredToken(args, 'target'), query)
+          projection = engine.path(handle, requiredToken(args, 'target'), query)
+          break
         case 'cycle':
-          return engine.cycleAt(handle, query)
+          projection = engine.cycleAt(handle, query)
+          break
       }
+      const diagnostic = chainDiagnosticOf(projection)
+      return diagnostic === undefined ? projection : { ...projection, diagnostic }
     },
+  }
+}
+
+/**
+ * Explain an empty relation result instead of returning a silently empty graph.
+ *
+ * A workspace can be fully indexed (`counts.nodes` in the tens of thousands)
+ * while the requested relation has no persisted edges — an index built before
+ * relation persistence, or a relation the parser never produces. In that case
+ * the model used to see `links: []` and no reason; this diagnostic names the
+ * count and the next action. A truncated result (`omitted > 0`) is not empty,
+ * so it never triggers.
+ */
+export function chainDiagnosticOf(
+  value: { counts?: { nodes?: number; links?: number; omitted?: number } | undefined; relation?: string | undefined },
+): { code: 'no_links'; hint: string } | undefined {
+  const nodes = value.counts?.nodes ?? 0
+  const links = value.counts?.links ?? 0
+  const omitted = value.counts?.omitted ?? 0
+  if (nodes === 0 || links > 0 || omitted > 0) return undefined
+  const relation = value.relation ?? 'requested'
+  return {
+    code: 'no_links',
+    hint: `${nodes.toLocaleString('en-US')} nodes are indexed but no "${relation}" edges were found; run coordination_index rebuild if this workspace was indexed before relation persistence, then retry.`,
+  }
+}
+
+/** Map our detected charset onto AMP's closed union. */
+function ampCharsetOf(charset: string | undefined): AmpCharset {
+  if (charset === undefined || charset === 'ascii' || charset === 'unknown') return 'utf-8'
+  return charset as AmpCharset
+}
+
+/**
+ * Default read offsets for one persisted node.
+ *
+ * AMP 0.6.0 owns this conversion: an outline range is half-open UTF-8 bytes and
+ * inclusive 1-based lines over the raw file, while `coordination_read` counts
+ * decoded text — so a UTF-8 BOM shifts byte offsets by three. `outlineAddress`
+ * removes that prefix and fails closed on reversed or out-of-bounds ranges; the
+ * typed error becomes INVALID_ARGUMENT so the model can correct the call.
+ */
+export function nodeReadDefaults(
+  ranges: {
+    lineStart?: number
+    lineEnd?: number
+    byteStart?: number
+    byteEnd?: number
+    charset?: string
+  },
+  mode: 'lines' | 'bytes',
+): { mode: 'lines' | 'bytes'; start: number; end?: number } {
+  try {
+    const range: SourceRange = {
+      startLine: BigInt(ranges.lineStart ?? 1),
+      endLine: BigInt(ranges.lineEnd ?? ranges.lineStart ?? 1),
+      startByte: BigInt(ranges.byteStart ?? 0),
+      endByte: BigInt(ranges.byteEnd ?? ranges.byteStart ?? 0),
+    }
+    const address = outlineAddress(range, ampCharsetOf(ranges.charset))
+    if (mode === 'lines') {
+      const line = readLineRequest(address)
+      return { mode, start: line.startLine, end: line.startLine + line.maxLines - 1 }
+    }
+    const bytes = readByteRequest(address)
+    return { mode, start: bytes.offsetBytes, end: bytes.offsetBytes + bytes.maxBytes }
+  } catch (error) {
+    if (error instanceof OutlineRangeError) {
+      throw new InvalidArgumentError(`node range cannot be addressed (${error.code})`, { code: error.code })
+    }
+    throw error
   }
 }
 
@@ -1849,9 +2309,10 @@ function readTool(
     parameters: {
       type: 'object',
       additionalProperties: false,
-      required: ['path', 'mode', 'start'],
+      required: [],
       properties: {
         path: fileStringParameter(copy, 'path'),
+        handle: fileStringParameter(copy, 'handle'),
         mode: {
           type: 'string',
           description: fileParameter(copy, 'mode'),
@@ -1869,16 +2330,51 @@ function readTool(
     },
     async execute(rawArgs, exec) {
       const args = asArguments(rawArgs)
-      const mode = requiredMode(args)
-      const request = {
-        path: requiredToken(args, 'path'),
-        mode,
-        start: nonNegativeInteger(args, 'start'),
-        ...(args.end === undefined ? {} : { end: nonNegativeInteger(args, 'end') }),
-        ...(args.maxBytes === undefined ? {} : { maxBytes: nonNegativeInteger(args, 'maxBytes') }),
-        ...(args.maxLines === undefined ? {} : { maxLines: nonNegativeInteger(args, 'maxLines') }),
+      const handle = optionalToken(args, 'handle')
+      const path = optionalToken(args, 'path')
+      if ((handle === undefined) === (path === undefined)) {
+        throw new InvalidArgumentError('exactly one of path or handle is required')
       }
-      return (await toolRuntimeFor(service, options, exec)).parseService.readContent(request)
+      const runtime = await toolRuntimeFor(service, options, exec)
+      let request: {
+        path: string
+        mode: 'bytes' | 'lines'
+        start: number
+        end?: number
+        maxBytes?: number
+        maxLines?: number
+      }
+      if (handle === undefined) {
+        request = {
+          path: path as string,
+          mode: requiredMode(args),
+          start: nonNegativeInteger(args, 'start'),
+          ...(args.end === undefined ? {} : { end: nonNegativeInteger(args, 'end') }),
+          ...(args.maxBytes === undefined ? {} : { maxBytes: nonNegativeInteger(args, 'maxBytes') }),
+          ...(args.maxLines === undefined ? {} : { maxLines: nonNegativeInteger(args, 'maxLines') }),
+        }
+      } else {
+        // A handle carries the node's own range. `nodeReadDefaults` converts the
+        // persisted bigint span through AMP 0.6.0's `outlineAddress`, which also
+        // removes the UTF-8 BOM prefix from byte offsets; explicit start/end win.
+        const ranges = runtime.nodeRanges(handle)
+        const requestedMode = args.mode === undefined ? undefined : requiredMode(args)
+        const defaults = nodeReadDefaults(
+          ranges,
+          requestedMode ?? (ranges.lineStart === undefined ? 'bytes' : 'lines'),
+        )
+        const start = args.start === undefined ? defaults.start : nonNegativeInteger(args, 'start')
+        const end = args.end === undefined ? defaults.end : nonNegativeInteger(args, 'end')
+        request = {
+          path: ranges.path,
+          mode: requestedMode ?? defaults.mode,
+          start,
+          ...(end === undefined ? {} : { end }),
+          ...(args.maxBytes === undefined ? {} : { maxBytes: nonNegativeInteger(args, 'maxBytes') }),
+          ...(args.maxLines === undefined ? {} : { maxLines: nonNegativeInteger(args, 'maxLines') }),
+        }
+      }
+      return runtime.parseService.readContent(request)
     },
   }
 }
@@ -1887,6 +2383,7 @@ function parseValue(
   parsed: ParsedFile,
   cards: readonly NodeCard[],
   dependencies: DependencyGraphSummary,
+  verbosity: 'compact' | 'full' = 'compact',
 ): ParseToolValue {
   const references = parsed.references.slice(0, PARSE_REFERENCE_LIMIT).map((reference) =>
     viewReference(reference, parsed.path),
@@ -1924,8 +2421,9 @@ function parseValue(
     referencesTruncated: parsed.references.length > references.length,
     diagnostics,
     diagnosticsTruncated: parsed.diagnostics.length > diagnostics.length,
-    cards: boundedCards,
+    cards: verbosity === 'full' ? boundedCards : boundedCards.map(compactCardOf),
     cardsTruncated: cards.length > boundedCards.length,
+    verbosity,
     dependencies,
     counts: {
       nodes: cards.length,
@@ -1933,6 +2431,18 @@ function parseValue(
       diagnostics: parsed.diagnostics.length,
       external: parsed.references.filter((reference) => reference.external).length,
     },
+  }
+}
+
+/** Drop the per-node `reference`/range duplication from one parse card. */
+function compactCardOf(card: NodeCard): ParseCompactCard {
+  return {
+    identity: card.identity,
+    kind: card.kind,
+    name: card.name,
+    ...(card.path === undefined ? {} : { path: card.path }),
+    ...(card.lineStart === undefined ? {} : { lineStart: card.lineStart }),
+    ...(card.lineEnd === undefined ? {} : { lineEnd: card.lineEnd }),
   }
 }
 
@@ -1944,7 +2454,7 @@ function parseValue(
  * never parse, write, execute or read file content: a call resolves the
  * workspace root through the same request-scoped resolver as the `/graph/*`
  * routes, loads one body-free `GraphStore` snapshot, and projects it through
- * the pure builders in `graph-view.ts` (`buildTree`, `buildImports`) plus the
+ * the pure builders in `graphView.ts` (`buildTree`, `buildImports`) plus the
  * small adapters below. Every successful value is paths/names/kinds only.
  *
  * Invalid user input never throws: each `execute` catches the typed error and
@@ -1988,14 +2498,38 @@ export interface WorkspaceTreeEntry {
   children?: WorkspaceTreeEntry[]
 }
 
-/** Value of `coordination_file`. */
-export interface CoordinationFileValue {
+/** Output shapes of `coordination_file`; `mode` selects the projection. */
+export type CoordinationFileMode = 'tree' | 'paths'
+
+/** Value of `coordination_file` with `mode: "tree"` (the default, nested). */
+export interface CoordinationFileTreeValue {
+  mode: 'tree'
   /** Resolved absolute workspace root the tree describes. */
   root: string
   entries: WorkspaceTreeEntry[]
   /** True when the depth, entry or graph-tree cap cut the result. */
   truncated: boolean
 }
+
+/**
+ * Value of `coordination_file` with `mode: "paths"` (flat, one string per entry).
+ *
+ * Directories carry a trailing `/`, so `src/util/` cannot be mistaken for a
+ * file; the order is the tree order (directories before files, code-point name
+ * order inside one directory). This is the token-light projection: 56 entries
+ * cost about one line each instead of a five-field object per entry.
+ */
+export interface CoordinationFilePathsValue {
+  mode: 'paths'
+  /** Resolved absolute workspace root the list describes. */
+  root: string
+  paths: string[]
+  /** True when the depth, entry or graph-tree cap cut the result. */
+  truncated: boolean
+}
+
+/** Value of `coordination_file`. */
+export type CoordinationFileValue = CoordinationFileTreeValue | CoordinationFilePathsValue
 
 /** One structure-outline node (path/name/kind metadata only, never a body). */
 export type StructureOutlineNode = OutlineNode
@@ -2008,6 +2542,7 @@ export interface CoordinationFileOutlineValue {
   nodes: StructureOutlineNode[]
   /** True when `limit` cut the node list. */
   truncated: boolean
+  truncation?: TruncationView
 }
 
 /** One workspace-scope outline group. */
@@ -2023,9 +2558,25 @@ export interface CoordinationWorkspaceOutlineValue {
   groups: CoordinationOutlineGroupValue[]
   /** True when the node budget cut the workspace view. */
   truncated: boolean
+  truncation?: TruncationView
 }
 
 export type CoordinationOutlineValue = CoordinationFileOutlineValue | CoordinationWorkspaceOutlineValue
+
+/**
+ * Structured truncation envelope for list projections.
+ *
+ * `total` is the number of rows the graph held before the cap, so a caller can
+ * tell "3 of 3" from "3 of 500". `next` is present only when a follow-up call
+ * with a documented parameter returns more rows (for example `limit=400` or
+ * `path=src/`); it is a hint, not an opaque cursor.
+ */
+export interface TruncationView {
+  readonly returned: number
+  readonly total: number
+  readonly truncated: boolean
+  readonly next?: string
+}
 
 /** One `coordination_importation` row. */
 export interface CoordinationImportationRow {
@@ -2040,6 +2591,7 @@ export interface CoordinationImportationValue {
   rows: CoordinationImportationRow[]
   /** True when `limit` or the route projection's 2,000-row cap cut the rows. */
   truncated: boolean
+  truncation?: TruncationView
 }
 
 /** One `coordination_exportation` row. */
@@ -2055,6 +2607,7 @@ export interface CoordinationExportationValue {
   rows: CoordinationExportationRow[]
   /** True when `limit` or the route projection's 2,000-row cap cut the rows. */
   truncated: boolean
+  truncation?: TruncationView
 }
 
 /** Deepest directory level `coordination_file` returns (root children = 1). */
@@ -2109,11 +2662,12 @@ const GRAPH_TOOL_COPY: Readonly<Record<Locale, Readonly<Record<CoordinationGraph
   'en-US': {
     coordination_file: {
       description:
-        'Read-only directory tree of the persisted workspace graph: workspace-relative paths, names and directory/file kinds only, never file content. Omit path for the workspace root; absolute paths, UNC paths and ".." are refused with INVALID_ARGUMENT.',
+        'Read-only directory tree of the persisted workspace graph: workspace-relative paths, names and directory/file kinds only, never file content. Omit path for the workspace root; absolute paths, UNC paths and ".." are refused with INVALID_ARGUMENT. mode:"paths" returns the same entries as a flat path list (directories end with "/"), which is far cheaper in tokens; mode:"tree" (default) keeps the nested objects.',
       parameters: {
         path: 'Workspace-relative directory; omit for the workspace root. Absolute/UNC paths and ".." are refused.',
         depth: 'Directory depth to return, 1-4 (default 2).',
         limit: 'Maximum tree entries, 1-500 (default 200).',
+        mode: 'Output projection: "tree" (default, nested entries) or "paths" (flat workspace-relative paths).',
       },
     },
     coordination_outline: {
@@ -2144,11 +2698,12 @@ const GRAPH_TOOL_COPY: Readonly<Record<Locale, Readonly<Record<CoordinationGraph
   'zh-CN': {
     coordination_file: {
       description:
-        '以只读目录树列出已持久化的工作区图：仅返回工作区相对路径、名称以及目录/文件类型，绝不返回文件内容。省略 path 表示工作区根目录；绝对路径、UNC 路径和 ".." 一律以 INVALID_ARGUMENT 拒绝。',
+        '以只读目录树列出已持久化的工作区图：仅返回工作区相对路径、名称以及目录/文件类型，绝不返回文件内容。省略 path 表示工作区根目录；绝对路径、UNC 路径和 ".." 一律以 INVALID_ARGUMENT 拒绝。mode:"paths" 把同样的条目输出为扁平路径列表（目录以 "/" 结尾），token 成本低得多；mode:"tree"（默认）保留嵌套对象。',
       parameters: {
         path: '工作区相对目录；省略表示工作区根目录。拒绝绝对路径、UNC 路径和 ".."。',
         depth: '返回的目录深度，1-4（默认 2）。',
         limit: '最大目录树条目数，1-500（默认 200）。',
+        mode: '输出投影："tree"（默认，嵌套条目）或 "paths"（扁平的工作区相对路径）。',
       },
     },
     coordination_outline: {
@@ -2196,6 +2751,54 @@ export function coordinationGraphToolDefinitions(
   ]
 }
 
+/** Refresh graph data without exposing workspace writes or another session's root. */
+export function coordinationIndexToolDefinition(
+  service: CoordinationToolService,
+  locale: Locale = normaliseLocale(service.locale),
+  options: CoordinationToolOptions = {},
+): CoordinationToolDefinition {
+  const zh = normaliseLocale(locale) === 'zh-CN'
+  return {
+    name: 'coordination_index',
+    description: zh
+      ? '按需刷新当前会话工作区的索引。只读源文件，返回计数、根目录、版本和截断状态。'
+      : 'Refresh the current session workspace index on demand. Reads source files and returns counts, root, version and truncation.',
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        action: { type: 'string', enum: ['index', 'rebuild'], description: zh
+          ? '默认 index：扫描工作区（最多 200 文件）；rebuild：刷新已知文件（最多 2000）。均限 10 秒。'
+          : 'Default index scans up to 200 files; rebuild refreshes up to 2000 known files. Both stop after 10 seconds.' },
+        paths: { type: 'array', items: { type: 'string' }, description: zh
+          ? '仅 index：1–200 个已变更的工作区相对文件；省略则扫描。'
+          : 'Index only: 1–200 changed workspace-relative files; omit to scan.' },
+      },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render: (_args, value) => renderJson(value, toolResultMaxBytes(service)),
+    },
+    async execute(rawArgs, exec) {
+      const args = asArguments(rawArgs)
+      if (Object.keys(args).some(key => key !== 'action' && key !== 'paths')) throw new InvalidArgumentError('unknown index parameter')
+      const action = args.action ?? 'index'
+      if (action !== 'index' && action !== 'rebuild') throw new InvalidArgumentError('action must be index or rebuild')
+      if (action === 'rebuild' && args.paths !== undefined) throw new InvalidArgumentError('paths cannot be combined with rebuild')
+      const paths = args.paths === undefined ? undefined : validateIndexPaths(args.paths as string[])
+      assertGraphIndexEnabled(service.config)
+      const db = coordinationDatabaseOf(service.db)
+      if (db === undefined) throw new InvalidStateError('workspace indexing requires the coordination database')
+      // Do not use toolRequestRoot's legacy fallback for a mutating graph action.
+      const root = await resolveToolWorkspaceRootForRequest(service, options, {
+        context: options.context, session: toolSessionOf(exec),
+      })
+      const outcome = await graphIndexOperations(db).update(root, { action, ...(paths === undefined ? {} : { paths }) }, parseOptionsOf(service, options))
+      if (outcome.ok) disposeCoordinationToolRuntime(service)
+      return outcome.ok ? outcome.value : { error: outcome.error }
+    },
+  }
+}
+
 /**
  * Register the four graph tools and return one disposer for the set.
  *
@@ -2239,6 +2842,7 @@ function fileTreeTool(
         path: { type: 'string', description: graphParameter(copy, 'path') },
         depth: { type: 'integer', description: graphParameter(copy, 'depth') },
         limit: { type: 'integer', description: graphParameter(copy, 'limit') },
+        mode: { type: 'string', enum: ['tree', 'paths'], description: graphParameter(copy, 'mode') },
       },
     },
     output: {
@@ -2250,6 +2854,7 @@ function fileTreeTool(
         const args = asArguments(rawArgs)
         const depth = boundedGraphInteger(args, 'depth', 2, MAX_FILE_TOOL_DEPTH)
         const limit = boundedGraphInteger(args, 'limit', DEFAULT_FILE_TOOL_ENTRIES, MAX_FILE_TOOL_ENTRIES)
+        const mode = optionalFileMode(args)
         const requested = optionalGraphPath(args)
         // "." and "./" are how callers spell "the workspace root"; they mean
         // the same thing as omitting `path`, not an invalid argument.
@@ -2263,7 +2868,7 @@ function fileTreeTool(
           )
         }
         const read = await graphReadOf(service, options, exec, scope)
-        return fileTreeValue(read.snapshot, read.root, scope, depth, limit)
+        return fileTreeValue(read.snapshot, read.root, scope, depth, limit, mode)
       } catch (error) {
         return graphToolFailure(error)
       }
@@ -2405,6 +3010,20 @@ async function graphWorkspaceRootOf(
   exec?: ToolExecution,
 ): Promise<string> {
   const session = toolSessionOf(exec)
+  if (session !== undefined && callableOf(contextGet(options.context, 'sessionQuery'), 'observeSession') === undefined) {
+    // Tool calls already carry their caller's identity. Older sandbox-only
+    // hosts can resolve that identity without a session-query service; HTTP
+    // selections still require an exact observation in the shared resolver.
+    const policy = service.host?.sandboxPolicy
+    if (policy !== undefined) {
+      try {
+        const root = await existingDirectoryRoot(nonEmptyRoot(policy.resolve({ session })?.workspaceRoot))
+        if (root !== undefined) return root
+      } catch {
+        // The strict resolver reports an unresolved caller below.
+      }
+    }
+  }
   const resolver = createToolWorkspaceRootResolver(
     service,
     options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot },
@@ -2541,6 +3160,7 @@ function fileTreeValue(
   scope: string | undefined,
   depth: number,
   limit: number,
+  mode: CoordinationFileMode = 'tree',
 ): CoordinationFileValue {
   const root = nonEmptyRoot(snapshot.root) ?? fallbackRoot
   const scopedNodes = treeNodesWithin(snapshot.nodes, scope)
@@ -2549,11 +3169,29 @@ function fileTreeValue(
   const expected = expectedTreeEntryCount(scopedNodes, scope)
   const actual = countTreeEntries(entries)
   const bounded = boundTreeEntries(entries, depth, limit)
-  return {
-    root: tree.root,
-    entries: bounded.entries,
-    truncated: bounded.truncated || actual < expected,
+  const truncated = bounded.truncated || actual < expected
+  if (mode === 'paths') {
+    return { mode: 'paths', root: tree.root, paths: flattenTreePaths(bounded.entries), truncated }
   }
+  return { mode: 'tree', root: tree.root, entries: bounded.entries, truncated }
+}
+
+/**
+ * Flatten bounded tree entries into workspace-relative paths.
+ *
+ * Directories keep a trailing `/` so `src/util/` can never be confused with a
+ * file, and the walk preserves the tree order, so the output is deterministic.
+ */
+function flattenTreePaths(entries: readonly WorkspaceTreeEntry[]): string[] {
+  const paths: string[] = []
+  const walk = (level: readonly WorkspaceTreeEntry[]): void => {
+    for (const entry of level) {
+      paths.push(entry.kind === 'directory' ? `${entry.path}/` : entry.path)
+      if (entry.children !== undefined) walk(entry.children)
+    }
+  }
+  walk(entries)
+  return paths
 }
 
 /** Nodes under one workspace-relative directory (the whole graph when absent). */
@@ -2685,12 +3323,23 @@ function structureOutlineValue(
     if (!query.paths.includes(path)) throw new NotFoundError('file', path)
     const outline = structureOutlineOfPath(path, graphNodesOfPath(query.nodes, path))
     const nodes = outline.nodes.slice(0, limit)
+    const truncated = nodes.length < outline.nodes.length
     return {
       scope: 'file',
       path,
       family: outline.family,
       nodes,
-      truncated: nodes.length < outline.nodes.length,
+      truncated,
+      truncation: {
+        returned: nodes.length,
+        total: outline.nodes.length,
+        truncated,
+        // A larger `limit` is the only way to see more of this file; when the
+        // cap is already reached, there is no next request worth naming.
+        ...(truncated && limit < MAX_OUTLINE_TOOL_NODES
+          ? { next: `limit=${Math.min(MAX_OUTLINE_TOOL_NODES, Math.max(limit * 2, limit + 1))}` }
+          : {}),
+      },
     }
   }
 
@@ -2701,20 +3350,38 @@ function structureOutlineValue(
     if (outline.nodes.length === 0) continue
     groups.push({ path, family: outline.family, nodes: outline.nodes })
   }
+  const total = groups.reduce((count, group) => count + group.nodes.length, 0)
   const bounded: CoordinationOutlineGroupValue[] = []
   let remaining = limit
   let truncated = false
+  let nextPath: string | undefined
   for (const group of groups) {
     if (remaining <= 0) {
       truncated = true
+      nextPath = group.path
       break
     }
     const nodes = group.nodes.slice(0, remaining)
-    if (nodes.length < group.nodes.length) truncated = true
+    if (nodes.length < group.nodes.length) {
+      truncated = true
+      // A partial group is resumed by scoping to that file with a fresh limit.
+      nextPath = group.path
+    }
     bounded.push({ path: group.path, family: group.family, nodes })
     remaining -= nodes.length
   }
-  return { scope: 'workspace', groups: bounded, truncated }
+  const returned = bounded.reduce((count, group) => count + group.nodes.length, 0)
+  return {
+    scope: 'workspace',
+    groups: bounded,
+    truncated,
+    truncation: {
+      returned,
+      total,
+      truncated,
+      ...(nextPath === undefined ? {} : { next: `path=${nextPath}` }),
+    },
+  }
 }
 
 /** Group every path-bearing graph node by its normalized workspace path. */
@@ -2797,9 +3464,20 @@ function importationValue(
   }
   const rows = view.rows.filter((row) => row.imported.length > 0)
   const bounded = rows.slice(0, limit)
+  const truncated = bounded.length < rows.length || view.rows.length >= MAX_IMPORT_ROWS
   return {
     rows: bounded.map((row) => importationRowValue(row, cyclic)),
-    truncated: bounded.length < rows.length || view.rows.length >= MAX_IMPORT_ROWS,
+    truncated,
+    truncation: {
+      returned: bounded.length,
+      // `rows` is the filtered projection, so `total` is what a caller can
+      // actually request; the raw view may include files with no relations.
+      total: rows.length,
+      truncated,
+      ...(bounded.length < rows.length && limit < MAX_RELATION_TOOL_ROWS
+        ? { next: `limit=${Math.min(MAX_RELATION_TOOL_ROWS, Math.max(limit * 2, limit + 1))}` }
+        : {}),
+    },
   }
 }
 
@@ -2820,9 +3498,20 @@ function exportationValue(
   }
   const rows = view.rows.filter((row) => row.exported.length > 0)
   const bounded = rows.slice(0, limit)
+  const truncated = bounded.length < rows.length || view.rows.length >= MAX_IMPORT_ROWS
   return {
     rows: bounded.map((row) => exportationRowValue(row, cyclic)),
-    truncated: bounded.length < rows.length || view.rows.length >= MAX_IMPORT_ROWS,
+    truncated,
+    truncation: {
+      returned: bounded.length,
+      // `rows` is the filtered projection, so `total` is what a caller can
+      // actually request; the raw view may include files with no relations.
+      total: rows.length,
+      truncated,
+      ...(bounded.length < rows.length && limit < MAX_RELATION_TOOL_ROWS
+        ? { next: `limit=${Math.min(MAX_RELATION_TOOL_ROWS, Math.max(limit * 2, limit + 1))}` }
+        : {}),
+    },
   }
 }
 
@@ -2960,6 +3649,14 @@ function boundedGraphInteger(
   return value
 }
 
+/** `coordination_file`'s output projection; unknown values are INVALID_ARGUMENT. */
+function optionalFileMode(args: Record<string, unknown>): CoordinationFileMode {
+  const value = args.mode
+  if (value === undefined) return 'tree'
+  if (value === 'tree' || value === 'paths') return value
+  throw new InvalidArgumentError('mode must be "tree" or "paths"', { mode: value })
+}
+
 /** Parameter copy lookup; a missing entry is a copy bug, not user input. */
 function graphParameter(copy: GraphToolCopy, name: string): string {
   const description = copy.parameters[name]
@@ -3070,6 +3767,21 @@ function fileStringParameter(copy: ToolCopy, name: string): Record<string, unkno
  * File-layer output schemas (the registry's enforced subset: no $ref)
  * ------------------------------------------------------------------------- */
 
+/** One `verbosity: "compact"` parse card (no per-node reference duplication). */
+const PARSE_COMPACT_CARD_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['identity', 'kind', 'name'],
+  properties: {
+    identity: { type: 'string' },
+    kind: { type: 'string' },
+    name: { type: 'string' },
+    path: { type: 'string' },
+    lineStart: { type: 'number' },
+    lineEnd: { type: 'number' },
+  },
+}
+
 const NODE_CARD_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: true,
@@ -3148,8 +3860,9 @@ const PARSE_TOOL_SCHEMA: Record<string, unknown> = {
     referencesTruncated: { type: 'boolean' },
     diagnostics: { type: 'array', items: DIAGNOSTIC_SCHEMA },
     diagnosticsTruncated: { type: 'boolean' },
-    cards: { type: 'array', items: NODE_CARD_SCHEMA },
+    cards: { type: 'array', items: { oneOf: [NODE_CARD_SCHEMA, PARSE_COMPACT_CARD_SCHEMA] } },
     cardsTruncated: { type: 'boolean' },
+    verbosity: { type: 'string', enum: ['compact', 'full'] },
     dependencies: { type: 'object', additionalProperties: true },
     counts: { type: 'object', additionalProperties: true },
   },
@@ -3158,14 +3871,12 @@ const PARSE_TOOL_SCHEMA: Record<string, unknown> = {
 const DESCRIBE_TOOL_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
-  required: ['handle', 'card', 'status', 'brief', 'fields', 'requested', 'unverifiable'],
+  required: ['handle', 'card', 'status', 'brief', 'requested', 'unverifiable'],
   properties: {
     handle: { type: 'string' },
     card: NODE_CARD_SCHEMA,
     status: { type: 'string' },
     brief: { type: 'string' },
-    reference: { type: 'object', additionalProperties: true },
-    fields: { type: 'object', additionalProperties: true },
     requested: { type: 'object', additionalProperties: true },
     unverifiable: { type: 'array', items: { type: 'string' } },
   },
@@ -3217,6 +3928,12 @@ const CHAIN_TOOL_SCHEMA: Record<string, unknown> = {
     relation: { type: 'string' },
     found: { type: 'boolean' },
     counts: { type: 'object', additionalProperties: true },
+    diagnostic: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['code', 'hint'],
+      properties: { code: { type: 'string' }, hint: { type: 'string' } },
+    },
   },
 }
 
@@ -3311,10 +4028,22 @@ const FILE_TOOL_SCHEMA: Record<string, unknown> = {
     {
       type: 'object',
       additionalProperties: false,
-      required: ['root', 'entries', 'truncated'],
+      required: ['mode', 'root', 'entries', 'truncated'],
       properties: {
+        mode: { type: 'string', enum: ['tree'] },
         root: { type: 'string' },
         entries: { type: 'array', items: FILE_TREE_ENTRY_SCHEMA },
+        truncated: { type: 'boolean' },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['mode', 'root', 'paths', 'truncated'],
+      properties: {
+        mode: { type: 'string', enum: ['paths'] },
+        root: { type: 'string' },
+        paths: { type: 'array', items: { type: 'string' } },
         truncated: { type: 'boolean' },
       },
     },
@@ -3346,6 +4075,19 @@ const STRUCTURE_OUTLINE_GROUP_SCHEMA: Record<string, unknown> = {
   },
 }
 
+/** Structured truncation envelope shared by list projections. */
+const TRUNCATION_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['returned', 'total', 'truncated'],
+  properties: {
+    returned: { type: 'number' },
+    total: { type: 'number' },
+    truncated: { type: 'boolean' },
+    next: { type: 'string' },
+  },
+}
+
 const OUTLINE_TOOL_SCHEMA: Record<string, unknown> = {
   oneOf: [
     {
@@ -3358,6 +4100,7 @@ const OUTLINE_TOOL_SCHEMA: Record<string, unknown> = {
         family: { type: 'string', enum: GRAPH_FAMILY_ENUM },
         nodes: { type: 'array', items: STRUCTURE_OUTLINE_NODE_SCHEMA },
         truncated: { type: 'boolean' },
+        truncation: TRUNCATION_SCHEMA,
       },
     },
     {
@@ -3368,6 +4111,7 @@ const OUTLINE_TOOL_SCHEMA: Record<string, unknown> = {
         scope: { type: 'string', const: 'workspace' },
         groups: { type: 'array', items: STRUCTURE_OUTLINE_GROUP_SCHEMA },
         truncated: { type: 'boolean' },
+        truncation: TRUNCATION_SCHEMA,
       },
     },
     GRAPH_TOOL_ERROR_SCHEMA,
@@ -3405,6 +4149,7 @@ const IMPORTATION_TOOL_SCHEMA: Record<string, unknown> = {
       properties: {
         rows: { type: 'array', items: IMPORTATION_ROW_SCHEMA },
         truncated: { type: 'boolean' },
+        truncation: TRUNCATION_SCHEMA,
       },
     },
     GRAPH_TOOL_ERROR_SCHEMA,
@@ -3420,6 +4165,7 @@ const EXPORTATION_TOOL_SCHEMA: Record<string, unknown> = {
       properties: {
         rows: { type: 'array', items: EXPORTATION_ROW_SCHEMA },
         truncated: { type: 'boolean' },
+        truncation: TRUNCATION_SCHEMA,
       },
     },
     GRAPH_TOOL_ERROR_SCHEMA,

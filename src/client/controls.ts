@@ -47,7 +47,7 @@ import Select, { type SelectChangeEvent } from '@mui/material/Select'
 import MenuItem from '@mui/material/MenuItem'
 import Tooltip from '@mui/material/Tooltip'
 import Fade from '@mui/material/Fade'
-import { tooltipVisibility } from './tooltip-visibility.js'
+import { tooltipVisibility } from './tooltipVisibility.js'
 import Dialog from '@mui/material/Dialog'
 import DialogTitle from '@mui/material/DialogTitle'
 import DialogContent from '@mui/material/DialogContent'
@@ -100,11 +100,11 @@ import {
   selectStyle,
   selectionConfig,
   selectionStateSignature,
-} from './selection-cache.js'
+} from './selectionCache.js'
 
 /** The host config projection, re-exported so the settings page keeps one path. */
-export { selectionConfig } from './selection-cache.js'
-export type { SelectionConfigView } from './selection-cache.js'
+export { selectionConfig } from './selectionCache.js'
+export type { SelectionConfigView } from './selectionCache.js'
 
 /** MUI's generics describe every overload; the plugin passes one narrow shape. */
 const MuiSelect: React.ComponentType<Record<string, unknown>> =

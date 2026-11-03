@@ -22,7 +22,7 @@
  *    the terminating `;`);
  *  - field/constant declarations -> one `variable` node per declarator.
  *
- * Kind mapping (checked against `NodeKind` in `src/host/node-registry.ts`):
+ * Kind mapping (checked against `NodeKind` in `src/host/nodeRegistry.ts`):
  *
  * | Java construct                    | `NodeMetadata.kind` | note |
  * |-----------------------------------|---------------------|------|

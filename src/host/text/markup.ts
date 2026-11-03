@@ -420,7 +420,7 @@ export const MAX_CSV_ROWS = 100_000
  *
  * Locators are parser-internal natural keys; `partOf`/`contains` reference
  * them. They are never public handles and never leave the host tuple
- * `(path, kind, locator)` that `node-registry.ts` hashes.
+ * `(path, kind, locator)` that `nodeRegistry.ts` hashes.
  */
 export function structuralLocator(
   path: string | undefined,

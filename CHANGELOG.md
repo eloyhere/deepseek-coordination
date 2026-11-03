@@ -1,6 +1,6 @@
 # Changelog
 
-[中文](CHANGELOG.zh-CN.md) · English
+[涓枃](CHANGELOG.zh-CN.md) · English
 
 All notable changes to this repository are documented in this file.
 
@@ -11,7 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > dsh-os tree with a standalone Vite application, and `0.2.0` replaced that with the current
 > DSH plugin bundle layout. Entries from `0.1.9` downwards describe **dsh-os**, a cross-platform
 > atomic OS-interaction surface, which is no longer on the branch tip but remains reachable in
-> git history and tagged `v0.1.5` … `v0.1.9`; see
+> git history and tagged `v0.1.5` — `v0.1.9`; see
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
@@ -19,20 +19,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
-| 0.22.4 | 2026-10-29 | — | Scoped SQL hydration for graph reads |
-| 0.22.3 | 2026-10-29 | — | Graph rows partitioned by workspace |
-| 0.22.2 | 2026-10-29 | — | Settings white-screen fix |
-| 0.22.1 | 2026-10-29 | — | Session-scoped workspace root, . accepted |
-| 0.22.0 | 2026-10-29 | — | Broad tasks decomposed into verifiable plan steps |
-| 0.21.0 | 2026-10-29 | — | /amp/story, concrete request/plan/ignored, all-MUI panel |
-| 0.20.0 | 2026-10-29 | — | Plain-language panel, no composer dropdowns, 16 px floor |
-| 0.19.0 | 2026-10-29 | — | Gated `Goal` + `Plan` artifacts from recorded acceptance |
-| 0.18.0 | 2026-10-29 | — | Single AMP panel, floating minimize control, `coordination_profession_lock` |
-| 0.17.3 | 2026-10-29 | — | Declared tool schema covers `frozen` and `config.compaction` (live-verified) |
-| 0.17.2 | 2026-10-29 | — | Live-boundary fix: lossless-JSON tool output, version in /ping |
-| 0.17.0 | 2026-10-29 | — | Takeover windows become AMP attention requests, interrupt records and ask receipts |
-| 0.16.0 | 2026-10-29 | — | Comprehension → warrant-validated claims and unknowns (T1 only on a verbatim anchor) |
-| 0.15.0 | 2026-10-29 | — | AMP v0.1 protocol layer: manifests, frames, receipts, ledger, checkpoints, `/amp/*` |
+| 0.22.4 | 2026-10-29 | —| Scoped SQL hydration for graph reads |
+| 0.22.3 | 2026-10-29 | —| Graph rows partitioned by workspace |
+| 0.22.2 | 2026-10-29 | —| Settings white-screen fix |
+| 0.22.1 | 2026-10-29 | —| Session-scoped workspace root, . accepted |
+| 0.22.0 | 2026-10-29 | —| Broad tasks decomposed into verifiable plan steps |
+| 0.21.0 | 2026-10-29 | —| /amp/story, concrete request/plan/ignored, all-MUI panel |
+| 0.20.0 | 2026-10-29 | —| Plain-language panel, no composer dropdowns, 16 px floor |
+| 0.19.0 | 2026-10-29 | —| Gated `Goal` + `Plan` artifacts from recorded acceptance |
+| 0.18.0 | 2026-10-29 | —| Single AMP panel, floating minimize control, `coordination_profession_lock` |
+| 0.17.3 | 2026-10-29 | —| Declared tool schema covers `frozen` and `config.compaction` (live-verified) |
+| 0.17.2 | 2026-10-29 | —| Live-boundary fix: lossless-JSON tool output, version in /ping |
+| 0.17.0 | 2026-10-29 | —| Takeover windows become AMP attention requests, interrupt records and ask receipts |
+| 0.16.0 | 2026-10-29 | — | Comprehension →warrant-validated claims and unknowns (T1 only on a verbatim anchor) |
+| 0.15.0 | 2026-10-29 | —| AMP v0.1 protocol layer: manifests, frames, receipts, ledger, checkpoints, `/amp/*` |
 | 0.14.10 | 2026-10-18 | `8c9ff34` | Project-level dependencies, imports own file cycles, plain-text transcript, context menus |
 | 0.14.9 | 2026-10-18 | `12115b5` | Panel mount crash and portal/inset layout |
 | 0.14.8 | 2026-10-18 | `26936c1` | Virtualized panels, routed tabs, outline/preview pages, four graph tools |
@@ -69,10 +69,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.6 | 2026-10-13 | `42ff514` | Tool description names the tool |
 | 0.1.5 | 2026-10-13 | `b29c0e3` | `workflow_plan` and measured prefix cache |
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
-| 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
+| 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
 
 ## [Unreleased]
+
+Work merged after the 0.22.4 release and not yet versioned (source audited 2026-11-03).
+
+### Added
+
+- **Durable missions, goals, plans and collaboration duties.** `coordination_mission` queues an AMP goal as a session mission and admits one at a time by priority then FIFO; `coordination_goal` runs proposed → committed → active → achieved/abandoned; `coordination_plan` refuses a task until its prerequisites are done and a plan until every task is done; `coordination_collaboration` assigns, accepts, starts, submits, verifies, rejects and cancels owner/assignee duties with evidence and owner review. Projections are served by `GET /amp/planning`, `/amp/missions`, `/amp/goals`, `/amp/plans` and `/amp/collaboration`, and the dock gained the matching navigation.
+- **Schema 27 and 28.** Schema 27 stores the durable planning projections; schema 28 stores owner/assignee duties and result handoffs. A mutation commits together with its AMP event, so a stored plan or duty always has the ledger entry that describes it.
+- **AMP 0.5.0 scoped control and explicit knowledge marks.** `coordination_control` reads and writes registry metadata (`modules`, `skills`, `knowledge`, `protocols`, `environments`, `concepts`) and the interaction/scenario settings over `global → workspace → session`, with inheritance, deletion tombstones, CAS `expectedVersion`, `dryRun` and `applyTo`. `coordination_knowledge` marks a workspace file as knowledge and can retitle, retag or unmark it. Routes: `GET/POST /control/registry`, `GET/POST /control/settings`, `GET/POST /graph/knowledge`.
+- **Model-facing notifications.** `coordination_notification` pops one notification in the Web GUI for the calling session: `snackbar`, `alert`, `dialog` or `popover`, with `success`/`info`/`warning`/`error` severity, an optional title, an auto-close duration, an anchor and up to four dismiss-only actions. Delivery is one-way by design — the tool returns as soon as the item is queued, so a modal nobody closes cannot stall the agent loop. The host keeps a bounded in-memory queue per session (20 items, 5-minute TTL, 4,000-character message cap); `GET /notify/pending` drains it for exactly one polling client and `POST /notify` queues an item without the tool registry.
+- **A consent dialog the model can call.** `coordination_approve` asks one explicit approve/reject question in a modal MUI dialog and blocks the tool call until the human answers. The window is session-bound and bounded (four waiting per session, 5 s–10 min timeout), and only an explicit click produces `approved`; a timeout, a withdrawn window, an aborted turn or an unloaded plugin settles as `expired`/`cancelled`, never as consent. Routes: `GET /approve/pending`, `POST /approve/answer`, `POST /approve/cancel`.
+- **Internal Elasticsearch search.** `coordination_search` runs one `simple_query_string` query against the operator's Elasticsearch through the `@elastic/elasticsearch` 9 client that arrives with `attention-manifest-protocol`. The endpoint and default index come from `COORDINATION_ES_*` environment variables —never from the model — and the client is imported lazily, so a host without the package still boots. Results are bounded (size ≤ 50, from ≤ 1000, `_source` previewed at 6,000 characters); an unreachable cluster returns `UPSTREAM` and a missing index `NOT_FOUND`.
+- **`coordination_environment` is no longer empty.** A fresh database is seeded once with `env.local`: project root, resolved `git`/`node`/`npm`/`pnpm`/`python`/`java`/`pwsh` paths and curated host variables (`path`, `pathext`, `psmodulepath`, `home`, `temp`, `shell`, `lang`, `platform`, `arch`). Only known names are collected and credential-shaped names are refused; `PATH`-like values are clipped. Seeding never overwrites an edited record, and the new `refresh` action re-discovers and merges while keeping hand edits.
+- **AMP 0.6.0, with handle-addressed reads.** The runtime dependency moves to `attention-manifest-protocol@^0.6.0`. `coordination_read` now accepts a node `handle` (from `coordination_parse` or `coordination_outline`) as an alternative to `path`; its persisted range goes through AMP's new `outlineAddress` bridge, which removes the UTF-8 BOM prefix from byte offsets and fails closed with INVALID_ARGUMENT on reversed or out-of-bounds ranges. `coordination_describe` falls back to the persisted graph when the bounded registry no longer holds a handle, so an outline handle no longer reports "node not found".
+- **An empty relation now explains itself.** `coordination_chain` returns `diagnostic: { code: "no_links", hint }` when nodes are indexed but the requested relation has no edges (for example an index built before relation persistence); the hint names the node count and points at `coordination_index rebuild`. A truncated result and an empty workspace stay silent.
+- **Panel navigation and insight routes.** The dock mounts fifteen tabs (`files`, `amp`, `missions`, `goals`, `plans`, `collaboration`, `outline`, `imports`, `exports`, `dependencies`, `project`, `cognition`, `capabilities`, `skills`, `knowledge`); `preview`, `insight-detail`, `agents` and `agent` stay routed pages behind rows. `GET /amp/scope?scope=global|default|workspace` returns a bounded scope snapshot (20 sessions / 50 entries / 20 receipts unless overridden) and `GET /amp/insights?session=` returns the session's cognition log, manifest capabilities, skills and knowledge, reporting every source as available or unavailable.
+
+### Changed
+
+- **The settings page is a searchable workspace instead of an always-expanded catalog.** A sticky command bar searches labels, hints, config keys and group titles; a chip rail lists the visible groups with row counts and follows the scroll position; the six common groups start open while the seven technical groups start collapsed behind an `高级` tag, and a search expands whatever it matches. Rows are two-column, the common `host` chip is gone, kind/default/range metadata moved into the row tooltip, and a row that differs from the schema default shows a dot, its default value and `恢复默认`. Saves stay optimistic and now flash `已保存` on the row plus a bottom-right Snackbar. The read-only 关于 / 参考 / 作者 tail is unchanged.
+- **The dock mounts its navigation tabs again.** 0.18.0 merged everything into one AMP panel and left the workspace, cognition and knowledge views reachable only by hash; they are now tabs again, next to the planning and collaboration views.
+- **Commands renamed, and bundled skill descriptions are localized.** The four read-only human commands are now `/coordination-missions`, `/coordination-goals`, `/coordination-plans` and `/coordination-duties` (previously `coord-*`). Their descriptions and refusal text are localized and re-register on `POST /locale`. The eight bundled skills no longer concatenate English and Chinese into one description: each carries both sentences, the provider returns the one matching the host language on every lookup, and `POST /locale` invalidates the skill catalog so DSH re-lists the other language. `SKILL.md` frontmatter keeps the English sentence only, because the provider is the surface that localizes.
+- **`coordination_file` gains `mode: "paths"`.** The same entries as a flat path list (directories end with `/`), one line per entry, with the same `depth`/`limit` bounds and `truncated` flag; `tree` stays the default. On the screenshot's 56-entry directory this is roughly an 80% token reduction.
+- **`coordination_search` is registered on demand.** Only `COORDINATION_ES_URL` (or `COORDINATION_ES_SEARCH=1` for the localhost default) puts it in the catalog; an absent backend no longer costs a tool slot every turn or produces guaranteed failing calls.
+- **Output trims: compact parse cards, one describe card, a summary selection view.** `coordination_parse` defaults to `verbosity: "compact"` (identity/kind/name/line range per card, no per-node `reference` copy) and keeps complete NodeCards behind `verbosity: "full"`; the earlier shape turned a 1.3 KB file into a 5.5 KB answer. `coordination_describe` stops repeating the card as a top-level `fields` snapshot and a second `reference` (both remain on the card). `coordination_selection` reads default to `view: "summary"` (six dimensions, lock, preset id/name) and return the full `SelectionState` only with `view: "full"`; a patch still answers with the save envelope.
+- **Every tool result reports `tookMs`.** A registry-level decorator measures each call once and adds an optional `tookMs` to the declared output schema, so no tool repeats timing code and older schemas stay valid. Only `coordination_index` used to expose duration; a slow scan and a cached hit now look different to the model.
+- **The per-turn AMP block is halved, and the context budget is measurable.** The AMP record block now caps at 4,000 characters (was 8,000), clips strings at 160 characters, keeps at most 6 duties / 3 missions / 3 goals / 2 plans / 3 tasks / 6 knowledge paths, sorts duties by content (rank, then id — the `updated` tie-break no longer churns the block) and registers at `order: 900`, so the per-turn block follows the stable guidance instead of preceding it. `GET /context/metrics` reports each tool's characters/tokens, a deterministic catalog hash (a locale switch or description edit changes it), the localized skill-catalog size and the AMP cap.
+- **The tool catalog is dieted, and the diet is measured.** AMP `Goal`/`Plan`/`Duty` arguments now declare a one-line wire schema while `execute` validates the complete local schema with identical rejection messages; the 30-value reference `kind` enum is no longer serialized in every reference slot; the control/environment/knowledge descriptions are shorter. Measured by `GET /context/metrics`, the catalog fell from 27,076 to 18,866 characters (≈6,769 → ≈4,717 tokens) with 23 tools.
+- **Truncated list projections say how much is missing and how to continue.** `coordination_outline` (file and workspace), `coordination_importation` and `coordination_exportation` now return `truncation: { returned, total, truncated, next? }` alongside the boolean `truncated`. `total` is the number of rows the projection held before the cap, so "1 of 3" is distinguishable from "1 of 300"; `next` names the follow-up call (`limit=2`, `path=src/a.ts`) and is omitted when the cap is already at its maximum.
+- **Cache telemetry joins the context budget.** `GET /context/metrics` now reports section hashes for the tool catalog and the localized skill catalog (a changed hash predicts a prefix miss after a locale switch or description edit) and the proxy's cache read ratio: `hitRate`, `inputTokens`, `cachedInputTokens`, samples, window and prefix drift. The cache block reads `proxy.status()`, so it is zeros until the proxy forwards a request, and it never includes prompt content.
+- **A durable state card closes the AMP block and survives compaction.** Each per-turn block now ends with `stateCard`: `objective` (the active goal's statement), open `duties` (count plus three ids), the executing `plan` with `done/total` and its next task, one imperative `next` action, and the effective interaction/scenario `constraints`. It is derived from the plugin's SQLite rows on every step, so compacting chat history — which only rewrites messages — cannot drop it, and `durable: true` states that contract. `GET /amp/state-card?session=… returns the same object; the README's old "8,000 characters / 8 duties" paragraph is corrected to the shipped 4,000-character / 6-duty caps.
+- **Wire schemas are lean by default.** Per-property `description` strings (4,198 characters, ~22% of the catalog) are no longer declared to the model; types, enums, `required`, bounds, patterns and defaults remain, so DSH validates exactly as before and every tool still validates against its own schema. The catalog fell from 18,866 to 12,283 characters (≈4,717 → ≈3,071 tokens). `COORDINATION_SCHEMA_DETAIL=full` restores the documented declarations. `/context/metrics` now also reports `parameterDescriptionChars` per tool, which is how the 4,198 was measured.
+- **A `core` tool profile reaches the ~2k-token budget.** `COORDINATION_TOOL_PROFILE=core` registers the read/planning surface only (16 tools) and skips control, environment, knowledge, notification, approval and the two workspace mutation tools; from the same per-tool metrics that surface is 5,989 characters ≈ 1,497 tokens, with `/context/metrics` reporting the active `profile`. The default stays `full` (23 tools, 3,071 tokens), because notification and approval are features rather than administration.
+- **Automatic compaction now snapshots the state card before rewriting history.** The plugin owns the proposal (`agent/pre-step` → `maybeCompact`), so it captures `stateCardOf(session)` immediately before calling DSH's `compactIfNeeded`, stores it with the per-session compaction bookkeeping, and includes it in the `compaction/auto` event. `GET /amp/state-card?compaction=1` returns `{ current, compaction }`, making the boundary auditable; the live card is rebuilt from durable rows after compaction, so nothing needs to be re-injected from the summary. Tests drive the real `CoordinationService` with a fake `CompactionPort` (captured card, refused compaction keeps none) and cover the route shape.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (1,159 tests, 1,158 pass, 1 skipped), `npm run build`, `npm run pack:check` (15 required runtime files present).
+- New render tests: the settings page renders its search field, all thirteen sections and the three read-only tail sections, and starts the technical groups collapsed; the notification centre is covered by queue, TTL and validation tests. Approval windows are covered by settle-once, session-binding, per-session cap, timeout and tool-abort tests, the Elasticsearch projector by request/response/failure tests (no cluster needed), and the bundled provider by localized-description and localized-command tests.
+
 
 ## [0.22.4] — 2026-10-29
 

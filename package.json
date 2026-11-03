@@ -1,7 +1,7 @@
 {
   "name": "deepseek-coordination",
   "version": "0.22.4",
-  "description": "A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, seven model-facing tools and an HTTP surface; the web half mounts five composer dropdowns, a settings catalog and the service-level takeover dialog.",
+  "description": "A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, AMP planning/collaboration/control tools, notifications, registered skills and optional commands/context; the web half provides docked panels, a searchable settings page, notification surfaces and the takeover dialog.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -21,7 +21,12 @@
     "url": "https://github.com/eloyhere/deepseek-coordination/issues"
   },
   "homepage": "https://github.com/eloyhere/deepseek-coordination#readme",
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/eloyhere"
+  },
   "type": "module",
+  "packageManager": "npm@11.19.0",
   "main": "lib/index.mjs",
   "types": "lib/index.d.mts",
   "exports": {
@@ -30,6 +35,8 @@
       "default": "./lib/index.mjs"
     },
     "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
@@ -37,8 +44,11 @@
     "lib/index.d.mts",
     "lib/client.js",
     "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
     "NOTICE",
-    "docs/amp-conformance.md"
+    "docs/ampConformance.md",
+    "skills/**/*.md"
   ],
   "dsh": {
     "bundle": {
@@ -62,10 +72,10 @@
     "test:build": "tsdown --config tsdown.test.config.ts",
     "test": "npm run test:build && node --test .tmp/test-build",
     "prepack": "npm run build",
-    "pack:check": "node scripts/check-pack.mjs"
+    "pack:check": "node scripts/checkPack.mjs"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24.0.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -97,6 +107,7 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^9.5.0",
     "@mui/material": "^9.5.0",
+    "attention-manifest-protocol": "^0.6.0",
     "dompurify": "^3.4.17",
     "fast-xml-parser": "^5.11.2",
     "fflate": "^0.8.3",
@@ -110,18 +121,3 @@
     "remark-math": "^6.0.0"
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -17,7 +17,7 @@ import { PythonParser } from './python.js'
 import { JavaParser } from './java.js'
 import { RustParser } from './rust.js'
 import { PhpParser } from './php.js'
-import { CFamilyParser } from './c-family.js'
+import { CFamilyParser } from './cFamily.js'
 import { BookParser } from './book.js'
 import { ParserRegistry, extensionOf } from './parser.js'
 import type { NodeMetadata, ParseOptions, ParseResult, Parser } from './parser.js'
@@ -42,7 +42,7 @@ import type {
  * stays Markdown.
  *
  * Binary parsers are deliberately absent: `OfficeParser` needs raw bytes and is
- * registered by the host file layer (`parse-service.ts`), which owns the bounded
+ * registered by the host file layer (`parseService.ts`), which owns the bounded
  * binary read path.
  */
 export const builtinParsers: readonly Parser[] = [

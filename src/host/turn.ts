@@ -25,9 +25,9 @@
  */
 import type { CoordinationConfig } from "./config.js";
 import type { Clock, HandleGenerator } from "./handle.js";
-import type { ExecutionStore } from "./execution-store.js";
-import type { TurnStore } from "./turn-store.js";
-import type { TraceWriter } from "./trace-port.js";
+import type { ExecutionStore } from "./executionStore.js";
+import type { TurnStore } from "./turnStore.js";
+import type { TraceWriter } from "./tracePort.js";
 import type { Session, Turn } from "../shared/entity.js";
 import type {
   CommandType,

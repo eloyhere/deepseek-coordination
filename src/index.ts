@@ -21,8 +21,8 @@ import {
   readSync,
   realpathSync,
 } from 'node:fs'
-import { readdir } from 'node:fs/promises'
 import { dirname, join, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { Config, resolveConfig, type CoordinationConfig } from './host/config.js'
@@ -31,27 +31,46 @@ import { resolveDatabasePath } from './host/database.js'
 import { createRuntime, installTurnLifecycle } from './host/dsh.js'
 import { applyConfigPatch } from './host/selection.js'
 import { withAmpReceipts } from './host/amp.js'
-import { handleAmpRoute } from './host/amp-routes.js'
-import { readOverrides, settingsPath, writeOverrides } from './host/settings-store.js'
-import { createProxyService } from './host/proxy-service.js'
-import { brandProfileOf, shouldDecorate } from './host/model-brand.js'
+import { withToolTiming } from './host/toolTiming.js'
+import { ToolCatalog, withToolCatalog } from './host/toolCatalog.js'
+import { schemaDetailFromEnv, withLeanSchemas } from './host/leanSchemas.js'
+import { profileFromEnv, withToolProfile } from './host/toolProfiles.js'
+import { handleAmpRoute, type AmpInsightsHost } from './host/ampRoutes.js'
+import { adaptAmpScopeHost } from './host/ampScope.js'
+import { readOverrides, settingsPath, writeOverrides } from './host/settingsStore.js'
+import { createProxyService } from './host/proxyService.js'
+import { registerAmpPlanningSkills, type AmpDynamicSkill, type AmpSkillRegistry } from './host/ampSkills.js'
+import type { NativeSubagentsPort } from './host/ampSubagents.js'
+import { registerAmpPrompt, registerAmpCommands, type AmpPromptRegistry, type AmpCommandRegistry, type AmpExtensionService } from './host/ampExtensions.js'
+import { brandProfileOf, shouldDecorate } from './host/modelBrand.js'
 import type { GenerateOptionsLike } from './shared/service.js'
 import {
   createToolWorkspaceRootResolver,
+  coordinationIndexToolDefinition,
+  disposeCoordinationToolRuntime,
+  parseOptionsOf,
   registerCoordinationGraphTools,
   registerCoordinationTools,
   resolveToolWorkspaceRoot,
   toolRegistryOf,
   type ToolWorkspaceRootResolver,
 } from './host/tools.js'
-import { GraphStore } from './host/graph-store.js'
-import { ParseService } from './host/parse-service.js'
-import { ChainEngine } from './host/chain.js'
-import { NodeRegistry } from './host/node-registry.js'
+import { coordinationWorkspaceTool } from './host/workspaceTools.js'
+import { GraphStore } from './host/graphStore.js'
+import { coordinationControlTools, type ControlToolService } from './host/controlTools.js'
+import { NotificationCenter } from './host/notify.js'
+import { coordinationNotificationToolDefinition } from './host/notifyTools.js'
+import { ApprovalCenter } from './host/approve.js'
+import { coordinationApproveToolDefinition } from './host/approveTools.js'
+import { coordinationSearchToolDefinition } from './host/searchTools.js'
+import { handleControlRoute } from './host/controlRoutes.js'
+import { assertGraphIndexEnabled, graphIndexOperations, graphRevision } from './host/graphIndex.js'
+import { ParseService } from './host/parseService.js'
+import { inflateTexSync, texSyncCandidate, texSyncPage } from './host/texSync.js'
 import {
   MAX_PREVIEW_ARCHIVE_BYTES,
+  MAX_PREVIEW_PDF_BYTES,
   MAX_PREVIEW_TEXT_BYTES,
-  WorkspaceIndexGate,
   agentMessagesRoute,
   buildAgentRoster,
   buildDependencies,
@@ -59,6 +78,7 @@ import {
   buildImports,
   buildIntra,
   buildOutline,
+  buildOutlineIndex,
   buildPptxPreview,
   buildTextPreview,
   buildTree,
@@ -66,25 +86,21 @@ import {
   collectAgentRoster,
   createGraphQuery,
   graphVersionOf,
-  indexWorkspaceFiles,
   isOfficePreviewKind,
   normaliseGraphPath,
   previewKindOf,
-  resetGraphCache,
+  previewPdfRange,
   resolveAgentSessionEvents,
   searchGraph,
-  workspaceIndexReport,
+  texPdfCandidate,
   type AgentServiceBundle,
   type GraphEdge,
   type GraphNode,
   type GraphQuery,
   type GraphScope,
   type PreviewValue,
-  type WorkspaceIndexEntry,
-  type WorkspaceIndexIo,
-  type WorkspaceIndexReport,
-} from './host/graph-view.js'
-import type { TakeoverGateAnswer } from './host/takeover-gate.js'
+} from './host/graphView.js'
+import type { TakeoverGateAnswer } from './host/takeoverGate.js'
 import { CoordinationError, InvalidArgumentError, InvalidStateError, NotFoundError, toErrorJson } from './shared/error.js'
 import { normaliseLocale, type Locale } from './shared/i18n.js'
 import { ABOUT } from './shared/about.js'
@@ -120,6 +136,19 @@ function invalidGraphPath(response: ServerResponse): void {
     },
     400,
   )
+}
+
+/**
+ * Whether `coordination_search` belongs in the catalog.
+ *
+ * Registered only when the operator configured a backend: `COORDINATION_ES_URL`
+ * (the endpoint) or `COORDINATION_ES_SEARCH=1` (explicit opt-in for the default
+ * localhost endpoint). An unconditionally registered tool whose cluster is down
+ * costs catalog tokens every turn and fails every call.
+ */
+function searchConfigured(): boolean {
+  return (process.env.COORDINATION_ES_URL ?? '').trim().length > 0
+    || process.env.COORDINATION_ES_SEARCH === '1'
 }
 
 /** Read a POST JSON body, with a size cap that guards against oversized payloads. */
@@ -210,6 +239,38 @@ interface GraphSnapshot {
  * not carry a request context (rebuild, intra); the graph routes always pass
  * their resolved root explicitly.
  */
+/**
+ * The AMP prompt service plus a bounded workspace digest.
+ *
+ * The injected context answers two cheap questions the model would otherwise
+ * spend tool calls on: which files are knowledge, and which interaction and
+ * scenario the scope chain resolves to. Everything stays metadata: knowledge
+ * contributes paths and titles, never a body. A missing sandbox policy simply
+ * narrows the digest to the session scope instead of failing the prompt.
+ */
+function ampPromptServiceOf(service: CoordinationService): AmpExtensionService {
+  return {
+    collaboration: service.collaboration,
+    planning: service.planning,
+    contextDigest(session: string) {
+      try {
+        const workspace = service.host.sandboxPolicy?.resolve({ session })?.workspaceRoot ?? ''
+        const identity = { ...(workspace.length === 0 ? {} : { workspace }), session }
+        const scope = workspace.length === 0 ? 'session' as const : 'workspace' as const
+        const interaction = service.control.getSetting('interaction', scope, identity)
+        const scenario = service.control.getSetting('scenario', scope, identity)
+        return {
+          knowledge: service.knowledge.brief(identity, 8),
+          ...(interaction.value === null ? {} : { interaction: interaction.value }),
+          ...(scenario.value === null ? {} : { scenario: scenario.value }),
+        }
+      } catch {
+        return undefined
+      }
+    },
+  }
+}
+
 function graphSnapshotOf(service: CoordinationService, root = resolveToolWorkspaceRoot(service)): GraphSnapshot {
   const store = new GraphStore(service.db, { workspaceRoot: root })
   const nodes: GraphNode[] = store.loadNodes().map((record) => ({
@@ -228,7 +289,27 @@ function graphSnapshotOf(service: CoordinationService, root = resolveToolWorkspa
     to: edge.to,
     changed: edge.changed,
   }))
-  return { root, version: graphVersionOf(nodes, edges), nodes, edges }
+  const baseVersion = graphVersionOf(nodes, edges)
+  const revisions = store.loadSnapshotRevisions()
+  let revisionHash = 2166136261
+  for (const item of revisions) {
+    const text = `${item.path}\u0000${item.hash}\u0000${item.changed};`
+    for (let index = 0; index < text.length; index += 1) revisionHash = Math.imul(revisionHash ^ text.charCodeAt(index), 16777619) >>> 0
+  }
+  return { root, version: `${baseVersion}.${revisions.length}.${revisionHash.toString(36)}`, nodes, edges }
+}
+
+/** Resolve the workspace identity the AMP insights merge needs, or `''`. */
+async function ampWorkspaceOf(
+  service: CoordinationService,
+  context: unknown,
+  url: URL,
+): Promise<string> {
+  try {
+    return await graphRootResolver(service, context as never, url).resolve()
+  } catch {
+    return ''
+  }
 }
 
 /** One scoped query over a snapshot; the scope is part of the L2 cache key. */
@@ -249,16 +330,19 @@ function graphQueryOf(snapshot: GraphSnapshot, scope: GraphScope): GraphQuery {
  *
  * The resolver is request-scoped by construction: its answer is cached on the
  * instance for the duration of this request only, so two requests (or two
- * sessions) never share a root. An invalid explicit `root` throws
+ * sessions) never share a root. An explicit `session` is resolved against that
+ * exact Session header before any directory fallback. An invalid explicit `root` throws
  * `InvalidArgumentError`, which the route handler maps to 400.
  */
 function graphRootResolver(
   service: CoordinationService,
   context: Context,
   url: URL,
+  includeSelectedSession = true,
 ): ToolWorkspaceRootResolver {
   return createToolWorkspaceRootResolver(service, {}, {
     root: url.searchParams.get('root'),
+    session: includeSelectedSession ? sessionOf(url) || undefined : undefined,
     context,
   })
 }
@@ -286,7 +370,7 @@ const PREVIEW_MAX_BYTES = MAX_PREVIEW_TEXT_BYTES
  * checked against the workspace root (symlink escapes refused), UTF-8 decoded
  * with fatal validation, binary/NUL refused. Office packages are read as bytes
  * through the same containment checks and converted **in memory only** by the
- * payload builders in `host/graph-view.ts`: no temporary file, no external
+ * payload builders in `host/graphView.ts`: no temporary file, no external
  * process, no LibreOffice. Preview never parses into the graph, never caches a
  * body and never logs one; the metadata-only parse caches are untouched.
  *
@@ -301,6 +385,8 @@ const PREVIEW_MAX_BYTES = MAX_PREVIEW_TEXT_BYTES
 async function previewOf(
   path: string,
   workspaceRoot: string,
+  session = '',
+  sourceLine?: number,
 ): Promise<PreviewValue> {
   const parser = new ParseService({ workspaceRoot })
   const relative = parser.relativePath(path)
@@ -311,14 +397,19 @@ async function previewOf(
     if (kind === 'xlsx') return buildXlsxPreview(relative, bytes)
     return buildPptxPreview(relative, bytes)
   }
-  let result: ReturnType<ParseService['readContent']>
-  try {
-    result = parser.readContent({ path: relative, mode: 'bytes', start: 0, maxBytes: PREVIEW_MAX_BYTES })
-  } catch (error) {
-    if (error instanceof InvalidArgumentError && error.message.includes('BOM')) {
-      result = parser.readContent({ path: relative, mode: 'bytes', start: 3, maxBytes: PREVIEW_MAX_BYTES })
-    } else {
-      throw error
+  const result = previewTextContent(parser, relative)
+  if (kind === 'tex') {
+    const candidate = texPdfCandidate(relative)
+    const metadata = candidate === undefined ? undefined : pdfPreviewMetadata(parser, candidate)
+    if (metadata !== undefined) {
+      return {
+        path: relative,
+        kind: 'pdf',
+        url: `${ROUTE_PREFIX}/graph/preview/pdf?path=${encodeURIComponent(relative)}${session.length === 0 ? '' : `&session=${encodeURIComponent(session)}`}`,
+        page: sourceLine === undefined ? 1 : texPreviewPage(parser, relative, sourceLine) ?? 1,
+        truncated: false,
+        bytes: metadata.bytes,
+      }
     }
   }
   return buildTextPreview(
@@ -328,6 +419,78 @@ async function previewOf(
     result.truncated,
     result.byteRange.end - result.byteRange.start,
   )
+}
+
+/** Read the source with the existing text, UTF-8 and BOM checks. */
+function previewTextContent(parser: ParseService, relative: string): ReturnType<ParseService['readContent']> {
+  try {
+    return parser.readContent({ path: relative, mode: 'bytes', start: 0, maxBytes: PREVIEW_MAX_BYTES })
+  } catch (error) {
+    if (error instanceof InvalidArgumentError && error.message.includes('BOM')) {
+      return parser.readContent({ path: relative, mode: 'bytes', start: 3, maxBytes: PREVIEW_MAX_BYTES })
+    }
+    throw error
+  }
+}
+
+/** Existing SyncTeX is optional; malformed/missing mappings leave the PDF at page 1. */
+function texPreviewPage(parser: ParseService, source: string, line: number): number | undefined {
+  const candidate = texSyncCandidate(source)
+  if (candidate === undefined) return undefined
+  let fd: number | undefined
+  try {
+    const real = realpathSync(parser.absolutePath(candidate))
+    const root = realpathSync(parser.workspaceRoot)
+    if (!real.startsWith(root.endsWith(sep) ? root : `${root}${sep}`)) return undefined
+    fd = openSync(real, 'r')
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return undefined
+    const bytes = Buffer.alloc(stat.size)
+    let offset = 0
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset)
+      if (count <= 0) return undefined
+      offset += count
+    }
+    const text = inflateTexSync(bytes)
+    return text === undefined ? undefined : texSyncPage(text, source, line)
+  } catch {
+    return undefined
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+/** Inspect only an adjacent compiled PDF, under the same realpath containment as a text read. */
+function pdfPreviewMetadata(parser: ParseService, relative: string): { bytes: number; real: string; dev: number; ino: number } | undefined {
+  const absolute = parser.absolutePath(relative)
+  if (!existsSync(absolute)) return undefined
+  let real: string
+  let root: string
+  try {
+    real = realpathSync(absolute)
+    root = realpathSync(parser.workspaceRoot)
+  } catch {
+    return undefined
+  }
+  const prefix = root.endsWith(sep) ? root : `${root}${sep}`
+  if (real !== root && !real.startsWith(prefix)) return undefined
+  let fd: number
+  try {
+    fd = openSync(real, 'r')
+  } catch {
+    return undefined
+  }
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || stat.size < 8 || stat.size > MAX_PREVIEW_PDF_BYTES) return undefined
+    const header = Buffer.alloc(8)
+    if (readSync(fd, header, 0, header.length, 0) !== header.length) return undefined
+    if (!header.toString('ascii').startsWith('%PDF-')) return undefined
+    return { bytes: stat.size, real, dev: stat.dev, ino: stat.ino }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /**
@@ -384,161 +547,6 @@ function readOfficePreviewBytes(parser: ParseService, relative: string): Uint8Ar
   }
 }
 
-/* ------------------------------------------------------------------------- *
- * Rebuild — re-index the already-known workspace files
- * ------------------------------------------------------------------------- */
-
-/** Maximum files one rebuild re-parses. */
-const REBUILD_FILE_CAP = 2_000
-/** Wall-clock budget of one rebuild; overrun reports the completed count. */
-const REBUILD_TIME_LIMIT_MS = 10_000
-
-/** True while a rebuild runs; a second concurrent request answers BUSY. */
-let rebuildInFlight = false
-
-/** Value of `POST /graph/rebuild`. */
-interface RebuildValue {
-  files: number
-  nodes: number
-  durationMs: number
-  truncated: boolean
-}
-
-/**
- * Re-parse and re-index every file the graph already knows.
- *
- * This is the only graph action, and it stays within the read-only contract:
- * the file system is only read, no build/command/execution runs, and only the
- * coordination database's own graph rows are refreshed. Each file goes through
- * the normal `ParseService` budgets, then `NodeRegistry` + `ChainEngine` rebuild
- * its cards and edges in one transaction; a single unreadable or unsupported
- * file is skipped without aborting the run.
- *
- * Bounds: at most {@link REBUILD_FILE_CAP} files and
- * {@link REBUILD_TIME_LIMIT_MS} ms — overrun returns the completed counts with
- * `truncated: true`. The L2 dependency cache is cleared unconditionally at the
- * end, and the rewritten rows bump the snapshot-derived graph version, so every
- * `/graph/*` view is invalidated (L1 is request-scoped and already discarded).
- */
-async function rebuildGraph(service: CoordinationService): Promise<RebuildValue> {
-  const startedAt = Date.now()
-  const root = resolveToolWorkspaceRoot(service)
-  const known = graphQueryOf(graphSnapshotOf(service, root), 'workspace').paths
-  const store = new GraphStore(service.db, { workspaceRoot: root })
-  const parser = new ParseService({ workspaceRoot: root })
-  const registry = new NodeRegistry({ persist: { saveNode: (record) => store.saveNode(record) } })
-  const chain = new ChainEngine({
-    persist: {
-      saveNode: (node) => store.saveChainNode(node),
-      saveEdge: (edge) => store.saveEdge(edge),
-      deleteEdge: (edge) => store.deleteEdge(edge),
-    },
-  })
-
-  const targets = known.slice(0, REBUILD_FILE_CAP)
-  let files = 0
-  let nodes = 0
-  let truncated = known.length > targets.length
-  for (const path of targets) {
-    if (Date.now() - startedAt >= REBUILD_TIME_LIMIT_MS) {
-      truncated = true
-      break
-    }
-    // Yield once per file so a concurrent request sees the in-flight flag and
-    // answers BUSY instead of waiting for the whole rebuild.
-    await new Promise<void>((resolve) => { setImmediate(resolve) })
-    let parsed: ReturnType<ParseService['parse']>
-    try {
-      parsed = parser.parse({ path })
-    } catch {
-      // Unsupported extension or a file removed since indexing: keep going.
-      continue
-    }
-    try {
-      const cards = store.transaction(() => {
-        store.beginParse(path)
-        const registered = registry.register(parsed)
-        chain.index(parsed)
-        store.saveSnapshot(parsed, { nodeCount: registered.length })
-        return registered.length
-      })
-      files += 1
-      nodes += cards
-    } catch {
-      // One bad file must never abort the rest of the rebuild.
-    }
-  }
-  resetGraphCache()
-  return { files, nodes, durationMs: Date.now() - startedAt, truncated }
-}
-
-/* ------------------------------------------------------------------------- *
- * Index — scan the workspace and index files that are not in the graph yet
- * ------------------------------------------------------------------------- */
-
-/**
- * Serializes `POST /graph/index`: the flag flips before the first await, so a
- * concurrent request answers 409 `BUSY` instead of queuing behind the scan.
- */
-const indexGate = new WorkspaceIndexGate()
-
-/**
- * Explicit indexing entry point for a profile whose graph is still empty.
- *
- * The file tools only index the paths they are asked to parse, so a fresh
- * workspace legitimately has no graph and the panels show their empty state.
- * This scan walks the workspace instead: the bounds (depth ≤ 8, accepted
- * extensions, skipped directories, 200 files / 10 s) live beside the pure
- * walker in `host/graph-view.ts`; this adapter only binds it to the same
- * services {@link rebuildGraph} uses.
- *
- * Read-only: directories are listed, accepted files are read through
- * `ParseService`'s budgeted read path, and only the coordination database's own
- * graph rows are rewritten. No build, command or execution runs, no workspace
- * file is written, and symlinks are not followed.
- */
-async function indexWorkspace(service: CoordinationService, root: string): Promise<WorkspaceIndexReport> {
-  const parser = new ParseService({ workspaceRoot: root })
-  const store = new GraphStore(service.db, { workspaceRoot: root })
-  const registry = new NodeRegistry({ persist: { saveNode: (record) => store.saveNode(record) } })
-  const chain = new ChainEngine({
-    persist: {
-      saveNode: (node) => store.saveChainNode(node),
-      saveEdge: (edge) => store.saveEdge(edge),
-      deleteEdge: (edge) => store.deleteEdge(edge),
-    },
-  })
-
-  const io: WorkspaceIndexIo = {
-    async readDirectory(path: string): Promise<readonly WorkspaceIndexEntry[]> {
-      const absolute = path.length === 0 ? root : join(root, path)
-      const entries = await readdir(absolute, { withFileTypes: true })
-      // A symlink is never followed: the scan cannot leave the workspace and
-      // cannot index one file twice through an alias.
-      return entries
-        .filter((entry) => !entry.isSymbolicLink() && (entry.isDirectory() || entry.isFile()))
-        .map((entry) => ({ name: entry.name, directory: entry.isDirectory() }))
-    },
-    async indexFile(path: string): Promise<number> {
-      const parsed = parser.parse({ path })
-      return store.transaction(() => {
-        store.beginParse(path)
-        const registered = registry.register(parsed)
-        chain.index(parsed)
-        store.saveSnapshot(parsed, { nodeCount: registered.length })
-        return registered.length
-      })
-    },
-  }
-
-  const result = await indexWorkspaceFiles(io)
-  // Rewritten rows bump the snapshot-derived graph version; drop L2 explicitly.
-  resetGraphCache()
-  // The root is part of the answer: a wrong root is visible, not silent, and a
-  // zero-file scan carries the `no-workspace-files` diagnostic.
-  return workspaceIndexReport(result, root)
-}
-
 /**
  * Nest a flat dotted override map, then merge it over the deployment config.
  *
@@ -583,7 +591,7 @@ function serviceOrUndefined(context: Context, name: string): Record<string, unkn
  *
  * Every entry is capability-optional: a headless or minimal profile may mount
  * none of them, in which case the roster is empty and a transcript lookup is
- * `NOT_FOUND`. Only read methods are called by `host/graph-view.ts`; this
+ * `NOT_FOUND`. Only read methods are called by `host/graphView.ts`; this
  * bundle never grants a send/cancel/resume path.
  */
 function agentServicesOf(context: Context): AgentServiceBundle {
@@ -607,6 +615,65 @@ function webServerOf(context: Context): { register: (route: Record<string, unkno
     : undefined
 }
 
+/**
+ * Enabled control-registry skills projected for DSH's runtime provider.
+ *
+ * The write path is `POST /control/registry` with registry `skills`: a record
+ * carrying `content` becomes a real provider candidate, so DSH's
+ * `sessionSkillCatalog` and the model-facing `skill` tool discover it. Session,
+ * current-workspace and global scopes are projected in that precedence order;
+ * a session-scoped row therefore wins when DSH passes the live agent.
+ */
+function controlRegistrySkills(
+  control: CoordinationService['control'],
+  cwd: string | undefined,
+  sessionId: string | undefined,
+): AmpDynamicSkill[] {
+  const records: ReturnType<CoordinationService['control']['listRegistry']> = []
+  // Session overrides workspace, which overrides global, matching the control
+  // registry's `global → workspace → session` inheritance.
+  if (sessionId !== undefined && sessionId.length > 0) {
+    try {
+      records.push(...control.localRegistry('skills', 'session', { session: sessionId }))
+    } catch { /* this lookup has no usable session identity */ }
+  }
+  if (cwd !== undefined && cwd.length > 0) {
+    try {
+      records.push(...control.localRegistry('skills', 'workspace', { workspace: cwd }))
+    } catch { /* this lookup has no usable workspace identity */ }
+  }
+  try {
+    records.push(...control.listRegistry('skills', 'global', {}))
+  } catch { /* a profile without a global identity has no global skills */ }
+  const skills: AmpDynamicSkill[] = []
+  const seen = new Set<string>()
+  for (const record of records) {
+    if (seen.has(record.id)) continue
+    // Mark the id before the enabled/content checks so a disabled or
+    // content-less override still hides the inherited row.
+    seen.add(record.id)
+    if (!record.enabled || record.deleted === true) continue
+    const value = record.value
+    const content = typeof value.content === 'string' ? value.content : ''
+    if (content.length === 0) continue
+    const description = typeof value.description === 'string' && value.description.length > 0
+      ? value.description
+      : typeof value.summary === 'string' && value.summary.length > 0
+        ? value.summary
+        : record.id
+    skills.push({
+      name: record.id,
+      description,
+      content,
+      ...(typeof value.whenToUse === 'string' ? { whenToUse: value.whenToUse } : {}),
+      ...(typeof value.path === 'string' ? { path: value.path } : {}),
+      ...(typeof value.modelInvocable === 'boolean' ? { modelInvocable: value.modelInvocable } : {}),
+      ...(typeof value.userInvocable === 'boolean' ? { userInvocable: value.userInvocable } : {}),
+    })
+  }
+  return skills
+}
+
 export function apply(context: Context, configInput?: Partial<CoordinationConfig>): void {
   // The override document lives beside the coordination database, so the
   // database path decides where the page's durable edits go.
@@ -617,12 +684,29 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
 
   const runtime = createRuntime(context)
   const service = new CoordinationService(context, config, runtime)
+  /*
+   * Model-facing notifications: one bounded, in-memory queue per session. The
+   * tool only enqueues; the client half polls `/notify/pending`, so showing a
+   * surface can never block the agent loop and nothing is persisted.
+   */
+  const notifications = new NotificationCenter()
+  /*
+   * Model-facing approvals: one bounded, in-memory consent window per waiting
+   * call. Unlike a notification this one blocks the tool call, and only a real
+   * answer resolves it — expiry, cancellation and unload all resolve as
+   * non-approval. `cancelAll` on unload keeps no dialog alive for a dead tool.
+   */
+  const approvals = new ApprovalCenter()
+  const nativeSubagents = serviceOrUndefined(context, 'subagents')
+  if (typeof nativeSubagents?.listChildren === 'function') {
+    service.nativeSubagents = nativeSubagents as unknown as NativeSubagentsPort
+  }
   service.turn.recoverInterrupted()
 
   /*
    * Cache proxy (experiment, off by default): `proxy.enable` or
    * `DSH_COORDINATION_PROXY=1` decides whether the proxy is attached at all.
-   * The installation itself lives in `host/proxy-service.ts`; rewriting is a
+   * The installation itself lives in `host/proxyService.ts`; rewriting is a
    * separate `proxy.mode` / `proxy.rewrite` switch and defaults to measurement.
    *
    * The decorator is brand-gated: only families with an automatic prefix cache
@@ -655,8 +739,16 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
 
   /** Re-register the tools after `POST /locale` changed the copy language. */
   let refreshTools: ((locale: Locale) => void) | undefined
+  /** Re-register the four human commands after `POST /locale` changed the copy language. */
+  let refreshCommands: ((locale: Locale) => void) | undefined
+  /** Live catalog behind `GET /context/metrics`; replaced on every (re)install. */
+  let liveToolCatalog: ToolCatalog | undefined
 
   context.effect(() => () => { service.dispose() }, `${name}: database`)
+
+  // No consent dialog outlives the plugin: unloading settles every waiting
+  // window as `cancelled`, so a blocked tool call returns instead of hanging.
+  context.effect(() => () => { approvals.cancelAll() }, `${name}: approvals`)
 
   context.effect(() => {
     const timer = setInterval(() => { service.cleanupExpired() }, 60000)
@@ -715,6 +807,14 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
   context.effect(() => service.takeoverGate.install(context), `${name}: takeover gate`)
 
   /*
+   * Host-side file-access takeover (`ui.takeoverFiles`): the `tools/pre-execute`
+   * gate that records reads and refuses writes outside the workspace. With the
+   * switch off nothing is registered at all; a live `/config` save re-installs
+   * it through `sync()`, so the settings-page toggle applies without a restart.
+   */
+  context.effect(() => service.fileGate.install(context), `${name}: file gate`)
+
+  /*
    * AMP observer: a whitelist of module-bus events is mirrored into the
    * append-only ledger. Only structure is copied (ids, counts, decisions), so no
    * prompt, question or tool-output text enters the chain. The observer is an
@@ -735,23 +835,76 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
       const registry = toolRegistryOf(context)
       // AMP v0.1: every tool call settles as a receipt in the ledger. The
       // decorator passes the definition through unchanged, so the model sees
-      // exactly the same name, description and schemas.
-      const receipted = withAmpReceipts(registry, service.amp)
+      // exactly the same name, description and schemas. Timing is applied once,
+      // outermost, so every result carries `tookMs` without per-tool code, and
+      // the catalog records the exact definitions for `/context/metrics`.
+      const catalog = new ToolCatalog()
+      liveToolCatalog = catalog
+      // Order matters: lean runs first so the catalog records the declarations
+      // the model actually receives, not the documented ones; the profile then
+      // drops administration tools when `core` is selected.
+      const receipted = withToolProfile(
+        withLeanSchemas(
+          withToolCatalog(withToolTiming(withAmpReceipts(registry, service.amp)), catalog),
+          schemaDetailFromEnv(),
+        ),
+        profileFromEnv(),
+      )
       // Two sets with independent lifetimes: the documented seven-tool file
       // surface and the four read-only graph tools. The graph set gets the
       // apply-time context so its per-call workspace-root resolution follows
       // the same session workspace the `/graph/*` routes use.
       const disposeFileTools = registerCoordinationTools(receipted, service, locale, { context })
-      let disposeGraphTools: () => void
+      let disposeGraphTools: (() => void) | undefined
+let disposeWorkspaceTool: (() => void) | undefined
+      let disposeIndexTool: (() => void) | undefined
+      let disposeControlTools: (() => void) | undefined
+      let disposeNotificationTool: (() => void) | undefined
+      let disposeApprovalTool: (() => void) | undefined
+      let disposeSearchTool: (() => void) | undefined
       try {
         disposeGraphTools = registerCoordinationGraphTools(receipted, service, locale, { context })
+        disposeIndexTool = receipted.register(coordinationIndexToolDefinition(service, locale, { context }))
+        disposeWorkspaceTool = receipted.register(coordinationWorkspaceTool(service, locale))
+        // AMP 0.5.0 scoped control + explicit knowledge marks: one tool each, on
+        // the same registry so a tool call settles as a receipt too.
+        const controlDisposers = coordinationControlTools(service as unknown as ControlToolService)
+          .map((definition) => receipted.register(definition))
+        disposeControlTools = () => {
+          for (const disposeTool of controlDisposers.reverse()) disposeTool()
+        }
+        // Model-facing notifications: one extra tool on the same registry, so a
+        // notification call settles as an AMP receipt like every other call.
+        disposeNotificationTool = receipted.register(
+          coordinationNotificationToolDefinition(notifications, locale),
+        )
+        // Consent dialog: the blocking counterpart of the notification tool.
+        disposeApprovalTool = receipted.register(
+          coordinationApproveToolDefinition(approvals, locale),
+        )
+        // Internal Elasticsearch: endpoint and index come from the environment,
+        // the model only chooses the query. Register only when the operator
+        // configured a backend: an always-registered tool whose cluster is down
+        // is a slot the model pays for every turn and a guaranteed failed call.
+        if (searchConfigured()) {
+          disposeSearchTool = receipted.register(
+            coordinationSearchToolDefinition(locale),
+          )
+        }
       } catch (error) {
-        // Never leave the first set registered when the second one fails.
+        // Never leave the first set registered when a later one fails.
+        disposeGraphTools?.()
         disposeFileTools()
         throw error
       }
       dispose = () => {
-        disposeGraphTools()
+        disposeSearchTool?.()
+        disposeWorkspaceTool?.()
+        disposeApprovalTool?.()
+        disposeNotificationTool?.()
+        disposeControlTools?.()
+        disposeIndexTool?.()
+        disposeGraphTools?.()
         disposeFileTools()
       }
     }
@@ -759,10 +912,103 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
     refreshTools = install
     return () => {
       refreshTools = undefined
+      liveToolCatalog = undefined
       dispose?.()
       dispose = undefined
     }
   }, `${name}: tools`)
+
+  /*
+   * AMP planning skills are an optional DSH capability. `inject` keeps this
+   * fiber dormant until the skill registry is mounted and reruns it if the
+   * host replaces that service; the exact registry disposers follow the
+   * plugin fiber lifetime. The markdown lives beside the packaged host bundle.
+   *
+   * The provider also projects enabled control-registry `skills` records that
+   * carry `content`, which is what makes that registry a true write-through
+   * surface for DSH's session skill catalog. A control write invalidates the
+   * provider so the next catalog lookup sees it.
+   */
+  let invalidateSkills: (() => void) | undefined
+  context.inject(['skills'], (skillContext) => {
+    const registry = serviceOrUndefined(skillContext, 'skills') as AmpSkillRegistry | undefined
+    const skillRoot = fileURLToPath(new URL('../skills/', import.meta.url))
+    return skillContext.effect(
+      () => {
+        const dispose = registerAmpPlanningSkills(
+          registry,
+          skillRoot,
+          (options) => {
+            const scope = options.scope
+            const sessionId = typeof scope === 'object' && scope !== null && !Array.isArray(scope)
+              && typeof scope.id === 'string'
+              ? scope.id
+              : undefined
+            return controlRegistrySkills(service.control, options.cwd, sessionId)
+          },
+          (control) => { invalidateSkills = control.invalidate },
+          // Read per lookup: a host language change only needs an invalidate to
+          // publish the other descriptions, not a provider re-registration.
+          () => normaliseLocale(service.locale),
+        )
+        return () => {
+          invalidateSkills = undefined
+          dispose()
+        }
+      },
+      `${name}: AMP planning skills`,
+    )
+  })
+
+  context.inject(['subagents'], (subagentContext) => {
+    const roster = serviceOrUndefined(subagentContext, 'subagents')
+    const port = roster !== undefined && typeof roster.listChildren === 'function'
+      ? roster as unknown as NativeSubagentsPort
+      : undefined
+    service.nativeSubagents = port
+    let disposeContinuable: (() => void) | undefined
+    if (roster !== undefined && typeof roster.registerContinuableSetup === 'function') {
+      disposeContinuable = (roster.registerContinuableSetup as (setup: (childContext: Context) => () => void) => () => void)
+        .call(roster, (childContext) => {
+          const promptRegistry = serviceOrUndefined(childContext, 'systemPrompt') as AmpPromptRegistry | undefined
+          // Optional support for runtimes with continuable child setup. The global
+          // context already resolves the child agent.id on installed runtimes.
+          return registerAmpPrompt(promptRegistry, ampPromptServiceOf(service))
+        })
+    }
+    return () => {
+      disposeContinuable?.()
+      if (service.nativeSubagents === port) service.nativeSubagents = undefined
+    }
+  })
+
+  context.inject(['systemPrompt'], (promptContext) => {
+    const registry = serviceOrUndefined(promptContext, 'systemPrompt') as AmpPromptRegistry | undefined
+    return promptContext.effect(
+      () => registerAmpPrompt(registry, ampPromptServiceOf(service)),
+      `${name}: AMP context`,
+    )
+  })
+
+  context.inject(['commands'], (commandContext) => {
+    const registry = serviceOrUndefined(commandContext, 'commands') as AmpCommandRegistry | undefined
+    return commandContext.effect(() => {
+      let disposeCommands: (() => void) | undefined
+      // Command descriptions and refusal text are baked at registration time, so
+      // a language change re-registers the four read-only commands.
+      const install = (locale: Locale): void => {
+        disposeCommands?.()
+        disposeCommands = registerAmpCommands(registry, service, locale)
+      }
+      refreshCommands = install
+      install(normaliseLocale(service.locale))
+      return () => {
+        refreshCommands = undefined
+        disposeCommands?.()
+        disposeCommands = undefined
+      }
+    }, `${name}: AMP commands`)
+  })
 
   context.effect(() => {
     // The HTTP surface is optional: a headless profile has no webserver, and the
@@ -800,7 +1046,7 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
           /*
            * AMP v0.1 surface (attention-manifest-protocol 0.1).
            *
-           * The route table lives in `host/amp-routes.ts` so it is testable
+           * The route table lives in `host/ampRoutes.ts` so it is testable
            * without a Cordis context or a webserver. The body is still the
            * plugin's `{ ok, value }` envelope, but `value` is the AMP object as
            * the protocol defines it — the same bytes whose canonical form is
@@ -809,6 +1055,8 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            *   GET  /amp/identity            -> { kid, alg, publicKey }
            *   GET  /amp/manifest            -> signed Manifest (reissued on expiry)
            *   GET  /amp/frame?session=<id>  -> latest Frame for one session
+           *   GET  /amp/planning?session=<id> -> missions, goal lifecycles and plans
+           *   GET  /amp/missions|goals|plans?session=<id> -> individual planning views
            *   GET  /amp/receipts[?limit=n]  -> newest-first Receipts
            *   GET  /amp/ledger[?limit=n][&full=1] -> chain head + entries
            *   GET  /amp/verify              -> recomputed chain verdict
@@ -817,11 +1065,206 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            * No response carries the private key or any content body.
            */
           const ampRoute = await handleAmpRoute(
-            { path, method, url, session: sessionOf(url) },
+            {
+              path, method, url, session: sessionOf(url),
+              // Only the insights route merges the agent-managed modules, and
+              // those are scoped, so it alone needs the resolved workspace.
+              ...(path === '/amp/insights'
+                ? { workspace: await ampWorkspaceOf(service, context, url) }
+                : {}),
+            },
             service,
+            path === '/amp/scope' || path === '/amp/insights' ? {
+              ...adaptAmpScopeHost({
+                workspaceRegistry: serviceOrUndefined(context, 'workspaceRegistry'),
+                storageDomain: serviceOrUndefined(context, 'storageDomain'),
+                sessionQuery: serviceOrUndefined(context, 'sessionQuery'),
+              }),
+              sessionSkillCatalog: serviceOrUndefined(context, 'sessionSkillCatalog'),
+              control: service.control,
+            } as AmpInsightsHost : undefined,
           )
           if (ampRoute !== undefined) {
             json(response, ampRoute.body, ampRoute.status)
+            return
+          }
+
+          /*
+           * AMP 0.5.0 scoped control + explicit knowledge marks.
+           *
+           * The route table lives in `host/controlRoutes.ts`, for the same
+           * reason as the AMP table: it is testable without a Cordis context or
+           * a webserver. The caller resolves the workspace root and the session
+           * once per request and never guesses either.
+           *
+           *   GET  /control/registry?scope=&registry=   effective registry view
+           *   POST /control/registry                    one registry action
+           *   GET  /control/settings?scope=&domain=     effective setting
+           *   POST /control/settings                    get/set/reset a setting
+           *   GET  /graph/knowledge                     knowledge files
+           *   POST /graph/knowledge                     mark/update/unmark a file
+           */
+          if (path === '/control/registry' || path === '/control/settings'
+            || path === '/graph/knowledge') {
+            const session = sessionOf(url)
+            let workspace = ''
+            try {
+              // Same per-request resolver as `/graph/*`: an explicit `?root=`
+              // wins, then the session's sandbox/working directory.
+              workspace = await graphRootResolver(service, context, url).resolve()
+            } catch {
+              // A missing workspace identity leaves global scope usable and
+              // makes a workspace/session call report its own typed error.
+              workspace = ''
+            }
+            const body = method === 'POST' ? await readJsonBody(request) : undefined
+            let knownPaths: ReadonlySet<string> | undefined
+            const controlRoute = handleControlRoute(
+              {
+                path,
+                method,
+                url,
+                session,
+                workspace,
+                ...(body === null || body === undefined ? {} : { body }),
+                isIndexed: (candidate: string): boolean => {
+                  if (knownPaths === undefined) {
+                    try {
+                      const snapshot = graphSnapshotOf(service, workspace)
+                      knownPaths = new Set(snapshot.nodes.flatMap((node) =>
+                        node.path === undefined ? [] : [normaliseGraphPath(node.path) ?? node.path]))
+                    } catch {
+                      knownPaths = new Set<string>()
+                    }
+                  }
+                  return knownPaths.has(candidate)
+                },
+              },
+              service,
+            )
+            if (controlRoute !== undefined) {
+              // A registry write can add, retitle, disable or remove a
+              // `skills` record; refresh the runtime provider's catalog view.
+              if (method === 'POST' && path === '/control/registry' && controlRoute.status === 200) {
+                invalidateSkills?.()
+              }
+              json(response, controlRoute.body, controlRoute.status)
+              return
+            }
+          }
+
+          /*
+           * Model-facing notifications (the `coordination_notification` tool).
+           *
+           *   GET  /notify/pending?session=<id>  -> { items: NotificationItem[] }
+           *   POST /notify { session, surface, message, ... } -> NotificationItem
+           *
+           * Both are session-addressed and in-memory. GET drains: exactly one
+           * polling client receives an item, and a later poll sees only newer
+           * ones. POST exists so an external caller (curl, a test, another
+           * local process) can pop a notification without the tool registry.
+           */
+          if (path === '/notify/pending' && method === 'GET') {
+            const session = sessionOf(url)
+            if (session.length === 0) {
+              json(response, { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'session is required' } }, 400)
+              return
+            }
+            json(response, { ok: true, value: { items: notifications.drain(session) } })
+            return
+          }
+
+          if (path === '/notify' && method === 'POST') {
+            const body = asRecord(await readJsonBody(request))
+            if (body === undefined) {
+              json(
+                response,
+                { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'body must be a JSON object' } },
+                400,
+              )
+              return
+            }
+            const session = sessionOf(url, body)
+            if (session.length === 0) {
+              json(response, { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'session is required' } }, 400)
+              return
+            }
+            const outcome = notifications.push(session, body)
+            json(response, { ok: true, value: outcome.item })
+            return
+          }
+
+          /*
+           * Model-facing approvals (the `coordination_approve` tool).
+           *
+           *   GET  /approve/pending?session=<id>             -> { items: ApprovalView[] }
+           *   POST /approve/answer { session, id, approved } -> { answered: true }
+           *   POST /approve/cancel { session, id }           -> { cancelled: true }
+           *
+           * Unlike `/notify/pending`, the list does NOT drain: the modal keeps
+           * showing the same request until the human answers it or it expires.
+           * Only `approved: true` produces an approval; the session on the
+           * answer must be the session that opened the window.
+           */
+          if (path === '/approve/pending' && method === 'GET') {
+            const session = sessionOf(url)
+            if (session.length === 0) {
+              json(response, { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'session is required' } }, 400)
+              return
+            }
+            json(response, { ok: true, value: { items: approvals.list(session) } })
+            return
+          }
+
+          if (path === '/approve/answer' && method === 'POST') {
+            const body = asRecord(await readJsonBody(request))
+            const session = sessionOf(url, body)
+            const id = typeof body?.id === 'string' ? body.id.trim() : ''
+            const approved = body?.approved
+            if (session.length === 0 || id.length === 0 || typeof approved !== 'boolean') {
+              json(
+                response,
+                {
+                  ok: false,
+                  error: { code: 'INVALID_ARGUMENT', message: 'session, id and a boolean approved are required' },
+                },
+                400,
+              )
+              return
+            }
+            if (!approvals.answer(session, id, approved)) {
+              json(
+                response,
+                { ok: false, error: { code: 'NOT_FOUND', message: `approval ${id} is not pending` } },
+                404,
+              )
+              return
+            }
+            json(response, { ok: true, value: { answered: true } })
+            return
+          }
+
+          if (path === '/approve/cancel' && method === 'POST') {
+            const body = asRecord(await readJsonBody(request))
+            const session = sessionOf(url, body)
+            const id = typeof body?.id === 'string' ? body.id.trim() : ''
+            if (session.length === 0 || id.length === 0) {
+              json(
+                response,
+                { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'session and id are required' } },
+                400,
+              )
+              return
+            }
+            if (!approvals.cancel(session, id)) {
+              json(
+                response,
+                { ok: false, error: { code: 'NOT_FOUND', message: `approval ${id} is not pending` } },
+                404,
+              )
+              return
+            }
+            json(response, { ok: true, value: { cancelled: true } })
             return
           }
 
@@ -971,6 +1414,11 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             // Tool descriptions are baked at registration time (the model-facing
             // prompt is assembled from them), so re-register with the new copy.
             refreshTools?.(normaliseLocale(current))
+            // The four read-only commands carry their own copy as well.
+            refreshCommands?.(normaliseLocale(current))
+            // Skill descriptions are read per lookup; drop the cached catalog so
+            // DSH lists the other language instead of the one it cached.
+            invalidateSkills?.()
             json(response, { ok: true, value: { locale: current } })
             return
           }
@@ -1000,6 +1448,9 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             const body = asRecord(await readJsonBody(request))
             const patch = asRecord(body?.patch) ?? body ?? {}
             const outcome = applyConfigPatch(service.config, patch as ConfigPatch)
+            // The file gate is registered only while its switch is on: follow the
+            // live value so turning `ui.takeoverFiles` on or off applies at once.
+            service.fileGate.sync()
             // The token governor snapshots the compaction policy at
             // construction; re-apply the triple so a live edit reaches it.
             if (outcome.compaction !== null) service.applyCompactionPolicy(outcome.compaction)
@@ -1032,7 +1483,7 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            *
            * Every route is body-free and side-effect free: it reads the graph
            * the file tools already persisted and projects it through the pure
-           * helpers in `host/graph-view.ts`. No parse is triggered, no file is
+           * helpers in `host/graphView.ts`. No parse is triggered, no file is
            * written and no prompt/credential/diagnostic text crosses the wire
            * for the workspace-graph routes.
            *
@@ -1064,7 +1515,7 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            *   GET /graph/search?q=<text>&limit=<n> -> { hits }
            *   GET /graph/agents                   -> { agents, progress }
            *   GET /graph/agents/messages?id=<id>  -> bounded transcript
-           *   GET /graph/preview?path=<rel>       -> only body-bearing file route
+           *   GET /graph/preview?path=<rel>       -> bounded text or PDF descriptor
            *   POST /graph/rebuild                 -> re-index known paths (action)
            *   POST /graph/index                   -> scan + index a fresh workspace
            *                                          { indexed, skipped, nodes,
@@ -1082,6 +1533,12 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             // `path` is optional: present means one file, absent the whole
             // workspace. An explicitly empty/invalid path is a 400, never a
             // silent fallback to the workspace view.
+            //
+            // `paths=1` returns the lazy index instead: one row per file with
+            // its family and node count, but no nodes. The panel renders file
+            // rows from that payload and loads one file's nodes only when the
+            // row is expanded, so a 200-file workspace no longer transfers up to
+            // 100,000 nodes on first paint.
             const hasPath = url.searchParams.has('path')
             const requested = hasPath ? normaliseGraphPath(url.searchParams.get('path')) : undefined
             if (hasPath && requested === undefined) {
@@ -1091,7 +1548,12 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             const root = await graphRootResolver(service, context, url).resolve()
             const snapshot = graphSnapshotOf(service, root)
             const scope: GraphScope = requested === undefined ? 'workspace' : 'file'
-            json(response, { ok: true, value: buildOutline(graphQueryOf(snapshot, scope), requested) })
+            const query = graphQueryOf(snapshot, scope)
+            const pathsOnly = requested === undefined && url.searchParams.get('paths') === '1'
+            json(response, {
+              ok: true,
+              value: pathsOnly ? buildOutlineIndex(query) : buildOutline(query, requested),
+            })
             return
           }
 
@@ -1243,6 +1705,75 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
            * 400, missing files 404, binary/NUL/undecodable content 415 — never
            * a guessed rendering.
            */
+          if (path === '/graph/preview/pdf' && method === 'GET') {
+            response.setHeader('cache-control', 'no-store')
+            const source = normaliseGraphPath(url.searchParams.get('path'))
+            const candidate = source === undefined ? undefined : texPdfCandidate(source)
+            if (candidate === undefined) {
+              invalidGraphPath(response)
+              return
+            }
+            const root = await createToolWorkspaceRootResolver(service, {}, { context, session: sessionOf(url) || undefined }).resolve()
+            const parser = new ParseService({ workspaceRoot: root })
+            // A PDF alone must not make a missing/escaped source previewable.
+            previewTextContent(parser, source as string)
+            const metadata = pdfPreviewMetadata(parser, candidate)
+            if (metadata === undefined) {
+              json(response, { ok: false, error: { code: 'NOT_FOUND', message: 'compiled PDF artifact not found' } }, 404)
+              return
+            }
+            const fd = openSync(metadata.real, 'r')
+            try {
+              const stat = fstatSync(fd)
+              if (!stat.isFile() || stat.size !== metadata.bytes || stat.size > MAX_PREVIEW_PDF_BYTES || stat.dev !== metadata.dev || stat.ino !== metadata.ino) {
+                json(response, { ok: false, error: { code: 'UNSUPPORTED_MEDIA', message: 'compiled PDF changed or exceeds the preview limit' } }, 415)
+                return
+              }
+              const signature = Buffer.alloc(8)
+              if (readSync(fd, signature, 0, signature.length, 0) !== signature.length || !signature.toString('ascii').startsWith('%PDF-')) {
+                json(response, { ok: false, error: { code: 'UNSUPPORTED_MEDIA', message: 'compiled artifact is not a PDF' } }, 415)
+                return
+              }
+              const range = previewPdfRange(request.headers.range, stat.size)
+              if (range === null) {
+                response.writeHead(416, {
+                  'cache-control': 'no-store',
+                  'content-type': 'application/json; charset=utf-8',
+                  'content-range': `bytes */${stat.size}`,
+                })
+                response.end()
+                return
+              }
+              const length = range.end - range.start + 1
+              const bytes = Buffer.allocUnsafe(length)
+              let read = 0
+              while (read < length) {
+                const count = readSync(fd, bytes, read, length - read, range.start + read)
+                if (count <= 0) break
+                read += count
+              }
+              if (read !== length) {
+                json(response, { ok: false, error: { code: 'UNSUPPORTED_MEDIA', message: 'compiled PDF changed during preview' } }, 415)
+                return
+              }
+              response.setHeader('content-type', 'application/pdf')
+              response.setHeader('content-disposition', 'inline')
+              response.setHeader('x-content-type-options', 'nosniff')
+              response.setHeader('content-security-policy', 'sandbox')
+              response.setHeader('accept-ranges', 'bytes')
+              response.setHeader('content-length', String(length))
+              if (request.headers.range !== undefined) {
+                response.writeHead(206, { 'content-range': `bytes ${range.start}-${range.end}/${stat.size}` })
+              } else {
+                response.writeHead(200)
+              }
+              response.end(bytes)
+            } finally {
+              closeSync(fd)
+            }
+            return
+          }
+
           if (path === '/graph/preview' && method === 'GET') {
             const requested = normaliseGraphPath(url.searchParams.get('path'))
             if (requested === undefined) {
@@ -1255,8 +1786,10 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             try {
               // Same per-request root as the other graph reads (no `root`
               // override: preview is workspace-relative only).
-              const root = await createToolWorkspaceRootResolver(service, {}, { context }).resolve()
-              const value = await previewOf(requested, root)
+              const root = await createToolWorkspaceRootResolver(service, {}, { context, session: sessionOf(url) || undefined }).resolve()
+              const rawLine = url.searchParams.get('line')
+              if (rawLine !== null && !/^[1-9]\d{0,6}$/.test(rawLine)) throw new InvalidArgumentError('line must be a positive source line')
+              const value = await previewOf(requested, root, sessionOf(url), rawLine === null ? undefined : Number(rawLine))
               json(response, { ok: true, value })
             } catch (error) {
               if (error instanceof NotFoundError) {
@@ -1282,51 +1815,48 @@ export function apply(context: Context, configInput?: Partial<CoordinationConfig
             return
           }
 
-          /*
-           * The explicit indexing entry point. A fresh profile's graph is empty
-           * because the file tools only index what they parse; this scan walks
-           * the workspace instead. Bounded to depth 8 / 200 files / 10 s with
-           * dependency, VCS and temp directories skipped and only parser-backed
-           * text extensions attempted. Serialized in-process (409 BUSY). It is
-           * read-only: no build, command or execution runs and no workspace file
-           * is written — only the coordination database's own graph rows change.
-           */
-          if (path === '/graph/index' && method === 'POST') {
+          if (path === '/graph/revision' && method === 'GET') {
+            response.setHeader('cache-control', 'no-store')
             const root = await graphRootResolver(service, context, url).resolve()
-            const outcome = await indexGate.run(() => indexWorkspace(service, root))
-            if (!outcome.ok) {
-              json(
-                response,
-                { ok: false, error: { code: 'BUSY', message: 'a workspace index is already running' } },
-                409,
-              )
-              return
-            }
-            json(response, { ok: true, value: outcome.value })
+            json(response, { ok: true, value: graphRevision(service.db, root) })
             return
           }
 
-          /*
-           * The graph rebuild action: re-parse and re-index the files already in
-           * the graph. It reads files only (no build, command or execution),
-           * is serialized in-process and bounded to 2000 files / 10 s. The
-           * response carries counts and timing only — never file content.
-           */
-          if (path === '/graph/rebuild' && method === 'POST') {
-            if (rebuildInFlight) {
-              json(
-                response,
-                { ok: false, error: { code: 'BUSY', message: 'a graph rebuild is already running' } },
-                409,
-              )
+          if ((path === '/graph/index' || path === '/graph/rebuild') && method === 'POST') {
+            assertGraphIndexEnabled(service.config)
+            const root = await graphRootResolver(service, context, url).resolve()
+            const action = path === '/graph/rebuild' ? 'rebuild' : 'index'
+            const outcome = await graphIndexOperations(service.db).update(root, { action }, parseOptionsOf(service))
+            if (!outcome.ok) {
+              json(response, outcome, 409)
               return
             }
-            rebuildInFlight = true
-            try {
-              json(response, { ok: true, value: await rebuildGraph(service) })
-            } finally {
-              rebuildInFlight = false
-            }
+            disposeCoordinationToolRuntime(service)
+            const value = outcome.value
+            // Preserve the rebuild route's original count field for existing clients.
+            json(response, { ok: true, value: action === 'rebuild' ? { ...value, files: value.indexed } : value })
+            return
+          }
+
+          if (path === '/context/metrics' && method === 'GET') {
+            const cache = proxy.status()
+            json(response, {
+              ok: true,
+              value: {
+                profile: profileFromEnv(),
+                catalog: liveToolCatalog?.metrics(normaliseLocale(service.locale)) ?? null,
+                cache: {
+                  hitRate: cache.metrics.hitRate,
+                  inputTokens: cache.metrics.inputTokens,
+                  cachedInputTokens: cache.metrics.cachedInputTokens,
+                  samples: cache.metrics.samples,
+                  requests: cache.metrics.requests,
+                  window: cache.metrics.window,
+                  prefix: cache.prefix,
+                },
+                note: 'Measures this plugin\'s tool catalog, skill catalog, AMP context cap and proxy cache-hit ratio; the DSH host prompt and its own tool block are outside this plugin and are not measured.',
+              },
+            })
             return
           }
 

@@ -125,6 +125,14 @@ export interface UiConfig {
   toolbar: boolean
   showTooltip: boolean
   takeover: boolean
+  /**
+   * Host-side file-access takeover (`src/host/fileGate.ts`): while it is on, the
+   * `tools/pre-execute` gate records every `read` and refuses a `write`/`edit`
+   * whose target resolves outside the session workspace. Off by default; the
+   * gate reads this value on every call, so turning it off applies at once, and
+   * a live settings save re-installs the listener (`FileGate.sync`).
+   */
+  takeoverFiles: boolean
   refreshInterval: number
   compact: boolean
   /** 'auto' follows the DSH locale; zh-CN/en-US force the host-side copy. */
@@ -372,6 +380,7 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
     toolbar: Schema.boolean().default(true),
     showTooltip: Schema.boolean().default(true),
     takeover: Schema.boolean().default(false),
+    takeoverFiles: Schema.boolean().default(false),
     refreshInterval: Schema.number().min(500).max(86_400_000).default(5000),
     compact: Schema.boolean().default(true),
     locale: Schema.union(['auto', 'zh-CN', 'en-US']).default('auto'),
@@ -379,6 +388,7 @@ export const Config: SchemaDefinition<CoordinationConfig> = Schema.object({
     toolbar: true,
     showTooltip: true,
     takeover: false,
+    takeoverFiles: false,
     refreshInterval: 5000,
     compact: true,
     locale: 'auto',

@@ -40,7 +40,6 @@ import type {
   Claim,
   EvidenceItem,
   Frame,
-  FrameDraft,
   FrameMode,
   Goal,
   Ignored,
@@ -55,22 +54,23 @@ import type {
   Receipt,
   ReceiptOp,
   Ref,
+  FrameDraft,
   Slot,
-  SnapshotVerdict,
   UnknownItem,
 } from '../protocol/index.js'
+import type { RefTable as AmpRefTable } from 'attention-manifest-protocol/boundary'
+import type { SnapshotVerdict as AmpSnapshotVerdict } from 'attention-manifest-protocol/ledger/persistence.js'
+import { canonical as ampCanonical, digestOf as ampDigestOf } from 'attention-manifest-protocol/semantic/canonical.js'
+import { deriveConfidence as ampDeriveConfidence, validateClaim as ampValidateClaim } from 'attention-manifest-protocol/warrant/warrant.js'
+import { RefTable as AmpRefTableImpl, frameFrom as ampFrameFrom } from 'attention-manifest-protocol/boundary'
+import { generateSigningKey as ampGenerateSigningKey, signManifest as ampSignManifest, verifyManifest as ampVerifyManifest } from 'attention-manifest-protocol/manifest/sign.js'
+import { sealCheckpoint as ampSealCheckpoint, verifyCheckpoint as ampVerifyCheckpoint, verifySnapshotAgainstCheckpoint as ampVerifySnapshotAgainstCheckpoint } from 'attention-manifest-protocol/ledger/checkpoint.js'
 import {
   GENESIS,
-  RefTable,
   buildAttentionRequest,
   buildInterruptRecord,
-  canonical,
-  deriveConfidence,
-  digestOf,
   exportPrivateKey,
   exportPublicKey,
-  frameFrom,
-  generateSigningKey,
   idFrom,
   importPrivateKey,
   importPublicKey,
@@ -78,19 +78,13 @@ import {
   isId,
   makeEvent,
   makeReceipt,
-  sealCheckpoint,
-  signManifest,
-  validateClaim,
   validateGoal,
   validatePlan,
-  verifyCheckpoint,
-  verifyManifest,
-  verifySnapshotAgainstCheckpoint,
 } from '../protocol/index.js'
-import { AmpStore, type StoredManifest } from './amp-store.js'
+import { AmpStore, type StoredManifest } from './ampStore.js'
 import { decodePlanStep } from './plan.js'
 import type { CoordinationToolDefinition, CoordinationToolRegistry } from './tools.js'
-import { jsonSafe } from '../shared/json-safe.js'
+import { jsonSafe } from '../shared/jsonSafe.js'
 
 /** The agent id every artifact in this installation is issued under. */
 export const AMP_AGENT_ID = 'deepseek-coordination'
@@ -116,14 +110,18 @@ export interface AmpCapabilityInput {
 }
 
 /**
- * The eleven model-facing tools, declared once.
+ * The coordination model-facing capabilities, declared once.
  *
- * The names must match `src/host/tools.ts`; `test/amp-protocol.test.ts` asserts
+ * The names must match `src/host/tools.ts`; `test/ampProtocol.test.ts` asserts
  * that every registered capability id is a legal AMP id and that the list has no
  * duplicates. A capability's `tier`/`confidence` are NOT written here — they are
  * derived from recorded receipts in {@link AmpService.manifest}.
  */
 export const COORDINATION_CAPABILITIES: readonly AmpCapabilityInput[] = [
+  { name: 'coordination_collaboration', label: 'assign and review session-bound multiagent duties', kind: 'tool' },
+  { name: 'coordination_mission', label: 'queue and settle durable AMP missions', kind: 'tool' },
+  { name: 'coordination_goal', label: 'create AMP goals and transition their lifecycle', kind: 'tool' },
+  { name: 'coordination_plan', label: 'manage AMP plans and dependency-checked task progress', kind: 'tool' },
   { name: 'coordination_selection', label: 'read or patch the five composer choices', kind: 'tool' },
   { name: 'coordination_profession', label: 'read or set the locked profession', kind: 'tool' },
   { name: 'coordination_profession_lock', label: 'inspect the profession lock of a turn', kind: 'tool' },
@@ -135,6 +133,7 @@ export const COORDINATION_CAPABILITIES: readonly AmpCapabilityInput[] = [
   { name: 'coordination_outline', label: 'structure outline of a file or workspace', kind: 'tool' },
   { name: 'coordination_importation', label: 'import rows of a file or workspace', kind: 'tool' },
   { name: 'coordination_exportation', label: 'export rows of a file or workspace', kind: 'tool' },
+  { name: 'coordination_index', label: 'refresh the bounded workspace index', kind: 'tool' },
 ]
 
 /** Concrete facts behind the panel narrative; not a protocol object. */
@@ -268,6 +267,7 @@ export interface AmpOptions {
   agentId?: string
   tenant?: string
   capabilities?: readonly AmpCapabilityInput[]
+  onPlan?: (session: string, goal: Goal, plan: Plan) => void
   logger?: { warn(message: string): void; debug?(message: string): void }
 }
 
@@ -404,6 +404,7 @@ export class AmpService {
   private readonly clock: Clock
   private readonly capabilities: readonly AmpCapabilityInput[]
   private readonly logger: AmpOptions['logger']
+  private readonly onPlan: AmpOptions['onPlan']
   private ready: Promise<void> | undefined
   private keyPair: KeyPair | undefined
   private publicKeyText = ''
@@ -420,6 +421,7 @@ export class AmpService {
     this.tenant = options.tenant ?? AMP_TENANT_DEFAULT
     this.capabilities = options.capabilities ?? []
     this.logger = options.logger
+    this.onPlan = options.onPlan
     this.db = options.db
     this.store = new AmpStore(options.db)
   }
@@ -451,9 +453,9 @@ export class AmpService {
 
     // Generate first, then derive the kid from the public key, so two profiles
     // that copy the database never claim the same key id with different keys.
-    const generated = await generateSigningKey('pending')
+    const generated = await ampGenerateSigningKey('pending')
     const raw = await exportPublicKey(generated.publicKey)
-    const kid = `ed25519-${digestOf(raw).slice(7, 23)}`
+    const kid = `ed25519-${ampDigestOf(raw).slice(7, 23)}`
     const pkcs8 = await exportPrivateKey(generated.privateKey)
     this.store.saveKey({
       kid,
@@ -498,7 +500,7 @@ export class AmpService {
 
     const receipts = this.receiptRows()
     const frameRef = this.latestFrameRef()
-    const manifest = await signManifest(
+    const manifest = (await ampSignManifest(
       {
         amp: '0.1',
         kind: 'manifest',
@@ -530,9 +532,9 @@ export class AmpService {
         },
       },
       this.key(),
-    )
+    )) as unknown as Manifest
 
-    this.store.saveManifest(manifest, canonical(manifest))
+    this.store.saveManifest(manifest, ampCanonical(manifest))
     this.manifestCache = { manifest, expiresMs: now + ManifestTtlMs, policyDigest }
     return manifest
   }
@@ -540,11 +542,11 @@ export class AmpService {
   /** Recomputes the manifest digest and signature; `false` means it was altered. */
   async verifyManifestSignature(manifest: Manifest): Promise<{ ok: boolean; reasons: string[] }> {
     await this.ensure()
-    return await verifyManifest(manifest, this.key().publicKey)
+    return await ampVerifyManifest(manifest, this.key().publicKey)
   }
 
   private policyDigest(): string {
-    return digestOf({
+    return ampDigestOf({
       profession: this.config.profession,
       plan: this.config.plan,
       compaction: this.config.compaction,
@@ -677,8 +679,9 @@ export class AmpService {
       budget: { allocated: this.attentionBudget(), spent: {} },
       note: `frame for turn ${facts.turn} in scene ${facts.scene}`,
     }
-    const { frame } = frameFrom(draft, refs, { now: () => iso(this.clock.now()) })
-    this.store.append('frame', frame, frame.ts)
+    const { frame } = ampFrameFrom(draft, refs, { now: () => iso(this.clock.now()) })
+    const protocolFrame = frame as unknown as Frame
+    this.store.append('frame', protocolFrame, protocolFrame.ts)
     await this.event('turn.opened', {
       session: facts.session,
       turn: facts.turn,
@@ -687,7 +690,7 @@ export class AmpService {
       scene: facts.scene,
       profession: facts.profession,
     })
-    return frame
+    return protocolFrame
   }
 
   /** Latest frame for one session, found through the `turn.opened` events. */
@@ -782,8 +785,8 @@ export class AmpService {
   }
 
 
-  private refTable(facts: AmpTurnFacts): RefTable {
-    const refs = RefTable.forScope('run', this.agentId)
+  private refTable(facts: AmpTurnFacts): AmpRefTable {
+    const refs = AmpRefTableImpl.forScope('run', this.agentId)
     refs.add('task', facts.turn, { kind: 'task', id: facts.turn })
     refs.add('memory', promptIdOf(facts.turn), { kind: 'memory', id: promptIdOf(facts.turn) })
     refs.add('concept', professionIdOf(facts.profession), { profession: facts.profession })
@@ -802,7 +805,7 @@ export class AmpService {
     return refs
   }
 
-  private slotsFor(facts: AmpTurnFacts, refs: RefTable): Slot[] {
+  private slotsFor(facts: AmpTurnFacts, refs: AmpRefTable): Slot[] {
     const zero = { tokens: 0 }
     const slots: Slot[] = []
     if (facts.goal !== undefined) {
@@ -935,7 +938,7 @@ export class AmpService {
       await this.recordCognition(facts)
     }
     if (facts.planFacts !== undefined) {
-      await this.recordPlan(facts.planFacts)
+      await this.recordPlan(facts.planFacts, facts.session)
     }
     return receipt
   }
@@ -988,7 +991,7 @@ export class AmpService {
    * not emitted and a `plan.deferred` event names the gap instead. That is the
    * difference between "no plan artifact" and "a plan artifact nobody can check".
    */
-  private async recordPlan(facts: AmpPlanFacts): Promise<void> {
+  private async recordPlan(facts: AmpPlanFacts, session: string): Promise<void> {
     const at = iso(facts.plan.created)
     const goal = facts.goal
     const steps = facts.steps
@@ -1016,7 +1019,7 @@ export class AmpService {
       id: goalId,
       statement: collapseWhitespace(goal.content, 1000),
       success: criteria,
-      // No ranking exists in this plugin: one active goal, neutral value.
+      // Turn-derived goals have no inferred ranking; explicit missions use caller priorities.
       value: 0.5,
       priority: 1,
       horizon: 'task',
@@ -1069,8 +1072,11 @@ export class AmpService {
       return
     }
 
-    this.store.append('goal', goalObject, at)
-    this.store.append('plan', planObject, at)
+    this.db.transaction(() => {
+      this.onPlan?.(session, goalObject, planObject)
+      this.store.append('goal', goalObject, at)
+      this.store.append('plan', planObject, at)
+    })
     await this.event('plan.recorded', {
       goal: goalObject.id,
       plan: planObject.id,
@@ -1223,7 +1229,7 @@ export class AmpService {
    * declares is the interesting failure — it means entries were deleted.
    */
   async verify(): Promise<
-    SnapshotVerdict & { tip: string; count: number; checkpoint?: { seq: number; tip: string; count: number } }
+    AmpSnapshotVerdict & { tip: string; count: number; checkpoint?: { seq: number; tip: string; count: number } }
   > {
     await this.ensure()
     const snapshot = this.store.snapshot(this.agentId)
@@ -1245,7 +1251,7 @@ export class AmpService {
         kid: latest.kid,
         sig: latest.sig,
       }
-      const signature = await verifyCheckpoint(stored, this.key().publicKey)
+      const signature = await ampVerifyCheckpoint(stored, this.key().publicKey)
       reasons.push(...signature.reasons)
 
       if (latest.count > snapshot.count) {
@@ -1262,7 +1268,8 @@ export class AmpService {
           count: prefixEntries.length,
           entries: prefixEntries,
         }
-        reasons.push(...verifySnapshotAgainstCheckpoint(prefix, stored).reasons)
+        const prefixVerdict = await ampVerifySnapshotAgainstCheckpoint(prefix, stored)
+        reasons.push(...prefixVerdict.reasons)
       }
       checkpoint = { seq: latest.seq, tip: latest.tip, count: latest.count }
     }
@@ -1298,7 +1305,7 @@ export class AmpService {
             kid: latest.kid,
             sig: latest.sig,
           }
-    const checkpoint = await sealCheckpoint(snapshot, this.key(), {
+    const checkpoint = await ampSealCheckpoint(snapshot, this.key(), {
       tenant: this.tenant,
       ...(previous === undefined ? {} : { previous }),
     })
@@ -1518,7 +1525,7 @@ function buildClaim(
             origin: `prompt:${facts.turn}`,
             ref: { kind: 'memory', id: promptIdOf(facts.turn) },
             excerpt: anchor.slice(0, 200),
-            digest: digestOf(anchor),
+            digest: ampDigestOf(anchor),
             at,
           },
         ]
@@ -1538,8 +1545,8 @@ function buildClaim(
     provenance: { source: `comprehension:${cognition.id}`, kind: 'inference', trust: 'self', at },
     created: at,
   }
-  claim.confidence = deriveConfidence(claim)
-  return validateClaim(claim).length === 0 ? claim : undefined
+  claim.confidence = ampDeriveConfidence(claim)
+  return ampValidateClaim(claim).length === 0 ? claim : undefined
 }
 
 /** The comprehension's ambiguity as an open unknown; importance is measured. */
@@ -1690,11 +1697,11 @@ export function planStatusOf(status: string): Plan['status'] {
   }
 }
 
-/** Plugin plan status → AMP task status (one status for every task). */
+/** Legacy plan status is coarse: active does not prove any individual task started. */
 export function planTaskStatus(status: string): Plan['tasks'][number]['status'] {
   switch (status) {
     case 'active':
-      return 'running'
+      return 'pending'
     case 'done':
       return 'done'
     case 'failed':

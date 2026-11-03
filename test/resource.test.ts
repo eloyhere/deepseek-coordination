@@ -102,7 +102,7 @@ function testConfig(defaultLease = 30_000): CoordinationConfig {
     chain: { depth: 8, links: 50, tokenBudget: 1500 },
     tools: { maxResultBytes: 0 },
     scenes: SceneProfiles,
-    ui: { toolbar: true, showTooltip: true, takeover: false, refreshInterval: 5000, compact: true, locale: 'auto' },
+    ui: { toolbar: true, showTooltip: true, takeover: false, takeoverFiles: false, refreshInterval: 5000, compact: true, locale: 'auto' },
     defaults: { profession: 'execution', interaction: 'think', scene: 'dialogue', validation: 'medium', command: 'none' },
   }
 }

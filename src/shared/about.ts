@@ -73,8 +73,8 @@ export const ABOUT: AboutInfo = {
   version: '0.22.4',
   license: 'Apache-2.0',
   summary:
-    'deepseek-coordination is a dual-face Cordis plugin for DeepSeek Harness: the host half records coordination state, registers model-facing tools and serves read-only HTTP routes, while the web half mounts the composer controls, workspace panel and settings page. The panel and parser layer is read-only: it projects body-free metadata and never edits, renames or deletes workspace files.',
-  runtime: '>=22.13.0',
+    'deepseek-coordination is a dual-face Cordis plugin for DeepSeek Harness: the host half records coordination state, registers model-facing tools (including an internal Elasticsearch query and a blocking consent dialog) and serves the HTTP surface, while the web half mounts the docked panels, the searchable settings page, model-triggered notifications, the consent dialog and the takeover dialog. The panel and parser layer is read-only: it projects body-free metadata and never edits, renames or deletes workspace files.',
+  runtime: '>=24.0.0',
   author: {
     name: 'Eloy Kim',
     email: 'eloy.kim@outlook.com',
@@ -118,6 +118,13 @@ export const ABOUT: AboutInfo = {
       scope: 'runtime',
       role: 'UI components',
       reason: 'Accordion, Table, List, TextField and the rest of the client widget surface.',
+    },
+    {
+      name: 'attention-manifest-protocol',
+      version: '^0.6.0',
+      scope: 'runtime',
+      role: 'AMP protocol runtime',
+      reason: 'Provides canonical JSON, frame boundaries, warrant validation, manifest signatures, checkpoint verification and the outline range bridge; requires Node 24 or newer.',
     },
     {
       name: 'dompurify',
@@ -310,10 +317,10 @@ export const ABOUT: AboutInfo = {
     },
     {
       name: 'node',
-      version: '>=22.13.0',
+      version: '>=24.0.0',
       scope: 'development',
       role: 'Runtime and test runner',
-      reason: 'Node runs the host, node --test and scripts/check-pack.mjs; engines.node is the floor.',
+      reason: 'Node runs the host, node --test and scripts/checkPack.mjs; engines.node is the floor.',
     },
     {
       name: 'npm',
@@ -332,7 +339,7 @@ export const ABOUT: AboutInfo = {
       title: 'A Strong-Connectivity Algorithm and Its Applications in Data Flow Analysis',
       venue: 'Computers & Mathematics with Applications 7(1), 67-72',
       url: 'https://doi.org/10.1016/0898-1221(81)90008-0',
-      reason: 'Strongly connected components for the cycle scan in `src/host/graph-view.ts`; the tree implements an iterative Kosaraju variant.',
+      reason: 'Strongly connected components for the cycle scan in `src/host/graphView.ts`; the tree implements an iterative Kosaraju variant.',
     },
     {
       id: 'fruchterman-reingold-1991',

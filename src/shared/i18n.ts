@@ -52,6 +52,7 @@ import type {
   SettingsControlChip,
 } from './selection.js'
 import type { CoordinationErrorCode } from './error.js'
+import type { ControlRegistry } from './control.js'
 
 /** The two languages the plugin ships. `zh-CN` is the default and the fallback. */
 export type Locale = 'zh-CN' | 'en-US'
@@ -224,13 +225,13 @@ export interface TakeoverCopy {
  * Floating workspace panel copy (client half)
  * ------------------------------------------------------------------------- */
 
-/** The four BottomNavigation tabs, in render order. */
-export const PANEL_TAB_IDS = ['files', 'outline', 'dependencies', 'imports'] as const
+/** Fixed workspace navigation destinations, in visible order. */
+export const PANEL_TAB_IDS = ['files', 'amp', 'missions', 'goals', 'plans', 'collaboration', 'outline', 'imports', 'exports', 'dependencies', 'project', 'cognition', 'capabilities', 'skills', 'knowledge'] as const
 
 export type PanelTab = (typeof PANEL_TAB_IDS)[number]
 
-/** Every routed panel view; `preview`/`exports` are not right-panel tabs. */
-export const PANEL_VIEW_IDS = [...PANEL_TAB_IDS, 'preview', 'exports', 'agents', 'agent', 'amp'] as const
+/** Routed pages also include hidden details and compatibility-only agent routes. */
+export const PANEL_VIEW_IDS = [...PANEL_TAB_IDS, 'preview', 'insight-detail', 'agents', 'agent'] as const
 
 export type PanelView = (typeof PANEL_VIEW_IDS)[number]
 
@@ -277,6 +278,35 @@ export interface PanelOutlineCopy {
 }
 
 /** 依赖 view. */
+/**
+ * The Knowledge tab copy.
+ *
+ * Three blocks share the tab because all answer "what does this workspace
+ * know": the explicitly marked knowledge files, the effective
+ * interaction/scenario settings the AMP scoped-control surface resolves for
+ * this scope, and the control-registry rows the host currently exposes.
+ */
+export interface PanelKnowledgeCopy {
+  readonly title: string
+  readonly empty: string
+  readonly mark: string
+  readonly unmark: string
+  readonly settings: string
+  readonly interaction: string
+  readonly scenario: string
+  readonly reset: string
+  readonly inherited: string
+  readonly unavailable: string
+  /** Control-registry section: heading, selector, switch name and empty state. */
+  readonly registry: string
+  readonly registryHint: string
+  readonly registrySelect: string
+  readonly registryToggle: string
+  readonly registryEmpty: string
+  /** Display label for each {@link ControlRegistry} domain. */
+  readonly registries: Readonly<Record<ControlRegistry, string>>
+}
+
 export interface PanelDependenciesCopy {
   readonly empty: string
 }
@@ -324,6 +354,13 @@ export interface PanelAmpCopy {
   readonly count: string
   readonly session: string
   readonly noSession: string
+  readonly scopeSessions: string
+  readonly scopeEmpty: string
+  readonly scopeSessionCount: string
+  readonly scopeSummary: string
+  readonly scopeTruncated: string
+  readonly globalTrust: string
+  readonly globalTrustHint: string
   /** The composer triple, read here because the composer has no dropdowns. */
   readonly selection: {
     readonly title: string
@@ -451,6 +488,14 @@ export interface PanelCopy {
   readonly indexPartial: string
   readonly tabs: Readonly<Record<PanelTab, string>>
   readonly families: Readonly<Record<PanelFamily, string>>
+  readonly insights: Readonly<Record<'cognition' | 'capabilities' | 'skills' | 'knowledge', string>>
+  readonly project: string
+  readonly insightEmpty: string
+  readonly insightUnavailable: string
+  readonly insightScopes: Readonly<Record<'session' | 'workspace' | 'installation', string>>
+  readonly insightWorkspace: string
+  /** The Knowledge tab: explicit knowledge files plus scoped control settings. */
+  readonly knowledgePanel: PanelKnowledgeCopy
   readonly states: PanelStatesCopy
   readonly files: PanelFilesCopy
   readonly outline: PanelOutlineCopy
@@ -458,7 +503,7 @@ export interface PanelCopy {
   readonly imports: PanelImportsCopy
   /** The single AMP attention panel that replaces the tabbed workspace. */
   readonly amp: PanelAmpCopy
-  /** Preview view heading and the per-row preview affordance. */
+    /** Preview view heading and the per-row preview affordance. */
   readonly preview: string
   readonly openPreview: string
   /** Empty preview when no file is selected. */
@@ -526,6 +571,10 @@ export interface PanelCopy {
     readonly preview: string
     readonly locate: string
     readonly copyPath: string
+    readonly outlineFile: string
+    readonly importsFile: string
+    readonly exportsFile: string
+    readonly dependenciesFile: string
     readonly expand: string
     readonly collapse: string
     readonly jumpToFile: string
@@ -751,6 +800,41 @@ export interface SettingsCopy {
   readonly catalog: SettingsCatalogCopy
   readonly values: SettingsValuesCopy
   readonly states: SettingsStatesCopy
+  /** Chrome around the catalog: search, modified filter, reset and counts. */
+  readonly layout: SettingsLayoutCopy
+}
+
+/**
+ * Copy the redesigned settings page adds around the catalog.
+ *
+ * These strings name affordances, never config values: the search field, the
+ * "modified" filter, the reset action and the count templates. Templates keep
+ * `{count}` / `{value}` placeholders identical in both locales (the i18n audit
+ * enforces that).
+ */
+export interface SettingsLayoutCopy {
+  /** Accessible name for the search field. */
+  readonly search: string
+  readonly searchPlaceholder: string
+  readonly clearSearch: string
+  /** Empty state when a search or the modified filter matches nothing. */
+  readonly noResults: string
+  /** `{count}` matches while a search is active. */
+  readonly matches: string
+  readonly modifiedOnly: string
+  /** Badge/tooltip: this value differs from the schema default. */
+  readonly modified: string
+  readonly reset: string
+  /** `{value}` is the default value being restored. */
+  readonly resetTo: string
+  readonly expandAll: string
+  readonly collapseAll: string
+  /** Tag on the groups that start collapsed (parser/chain/tools/cache…). */
+  readonly advanced: string
+  /** Accessible name for the group navigation. */
+  readonly sections: string
+  /** `{count}` items in one group or scene. */
+  readonly items: string
 }
 
 /**
@@ -1145,6 +1229,7 @@ const ZH_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
       validation: '要选择的验证档位：low / medium / high；三档都联网检索。',
       command: '要选择的命令面：none / goal / plan / feedback / compact / permission。',
       preset: 'DSH 权限预设键；只作用于当前会话。',
+      view: '读取视图：summary（默认，只含六个维度、锁定与预设 id/name）或 full（完整 SelectionState）。',
     },
   },
   coordination_profession: {
@@ -1173,6 +1258,7 @@ const ZH_FILE_TOOLS: Readonly<Record<FileToolName, ToolCopy>> = {
       path: '工作区相对路径；与 text 二选一。',
       text: '要直接解析的文本；与 path 二选一，不写缓存。',
       parserId: '强制解析器（javascript / css / html / markdown / latex）；省略时按扩展名。',
+      verbosity: 'compact（默认，卡片只留 handle/kind/name/区间）或 full（完整 NodeCard，含 reference）。',
     },
   },
   coordination_describe: {
@@ -1197,9 +1283,10 @@ const ZH_FILE_TOOLS: Readonly<Record<FileToolName, ToolCopy>> = {
   },
   coordination_read: {
     description:
-      '读取工作区文件的字节或行范围；这是唯一返回文件内容的工具，单次上限 256 KiB / 2000 行 / 16k tokens。',
+      '读取工作区文件的字节或行范围；这是唯一返回文件内容的工具，单次上限 256 KiB / 2000 行 / 16k tokens。path 与 handle 二选一：handle 由 parse/outline 产出，省略 mode/start/end 时按该节点的行范围读取。',
     parameters: {
-      path: '工作区相对路径。',
+      path: '工作区相对路径；与 handle 二选一。',
+      handle: 'parse/outline 产出的节点 handle；省略 mode/start/end 时用该节点的行范围。',
       mode: 'bytes（字节偏移，end 不含）或 lines（1 基行号，end 含）。',
       start: '起始字节偏移或起始行号。',
       end: '结束字节偏移（不含）或结束行号（含）。',
@@ -1256,9 +1343,56 @@ const ZH_PANEL: PanelCopy = {
   indexPartial: '已索引部分文件（达到上限）',
   tabs: {
     files: '文件',
+    amp: '协作',
+    missions: '使命',
+    goals: '目标',
+    plans: '计划',
+    collaboration: '职责',
     outline: '大纲',
-    dependencies: '依赖',
     imports: '导入',
+    exports: '导出',
+    dependencies: '依赖',
+    project: '项目',
+    cognition: '认知',
+    capabilities: '能力',
+    skills: '技能',
+    knowledge: '知识',
+  },
+  insights: { cognition: '认知', capabilities: '能力', skills: '技能', knowledge: '知识' },
+  project: '项目',
+  insightScopes: { session: '当前会话', workspace: '当前工作区', installation: '当前安装' },
+  insightEmpty: '当前会话没有此类记录。',
+  insightUnavailable: '当前会话未提供此类数据源。',
+  insightWorkspace: '数据来自当前会话的工作区。',
+  knowledgePanel: {
+    title: '知识文件',
+    empty: '当前还没有标记为知识的文件。在大纲或文件行上标记后，这里会列出它们。',
+    mark: '标记为知识',
+    unmark: '取消知识标记',
+    settings: '作用域配置',
+    interaction: '交互方式',
+    scenario: '工作情景',
+    reset: '恢复继承值',
+    inherited: '继承自 {scope}',
+    unavailable: '当前宿主未提供该接口。',
+    registry: '注册中心',
+    registryHint: '按域查看宿主登记的能力与环境；这里的开关只改当前工作区的元数据。',
+    registrySelect: '选择注册域',
+    registryToggle: '启用或停用',
+    registryEmpty: '该注册域暂无记录。',
+    registries: {
+      modules: '模块',
+      environments: '环境',
+      tools: '工具',
+      cognition: '认知',
+      capabilities: '能力',
+      abilities: '本领',
+      progress: '进度',
+      skills: '技能',
+      knowledge: '知识',
+      protocols: '协议',
+      concepts: '概念',
+    },
   },
   families: {
     book: '书籍',
@@ -1323,6 +1457,13 @@ const ZH_PANEL: PanelCopy = {
     count: '条目',
     session: '会话',
     noSession: '没有会话 ID，无法读取注意帧。',
+    scopeSessions: '范围内会话',
+    scopeEmpty: '此范围暂无协作记录。',
+    scopeSessionCount: '共 {count} 个会话',
+    scopeSummary: '会话 {sessions} · 账本条目 {entries} · 回执 {receipts}',
+    scopeTruncated: '仅展示部分结果；上方数字是完整范围的总数。',
+    globalTrust: '全局账本完整性',
+    globalTrustHint: '以下验证针对代理的完整签名账本，与当前筛选范围无关。',
     selection: {
       title: '职责 · 交互 · 情景',
       profession: '职责',
@@ -1431,6 +1572,10 @@ const ZH_PANEL: PanelCopy = {
     preview: '预览',
     locate: '在文件树中定位',
     copyPath: '复制路径',
+    outlineFile: '大纲',
+    importsFile: '导入',
+    exportsFile: '导出',
+    dependenciesFile: '依赖',
     expand: '展开',
     collapse: '折叠',
     jumpToFile: '跳转到文件',
@@ -1908,6 +2053,22 @@ const ZH: Copy = {
     catalog: { groups: ZH_CATALOG_GROUPS, fields: ZH_CATALOG_FIELDS, values: ZH_CATALOG_VALUES },
     values: ZH_VALUES,
     states: ZH_STATES,
+    layout: {
+      search: '搜索设置',
+      searchPlaceholder: '搜索名称、说明或配置键',
+      clearSearch: '清除搜索',
+      noResults: '没有匹配的设置',
+      matches: '匹配 {count} 项',
+      modifiedOnly: '只看已修改',
+      modified: '已修改',
+      reset: '恢复默认',
+      resetTo: '恢复默认值 {value}',
+      expandAll: '全部展开',
+      collapseAll: '全部收起',
+      advanced: '高级',
+      sections: '设置分组',
+      items: '{count} 项',
+    },
   },
   about: {
     title: '关于',
@@ -2267,6 +2428,7 @@ const EN_TOOLS: Readonly<Record<ToolName, ToolCopy>> = {
       validation: 'Validation level to select: low / medium / high; all three levels search the web.',
       command: 'Command face to select: none / goal / plan / feedback / compact / permission.',
       preset: 'DSH permission preset key; it applies to the current session only.',
+      view: 'Read view: summary (default: six dimensions, lock and preset id/name) or full (the complete SelectionState).',
     },
   },
   coordination_profession: {
@@ -2293,6 +2455,7 @@ const EN_FILE_TOOLS: Readonly<Record<FileToolName, ToolCopy>> = {
       path: 'Workspace-relative path; exactly one of path or text.',
       text: 'Text to parse directly; exactly one of path or text, not cached.',
       parserId: 'Force a parser (javascript / css / html / markdown / latex); the extension decides when omitted.',
+      verbosity: 'compact (default: handle/kind/name/range per card) or full (complete NodeCards with reference).',
     },
   },
   coordination_describe: {
@@ -2318,9 +2481,10 @@ const EN_FILE_TOOLS: Readonly<Record<FileToolName, ToolCopy>> = {
   },
   coordination_read: {
     description:
-      'Read a byte or line range of a workspace file; the only tool that returns file content, capped at 256 KiB / 2,000 lines / 16k tokens per call.',
+      'Read a byte or line range of a workspace file; the only tool that returns file content, capped at 256 KiB / 2,000 lines / 16k tokens per call. Pass either path or a handle produced by parse/outline: with a handle, mode/start/end default to that node\'s own range.',
     parameters: {
-      path: 'Workspace-relative path.',
+      path: 'Workspace-relative path; pass this or handle.',
+      handle: 'A node handle produced by parse/outline; defaults mode/start/end to the node\'s range.',
       mode: 'bytes (byte offsets, end exclusive) or lines (1-based lines, end inclusive).',
       start: 'Start byte offset or 1-based start line.',
       end: 'End byte offset (exclusive) or end line (inclusive).',
@@ -2377,9 +2541,56 @@ const EN_PANEL: PanelCopy = {
   indexPartial: 'Indexed partially (limit reached)',
   tabs: {
     files: 'Files',
+    amp: 'Coordination',
+    missions: 'Missions',
+    goals: 'Goals',
+    plans: 'Plans',
+    collaboration: 'Duties',
     outline: 'Outline',
-    dependencies: 'Dependencies',
     imports: 'Imports',
+    exports: 'Exports',
+    dependencies: 'Dependencies',
+    project: 'Project',
+    cognition: 'Cognition',
+    capabilities: 'Capabilities',
+    skills: 'Skills',
+    knowledge: 'Knowledge',
+  },
+  insights: { cognition: 'Cognition', capabilities: 'Capabilities', skills: 'Skills', knowledge: 'Knowledge' },
+  project: 'Project',
+  insightScopes: { session: 'Current session', workspace: 'Current workspace', installation: 'Installation' },
+  insightEmpty: 'This session has no records of this kind.',
+  insightUnavailable: 'This data source is unavailable for the current session.',
+  insightWorkspace: 'Data is scoped to the current session workspace.',
+  knowledgePanel: {
+    title: 'Knowledge files',
+    empty: 'No file is marked as knowledge yet. Mark one from the outline or a file row and it appears here.',
+    mark: 'Mark as knowledge',
+    unmark: 'Remove knowledge mark',
+    settings: 'Scoped settings',
+    interaction: 'Interaction',
+    scenario: 'Scenario',
+    reset: 'Restore inherited value',
+    inherited: 'inherited from {scope}',
+    unavailable: 'This host does not expose that surface.',
+    registry: 'Registry',
+    registryHint: 'Browse host-registered capabilities and environments by domain; these switches change workspace metadata only.',
+    registrySelect: 'Choose a registry',
+    registryToggle: 'Enable or disable',
+    registryEmpty: 'No records in this registry.',
+    registries: {
+      modules: 'Modules',
+      environments: 'Environments',
+      tools: 'Tools',
+      cognition: 'Cognition',
+      capabilities: 'Capabilities',
+      abilities: 'Abilities',
+      progress: 'Progress',
+      skills: 'Skills',
+      knowledge: 'Knowledge',
+      protocols: 'Protocols',
+      concepts: 'Concepts',
+    },
   },
   families: {
     book: 'Book',
@@ -2444,6 +2655,13 @@ const EN_PANEL: PanelCopy = {
     count: 'Entries',
     session: 'Session',
     noSession: 'No session id; the attention frame cannot be read.',
+    scopeSessions: 'Sessions in scope',
+    scopeEmpty: 'No coordination activity in this scope.',
+    scopeSessionCount: '{count} sessions',
+    scopeSummary: '{sessions} sessions · {entries} ledger entries · {receipts} receipts',
+    scopeTruncated: 'Showing a limited set; counts above cover the full scope.',
+    globalTrust: 'Global ledger integrity',
+    globalTrustHint: 'This verifies the agent’s complete signed ledger, independent of the selected scope.',
     selection: {
       title: 'Profession · Interaction · Scene',
       profession: 'Profession',
@@ -2552,6 +2770,10 @@ const EN_PANEL: PanelCopy = {
     preview: 'Preview',
     locate: 'Locate in file tree',
     copyPath: 'Copy path',
+    outlineFile: 'Outline',
+    importsFile: 'Imports',
+    exportsFile: 'Exports',
+    dependenciesFile: 'Dependencies',
     expand: 'Expand',
     collapse: 'Collapse',
     jumpToFile: 'Go to file',
@@ -3029,6 +3251,22 @@ const EN: Copy = {
     catalog: { groups: EN_CATALOG_GROUPS, fields: EN_CATALOG_FIELDS, values: EN_CATALOG_VALUES },
     values: EN_VALUES,
     states: EN_STATES,
+    layout: {
+      search: 'Search settings',
+      searchPlaceholder: 'Search name, description or config key',
+      clearSearch: 'Clear search',
+      noResults: 'No matching settings',
+      matches: '{count} matches',
+      modifiedOnly: 'Modified only',
+      modified: 'Modified',
+      reset: 'Reset to default',
+      resetTo: 'Reset to default {value}',
+      expandAll: 'Expand all',
+      collapseAll: 'Collapse all',
+      advanced: 'Advanced',
+      sections: 'Sections',
+      items: '{count} items',
+    },
   },
   about: {
     title: 'About',

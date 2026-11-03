@@ -15,7 +15,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { DatabaseError, NotFoundError } from '../shared/error.js'
 
-export const SCHEMA_VERSION = 26
+export const SCHEMA_VERSION = 28
 
 export const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -893,7 +893,7 @@ CREATE TABLE IF NOT EXISTS global_posterior (
  * touching an existing row, and PRAGMA user_version becomes 24. The node row
  * stores metadata and locators only (no body, no AST, no attachment bytes);
  * the node/edge handle columns are the deterministic public handles produced by
- * node-registry.ts / chain.ts, so a rehydrated runtime answers the same
+ * nodeRegistry.ts / chain.ts, so a rehydrated runtime answers the same
  * handle after a restart.
  *
  * One deliberate extension to the documented edge shape: the domain model's
@@ -1140,6 +1140,49 @@ BEGIN
   SELECT RAISE(ABORT, 'amp_manifest is append-only');
 END;
 
+-- v27: durable planning projections; mutations and their AMP events commit together.
+CREATE TABLE IF NOT EXISTS amp_planning_goal (
+  id TEXT PRIMARY KEY,
+  session INTEGER NOT NULL REFERENCES session(identity),
+  body TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_amp_planning_goal_session ON amp_planning_goal(session, created);
+CREATE TABLE IF NOT EXISTS amp_planning_plan (
+  id TEXT PRIMARY KEY,
+  session INTEGER NOT NULL REFERENCES session(identity),
+  goal TEXT NOT NULL REFERENCES amp_planning_goal(id),
+  body TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_amp_planning_plan_session ON amp_planning_plan(session, created);
+CREATE TABLE IF NOT EXISTS amp_mission (
+  identity INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT UNIQUE NOT NULL,
+  session INTEGER NOT NULL REFERENCES session(identity),
+  goal TEXT UNIQUE NOT NULL REFERENCES amp_planning_goal(id),
+  priority INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued', 'active', 'done', 'abandoned')),
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_amp_mission_session ON amp_mission(session, status, created);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_amp_mission_active ON amp_mission(session) WHERE status = 'active';
+
+-- v28: owner/assignee-scoped multiagent duties and result handoffs.
+CREATE TABLE IF NOT EXISTS amp_duty (
+  id TEXT PRIMARY KEY,
+  owner INTEGER NOT NULL REFERENCES session(identity),
+  assignee INTEGER NOT NULL REFERENCES session(identity),
+  body TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_amp_duty_owner ON amp_duty(owner, created);
+CREATE INDEX IF NOT EXISTS idx_amp_duty_assignee ON amp_duty(assignee, created);
+
 CREATE TABLE IF NOT EXISTS amp_checkpoint (
   seq INTEGER PRIMARY KEY,
   tenant TEXT NOT NULL,
@@ -1153,6 +1196,86 @@ CREATE TABLE IF NOT EXISTS amp_checkpoint (
   body TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_amp_checkpoint_tip ON amp_checkpoint(tip);
+
+-- v29: AMP 0.5.0 scoped control (registry metadata, defaults, settings) and
+-- explicit knowledge-file marks. Every table is scoped by (scope, scope_id),
+-- where global uses the empty id; versions are the CAS token a control write
+-- must echo back.
+CREATE TABLE IF NOT EXISTS control_record (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  registry TEXT NOT NULL,
+  id TEXT NOT NULL,
+  value TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL,
+  PRIMARY KEY (scope, scope_id, registry, id)
+);
+CREATE INDEX IF NOT EXISTS idx_control_record_registry ON control_record(scope, scope_id, registry, deleted);
+
+CREATE TABLE IF NOT EXISTS control_default (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL,
+  PRIMARY KEY (scope, scope_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS control_setting (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  value TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL,
+  PRIMARY KEY (scope, scope_id, domain)
+);
+
+CREATE TABLE IF NOT EXISTS control_link (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  registry TEXT NOT NULL,
+  id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (scope, scope_id, registry, id, target_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_control_link_target ON control_link(scope, scope_id, registry, target_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_file (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  title TEXT NOT NULL,
+  note TEXT NOT NULL,
+  tags TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL,
+  PRIMARY KEY (scope, scope_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_file_updated ON knowledge_file(updated DESC);
+
+-- v30: links between an AMP goal/plan and the Harness services that own the
+-- live lifecycle (ctx.goals, ctx.planMode). One row per (session, goal); the
+-- note column records why the last sync attempt failed, so the panel can show
+-- divergence instead of guessing.
+CREATE TABLE IF NOT EXISTS harness_link (
+  session TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  remote_id TEXT,
+  revision INTEGER,
+  phase TEXT,
+  note TEXT,
+  synced INTEGER,
+  PRIMARY KEY (session, goal)
+);
 CREATE TRIGGER IF NOT EXISTS trg_amp_checkpoint_immutable_update
 BEFORE UPDATE ON amp_checkpoint
 BEGIN

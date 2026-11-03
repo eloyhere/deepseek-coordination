@@ -15,7 +15,7 @@ import type { ModuleHost } from "../src/host/module.js";
 import type { CoordinationConfig } from "../src/host/config.js";
 import { HandleGenerator, ManualClock } from "../src/host/handle.js";
 import { TraceModule } from "../src/host/trace.js";
-import { SqliteTraceStore } from "../src/host/adapters/sqlite/trace-store.js";
+import { SqliteTraceStore } from "../src/host/adapters/sqlite/traceStore.js";
 import {
   OrganizationModule,
   WritingStageMarkers,
@@ -146,6 +146,7 @@ const TestConfig: CoordinationConfig = {
     toolbar: true,
     showTooltip: true,
     takeover: false,
+    takeoverFiles: false,
     refreshInterval: 5000,
     compact: true,
     locale: "auto",

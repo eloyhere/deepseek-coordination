@@ -20,7 +20,7 @@ import {
   type TraceWriter,
 } from "../src/host/module.js";
 import { TraceModule } from "../src/host/trace.js";
-import { SqliteTraceStore } from "../src/host/adapters/sqlite/trace-store.js";
+import { SqliteTraceStore } from "../src/host/adapters/sqlite/traceStore.js";
 import { CommandModule, COMMAND_PREFIX } from "../src/host/command.js";
 import type { CommandHandlers } from "../src/host/command.js";
 import { GoalModule } from "../src/host/goal.js";
@@ -159,6 +159,7 @@ function createConfig(clarifyTimeout = 30000): CoordinationConfig {
       toolbar: true,
       showTooltip: true,
       takeover: false,
+      takeoverFiles: false,
       refreshInterval: 5000,
       compact: true,
       locale: "auto",

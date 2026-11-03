@@ -37,6 +37,8 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { clearComposerCaches } from './controls.js'
 import { CoordinationSettings } from './settings.js'
 import { TakeoverDialog } from './takeover.js'
+import { NotificationHost } from './notification.js'
+import { ApprovalDialog } from './approval.js'
 import { currentCopy, installLocale } from './i18n.js'
 import { disposeTakeoverStyle, installTakeoverStyle } from './store.js'
 import { copyFor } from '../shared/i18n.js'
@@ -214,15 +216,18 @@ interface MemoControlsProps {
  */
 const MemoControls = React.memo(
   function MemoControlsInner(props: MemoControlsProps): React.ReactElement {
-    // The takeover dialog and the docked panel column are siblings, not
-    // children of the composer row: their own state (polling, routing) never
-    // re-renders the composer. The four composer dropdowns are gone: the
-    // profession/interaction/scene triple is read in the docked AMP panel, so
-    // the composer keeps only the host's own controls.
+    // The takeover dialog, the consent dialog, the notification surfaces and the
+    // docked panel column are siblings, not children of the composer row: their
+    // own state (polling, routing) never re-renders the composer. The four
+    // composer dropdowns are gone: the profession/interaction/scene triple is
+    // read in the docked AMP panel, so the composer keeps only the host's own
+    // controls.
     return React.createElement(
       React.Fragment,
       null,
       React.createElement(TakeoverDialog, { sessionId: props.sessionId }),
+      React.createElement(ApprovalDialog, { sessionId: props.sessionId }),
+      React.createElement(NotificationHost, { sessionId: props.sessionId }),
       React.createElement(
         PanelLoadBoundary,
         null,

@@ -1,17 +1,15 @@
 /**
  * AMP v0.1 protocol layer.
  *
- * A faithful, host-side port of `attention-manifest-protocol`, restricted to the
- * artifacts this plugin emits and verifies: primitives, canonical JSON, ids,
- * errors, the sealed A-surface envelope, the signed Manifest, the Frame
- * boundary, Receipts/Events, the Warrant derivation rules and the append-only
- * ledger with signed checkpoints.
+ * Host-specific compatibility artifacts retained beside the runtime dependency
+ * `attention-manifest-protocol`: DSH takeover projections, local key serialization,
+ * receipt/event builders and legacy test fixtures. Production protocol primitives
+ * are imported directly from the npm package at their ownership boundaries.
  *
- * Rules for consumers inside this repository:
- *  - import from `../protocol/index.js`, never from a deep path;
- *  - never re-declare a protocol field locally (a second spelling of `tier` is
- *    how two subsystems silently disagree);
- *  - never author a `confidence` on a claim — call `deriveConfidence`;
+ * Rules for compatibility-layer consumers:
+ *  - keep DSH-specific artifact builders here until the npm package exposes them;
+ *  - production normative protocol operations must import from the npm package;
+ *  - never author a `confidence` on a claim — derive it with AMP's warrant API;
  *  - never mutate a stored artifact — append a new one that cites the old.
  *
  * The layer is host-only: `sha256.ts` uses `node:crypto`, so importing this

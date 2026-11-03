@@ -142,7 +142,7 @@ export function validateGoal(goal: Goal): string[] {
 }
 
 /** Every problem that makes a `Plan` unstorable. */
-export function validatePlan(plan: Plan): string[] {
+export function validatePlan(plan: Plan | import('attention-manifest-protocol/goal/plan.js').Plan): string[] {
   const problems: string[] = []
   if (plan.amp !== '0.1' || plan.kind !== 'plan') problems.push('not an AMP v0.1 plan')
   if (!isId(plan.id)) problems.push('id is not a valid AMP id')

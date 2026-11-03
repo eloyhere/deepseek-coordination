@@ -701,6 +701,18 @@ const UI_CONTROLS: readonly SettingsControl[] = [
   control({ group: 'ui', copy: 'toolbarDeprecated', key: 'ui.toolbar', kind: 'boolean', chip: 'readOnly', wired: false }),
   control({ group: 'ui', copy: 'composerTooltips', key: 'ui.showTooltip', kind: 'boolean', wired: true }),
   control({ group: 'ui', copy: 'takeoverDialogs', key: 'ui.takeover', kind: 'boolean', wired: true }),
+  /*
+   * Host-side file-access takeover (`src/host/fileGate.ts`): the `read`/`write`
+   * gate, not a browser preference — no `local` store, so the row writes the
+   * host config path and the gate re-reads it live.
+   *
+   * Copy reuses the takeover row's id on purpose: the shared i18n dictionaries
+   * are out of scope for this switch, and `settings.catalog.fields` is a closed
+   * `Record<SettingsCatalogFieldId, ...>`, so a brand-new copy id would resolve
+   * no label and fail the catalog's copy-coverage test. A dedicated
+   * `takeoverFiles` copy id is the follow-up when the dictionaries are edited.
+   */
+  control({ group: 'ui', copy: 'takeoverDialogs', key: 'ui.takeoverFiles', kind: 'boolean', wired: true }),
   control({ group: 'ui', copy: 'refreshInterval', key: 'ui.refreshInterval', kind: 'number', min: 500, max: 86_400_000, step: 500, wired: true }),
   control({ group: 'ui', copy: 'compact', key: 'ui.compact', kind: 'boolean', wired: true }),
   control({ group: 'ui', copy: 'defaultLocale', key: 'ui.locale', kind: 'enum', options: ['auto', 'zh-CN', 'en-US'], chip: 'readOnly', wired: true }),

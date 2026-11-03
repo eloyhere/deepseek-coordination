@@ -15,7 +15,7 @@
  *
  * descriptive only: no edit, no build, no install; a real 'project create' would be a shell command behind DSH's permission model, not a plugin tool.
  *
- * Importing `parse-service.js` runs the production registration on the shared
+ * Importing `parseService.js` runs the production registration on the shared
  * `defaultParserRegistry`, so the registry assertions describe the real runtime
  * rather than a test-only registry.
  */
@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { zipSync, strToU8 } from 'fflate'
-import { ParseService } from '../src/host/parse-service.js'
+import { ParseService } from '../src/host/parseService.js'
 import { defaultParserRegistry } from '../src/host/text/index.js'
 import { MavenParser } from '../src/host/text/maven.js'
 import { NpmParser } from '../src/host/text/npm.js'

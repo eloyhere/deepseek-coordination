@@ -102,7 +102,7 @@ export interface CodeSymbol extends FlatFragment {
    * `enum`/`const enum` -> `enumeration`, and `namespace`/`module` ->
    * `namespace`.
    */
-  kind: 'class' | 'function' | 'method' | 'variable' | 'interface' | 'type' | 'enumeration' | 'namespace'
+  kind: 'class' | 'function' | 'method' | 'property' | 'variable' | 'interface' | 'type' | 'enumeration' | 'namespace'
   name: string
   /** Symbol span, including the declaration keyword(s). */
   span: SourceSpan
@@ -1037,7 +1037,64 @@ function handleInterface(
       { scope, binding: 'identifier' },
     ),
   )
+  if (close >= 0) scanInterfaceMembers(ctx, sig, open, close, symbols)
   return endPosition + 1
+}
+
+/** Only direct, named signatures and properties are children of an interface. */
+function scanInterfaceMembers(
+  ctx: ParseContext,
+  sig: readonly SigToken[],
+  open: number,
+  close: number,
+  symbols: CodeSymbol[],
+): void {
+  let position = open + 1
+  while (position < close) {
+    if (!ctx.checkpoint()) return
+    const start = position
+    const token = sig[position].token
+    if (token.text === 'readonly') position += 1
+    const name = sig[position]
+    if (name === undefined || name.token.kind !== 'identifier') {
+      position = start + 1
+      continue
+    }
+    let after = position + 1
+    if (sig[after]?.token.text === '?') after += 1
+    if (sig[after]?.token.text === '<') {
+      const end = findMatching(sig, after, '<', '>', close)
+      if (end < 0) { position = start + 1; continue }
+      after = end + 1
+    }
+    const method = sig[after]?.token.text === '('
+    if (!method && sig[after]?.token.text !== ':') {
+      position = start + 1
+      continue
+    }
+    const paramsEnd = method ? findMatching(sig, after, '(', ')', close) : after
+    if (paramsEnd < 0) { position = start + 1; continue }
+    let end = paramsEnd
+    while (end + 1 < close && sig[end + 1].token.text !== ';' && sig[end + 1].token.text !== ',') {
+      const next = sig[end + 1].token.text
+      if (next === '}') break
+      if (next === '{' || next === '(' || next === '[' || next === '<') {
+        const match = findMatching(sig, end + 1, next, next === '{' ? '}' : next === '(' ? ')' : next === '[' ? ']' : '>', close)
+        if (match < 0) break
+        end = match
+        continue
+      }
+      if (sig[end + 1].token.span.line > sig[end].token.span.line &&
+        (sig[end + 2]?.token.text === '(' || sig[end + 2]?.token.text === ':' || sig[end + 2]?.token.text === '?')) break
+      end += 1
+    }
+    const symbol = newSymbol(method ? 'method' : 'property', name.token.text, spanBetween(sig[start].token, sig[end].token),
+      sig[start].index, sig[end].index, false, method ? { binding: 'method' } : {})
+    if (method) symbol.form = 'method'
+    symbols.push(symbol)
+    position = end + 1
+    if (sig[position]?.token.text === ';' || sig[position]?.token.text === ',') position += 1
+  }
 }
 
 /**
@@ -1074,6 +1131,10 @@ function handleTypeAlias(
       { scope, binding: 'identifier' },
     ),
   )
+  if (sig[cursor + 1]?.token.text === '{') {
+    const close = findMatching(sig, cursor + 1, '{', '}', endPosition + 1)
+    if (close >= 0) scanInterfaceMembers(ctx, sig, cursor + 1, close, symbols)
+  }
   return endPosition + 1
 }
 
@@ -1113,6 +1174,25 @@ function handleEnum(
       { scope, binding: 'identifier' },
     ),
   )
+  if (close >= 0) {
+    for (let member = open + 1; member < close;) {
+      if (!ctx.checkpoint()) break
+      const token = sig[member]
+      if (token.token.kind !== 'identifier' && token.token.kind !== 'string' && token.token.kind !== 'number') {
+        member += 1
+        continue
+      }
+      const name = token.token.kind === 'string' ? stripQuotes(token.token.text) : token.token.text
+      const symbol = newSymbol('property', name, token.token.span, token.index, token.index, false)
+      symbols.push(symbol)
+      member += 1
+      if (sig[member]?.token.text === '=') {
+        member += 1
+        while (member < close && sig[member].token.text !== ',') member += 1
+      }
+      if (sig[member]?.token.text === ',') member += 1
+    }
+  }
   return endPosition + 1
 }
 
@@ -1162,7 +1242,9 @@ function handleNamespace(
       { scope, binding: 'identifier' },
     ),
   )
-  return endPosition + 1
+  // Continue the main token walk inside a namespace so its declarations are
+  // indexed too; their source spans prove the enclosing namespace later.
+  return close < 0 ? endPosition + 1 : open + 1
 }
 
 /** End of a TypeScript type alias right-hand side (bounded, fail-closed). */
@@ -1769,15 +1851,15 @@ function scanMethods(
       position += 1
       continue
     }
-    if (member.field !== undefined && member.isStatic) {
+    if (member.field !== undefined) {
       const variable = newSymbol(
-        'variable',
+        member.isStatic ? 'variable' : 'property',
         member.field.name,
         member.field.span,
         sig[position].index,
         sig[member.field.tokenIndex].index,
         false,
-        { static: true, scope: 'static' },
+        member.isStatic ? { static: true, scope: 'static' } : {},
       )
       variable.ownerClass = ownerClass
       symbols.push(variable)
@@ -1927,20 +2009,17 @@ function parseMember(
   if (sig[afterName]?.token.text === '?' || sig[afterName]?.token.text === '!') afterName += 1
   if (sig[afterName]?.token.text !== '(') {
     const end = skipMember(sig, from, limit, newline)
-    if (isStatic) {
-      return {
-        end,
-        isStatic,
-        isAsync,
-        isGenerator,
-        field: {
-          name,
-          span: spanBetween(sig[nameStart].token, sig[nameEnd - 1].token),
-          tokenIndex: nameStart,
-        },
-      }
+    return {
+      end,
+      isStatic,
+      isAsync,
+      isGenerator,
+      field: {
+        name,
+        span: spanBetween(sig[nameStart].token, sig[nameEnd - 1].token),
+        tokenIndex: nameStart,
+      },
     }
-    return { end, isStatic, isAsync, isGenerator }
   }
   const paramsClose = findMatching(sig, afterName, '(', ')', limit)
   if (paramsClose < 0) {

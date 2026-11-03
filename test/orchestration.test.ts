@@ -28,7 +28,7 @@ import type { ModuleHost, TraceWriter } from "../src/host/module.js";
 import { OrchestrationModule } from "../src/host/orchestration.js";
 import { ProfessionModule } from "../src/host/profession.js";
 import { TraceModule } from "../src/host/trace.js";
-import { SqliteTraceStore } from "../src/host/adapters/sqlite/trace-store.js";
+import { SqliteTraceStore } from "../src/host/adapters/sqlite/traceStore.js";
 
 interface FixtureOptions {
   effort?: string;
@@ -155,6 +155,7 @@ function createConfig(options: FixtureOptions): CoordinationConfig {
       toolbar: true,
       showTooltip: true,
       takeover: false,
+      takeoverFiles: false,
       refreshInterval: 5000,
       compact: true,
       locale: "auto",

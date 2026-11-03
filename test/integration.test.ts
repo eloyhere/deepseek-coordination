@@ -18,9 +18,9 @@ import { createTestHost, insertGoal, insertPlan, insertSession, insertTurn } fro
 import type { TestHostOptions } from './helpers.js'
 import { resolveConfig } from '../src/host/config.js'
 import { ChainEngine } from '../src/host/chain.js'
-import { fileHandleFor, nodeHandleFor } from '../src/host/node-registry.js'
-import type { ParsedFile } from '../src/host/parse-service.js'
-import type { GraphEdge, GraphNode } from '../src/host/graph-view.js'
+import { fileHandleFor, nodeHandleFor } from '../src/host/nodeRegistry.js'
+import type { ParsedFile } from '../src/host/parseService.js'
+import type { GraphEdge, GraphNode } from '../src/host/graphView.js'
 import { ProfessionModule } from '../src/host/profession.js'
 import {
   SelectionModule,
@@ -39,7 +39,8 @@ import {
 import type {
   CoordinationExportationValue,
   CoordinationFileOutlineValue,
-  CoordinationFileValue,
+  CoordinationFilePathsValue,
+  CoordinationFileTreeValue,
   CoordinationGraphSnapshot,
   CoordinationImportationValue,
   CoordinationToolDefinition,
@@ -48,6 +49,7 @@ import type {
   CoordinationWorkspaceOutlineValue,
   ProfessionLockToolValue,
   ProfessionToolValue,
+  SelectionSummaryValue,
 } from '../src/host/tools.js'
 import type { SelectionState } from '../src/shared/selection.js'
 import type { Locale } from '../src/shared/i18n.js'
@@ -213,6 +215,7 @@ test('state() projects the resolved config and keeps the old wire fields', () =>
         toolbar: false,
         showTooltip: false,
         takeover: true,
+        takeoverFiles: false,
         refreshInterval: 7000,
         compact: false,
         locale: 'en-US',
@@ -630,7 +633,17 @@ test('tool definitions have the registry shape and render a text block', () => {
       assert.ok(definition.description.length > 0, `${definition.name} needs a description`)
       assert.equal(definition.parameters.type, 'object')
       assert.equal(typeof definition.parameters.properties, 'object')
-      assert.equal(definition.output.schema.type, 'object')
+      // A tool may declare a union output (`coordination_selection`), whose
+      // arms are still object values.
+      const outputSchema = definition.output.schema as {
+        type?: unknown
+        oneOf?: Array<{ type?: unknown }>
+      }
+      assert.ok(
+        outputSchema.type === 'object' ||
+          (Array.isArray(outputSchema.oneOf) && outputSchema.oneOf[0]?.type === 'object'),
+        `${definition.name} declares an object or object-rooted oneOf output`,
+      )
       assert.equal(typeof definition.output.render, 'function')
 
       const blocks = definition.output.render({}, samples[definition.name])
@@ -755,15 +768,20 @@ test('selection tool reads and writes the SelectionState', async () => {
       'coordination_selection',
     )
 
-    const before = (await tool.execute({}, { agent: { id: handle } })) as SelectionState
+    const before = (await tool.execute({}, { agent: { id: handle } })) as SelectionSummaryValue
+    assert.equal(before.view, 'summary')
     assert.equal(before.session, handle)
-    assert.ok(before.config)
     assert.equal(before.selection.scene, 'dialogue')
+    assert.equal('config' in before, false, 'the summary omits the config projection')
+    assert.ok(Array.isArray(before.presets))
+
+    const full = (await tool.execute({ view: 'full' }, { agent: { id: handle } })) as SelectionState
+    assert.ok(full.config, 'view:"full" keeps the complete SelectionState')
 
     const after = (await tool.execute(
       { scene: 'engineering', validation: 'high' },
       { agent: { id: handle } },
-    )) as SelectionState
+    )) as { selection: SelectionState['selection'] }
     assert.equal(after.selection.scene, 'engineering')
     assert.equal(after.selection.validation, 'high')
     assert.equal(fixture.selection.get(handle).scene, 'engineering')
@@ -1199,7 +1217,7 @@ test('coordination_file returns a deterministic, depth-bounded tree', async () =
   try {
     const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_file')
 
-    const root = (await tool.execute({})) as CoordinationFileValue
+    const root = (await tool.execute({})) as CoordinationFileTreeValue
     assert.equal(root.root, workspace.root)
     assert.deepEqual(
       root.entries.map((entry) => [entry.name, entry.kind]),
@@ -1209,7 +1227,7 @@ test('coordination_file returns a deterministic, depth-bounded tree', async () =
     // The default depth 2 stops at src/util, whose children exist below it.
     assert.equal(root.truncated, true)
 
-    const src = (await tool.execute({ path: 'src', depth: 3 })) as CoordinationFileValue
+    const src = (await tool.execute({ path: 'src', depth: 3 })) as CoordinationFileTreeValue
     assert.deepEqual(flattenTree(src.entries), [
       'src/util',
       'src/util/deep',
@@ -1220,7 +1238,7 @@ test('coordination_file returns a deterministic, depth-bounded tree', async () =
     ])
     assert.equal(src.truncated, false)
 
-    const docs = (await tool.execute({ path: 'docs', depth: 4 })) as CoordinationFileValue
+    const docs = (await tool.execute({ path: 'docs', depth: 4 })) as CoordinationFileTreeValue
     assert.deepEqual(docs.entries.map((entry) => entry.path), ['docs/guide.md'])
     assert.equal(docs.entries[0]?.children, undefined)
     assert.equal(docs.truncated, false)
@@ -1234,7 +1252,7 @@ test('coordination_file bounds entries and returns INVALID_ARGUMENT for bad path
   try {
     const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_file')
 
-    const capped = (await tool.execute({ path: 'src', depth: 3, limit: 2 })) as CoordinationFileValue
+    const capped = (await tool.execute({ path: 'src', depth: 3, limit: 2 })) as CoordinationFileTreeValue
     assert.equal(flattenTree(capped.entries).length, 2)
     assert.equal(capped.truncated, true)
 
@@ -1248,6 +1266,37 @@ test('coordination_file bounds entries and returns INVALID_ARGUMENT for bad path
       const value = (await tool.execute(args)) as { error?: { code: string } }
       assert.equal(value.error?.code, 'INVALID_ARGUMENT', `${JSON.stringify(args)} must be rejected`)
     }
+
+    const badMode = (await tool.execute({ mode: 'flat' })) as { error?: { code: string } }
+    assert.equal(badMode.error?.code, 'INVALID_ARGUMENT', 'unknown modes are refused')
+  } finally {
+    workspace.close()
+  }
+})
+
+test('coordination_file mode:"paths" flattens the same entries into a path list', async () => {
+  const workspace = graphWorkspace()
+  try {
+    const tool = toolOf(graphToolsOf(stubGraphSnapshot(graphFixture()), workspace.root), 'coordination_file')
+
+    const flat = (await tool.execute({ path: 'src', depth: 3, mode: 'paths' })) as CoordinationFilePathsValue
+    assert.equal(flat.mode, 'paths')
+    assert.equal(flat.truncated, false)
+    assert.equal('entries' in flat, false, 'the tree projection is omitted, not duplicated')
+    assert.deepEqual(flat.paths, [
+      'src/util/',
+      'src/util/deep/',
+      'src/util/deep/d.ts',
+      'src/util/c.ts',
+      'src/a.ts',
+      'src/b.ts',
+    ])
+    const tree = (await tool.execute({ path: 'src', depth: 3 })) as CoordinationFileTreeValue
+    assert.equal(tree.mode, 'tree')
+
+    const bounded = (await tool.execute({ path: 'src', depth: 3, limit: 2, mode: 'paths' })) as CoordinationFilePathsValue
+    assert.equal(bounded.paths.length, 2)
+    assert.equal(bounded.truncated, true)
   } finally {
     workspace.close()
   }
@@ -1277,6 +1326,12 @@ test('coordination_outline file scope keeps structure kinds only', async () => {
     const capped = (await tool.execute({ path: 'src/a.ts', limit: 2 })) as CoordinationFileOutlineValue
     assert.equal(capped.nodes.length, 2)
     assert.equal(capped.truncated, true)
+    assert.deepEqual(capped.truncation, {
+      returned: 2,
+      total: 7,
+      truncated: true,
+      next: 'limit=4',
+    })
 
     for (const path of ['../escape', 'C:\\secret', '/etc', 'src/nope.ts']) {
       const bad = (await tool.execute({ path })) as { error?: { code: string } }
@@ -1307,6 +1362,12 @@ test('coordination_outline workspace scope groups files and honours the node bud
     assert.equal(limited.groups.length, 1)
     assert.equal(limited.groups[0]?.nodes.length, 2)
     assert.equal(limited.truncated, true)
+    assert.deepEqual(limited.truncation, {
+      returned: 2,
+      total: 13,
+      truncated: true,
+      next: 'path=src/a.ts',
+    })
   } finally {
     workspace.close()
   }
@@ -1330,6 +1391,12 @@ test('coordination_importation reports per-file import rows with cycle flags', a
     const capped = (await tool.execute({ limit: 1 })) as CoordinationImportationValue
     assert.equal(capped.rows.length, 1)
     assert.equal(capped.truncated, true)
+    assert.deepEqual(capped.truncation, {
+      returned: 1,
+      total: 2,
+      truncated: true,
+      next: 'limit=2',
+    })
 
     for (const path of ['../secret', 'C:\\secret', '/etc', 'src/nope.ts']) {
       const bad = (await tool.execute({ path })) as { error?: { code: string } }
@@ -1381,7 +1448,7 @@ test('the four graph tools are registered with the documented names and schemas'
     ])
 
     const expectedParameters: Record<string, string[]> = {
-      coordination_file: ['depth', 'limit', 'path'],
+      coordination_file: ['depth', 'limit', 'mode', 'path'],
       coordination_outline: ['limit', 'path'],
       coordination_importation: ['limit', 'path'],
       coordination_exportation: ['limit', 'path'],
@@ -1423,7 +1490,7 @@ test('graph tools project an empty graph when nothing has been indexed', async (
     coordinationGraphToolDefinitions(graphToolService(), 'en-US', { workspaceRoot: process.cwd() }),
     'coordination_file',
   )
-  const value = (await tool.execute({})) as CoordinationFileValue
+  const value = (await tool.execute({})) as CoordinationFileTreeValue
   assert.deepEqual(value.entries, [])
   assert.equal(value.truncated, false)
 })
@@ -1451,12 +1518,12 @@ test('coordination_file treats "." as the workspace root and resolves the callin
     )
     const file = toolOf(definitions, 'coordination_file')
 
-    const dot = (await file.execute({ path: '.' }, { agent: { id: 'session-root-probe' } })) as CoordinationFileValue
+    const dot = (await file.execute({ path: '.' }, { agent: { id: 'session-root-probe' } })) as CoordinationFileTreeValue
     assert.ok(!('error' in dot), JSON.stringify(dot))
     assert.equal(dot.root, sessionWorkspace.root)
     assert.ok(Array.isArray(dot.entries))
 
-    const implicit = (await file.execute({}, { agent: { id: 'session-root-probe' } })) as CoordinationFileValue
+    const implicit = (await file.execute({}, { agent: { id: 'session-root-probe' } })) as CoordinationFileTreeValue
     assert.deepEqual(flattenTree(dot.entries), flattenTree(implicit.entries))
   } finally {
     workspace.close()

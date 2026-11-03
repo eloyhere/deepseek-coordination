@@ -34,10 +34,10 @@ import {
   type AmpPlanFacts,
   type AmpTurnFacts,
 } from "./amp.js";
-import { SqliteExecutionStore } from "./adapters/sqlite/execution-store.js";
-import { SqliteTraceStore } from "./adapters/sqlite/trace-store.js";
-import { SqliteTurnStore } from "./adapters/sqlite/turn-store.js";
-import { SqliteProfessionStore } from "./adapters/sqlite/profession-store.js";
+import { SqliteExecutionStore } from "./adapters/sqlite/executionStore.js";
+import { SqliteTraceStore } from "./adapters/sqlite/traceStore.js";
+import { SqliteTurnStore } from "./adapters/sqlite/turnStore.js";
+import { SqliteProfessionStore } from "./adapters/sqlite/professionStore.js";
 import { HandleGenerator, SystemClock } from "./handle.js";
 import { createModuleHost, type AgentView, type ModuleHost } from "./module.js";
 import { TokenGovernor, normaliseCompactionPatch } from "./token.js";
@@ -54,19 +54,27 @@ import { TurnModule } from "./turn.js";
 import { ProfessionModule } from "./profession.js";
 import { CommandModule } from "./command.js";
 import { GoalModule } from "./goal.js";
+import { AmpPlanning } from "./ampPlanning.js";
+import { AmpCollaboration } from "./ampCollaboration.js";
+import { ControlService } from "./control.js";
+import { KnowledgeService } from "./knowledge.js";
+import type { NativeSubagentsPort } from "./ampSubagents.js";
 import { CompactModule } from "./compact.js";
 import { DirectiveModule } from "./directive.js";
 import { PlanModule, decodePlanStep } from "./plan.js";
 import { PermissionModule } from "./permission.js";
 import { TakeoverModule } from "./takeover.js";
-import { TakeoverGate } from "./takeover-gate.js";
+import { TakeoverGate } from "./takeoverGate.js";
 import type {
   PendingTakeoverView,
   TakeoverGateAnswer,
-} from "./takeover-gate.js";
+} from "./takeoverGate.js";
+import { FileGate } from "./fileGate.js";
 import { ProviderModule } from "./provider.js";
 import { CacheModule } from "./cache.js";
-import { CompactionStateStore } from "./compaction-state.js";
+import { CompactionStateStore } from "./compactionState.js";
+import { stateCardOf } from "./stateCard.js";
+import type { StateCard } from "./stateCard.js";
 import type { CommandHandlers } from "./command.js";
 import { ComprehensionModule } from "./comprehension.js";
 import type { ComprehensionPolicyPatch } from "./comprehension.js";
@@ -666,10 +674,23 @@ export class CoordinationService extends Service {
   readonly takeover: TakeoverModule;
   /** Intercepts DSH approval/question waterfalls while `ui.takeover` is on. */
   readonly takeoverGate: TakeoverGate;
+  /**
+   * Host-side file-access gate (`ui.takeoverFiles`): records `read` calls and
+   * refuses `write`/`edit` outside the workspace while the switch is on.
+   */
+  readonly fileGate: FileGate;
   readonly provider: ProviderModule;
   readonly cache: CacheModule;
   /** AMP v0.1 artifacts: manifest, frames, receipts, events and the ledger. */
   readonly amp: AmpService;
+  readonly planning: AmpPlanning;
+  readonly collaboration: AmpCollaboration;
+  /** AMP 0.5.0 scoped control: registry metadata, defaults, settings. */
+  readonly control: ControlService;
+  /** Explicit "this file is knowledge" marks, mirrored into the registry. */
+  readonly knowledge: KnowledgeService;
+  /** Host-native subagent session roster; absent in headless or minimal profiles. */
+  nativeSubagents?: NativeSubagentsPort;
 
   private readonly dshTurns = new Map<string, TurnSlot>();
   /** In-flight deterministic pipelines, one per DSH session. */
@@ -742,12 +763,19 @@ export class CoordinationService extends Service {
     // ledger. Construction is synchronous; the key is loaded (or minted) on the
     // first artifact, so a host that never observes a turn never writes one.
     // It is created before the takeover gate so the gate can report windows.
+    this.planning = new AmpPlanning(this.host);
+    this.collaboration = new AmpCollaboration(this.host);
+    // AMP 0.5.0 scoped control is created before knowledge: a knowledge mark
+    // publishes its matching registry record in the same transaction.
+    this.control = new ControlService(this.db, clock);
+    this.knowledge = new KnowledgeService(this.db, clock, this.control);
     this.amp = new AmpService({
       db: this.db,
       config: this.config,
       handles: this.host.handles,
       clock: this.host.clock,
       capabilities: COORDINATION_CAPABILITIES,
+      onPlan: (session, goal, plan) => this.planning.adoptProjection(session, goal, plan),
       ...(this.host.logger === undefined ? {} : { logger: this.host.logger }),
     });
     this.session = new SessionModule(this.host.executionStore!, config, clock);
@@ -823,6 +851,36 @@ export class CoordinationService extends Service {
             }),
           );
         },
+      },
+    });
+    // Host-side file-access takeover (`ui.takeoverFiles`). The workspace root is
+    // asked of the same sandbox policy the file tools use, per call, so the gate
+    // follows the session's own workspace instead of a process-wide guess. An
+    // absent policy is `undefined` -> the gate fails open, never guesses a root.
+    this.fileGate = new FileGate({
+      config: this.config,
+      workspaceRootFor: (agent) => {
+        try {
+          const view = this.host.sandboxPolicy?.resolve(
+            agent === undefined ? {} : { session: agent },
+          );
+          return view?.workspaceRoot;
+        } catch {
+          return undefined;
+        }
+      },
+      // One AMP event per recorded read/refusal; `recordAmp` is write-behind, so
+      // a slow key load never delays the tool call.
+      record: (record) => {
+        this.recordAmp(
+          this.amp.event("file.gate", {
+            action: record.kind,
+            tool: record.tool,
+            ...(record.path === undefined ? {} : { path: record.path }),
+            ...(record.reason === undefined ? {} : { reason: record.reason }),
+            ...(record.agent === undefined ? {} : { agent: record.agent }),
+          }),
+        );
       },
     });
     this.provider = new ProviderModule(this.host);
@@ -1374,6 +1432,17 @@ export class CoordinationService extends Service {
     }
     if (plan.decision === "none") return { action: "none", plan };
 
+    // Snapshot the durable state card immediately before compaction. DSH
+    // rewrites the chat history, not this plugin's rows, so the card is also
+    // rebuilt after compaction by the per-turn AMP block; this snapshot is the
+    // auditable "before" value and names what the step was working on.
+    let stateCard: StateCard | undefined;
+    try {
+      stateCard = stateCardOf(this, sessionId);
+    } catch {
+      stateCard = undefined;
+    }
+
     const controller = new AbortController();
     const timeout = Math.min(this.config.clarifyTimeout, 30000);
     const timer = setTimeout(() => controller.abort(), timeout);
@@ -1391,8 +1460,13 @@ export class CoordinationService extends Service {
       this.compactionState.set(sessionId, {
         lastAt: now,
         count: (state?.count ?? 0) + 1,
+        ...(stateCard === undefined ? {} : { card: stateCard }),
       });
-      this.host.events.emit("compaction/auto", { session: sessionId, plan });
+      this.host.events.emit("compaction/auto", {
+        session: sessionId,
+        plan,
+        ...(stateCard === undefined ? {} : { stateCard }),
+      });
       return { action: "compacted", plan };
     } catch {
       return { action: "skipped", plan };
@@ -1400,6 +1474,16 @@ export class CoordinationService extends Service {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  /**
+   * The state card captured immediately before this session's last automatic
+   * compaction (`undefined` until one succeeds). The current card is rebuilt
+   * from durable rows on every step; this method returns the audit snapshot.
+   */
+  compactionCardOf(session: string): StateCard | undefined {
+    const card = this.compactionState.get(session)?.card;
+    return card === undefined ? undefined : (card as StateCard);
   }
 
   dispose(): void {

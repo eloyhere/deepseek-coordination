@@ -22,7 +22,7 @@ import type {
 } from "../src/host/module.js";
 import { HandleGenerator, SystemClock } from "../src/host/handle.js";
 import { TraceModule } from "../src/host/trace.js";
-import { SqliteTraceStore } from "../src/host/adapters/sqlite/trace-store.js";
+import { SqliteTraceStore } from "../src/host/adapters/sqlite/traceStore.js";
 import { resolveConfig } from "../src/host/config.js";
 import { PermissionModule } from "../src/host/permission.js";
 import { TakeoverModule } from "../src/host/takeover.js";

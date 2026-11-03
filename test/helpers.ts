@@ -20,10 +20,10 @@ import type { CoordinationConfig, PlanWeights } from "../src/host/config.js";
 import { CoordinationDatabase } from "../src/host/database.js";
 import { HandleGenerator, SystemClock } from "../src/host/handle.js";
 import { CoordinationEventBus, createModuleHost } from "../src/host/module.js";
-import { SqliteExecutionStore } from "../src/host/adapters/sqlite/execution-store.js";
-import { SqliteTraceStore } from "../src/host/adapters/sqlite/trace-store.js";
-import { SqliteTurnStore } from "../src/host/adapters/sqlite/turn-store.js";
-import { SqliteProfessionStore } from "../src/host/adapters/sqlite/profession-store.js";
+import { SqliteExecutionStore } from "../src/host/adapters/sqlite/executionStore.js";
+import { SqliteTraceStore } from "../src/host/adapters/sqlite/traceStore.js";
+import { SqliteTurnStore } from "../src/host/adapters/sqlite/turnStore.js";
+import { SqliteProfessionStore } from "../src/host/adapters/sqlite/professionStore.js";
 import type {
   AgentPort,
   ApprovalPort,
@@ -128,6 +128,7 @@ const DEFAULT_CONFIG: CoordinationConfig = {
     toolbar: true,
     showTooltip: true,
     takeover: false,
+    takeoverFiles: false,
     refreshInterval: 5000,
     compact: true,
     locale: "auto",

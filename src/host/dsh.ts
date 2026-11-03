@@ -17,6 +17,9 @@ import type {
   ApprovalPort,
   CompactionPort,
   GoalPort,
+  PlanModePort,
+  ShellPort,
+  ShellExecutionHandle,
   LlmConfigurableProviderInfo,
   LlmModelInfo,
   LlmProviderInfo,
@@ -323,6 +326,31 @@ function makeGoalPort(context: unknown, rawAgent: (id: string) => unknown): Goal
   }
 }
 
+function makePlanModePort(context: unknown, rawAgent: (id: string) => unknown): PlanModePort | undefined {
+  const planMode = serviceOf(context, 'planMode')
+  if (planMode === undefined) return undefined
+  const get = asFunction(planMode.get)
+  const set = asFunction(planMode.set)
+  if (get === undefined || set === undefined) return undefined
+  const live = (view: AgentView): unknown => rawAgent(view.id) ?? view
+  return {
+    get: (view: AgentView) => {
+      try {
+        const value = get.call(planMode, live(view))
+        return isRecord(value) && value.active === true
+          ? { active: true, ...(value.pending === true ? { pending: true } : {}) }
+          : { active: false, ...(isRecord(value) && value.pending === true ? { pending: true } : {}) }
+      } catch {
+        return { active: false }
+      }
+    },
+    set: (view: AgentView, active: boolean) => {
+      const result: unknown = set.call(planMode, live(view), active)
+      return typeof result === 'string' ? result : 'noop'
+    },
+  }
+}
+
 function makeCompactionPort(context: unknown, rawAgent: (id: string) => unknown): CompactionPort | undefined {
   const compaction = serviceOf(context, 'compaction')
   if (compaction === undefined) return undefined
@@ -447,6 +475,25 @@ function makeSandboxPolicyPort(context: unknown): SandboxPolicyPort | undefined 
   }
 }
 
+/**
+ * Adapt `ctx.shell` into the plugin's narrow shell seam.
+ *
+ * `resolve` applies the host's own defaults and caps, and `execute` returns a
+ * handle whose `result()` carries the bounded output. Both methods must exist;
+ * a half-implemented service is treated as absent rather than called blindly.
+ */
+function makeShellPort(context: unknown): ShellPort | undefined {
+  const shell = serviceOf(context, 'shell')
+  if (shell === undefined) return undefined
+  const resolve = asFunction(shell.resolve)
+  const execute = asFunction(shell.execute)
+  if (resolve === undefined || execute === undefined) return undefined
+  return {
+    resolve: (request: { command: string; workdir?: string; timeoutMs?: number; signal?: AbortSignal }) => resolve.call(shell, request),
+    execute: (spec: unknown) => Promise.resolve(execute.call(shell, spec)).then((handle: unknown) => handle as ShellExecutionHandle),
+  }
+}
+
 /** Build every port from one Cordis context; absent services stay absent. */
 export function createRuntime(context: unknown): DshRuntime {
   const agentRuntime = makeAgentPort(context)
@@ -455,6 +502,10 @@ export function createRuntime(context: unknown): DshRuntime {
   return {
     ...(makeLlmPort(context) === undefined ? {} : { llm: makeLlmPort(context) }),
     ...(makeGoalPort(context, rawAgent) === undefined ? {} : { goals: makeGoalPort(context, rawAgent) }),
+    ...(makePlanModePort(context, rawAgent) === undefined
+      ? {}
+      : { planMode: makePlanModePort(context, rawAgent) }),
+    ...(makeShellPort(context) === undefined ? {} : { shell: makeShellPort(context) }),
     ...(makeCompactionPort(context, rawAgent) === undefined
       ? {}
       : { compaction: makeCompactionPort(context, rawAgent) }),

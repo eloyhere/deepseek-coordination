@@ -10,7 +10,7 @@ import type { CoordinationConfig } from "./config.js";
 import type { Session } from "../shared/entity.js";
 import type { Interaction, Scene, Validation } from "../shared/enum.js";
 import { toInteraction, toScene, toValidation } from "../shared/enum.js";
-import type { ExecutionStore } from "./execution-store.js";
+import type { ExecutionStore } from "./executionStore.js";
 import type { Clock } from "./handle.js";
 
 export interface SessionMetadata extends Record<string, unknown> {

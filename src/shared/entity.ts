@@ -893,7 +893,7 @@ export type CoordinationSession = Session
  * `locator` is the concept's natural key inside one parse. `partOf`/`contains`
  * are **locators**, never public handles: handles are host-layer identifiers and
  * a parser never fabricates one. The projection layer maps locators to the
- * deterministic handles from `node-registry.ts`.
+ * deterministic handles from `nodeRegistry.ts`.
  */
 export interface ConceptBase {
   /** Structural, formal statement or office concept kind. */

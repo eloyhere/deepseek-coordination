@@ -11,15 +11,15 @@ import type { CoordinationConfig } from "./config.js";
 import type { CoordinationDatabase } from "./database.js";
 import { HandleGenerator } from "./handle.js";
 import type { Clock } from "./handle.js";
-import type { ExecutionStore } from "./execution-store.js";
-import type { TurnStore } from "./turn-store.js";
-import type { ProfessionStore } from "./profession-store.js";
-import type { TraceWriter } from "./trace-port.js";
+import type { ExecutionStore } from "./executionStore.js";
+import type { TurnStore } from "./turnStore.js";
+import type { ProfessionStore } from "./professionStore.js";
+import type { TraceWriter } from "./tracePort.js";
 export type {
   TraceInput,
   TraceVerification,
   TraceWriter,
-} from "./trace-port.js";
+} from "./tracePort.js";
 
 /* ------------------------------------------------------------------------- *
  * Read-only DSH ports
@@ -102,6 +102,49 @@ export interface GoalPort {
   resume?(agent: AgentView, reference: unknown): GoalViewPort;
   complete?(agent: AgentView, reference: unknown): GoalViewPort;
   clear?(agent: AgentView, reference: unknown): unknown;
+}
+
+/**
+ * DSH's own plan-mode switch (`ctx.planMode`).
+ *
+ * The host exposes a boolean state plus the result of the requested change; it
+ * does not store a plan document. This plugin therefore maps its own AMP plan
+ * lifecycle onto "a plan is executing" rather than inventing a second plan
+ * model on the Harness side.
+ */
+/**
+ * The host shell seam (`ctx.shell`), narrowed to what this plugin uses.
+ *
+ * Structural on purpose: `ctx.shell` is a DSH service with branded types, and
+ * this plugin only needs "resolve a request, execute it, collect the result".
+ * A missing port means commands cannot run at all — the tool reports
+ * `UNAVAILABLE` rather than spawning a process of its own.
+ */
+export interface ShellPort {
+  resolve(request: { command: string; workdir?: string; timeoutMs?: number; signal?: AbortSignal }): unknown
+  execute(spec: unknown): Promise<ShellExecutionHandle>
+}
+
+/** The prepared process handle, narrowed to `result()` plus its bounded output. */
+export interface ShellExecutionHandle {
+  result(): Promise<{
+    exitCode: number | null
+    timedOut: boolean
+    aborted: boolean
+    timeoutMs: number
+    stdout: { text: string; truncated: boolean }
+    stderr: { text: string; truncated: boolean }
+    sandbox?: { mode?: string }
+  }>
+}
+
+export interface PlanModePort {
+  get(agent: AgentView): { active: boolean; pending?: boolean };
+  /**
+   * Select the state. Returns `committed`/`queued`/`cancelled`/`noop`, which is
+   * how the caller can tell an immediate change from one waiting for a step.
+   */
+  set(agent: AgentView, active: boolean): string;
 }
 
 export interface CompactionPort {
@@ -232,6 +275,8 @@ export interface ModuleHost {
   readonly professionStore?: ProfessionStore;
   readonly llm?: LlmReadPort;
   readonly goals?: GoalPort;
+  readonly planMode?: PlanModePort;
+  readonly shell?: ShellPort;
   readonly compaction?: CompactionPort;
   readonly web?: WebSearchPort;
   readonly agents?: AgentPort;
@@ -254,6 +299,8 @@ export interface ModuleHostInput {
   events?: CoordinationEventBus;
   llm?: LlmReadPort;
   goals?: GoalPort;
+  planMode?: PlanModePort;
+  shell?: ShellPort;
   compaction?: CompactionPort;
   web?: WebSearchPort;
   agents?: AgentPort;
@@ -280,6 +327,7 @@ export function createModuleHost(input: ModuleHostInput): ModuleHost {
     events: input.events ?? new CoordinationEventBus(),
     ...(input.llm === undefined ? {} : { llm: input.llm }),
     ...(input.goals === undefined ? {} : { goals: input.goals }),
+    ...(input.planMode === undefined ? {} : { planMode: input.planMode }),
     ...(input.compaction === undefined ? {} : { compaction: input.compaction }),
     ...(input.web === undefined ? {} : { web: input.web }),
     ...(input.agents === undefined ? {} : { agents: input.agents }),

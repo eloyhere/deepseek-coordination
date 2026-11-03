@@ -150,7 +150,7 @@ function fixtureConfig(options: FixtureOptions): CoordinationConfig {
     },
     chain: { depth: 8, links: 50, tokenBudget: 1500 },
     tools: { maxResultBytes: 0 },
-    ui: { toolbar: true, showTooltip: true, takeover: false, refreshInterval: 5000, compact: true, locale: 'auto' },
+    ui: { toolbar: true, showTooltip: true, takeover: false, takeoverFiles: false, refreshInterval: 5000, compact: true, locale: 'auto' },
     scenes: { ...SceneProfiles },
     defaults: {
       profession: 'execution',

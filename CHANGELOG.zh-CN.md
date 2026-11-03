@@ -71,6 +71,36 @@
 
 ## [未发布]
 
+0.22.4 之后合入、尚未发版的工作（源码审计 2026-11-03）。
+
+### 新增
+
+- **持久使命、目标、计划与协作职责。** `coordination_mission` 按优先级再 FIFO 排队并激活一个使命；`coordination_goal` 走 proposed → committed → active → achieved/abandoned；`coordination_plan` 在前置任务完成前拒绝开始任务、在全部任务完成前拒绝完成计划；`coordination_collaboration` 支持分配/接受/开始/提交/验证/驳回/取消职责。投影由 `/amp/planning`、`/amp/missions`、`/amp/goals`、`/amp/plans`、`/amp/collaboration` 提供。
+- **Schema 27/28。** 27 保存持久规划投影，28 保存职责与交接；变更与 AMP 事件同事务提交。
+- **AMP 0.5.0 作用域控制与知识标记。** `coordination_control` 读写注册表元数据与 interaction/scenario 设置，支持继承、删除墓碑、CAS `expectedVersion`、`dryRun`；`coordination_knowledge` 标记工作区文件为知识。
+- **模型可调用通知。** `coordination_notification` 在 Web GUI 弹出一条 `snackbar`/`alert`/`dialog`/`popover` 通知；单向投递，队列有界（每会话 20 条、5 分钟 TTL、4,000 字符正文上限）。
+- **模型可调用同意对话框。** `coordination_approve` 阻塞等待人工批准/拒绝；超时、撤回、中止或卸载只会结算为 `expired`/`cancelled`，绝不视为同意。
+- **内部 Elasticsearch 搜索。** `coordination_search` 用 `simple_query_string` 查询运维配置的集群；连接信息只来自 `COORDINATION_ES_*` 环境变量，客户端惰性导入，结果有界。
+- **`coordination_environment` 不再是空表。** 首次 list 会播种 `env.local`（项目根、git/node/npm/pnpm/python/java/pwsh 路径与 path/pathext 等变量）；`refresh` 重新发现并合并且不覆盖手工编辑。
+- **AMP 0.6.0 与 handle 读取。** `coordination_read` 接受节点 handle，经 `outlineAddress` 去掉 BOM 前缀并拒绝反向/越界区间；`coordination_describe` 在注册表丢失 handle 时回退持久化图。
+- **空关系自解释。** `coordination_chain` 在节点已索引但关系无边时返回 `diagnostic: { code: "no_links", hint }`。
+- **面板导航与洞察路由。** dock 挂载十五个页签；`/amp/scope` 与 `/amp/insights` 返回有界快照。
+
+### 变更
+
+- 设置页改为可搜索工作区；dock 恢复导航页签；四条人工命令改名并本地化；`coordination_file` 增加 `mode:"paths"`；`coordination_search` 按需注册。
+- **输出瘦身。** `coordination_parse` 默认紧凑卡片（`verbosity:"full"` 恢复完整 NodeCard）；`coordination_describe` 只返回一张卡；`coordination_selection` 默认 `view:"summary"`。
+- **`tookMs`。** 每个工具结果带可选 `tookMs`。
+- **AMP 块减半并可测。** 上限 4,000 字符、更紧的裁剪与条数、内容稳定排序、`order: 900`，并以持久 `stateCard` 收尾；`GET /amp/state-card` 暴露同一对象，`?compaction=1` 返回压缩前快照。
+- **目录瘦身。** artifact wire schema、reference 枚举去重、描述压缩、精简 wire schema（`COORDINATION_SCHEMA_DETAIL=full` 恢复）；`GET /context/metrics` 报告逐工具字符/token、分段哈希、缓存比率与 `profile`。目录 27,076 → 12,283 字符（≈6,769 → ≈3,071 tokens）；`COORDINATION_TOOL_PROFILE=core` 的读/规划面约 1,497 tokens。
+- **结构化截断。** 大纲/导入/导出工具在布尔 `truncated` 外返回 `truncation: { returned, total, truncated, next? }`。
+- **自动压缩快照。** `maybeCompact` 在重写历史前捕获状态卡并随 `compaction/auto` 事件发出。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（1,159 tests，1,158 pass，1 skipped）、`npm run build`、`npm run pack:check`（15 个必需运行时文件齐全）。
+- 通知队列、同意窗口、搜索投影、环境播种、handle 读取、chain 诊断、截断信封、状态卡与压缩快照均有专项测试覆盖。
+
 ## [0.22.4] — 2026-10-29
 
 ### 变更

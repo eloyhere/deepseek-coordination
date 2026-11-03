@@ -14,7 +14,7 @@
  * | Source (parser output) | Edge |
  * |---|---|
  * | file references (`import`/`require`/`export-from`/CSS/HTML/Markdown/TeX input) resolved lexically | `depends` (the projection of `imports`, §3) |
- * | heading levels (Markdown/HTML) | `contains` parent→child, `part_of` child→parent |
+ * | heading levels (Markdown/HTML), explicit domain parent locators, strict structural code spans | `contains` parent→child, `part_of` child→parent |
  * | every parsed node under its file node | `contains` file→node, `part_of` node→file |
  * | TeX `\begin{proof}` + explicit `\ref` target | `proves` |
  * | Markdown fenced div `::: require` / `::: meet` | `requires` (file→condition), `meets` (condition→file) |
@@ -46,8 +46,8 @@
  * optional persistence sink.
  *
  * Graphs are `DirectedGraph<string>` (shared) per relation, so cycle detection
- * and traversal use the frozen library. Complexity: `index` O(nodes + edges) for
- * one file; a query is O(V + E) bounded by depth/links/tokens; a cache hit is
+ * and traversal use the frozen library. Lexical parent inference compares the
+ * file's bounded metadata spans; a query is O(V + E) bounded by depth/links/tokens; a cache hit is
  * O(1). Node and edge totals are fail-closed at 50,000/200,000 (domain §7).
  */
 import { DirectedGraph } from '../shared/graph.js'
@@ -55,8 +55,8 @@ import { LruList } from '../shared/lru.js'
 import { InvalidArgumentError, NotFoundError } from '../shared/error.js'
 import { estimateTokens } from './token.js'
 import { resolveSpecifier } from './text/dependency.js'
-import { fileHandleFor, nodeHandleFor, nodeKeyOf } from './node-registry.js'
-import type { ParsedFile } from './parse-service.js'
+import { fileHandleFor, nodeHandleFor, nodeKeyOf } from './nodeRegistry.js'
+import type { ParsedFile } from './parseService.js'
 
 /* ------------------------------------------------------------------------- *
  * Budgets and vocabulary
@@ -102,6 +102,11 @@ const FILE_NODE_KINDS: ReadonlySet<string> = new Set(['module', 'document', 'boo
  * parsed file (or claim the directory exists on disk).
  */
 const DIRECTORY_NODE_KIND = 'directory'
+
+/** Parser kinds that can be proven lexical containers from strict source spans. */
+const STRUCTURAL_PARENT_KINDS: ReadonlySet<string> = new Set([
+  'class', 'function', 'method', 'interface', 'namespace', 'type', 'enumeration', 'property',
+])
 
 /**
  * Canonical chain relations. `depends_on` is an input alias for `depends`
@@ -621,12 +626,26 @@ export class ChainEngine {
     this.adoptStubEdges(path, fileHandle)
 
     // Locator → handle, for relations the parser states by natural key
-    // (TeX `domain.appliesTo`) instead of by name/label.
+    // (`domain.partOf`/`domain.appliesTo`) instead of by name/label. Duplicate
+    // locators are ambiguous and deliberately do not resolve to an arbitrary node.
     const locatorHandles = new Map<string, string>()
+    const ambiguousLocators = new Set<string>()
+    const indexedNodes: Array<{ metadata: ParsedFile['nodes'][number]; handle: string }> = []
     for (const metadata of parsed.nodes) {
       const key = nodeKeyOf(metadata)
       const handle = nodeHandleFor(path, metadata.kind, key)
-      if (metadata.locator !== undefined) locatorHandles.set(metadata.locator, handle)
+      const locators = new Set([metadata.locator, metadata.domain?.locator])
+      for (const locator of locators) {
+        if (locator === undefined || ambiguousLocators.has(locator)) continue
+        const existing = locatorHandles.get(locator)
+        if (existing !== undefined && existing !== handle) {
+          locatorHandles.delete(locator)
+          ambiguousLocators.add(locator)
+        } else {
+          locatorHandles.set(locator, handle)
+        }
+      }
+      indexedNodes.push({ metadata, handle })
       this.upsertNode({
         handle,
         kind: metadata.kind,
@@ -639,6 +658,52 @@ export class ChainEngine {
         origin: 'parser',
       })
       this.linkContainment(fileHandle, handle)
+    }
+
+    // Parser-declared parent locators are exact evidence (notably TeX sectioning).
+    // Resolve only unique locators from this parse/file; never create a parent
+    // from a kind or title match.
+    const explicitlyParented = new Set<string>()
+    for (const { metadata, handle } of indexedNodes) {
+      const parentLocator = metadata.domain?.partOf
+      if (parentLocator === undefined) continue
+      explicitlyParented.add(handle)
+      const parentHandle = locatorHandles.get(parentLocator)
+      if (parentHandle === undefined || parentHandle === handle) continue
+      if (!this.canLinkContainment(parentHandle, handle)) continue
+      this.linkContainment(parentHandle, handle)
+    }
+
+    // Code outline fallback: a structural node may own another node only when
+    // its parser span strictly encloses the child's span in this same parsed
+    // file. Choose a unique smallest enclosing structural span; equal-sized
+    // candidates are ambiguous, and explicit parser parent locators take priority.
+    if (parsed.parserId === 'javascript' || parsed.parserId === 'python' || parsed.parserId === 'java') {
+      for (const child of indexedNodes) {
+        if (explicitlyParented.has(child.handle) || child.metadata.path !== path) continue
+        const childSpan = child.metadata.span
+        if (!Number.isFinite(childSpan.start) || !Number.isFinite(childSpan.end) || childSpan.end <= childSpan.start) continue
+        const candidates = indexedNodes.filter(({ metadata, handle }) => {
+          if (handle === child.handle || metadata.path !== path || !STRUCTURAL_PARENT_KINDS.has(metadata.kind)) return false
+          return Number.isFinite(metadata.span.start) && Number.isFinite(metadata.span.end) &&
+            metadata.span.start < childSpan.start && metadata.span.end > childSpan.end
+        })
+        if (candidates.length === 0) continue
+        candidates.sort((left, right) => {
+          const leftWidth = left.metadata.span.end - left.metadata.span.start
+          const rightWidth = right.metadata.span.end - right.metadata.span.start
+          return leftWidth - rightWidth
+        })
+        const nearest = candidates[0]
+        const second = candidates[1]
+        if (nearest === undefined) continue
+        if (second !== undefined &&
+          second.metadata.span.end - second.metadata.span.start === nearest.metadata.span.end - nearest.metadata.span.start) continue
+        // Crossing spans do not prove which lexical scope owns the child.
+        if (candidates.some(({ metadata }) =>
+          metadata.span.start > nearest.metadata.span.start || metadata.span.end < nearest.metadata.span.end)) continue
+        if (this.canLinkContainment(nearest.handle, child.handle)) this.linkContainment(nearest.handle, child.handle)
+      }
     }
 
     // Heading hierarchy from explicit levels (Markdown `#`, HTML `<h1>`–`<h6>`).
@@ -1301,6 +1366,11 @@ export class ChainEngine {
       version: 'unknown',
       origin: 'stub',
     })
+  }
+
+  /** Refuse self-links and hierarchy links that would close a `part_of` cycle. */
+  private canLinkContainment(parent: string, child: string): boolean {
+    return parent !== child && !this.graph('part_of').reachable(parent).includes(child)
   }
 
   /**

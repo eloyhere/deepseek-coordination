@@ -21,9 +21,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { CoordinationDatabase, SCHEMA_VERSION } from '../src/host/database.js'
-import { fileHandleFor, NodeRegistry } from '../src/host/node-registry.js'
-import type { DescribeResult, NodeCard } from '../src/host/node-registry.js'
-import { GraphStore, projectHandleFor } from '../src/host/graph-store.js'
+import { fileHandleFor, NodeRegistry } from '../src/host/nodeRegistry.js'
+import type { DescribeResult, NodeCard } from '../src/host/nodeRegistry.js'
+import { GraphStore, projectHandleFor } from '../src/host/graphStore.js'
 import type { ChainProjection } from '../src/host/chain.js'
 import { registerCoordinationTools } from '../src/host/tools.js'
 import type {
@@ -32,7 +32,7 @@ import type {
   CoordinationToolService,
   ParseToolValue,
 } from '../src/host/tools.js'
-import type { ParsedFile } from '../src/host/parse-service.js'
+import type { ParsedFile } from '../src/host/parseService.js'
 import type { NodeMetadata } from '../src/host/text/parser.js'
 import { testConfig } from './helpers.js'
 
@@ -148,7 +148,7 @@ function syntheticParse(domain: NodeMetadata['domain'], path = 'docs/spec.md'): 
  * Schema migration
  * ------------------------------------------------------------------------- */
 
-test('schema 26 adds the graph and AMP tables to a schema-23 database without losing rows', () => {
+test('current schema adds the graph and AMP tables to a schema-23 database without losing rows', () => {
   const workspace = new TempWorkspace()
   const path = join(workspace.root, 'legacy.db')
   try {
@@ -177,8 +177,8 @@ test('schema 26 adds the graph and AMP tables to a schema-23 database without lo
 
     const db = new CoordinationDatabase(path)
     try {
-      assert.equal(SCHEMA_VERSION, 26)
-      assert.equal(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version, 26)
+      assert.ok(SCHEMA_VERSION >= 26)
+      assert.equal(db.get<{ user_version: number }>('PRAGMA user_version')?.user_version, SCHEMA_VERSION)
       assert.equal(db.count('session'), 1)
       assert.equal(
         db.get<{ principal: string }>("SELECT principal FROM session WHERE handle = 'legacy-session'")?.principal,
@@ -187,7 +187,7 @@ test('schema 26 adds the graph and AMP tables to a schema-23 database without lo
       const tables = new Set(
         db.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name),
       )
-      for (const table of ['node', 'edge', 'snapshot', 'amp_object', 'amp_key', 'amp_manifest', 'amp_checkpoint']) {
+      for (const table of ['node', 'edge', 'snapshot', 'amp_object', 'amp_key', 'amp_manifest', 'amp_checkpoint', 'amp_planning_goal', 'amp_planning_plan', 'amp_mission']) {
         assert.ok(tables.has(table), `${table} table is missing`)
       }
       const indexes = new Set(
@@ -227,8 +227,8 @@ test('handles and chain edges survive closing the database and building a new ru
     let bHandle = ''
     let aFingerprint = ''
     try {
-      const parsedA = (await first.get('coordination_parse').execute({ path: 'src/a.ts' })) as ParseToolValue
-      const parsedB = (await first.get('coordination_parse').execute({ path: 'src/b.ts' })) as ParseToolValue
+      const parsedA = (await first.get('coordination_parse').execute({ path: 'src/a.ts', verbosity: 'full' })) as ParseToolValue
+      const parsedB = (await first.get('coordination_parse').execute({ path: 'src/b.ts', verbosity: 'full' })) as ParseToolValue
       aHandle = parsedA.cards[0]?.identity as string
       bHandle = parsedB.cards[0]?.identity as string
       aFingerprint = parsedA.cards[0]?.fingerprint as string
@@ -280,8 +280,8 @@ test('handles and chain edges survive closing the database and building a new ru
       })) as DescribeResult
       assert.equal(described.card.identity, aHandle)
       assert.equal(described.card.kind, 'module')
-      assert.equal(described.fields.path, 'src/a.ts')
-      assert.equal(described.fields.fingerprint, aFingerprint)
+      assert.equal(described.card.path, 'src/a.ts')
+      assert.equal(described.card.fingerprint, aFingerprint)
       assert.equal(described.status, 'parsed')
       assert.ok(Array.isArray(described.unverifiable))
       assert.ok(!('content' in described))
@@ -322,7 +322,7 @@ test('re-parsing refreshes the persisted card instead of duplicating the handle'
     const registry = new MemoryRegistry()
     const dispose = registerCoordinationTools(registry, service, 'en-US')
     try {
-      const first = (await registry.get('coordination_parse').execute({ path: 'src/retune.ts' })) as ParseToolValue
+      const first = (await registry.get('coordination_parse').execute({ path: 'src/retune.ts', verbosity: 'full' })) as ParseToolValue
       const handle = first.cards[0]?.identity as string
       const nodes = db.count('node')
       const edges = db.count('edge')
@@ -330,7 +330,7 @@ test('re-parsing refreshes the persisted card instead of duplicating the handle'
 
       // Grow the file: the same deterministic handle must be updated in place.
       workspace.write('src/retune.ts', 'export const one = 1\nexport const two = 2\n')
-      const second = (await registry.get('coordination_parse').execute({ path: 'src/retune.ts' })) as ParseToolValue
+      const second = (await registry.get('coordination_parse').execute({ path: 'src/retune.ts', verbosity: 'full' })) as ParseToolValue
       assert.equal(second.cards[0]?.identity, handle)
       assert.notEqual(second.cards[0]?.fingerprint, first.cards[0]?.fingerprint)
       assert.equal(db.count('snapshot'), snapshots)

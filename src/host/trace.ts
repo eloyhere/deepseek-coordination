@@ -7,10 +7,10 @@
  */
 import { createHash } from "node:crypto";
 import type { OrchestrationTrace } from "../shared/entity.js";
-import type { TraceInput, TraceVerification, TraceWriter } from "./trace-port.js";
+import type { TraceInput, TraceVerification, TraceWriter } from "./tracePort.js";
 import type { Clock } from "./handle.js";
 import type { HandleGenerator } from "./handle.js";
-import type { TraceStore } from "./trace-store.js";
+import type { TraceStore } from "./traceStore.js";
 
 export class TraceModule implements TraceWriter {
   private readonly store: TraceStore;

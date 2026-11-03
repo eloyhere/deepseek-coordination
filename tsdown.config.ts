@@ -27,6 +27,12 @@ export default defineConfig([
       neverBundle: (id) =>
         id === '@deepseek-ai/cordis' ||
         id === '@deepseek-ai/dsh-host-webserver' ||
+        id === 'attention-manifest-protocol' ||
+        id.startsWith('attention-manifest-protocol/') ||
+        // The Elasticsearch client comes from attention-manifest-protocol's
+        // dependency tree; keep it external so the lazy import resolves at
+        // runtime instead of inlining transport/undici into the host bundle.
+        id.startsWith('@elastic/') ||
         id.startsWith('@deepseek-ai/dsh-'),
       // Office parsing is pure host code and must work from the packaged bundle
       // (lib/index.mjs) without a runtime node_modules lookup.
@@ -49,9 +55,9 @@ export default defineConfig([
       // registered package ids; a `node:*` require there aborts the whole web
       // boot ("import failed: client-modules: require(\"node:process\")").
       // These shims keep the tiny surface vfile uses inside the bundle.
-      'node:path': fileURLToPath(new URL('./src/client/shims/node-path.ts', import.meta.url)),
-      'node:process': fileURLToPath(new URL('./src/client/shims/node-process.ts', import.meta.url)),
-      'node:url': fileURLToPath(new URL('./src/client/shims/node-url.ts', import.meta.url)),
+      'node:path': fileURLToPath(new URL('./src/client/shims/nodePath.ts', import.meta.url)),
+      'node:process': fileURLToPath(new URL('./src/client/shims/nodeProcess.ts', import.meta.url)),
+      'node:url': fileURLToPath(new URL('./src/client/shims/nodeUrl.ts', import.meta.url)),
     },
     define: {
       // MUI and emotion read process.env.NODE_ENV. The browser has no `process`,

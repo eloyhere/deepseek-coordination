@@ -11,9 +11,9 @@ import { resolveConfig } from "../src/host/config.js";
 import { HandleGenerator, SystemClock } from "../src/host/handle.js";
 import { TraceModule } from "../src/host/trace.js";
 import { CoordinationEventBus, createModuleHost } from "../src/host/module.js";
-import { SqliteExecutionStore } from "../src/host/adapters/sqlite/execution-store.js";
-import { SqliteTraceStore } from "../src/host/adapters/sqlite/trace-store.js";
-import { SqliteTurnStore } from "../src/host/adapters/sqlite/turn-store.js";
+import { SqliteExecutionStore } from "../src/host/adapters/sqlite/executionStore.js";
+import { SqliteTraceStore } from "../src/host/adapters/sqlite/traceStore.js";
+import { SqliteTurnStore } from "../src/host/adapters/sqlite/turnStore.js";
 import type {
   ModuleHost,
   TraceInput,

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { SqliteExecutionStore } from "../src/host/adapters/sqlite/execution-store.js";
+import { SqliteExecutionStore } from "../src/host/adapters/sqlite/executionStore.js";
 import { resolveConfig } from "../src/host/config.js";
 import { CoordinationDatabase } from "../src/host/database.js";
 import { SystemClock } from "../src/host/handle.js";

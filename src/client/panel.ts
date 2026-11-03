@@ -191,6 +191,8 @@ import ListItemIcon from '@mui/material/ListItemIcon'
 import ListItemText from '@mui/material/ListItemText'
 import Tabs from '@mui/material/Tabs'
 import Tab from '@mui/material/Tab'
+import Select from '@mui/material/Select'
+import Switch from '@mui/material/Switch'
 import Table from '@mui/material/Table'
 import TableBody from '@mui/material/TableBody'
 import TableCell from '@mui/material/TableCell'
@@ -224,15 +226,36 @@ import RestartAltIcon from '@mui/icons-material/RestartAlt'
 import PeopleIcon from '@mui/icons-material/People'
 import ArrowBackIcon from '@mui/icons-material/ArrowBack'
 import OpenInFullIcon from '@mui/icons-material/OpenInFull'
+import FolderOpenIcon from '@mui/icons-material/FolderOpen'
+import GroupWorkIcon from '@mui/icons-material/GroupWork'
+import PsychologyIcon from '@mui/icons-material/Psychology'
+import ExtensionIcon from '@mui/icons-material/Extension'
+import SchoolIcon from '@mui/icons-material/School'
+import TipsAndUpdatesIcon from '@mui/icons-material/TipsAndUpdates'
+import Inventory2Icon from '@mui/icons-material/Inventory2'
+import FlagIcon from '@mui/icons-material/Flag'
+import TrackChangesIcon from '@mui/icons-material/TrackChanges'
+import ChecklistIcon from '@mui/icons-material/Checklist'
+import AssignmentIndIcon from '@mui/icons-material/AssignmentInd'
+import { COLLABORATION_COPY, parseCollaboration } from './ampCollaboration.js'
+import type { CollaborationCopy, CollaborationView } from './ampCollaboration.js'
 import { alpha, ThemeProvider, useTheme } from '@mui/material/styles'
 import type { Theme } from '@mui/material/styles'
-import type { PrismTheme, RenderProps } from 'prism-react-renderer'
 import { theme } from './theme.js'
-import { useCopy } from './i18n.js'
-import { fetchGraph, indexGraph, loadSelection, rebuildGraph } from './bridge.js'
-import { PANEL_FAMILIES, PANEL_VIEW_IDS, fillTemplate } from '../shared/i18n.js'
-import type { PanelAmpCopy, PanelCopy, PanelFamily, PanelView } from '../shared/i18n.js'
+import { currentLocale, useCopy } from './i18n.js'
+import { AMP_PLANNING_COPY, parseAmpPlanning } from './ampPlanning.js'
+import type { AmpPlanningView, AmpPlanningCopy } from './ampPlanning.js'
+import {
+  fetchControlRegistry, fetchGraph, fetchKnowledge, fetchControlSetting, indexGraph, loadSelection,
+  resetControlSetting, rebuildGraph, toggleControlRecord, writeKnowledge,
+  type ControlRegistryRow, type ControlSettingRow, type KnowledgeRow,
+} from './bridge.js'
 import type { SelectionState } from '../shared/selection.js'
+import { PANEL_FAMILIES, PANEL_TAB_IDS, PANEL_VIEW_IDS, fillTemplate } from '../shared/i18n.js'
+import type { PanelAmpCopy, PanelCopy, PanelFamily, PanelView } from '../shared/i18n.js'
+import { CONTROL_REGISTRIES, isControlRegistry } from '../shared/control.js'
+import type { ControlRegistry, ControlScope } from '../shared/control.js'
+import type { AmpInsightsView, InsightItem } from '../shared/ampInsights.js'
 
 /* MUI's generics describe every overload; this module passes one narrow shape. */
 type Loose = React.ComponentType<Record<string, unknown>>
@@ -241,6 +264,8 @@ const MuiTextField = TextField as unknown as Loose
 const MuiAutocomplete = Autocomplete as unknown as Loose
 const MuiMenu = Menu as unknown as Loose
 const MuiMenuItem = MenuItem as unknown as Loose
+const MuiSelect = Select as unknown as Loose
+const MuiSwitch = Switch as unknown as Loose
 const MuiCard = Card as unknown as Loose
 const MuiCardContent = CardContent as unknown as Loose
 const MuiBottomNavigation = BottomNavigation as unknown as Loose
@@ -304,6 +329,12 @@ const IconResetLayout = RestartAltIcon as unknown as Loose
 const IconAgents = PeopleIcon as unknown as Loose
 const IconBack = ArrowBackIcon as unknown as Loose
 const IconRestore = OpenInFullIcon as unknown as Loose
+const IconProject = FolderOpenIcon as unknown as Loose
+const IconCognition = PsychologyIcon as unknown as Loose
+const IconCapability = ExtensionIcon as unknown as Loose
+const IconSkill = TipsAndUpdatesIcon as unknown as Loose
+const IconKnowledge = SchoolIcon as unknown as Loose
+const IconRegistry = Inventory2Icon as unknown as Loose
 
 const h = React.createElement
 
@@ -470,10 +501,8 @@ export class PanelErrorBoundary extends React.Component<
  * search, never a tab, so `#coordination/panel/right/preview?path=…` deep-links
  * without adding a sixth tab.
  */
-export const RIGHT_PANEL_TABS: readonly PanelView[] = [
-  'amp',
-]
-export const RIGHT_PANEL_ROUTES: readonly PanelView[] = ['amp']
+export const RIGHT_PANEL_TABS: readonly PanelView[] = PANEL_TAB_IDS
+export const RIGHT_PANEL_ROUTES: readonly PanelView[] = PANEL_VIEW_IDS
 
 /** Cycle paths rendered in a warning block before the overflow line. */
 const MAX_CYCLE_LINES = 5
@@ -496,56 +525,43 @@ export const PANEL_RESIZE_TRANSITION = theme.transitions.create(
   { duration: PANEL_TOGGLE_MS, easing: PANEL_EASING },
 )
 
-/** Client-side cap for the syntax-highlighted code preview. */
-const MAX_CODE_LINES = 2000
-const MAX_CODE_BYTES = 64 * 1024
-
-/** File extension → Prism language; unknown extensions render as `plain`. */
-const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
-  ts: 'tsx',
-  tsx: 'tsx',
-  js: 'jsx',
-  jsx: 'jsx',
-  java: 'java',
-  py: 'python',
-  rs: 'rust',
-  php: 'php',
-  c: 'c',
-  h: 'c',
-  cpp: 'cpp',
-  hpp: 'cpp',
-  cc: 'cpp',
-  json: 'json',
-  yaml: 'yaml',
-  yml: 'yaml',
-  toml: 'toml',
-  md: 'markdown',
-}
-
 const TAB_ICONS: Readonly<Record<PanelView, Loose>> = {
-  files: IconArticle,
+  files: IconProject,
+  amp: GroupWorkIcon as unknown as Loose,
+  missions: FlagIcon as unknown as Loose,
+  goals: TrackChangesIcon as unknown as Loose,
+  plans: ChecklistIcon as unknown as Loose,
+  collaboration: AssignmentIndIcon as unknown as Loose,
   outline: IconOutline,
-  dependencies: IconDependencies,
   imports: IconImports,
-  preview: IconPreview,
   exports: IconExports,
+  dependencies: IconDependencies,
+  project: IconArticle,
+  cognition: PsychologyIcon as unknown as Loose,
+  capabilities: ExtensionIcon as unknown as Loose,
+  skills: TipsAndUpdatesIcon as unknown as Loose,
+  knowledge: SchoolIcon as unknown as Loose,
+  preview: IconPreview,
+  'insight-detail': Inventory2Icon as unknown as Loose,
   agents: IconAgents,
   agent: IconAgents,
-  amp: IconArticle,
 }
 
 function tabLabel(view: PanelView, copy: PanelCopy): string {
-  if (view === 'amp') return copy.amp.title
-  if (view === 'preview') return copy.preview
-  if (view === 'exports') return copy.exports
   if (view === 'agents' || view === 'agent') return copy.agents
-  return copy.tabs[view]
+  if (view === 'preview' || view === 'insight-detail') return copy.preview
+  return copy.tabs[view as keyof PanelCopy['tabs']]
 }
 
 function tabTip(view: PanelView, copy: PanelCopy): string {
   switch (view) {
     case 'amp':
       return copy.amp.subtitle
+    case 'missions':
+    case 'goals':
+    case 'plans':
+    case 'collaboration':
+      return copy.tabs[view]
     case 'files':
       return copy.tip.tabFiles
     case 'outline':
@@ -555,10 +571,19 @@ function tabTip(view: PanelView, copy: PanelCopy): string {
     case 'imports':
       return copy.tip.tabImportsGraph
     case 'preview':
+    case 'insight-detail':
       return copy.tip.tabPreview
     case 'exports':
       return copy.tip.tabExportsGraph
-    default:
+    case 'project':
+      return copy.project
+    case 'cognition':
+    case 'capabilities':
+    case 'skills':
+    case 'knowledge':
+      return copy.insights[view]
+    case 'agents':
+    case 'agent':
       return copy.tip.tabAgents
   }
 }
@@ -883,20 +908,21 @@ export const CARD_CONTENT_SX = {
   '&:last-child': { paddingBottom: 1.5 },
 }
 
-/** Bottom navigation: a fixed 56 px strip that never overlaps the scroller. */
+/** Fixed bottom navigation with MUI's scroll buttons for the eleven destinations. */
 export const NAV_SX = {
   flex: 'none',
-  height: NAV_HEIGHT,
   minHeight: NAV_HEIGHT,
   maxHeight: NAV_HEIGHT,
   overflow: 'hidden',
   borderTop: '1px solid',
   borderColor: 'divider',
-  '& .MuiBottomNavigationAction-root': { flex: 1, minWidth: 0, maxWidth: 'none', padding: '5px 0 3px' },
-  '& .MuiBottomNavigationAction-label': { fontSize: '1rem', whiteSpace: 'nowrap' },
+  '& .MuiTabs-scroller': { overflowX: 'auto !important' },
+  '& .MuiTabs-flexContainer': { minWidth: 'max-content' },
+  '& .MuiTab-root': { minWidth: 72, maxWidth: 112, minHeight: NAV_HEIGHT, padding: '5px 8px', gap: 0.25 },
+  '& .MuiTab-icon': { marginBottom: '2px' },
 }
 
-const NAV_ACTION_SX = { minWidth: 0 }
+const NAV_ACTION_SX = { minWidth: 72, maxWidth: 112 }
 
 const STATE_BOX_SX = {
   display: 'flex',
@@ -987,7 +1013,15 @@ export const PANEL_ROW_SX = {
     minWidth: 0,
     overflow: 'hidden',
   },
-  '& .MuiListItemText-primary': { lineHeight: 1.3 },
+  '& .MuiListItemText-primary': {
+    lineHeight: 1.3,
+    // Belt and braces: even if a caller passes custom slot props, a fixed-height
+    // row must never wrap its title into the next row.
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    minWidth: 0,
+  },
   '& .MuiListItemText-secondary': {
     lineHeight: 1.3,
     minWidth: 0,
@@ -1038,6 +1072,28 @@ export const PANEL_ROW_SECONDARY_PROPS = {
   variant: 'caption',
   noWrap: true,
   color: 'text.secondary',
+}
+
+/**
+ * `ListItemText` typography slots, in the shape MUI 9 accepts.
+ *
+ * MUI 9 replaced `primaryTypographyProps`/`secondaryTypographyProps` with
+ * `slotProps.primary`/`slotProps.secondary`. The old props are *silently
+ * ignored*, so a row kept rendering default `body1` text that wrapped inside
+ * the fixed 48 px row and was clipped — long outline headings showed only their
+ * first line. Every row builds its slots through this helper so the two lines
+ * stay `body2`/`caption` and single-line.
+ */
+function listTextProps(
+  primary: Record<string, unknown> = PANEL_ROW_PRIMARY_PROPS,
+  secondary?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    slotProps: {
+      primary,
+      ...(secondary === undefined ? {} : { secondary }),
+    },
+  }
 }
 
 /** Relative shell that owns the absolutely positioned trailing action. */
@@ -1181,10 +1237,10 @@ function virtualSpacer(height: number, key: string): React.ReactElement | null {
  * VirtualList / VirtualTree + adapters
  *
  * Both primitives are data-shape agnostic: a view supplies a small adapter
- * (count/key/read access, or roots/key/children) plus an item slot. Only the
- * rows inside the panel viewport are mounted. A tree slot receives the row's
- * depth and the adapter's node value; a flat list slot receives the row index
- * and the value. Leading/trailing spacers keep the scroll height exact.
+ * (count/key/read access, or roots/key/children) whose render method owns row
+ * content. Only rows inside the panel viewport are mounted. Tree renderers
+ * receive depth, row index and node value; flat list renderers receive index
+ * and value. Leading/trailing spacers keep the scroll height exact.
  * ------------------------------------------------------------------------- */
 
 /** One tree node handed to {@link VirtualTree}; `value` is the caller's item. */
@@ -1200,6 +1256,7 @@ export interface VirtualListAdapter<T> {
   readonly size: number
   key(index: number): string
   at(index: number): T
+  render(index: number, value: T): React.ReactNode
 }
 
 /** Adapter for {@link VirtualTree}: roots plus the node key/children accessors. */
@@ -1208,6 +1265,7 @@ export interface VirtualTreeAdapter<T> {
   key(value: T): string
   /** Always returns an array, so a leaf is simply empty. */
   children(value: T): readonly T[]
+  render(depth: number, index: number, value: T): React.ReactNode
 }
 
 /** One flattened, currently visible tree row. `index` is its array position. */
@@ -1221,11 +1279,13 @@ export interface VirtualTreeRow<T> {
 export function createVirtualListAdapter<T>(
   items: readonly T[],
   key?: (value: T, index: number) => string,
+  render?: (index: number, value: T) => React.ReactNode,
 ): VirtualListAdapter<T> {
   return {
     size: items.length,
     key: (index) => key?.(items[index] as T, index) ?? String(index),
     at: (index) => items[index] as T,
+    render: render ?? ((_index, value) => renderAdapterValue(value)),
   }
 }
 
@@ -1234,19 +1294,30 @@ export function createVirtualTreeAdapter<T>(
   roots: readonly T[],
   key: (value: T) => string,
   children?: (value: T) => readonly T[],
+  render?: (depth: number, index: number, value: T) => React.ReactNode,
 ): VirtualTreeAdapter<T> {
-  return { roots, key, children: children ?? (() => []) }
+  return { roots, key, children: children ?? (() => []), render: render ?? ((_depth, _index, value) => renderAdapterValue(value)) }
 }
 
 /** Adapter for the `{ key, value, children }` tree shape used by views. */
 export function entryTreeAdapter<T>(
   entries: readonly VirtualTreeEntry<T>[],
+  render?: (depth: number, index: number, value: VirtualTreeEntry<T>) => React.ReactNode,
 ): VirtualTreeAdapter<VirtualTreeEntry<T>> {
   return {
     roots: entries,
     key: (entry) => entry.key,
     children: (entry) => entry.children ?? [],
+    render: render ?? ((_depth, _index, entry) => renderAdapterValue(entry.value)),
   }
+}
+
+function renderAdapterValue(value: unknown): React.ReactNode {
+  if (value === null || typeof value === 'string' || typeof value === 'number') return value
+  if (typeof value === 'boolean' || value === undefined) return null
+  if (Array.isArray(value)) return value.map(renderAdapterValue)
+  if (React.isValidElement(value)) return value
+  return null
 }
 
 /**
@@ -1281,8 +1352,6 @@ export interface VirtualTreeProps<T> {
   collapsed: ReadonlySet<string>
   /** Toggle one branch; `key` comes from `adapter.key(value)`. */
   onToggle: (key: string) => void
-  /** Row slot: (depth, flattened row index, adapter value). */
-  slot: (depth: number, index: number, value: T) => React.ReactNode
   /** Accessible name for the virtualized tree surface. */
   'aria-label'?: string
 }
@@ -1380,15 +1449,13 @@ function useVariableRange(
 
 export interface VirtualListProps<T> {
   adapter: VirtualListAdapter<T>
-  /** Row slot: (row index, adapter value). */
-  slot: (index: number, value: T) => React.ReactNode
   /** Fixed row height (default 48), or a fixed-slot height per row. */
   rowHeight?: VirtualRowHeight<T>
   /** Accessible name for the virtualized list surface. */
   'aria-label'?: string
 }
 
-/** Virtualized flat list: the slot receives (index, value). */
+/** Virtualized flat list: the adapter renders (index, value). */
 export function VirtualList<T>(props: VirtualListProps<T>): React.ReactElement {
   const containerRef = React.useRef<HTMLElement | null>(null)
   const offset = useVirtualOffset(containerRef)
@@ -1443,7 +1510,7 @@ export function VirtualList<T>(props: VirtualListProps<T>): React.ReactElement {
               overflow: 'hidden',
             },
           },
-          props.slot(index, props.adapter.at(index)),
+          props.adapter.render(index, props.adapter.at(index)),
         )
       }),
     )
@@ -1462,14 +1529,14 @@ export function VirtualList<T>(props: VirtualListProps<T>): React.ReactElement {
       return h(
         MuiBox,
         { key: props.adapter.key(index), sx: VIRTUAL_ROW_SX },
-        props.slot(index, props.adapter.at(index)),
+        props.adapter.render(index, props.adapter.at(index)),
       )
     }),
     virtualSpacer(range.bottomPad, 'virtual-list-bottom'),
   )
 }
 
-/** Virtualized tree: the slot receives (depth, flattened index, value). */
+/** Virtualized tree: the adapter renders (depth, flattened index, value). */
 export function VirtualTree<T>(props: VirtualTreeProps<T>): React.ReactElement {
   // Expansion is controlled by the view; the component only flattens, windows
   // rows and provides keyboard collapse/expand through `onToggle`.
@@ -1518,7 +1585,7 @@ export function VirtualTree<T>(props: VirtualTreeProps<T>): React.ReactElement {
           'data-coordination-tree-key': key,
           sx: VIRTUAL_ROW_SX,
         },
-        props.slot(depth, index, value),
+        props.adapter.render(depth, index, value),
       )
     }),
     virtualSpacer(range.bottomPad, 'virtual-tree-bottom'),
@@ -1598,9 +1665,9 @@ const PREVIEW_PROSE_SX = {
   lineHeight: 1.6,
   overflowWrap: 'anywhere',
   '& p': { margin: '0 0 8px' },
-  '& h1': { fontSize: 18, margin: '8px 0' },
-  '& h2': { fontSize: 16, margin: '8px 0' },
-  '& h3': { fontSize: '1rem', margin: '8px 0' },
+  '& h1': { fontSize: 18, margin: '8px 0', color: 'primary.main' },
+  '& h2': { fontSize: 16, margin: '8px 0', color: 'primary.main' },
+  '& h3': { fontSize: '1rem', margin: '8px 0', color: 'secondary.main' },
   '& h4, & h5, & h6': { fontSize: '1rem', margin: '8px 0' },
   '& ul, & ol': { paddingLeft: 3, margin: '0 0 8px' },
   '& li': { marginBottom: 2 },
@@ -1613,7 +1680,10 @@ const PREVIEW_PROSE_SX = {
     borderColor: 'divider',
     color: 'text.secondary',
   },
-  '& code': { fontFamily: 'monospace', fontSize: 11 },
+  '& code': { fontFamily: 'monospace', fontSize: 'inherit' },
+  '& :not(pre) > code': { color: 'success.main', backgroundColor: 'action.hover', paddingInline: 0.5 },
+  '& strong': { color: 'primary.main' },
+  '& em': { color: 'secondary.main' },
   '& pre': {
     margin: '0 0 8px',
     padding: 1,
@@ -2333,8 +2403,13 @@ function commonPathDepth(paths: readonly string[]): number {
 }
 
 /** Add the selected file to a graph route when one is selected. */
-function withPath(route: string, path: string | null): string {
-  return path === null || path.length === 0 ? route : `${route}?path=${encodeURIComponent(path)}`
+function withPath(route: string, path: string | null, sessionId: string | null): string {
+  const [pathname, query = ''] = route.split('?')
+  const params = new URLSearchParams(query)
+  if (path !== null && path.length > 0) params.set('path', path)
+  if (sessionId !== null && sessionId.length > 0) params.set('session', sessionId)
+  const suffix = params.toString()
+  return suffix.length === 0 ? pathname! : `${pathname}?${suffix}`
 }
 
 /* ------------------------------------------------------------------------- *
@@ -2447,9 +2522,12 @@ function parseTree(value: unknown): TreeData {
 }
 
 interface OutlineNode {
+  handle?: string
+  parent?: string
   name: string
   kind: string
   depth: number
+  line: number
   path: string | null
 }
 
@@ -2458,6 +2536,13 @@ export interface OutlineFileGroup {
   path: string | null
   family: string
   nodes: OutlineNode[]
+  /**
+   * Node count reported by `?paths=1` before the file's nodes are loaded.
+   *
+   * A lazy file row is still a branch when `count > 0`, even though `nodes` is
+   * empty until the row is expanded and its outline is fetched.
+   */
+  count?: number
   /** Outermost manifest scope that claims this file, when the host echoes one. */
   project?: OutlineProject
 }
@@ -2482,6 +2567,8 @@ type Scope = 'file' | 'workspace'
 
 interface OutlineData {
   scope: Scope
+  /** Parser-backed document or source family of a file-scoped outline. */
+  family: string
   /** Workspace root when the host includes it (otherwise fetched separately). */
   root: string
   /** The requested file of a file-scope response. */
@@ -2498,15 +2585,18 @@ function parseOutlineNode(value: unknown): OutlineNode | null {
   const record = asRecord(value)
   if (record === undefined) {
     const name = asString(value)
-    return name === undefined ? null : { name, kind: '', depth: 0, path: null }
+    return name === undefined ? null : { name, kind: '', depth: 0, line: 0, path: null }
   }
   const name = asString(record.name) ?? asString(record.label) ?? asString(record.title)
   if (name === undefined) return null
   const depthValue = finiteNumber(record.depth) ?? finiteNumber(record.level)
   return {
+    ...(asString(record.handle) === undefined ? {} : { handle: asString(record.handle) }),
+    ...(asString(record.parent) === undefined ? {} : { parent: asString(record.parent) }),
     name,
     kind: asString(record.kind) ?? asString(record.type) ?? '',
     depth: depthValue === undefined ? 0 : Math.max(0, Math.floor(depthValue)),
+    line: Math.max(0, Math.floor(finiteNumber(record.line) ?? 0)),
     path: asString(record.path) ?? asString(record.file) ?? null,
   }
 }
@@ -2559,13 +2649,17 @@ function parseOutline(value: unknown): OutlineData {
   const root = asString(record?.root) ?? ''
 
   if (scope === 'workspace') {
+    // `pathsOnly` is the lazy index: every group carries a `count` but no
+    // nodes, and the row stays a branch so expanding it loads one file.
+    const pathsOnly = record?.pathsOnly === true
     const groups: OutlineFileGroup[] = []
     if (Array.isArray(rawGroups)) {
       for (const rawGroup of rawGroups) {
         const groupRecord = asRecord(rawGroup)
         if (groupRecord === undefined) continue
         const nodes = parseOutlineNodes(groupRecord.nodes)
-        if (nodes.length === 0) continue
+        const count = finiteNumber(groupRecord.count)
+        if (nodes.length === 0 && !pathsOnly) continue
         const projectRecord = asRecord(groupRecord.project)
         const projectRoot = projectRecord === undefined
           ? undefined
@@ -2574,6 +2668,7 @@ function parseOutline(value: unknown): OutlineData {
           path: asString(groupRecord.path) ?? asString(groupRecord.file) ?? null,
           family: asString(groupRecord.family) ?? asString(groupRecord.kind) ?? '',
           nodes,
+          ...(count === undefined ? {} : { count: Math.max(0, Math.floor(count)) }),
         }
         if (projectRoot !== undefined && projectRoot.trim().length > 0) {
           group.project = {
@@ -2602,6 +2697,7 @@ function parseOutline(value: unknown): OutlineData {
     }
     return {
       scope,
+      family: '',
       root,
       path: null,
       projects: parseOutlineProjects(record?.projects),
@@ -2624,6 +2720,7 @@ function parseOutline(value: unknown): OutlineData {
   }
   return {
     scope,
+    family: asString(record?.family) ?? '',
     root,
     path: asString(record?.path) ?? null,
     projects: [],
@@ -2848,6 +2945,9 @@ interface PreviewData {
   path: string
   kind: string
   content: string
+  /** Relative, same-origin URL returned for an existing compiled TeX PDF. */
+  url: string | null
+  page: number
   truncated: boolean
   bytes: number | null
   sheets: SheetData[]
@@ -2906,6 +3006,8 @@ function parsePreview(value: unknown): PreviewData {
     path: asString(record?.path) ?? '',
     kind: (asString(record?.kind) ?? 'text').toLowerCase(),
     content: typeof record?.content === 'string' ? record.content : '',
+    url: typeof record?.url === 'string' && record.url.startsWith('/deepseek-coordination/graph/preview/pdf?') ? record.url : null,
+    page: Math.max(1, Math.floor(finiteNumber(record?.page) ?? 1)),
     truncated: record?.truncated === true,
     bytes: finiteNumber(record?.bytes) ?? null,
     sheets: parseSheets(record?.sheets),
@@ -3168,6 +3270,9 @@ export function fileContextMenuItems(
       label: menu.preview,
       disabled: options.directory || !options.canPreview,
     },
+    ...(['outline', 'imports', 'exports', 'dependencies'] as const).map((id) => ({
+      id, label: menu[`${id}File`], disabled: options.directory || !options.canPreview,
+    })),
     { id: 'locate', label: menu.locate, disabled: options.directory },
     { id: 'copyPath', label: menu.copyPath, disabled: options.directory },
   ]
@@ -3181,7 +3286,7 @@ export function fileContextMenuItems(
   return actions
 }
 
-/** Outline menu: 跳转文件 / 预览所在文件 / 复制标题. */
+/** Outline menu: 跳转文件 / 预览所在文件 / 标记为知识 / 复制标题. */
 export function outlineContextMenuItems(
   copy: PanelCopy,
   options: { readonly hasPath: boolean; readonly canPreview: boolean },
@@ -3194,6 +3299,9 @@ export function outlineContextMenuItems(
       label: menu.previewFile,
       disabled: !options.hasPath || !options.canPreview,
     },
+    // The same operation the `coordination_knowledge` tool exposes; the action
+    // is user-initiated because declaring a file as knowledge is a judgement.
+    { id: 'markKnowledge', label: copy.knowledgePanel.mark, disabled: !options.hasPath },
     { id: 'copyTitle', label: menu.copyTitle },
   ]
 }
@@ -3816,6 +3924,160 @@ function AmpRow(props: { label: string; value: React.ReactNode }): React.ReactEl
   )
 }
 
+export type PlanningPage = 'missions' | 'goals' | 'plans'
+
+export function AmpPlanningContent(props: {
+  value: AmpPlanningView
+  copy: AmpPlanningCopy
+  section?: PlanningPage
+  selectedId?: string | null
+  onNavigate?: (page: PlanningPage, id: string) => void
+}): React.ReactElement {
+  const { value, copy } = props
+  const status = (state: string): React.ReactNode => h(MuiChip, {
+    size: 'small', variant: 'outlined', label: copy.statuses[state] ?? (state || '—'),
+  })
+  const empty = (message: string): React.ReactNode => h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, message)
+  const heading = (title: string, count: number): React.ReactNode => h(MuiTypography, {
+    variant: 'subtitle2', component: 'h3', sx: { marginTop: 1, marginBottom: 0.5 },
+  }, `${title} (${count})`)
+  const itemSx = { padding: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1, minWidth: 0 }
+  const textSx = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }
+  const itemTitle = (title: string, state: string): React.ReactNode => h(MuiBox, {
+    sx: { display: 'flex', alignItems: 'flex-start', gap: 1, minWidth: 0 },
+  }, h(MuiTypography, { variant: 'body2', sx: { ...textSx, fontWeight: 600, flex: 1, minWidth: 0 } }, title), status(state))
+  const time = (stamp: number | null): string => {
+    if (stamp === null) return '—'
+    const date = new Date(stamp)
+    return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(currentLocale())
+  }
+  const goalLabel = (id: string): string => {
+    const goal = value.goals.find((entry) => entry.goal.id === id)?.goal
+    return goal?.statement ? `${goal.statement} (${id})` : id || '—'
+  }
+  const related = (page: PlanningPage, id: string, title: string): React.ReactNode => props.onNavigate === undefined
+    ? title
+    : h(MuiButton, { size: 'small', onClick: (): void => props.onNavigate?.(page, id), sx: { textAlign: 'left', justifyContent: 'flex-start', textTransform: 'none' } }, title)
+  const missions = props.section === 'missions' && props.selectedId ? value.missions.filter(item => item.goal === props.selectedId || item.id === props.selectedId) : value.missions
+  const goals = props.section === 'goals' && props.selectedId ? value.goals.filter(item => item.goal.id === props.selectedId) : value.goals
+  const plans = props.section === 'plans' && props.selectedId ? value.plans.filter(item => item.goal.id === props.selectedId || item.id === props.selectedId) : value.plans
+  const hasData = value.missions.length + value.goals.length + value.plans.length > 0
+  if (!hasData && props.section === undefined) return h(React.Fragment, null, empty(copy.empty))
+  return h(MuiBox, { sx: { display: 'flex', flexDirection: 'column', gap: 0.75, minWidth: 0 } },
+    props.section === undefined || props.section === 'missions' ? h(React.Fragment, null,
+    heading(copy.missions, missions.length),
+    missions.length === 0 ? empty(copy.missionsEmpty) : missions.map((mission) => h(MuiBox, { key: mission.id, sx: itemSx },
+      itemTitle(mission.id, mission.status),
+      h(AmpRow, { label: copy.goal, value: related('goals', mission.goal, goalLabel(mission.goal)) }),
+      h(AmpRow, { label: copy.priority, value: mission.priority ?? '—' }),
+      h(AmpRow, { label: copy.created, value: time(mission.created) }),
+      h(AmpRow, { label: copy.updated, value: time(mission.updated) })))) : null,
+    props.section === undefined || props.section === 'goals' ? h(React.Fragment, null,
+    heading(copy.goals, goals.length),
+    goals.length === 0 ? empty(copy.goalsEmpty) : goals.map(({ goal, state }) => h(MuiBox, { key: goal.id, sx: itemSx },
+      itemTitle(goal.statement || goal.id, state),
+      h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: textSx }, goal.id),
+      h(AmpRow, { label: copy.priority, value: goal.priority ?? '—' }),
+      props.onNavigate === undefined ? null : h(MuiBox, { sx: { display: 'flex', gap: 0.5 } },
+        related('missions', goal.id, `${copy.missions} (${value.missions.filter(item => item.goal === goal.id).length})`),
+        related('plans', goal.id, `${copy.plans} (${value.plans.filter(item => item.goal.id === goal.id).length})`)),
+      goal.success.length === 0 ? null : h(MuiTypography, { variant: 'caption', component: 'div', color: 'text.secondary', sx: { marginTop: 0.5 } }, copy.success),
+      ...goal.success.map((criterion, index) => h(MuiBox, { key: index, sx: { marginTop: 0.5 } },
+        h(MuiTypography, { variant: 'body2', sx: textSx }, `${index + 1}. ${criterion.statement || '—'}`),
+        h(AmpRow, { label: copy.check, value: criterion.check || '—' })))))) : null,
+    props.section === undefined || props.section === 'plans' ? h(React.Fragment, null,
+    heading(copy.plans, plans.length),
+    plans.length === 0 ? empty(copy.plansEmpty) : plans.map((plan) => h(MuiBox, { key: plan.id, sx: itemSx },
+      itemTitle(plan.id, plan.status),
+      h(AmpRow, { label: copy.goal, value: related('goals', plan.goal.id, goalLabel(plan.goal.id)) }),
+      plan.tasks.length === 0 ? empty(copy.tasksEmpty) : h(MuiBox, { component: 'ol', sx: { margin: 0, paddingLeft: 2.5 } },
+        ...plan.tasks.map((task) => h(MuiBox, { component: 'li', key: task.id, sx: { paddingTop: 1 } },
+          itemTitle(task.intent || task.id, task.status),
+          h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: textSx }, task.id),
+          h(AmpRow, { label: copy.expected, value: task.expect.observation || '—' }),
+          h(AmpRow, { label: copy.check, value: task.expect.check || '—' }))))))) : null)
+}
+
+/** Read-only duty list; selecting a duty by hash narrows this session's records. */
+export function CollaborationContent(props: { value: CollaborationView; copy: CollaborationCopy; selectedId?: string | null }): React.ReactElement {
+  const { value, copy } = props
+  const duties = props.selectedId ? value.duties.filter(duty => duty.id === props.selectedId) : value.duties
+  const line = (label: string, text: string): React.ReactNode => text.length > 0 ? h(AmpRow, { label, value: text }) : null
+  const list = (label: string, items: string[]): React.ReactNode => items.length > 0
+    ? h(MuiBox, { sx: { marginTop: 0.5 } },
+      h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, label),
+      h(MuiBox, { component: 'ul', sx: { marginBlock: 0.25, paddingLeft: 2.5, overflowWrap: 'anywhere' } },
+        ...items.map((item, index) => h(MuiTypography, { component: 'li', variant: 'body2', key: index }, item))))
+    : null
+  const time = (value: number | null): string => value === null || Number.isNaN(new Date(value).getTime())
+    ? '—' : new Date(value).toLocaleString(currentLocale())
+  if (duties.length === 0) return h(EmptyState, { message: copy.empty })
+  return h(MuiBox, { sx: { display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 } },
+    ...duties.map(duty => h(MuiBox, { key: duty.id, sx: { border: '1px solid', borderColor: 'divider', borderRadius: 1, padding: 1.25, minWidth: 0 } },
+      h(MuiBox, { sx: { display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 } },
+        h(MuiTypography, { variant: 'subtitle2', sx: { flex: 1, minWidth: 0, overflowWrap: 'anywhere' } }, duty.id),
+        h(MuiChip, { size: 'small', variant: 'outlined', label: copy.statuses[duty.status as keyof typeof copy.statuses] ?? duty.status })),
+      line(copy.owner, duty.ownerSession), line(copy.assignee, duty.assigneeSession), line(copy.role, duty.role),
+      list(copy.responsibilities, duty.responsibilities), list(copy.acceptance, duty.acceptance),
+      line(copy.goal, duty.goal ?? ''), line(copy.plan, duty.plan ?? ''), line(copy.task, duty.task ?? ''),
+      line(copy.summary, duty.summary ?? ''), list(copy.evidence, duty.evidence), line(copy.review, duty.review ?? ''),
+      line(copy.created, time(duty.created)), line(copy.updated, time(duty.updated)))))
+}
+
+/** A session-scoped route; no duty mutation is available from the panel. */
+function CollaborationPage(props: ViewProps): React.ReactElement {
+  const copy = COLLABORATION_COPY[currentLocale()]
+  const path = props.sessionId ? `/amp/collaboration?session=${encodeURIComponent(props.sessionId)}` : null
+  const collaboration = useGraph(path, parseCollaboration, props.refresh, props.onSettled)
+  React.useEffect(() => {
+    if (!props.sessionId || typeof window.setInterval !== 'function') return
+    const refresh = (): void => { if (!document.hidden) collaboration.retry() }
+    const timer = window.setInterval(refresh, 10000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', refresh) }
+  }, [props.sessionId, collaboration.retry])
+  return h(MuiBox, { sx: { padding: 1.5, minWidth: 0 } },
+    h(MuiBox, { sx: { display: 'flex', alignItems: 'center', gap: 1, marginBottom: 1 } },
+      h(MuiTypography, { variant: 'h6', component: 'h2', sx: { flex: 1 } }, copy.title),
+      h(MuiButton, { size: 'small', onClick: collaboration.retry, disabled: !props.sessionId, startIcon: h(IconRefresh, { fontSize: 'small' }) }, props.copy.refresh)),
+    props.id ? h(MuiButton, { size: 'small', onClick: (): void => navigate(props.side, 'collaboration'), sx: { marginBottom: 1 } }, copy.clearSelection) : null,
+    !props.sessionId ? h(EmptyState, { message: copy.noSession })
+      : collaboration.state.status === 'error' || (collaboration.state.status === 'ready' && collaboration.state.value === null)
+        ? h(MuiAlert, { severity: 'error', action: h(MuiButton, { size: 'small', color: 'inherit', onClick: collaboration.retry }, props.copy.states.retry) }, copy.error)
+        : collaboration.state.status === 'ready' && collaboration.state.value !== null
+          ? h(CollaborationContent, { value: collaboration.state.value, copy, selectedId: props.id })
+          : h(LoadingState, { copy: props.copy }))
+}
+
+/** One session-scoped planning destination; the AMP overview reuses its cards. */
+function PlanningView(props: ViewProps): React.ReactElement {
+  const copy = AMP_PLANNING_COPY[currentLocale()]
+  const section: PlanningPage = props.view === 'missions' || props.view === 'goals' ? props.view : 'plans'
+  const path = props.sessionId ? `/amp/planning?session=${encodeURIComponent(props.sessionId)}` : null
+  const planning = useGraph(path, parseAmpPlanning, props.refresh, props.onSettled)
+  React.useEffect(() => {
+    if (!props.sessionId || typeof window.setInterval !== 'function') return
+    const refreshPlanning = (): void => { if (!document.hidden) planning.retry() }
+    const timer = window.setInterval(refreshPlanning, 10000)
+    document.addEventListener('visibilitychange', refreshPlanning)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refreshPlanning)
+    }
+  }, [props.sessionId, planning.retry])
+  return h(MuiBox, { sx: { padding: 1.5, minWidth: 0 } },
+    h(MuiBox, { sx: { display: 'flex', alignItems: 'center', gap: 1, marginBottom: 1 } },
+      h(MuiTypography, { variant: 'h6', component: 'h2', sx: { flex: 1 } }, copy[section]),
+      h(MuiButton, { size: 'small', onClick: planning.retry, disabled: !props.sessionId, startIcon: h(IconRefresh, { fontSize: 'small' }) }, props.copy.refresh)),
+    props.id ? h(MuiButton, { size: 'small', onClick: (): void => navigate(props.side, section), sx: { marginBottom: 1 } }, props.copy.clearSelection) : null,
+    !props.sessionId ? h(EmptyState, { message: props.copy.amp.noSession })
+      : planning.state.status === 'error' || (planning.state.status === 'ready' && planning.state.value === null)
+        ? h(MuiAlert, { severity: 'error', action: h(MuiButton, { size: 'small', color: 'inherit', onClick: planning.retry }, props.copy.states.retry) }, copy.error)
+        : planning.state.status === 'ready' && planning.state.value !== null
+          ? h(AmpPlanningContent, { value: planning.state.value, copy, section, selectedId: props.id, onNavigate: (page: PlanningPage, id: string): void => navigate(props.side, page, { id }) })
+          : h(LoadingState, { copy: props.copy }))
+}
+
 /** Plain-language slot sentence; the technical `why` stays in the details block. */
 function ampSlotSentence(
   slot: { role: string; target: string },
@@ -3867,81 +4129,85 @@ function ampOutcomeLabel(outcome: string, plain: PanelAmpCopy['plain']): string 
   }
 }
 
-/**
- * The three composer choices, read for the panel.
- *
- * The composer no longer renders dropdowns, so this is the only place the
- * current profession/interaction/scene triple is visible; a failed read is an
- * explicit "unavailable" line, never a default that would misreport the turn.
- */
 function useAmpSelection(
   sessionId: string | null,
   refresh: number,
 ): { status: 'loading' | 'ready' | 'unavailable'; value: SelectionState | null } {
-  const [result, setResult] = React.useState<{
-    status: 'loading' | 'ready' | 'unavailable'
-    value: SelectionState | null
-  }>({ status: 'loading', value: null })
+  const [result, setResult] = React.useState<{ status: 'loading' | 'ready' | 'unavailable'; value: SelectionState | null }>({ status: 'loading', value: null })
   React.useEffect(() => {
-    if (sessionId === null || sessionId.length === 0) {
-      setResult({ status: 'unavailable', value: null })
-      return
-    }
+    if (!sessionId) { setResult({ status: 'unavailable', value: null }); return }
     let cancelled = false
-    setResult((previous) => (previous.status === 'ready' ? previous : { status: 'loading', value: null }))
-    void loadSelection(sessionId)
-      .then((value) => {
-        if (cancelled) return
-        setResult(value === null ? { status: 'unavailable', value: null } : { status: 'ready', value })
-      })
-      .catch(() => {
-        if (!cancelled) setResult({ status: 'unavailable', value: null })
-      })
-    return () => {
-      cancelled = true
-    }
+    setResult({ status: 'loading', value: null })
+    void loadSelection(sessionId).then((value) => {
+      if (!cancelled) setResult(value === null ? { status: 'unavailable', value: null } : { status: 'ready', value })
+    }).catch(() => { if (!cancelled) setResult({ status: 'unavailable', value: null }) })
+    return () => { cancelled = true }
   }, [sessionId, refresh])
   return result
 }
 
+/** Legacy global readers (`/amp/receipts?limit=20`, `/amp/ledger?limit=20`) are not used for filtered views. */
+function parseAmpScope(value: unknown): import('../shared/ampScope.js').AmpScopeView {
+  return value as import('../shared/ampScope.js').AmpScopeView
+}
+
 function AmpView(props: ViewProps): React.ReactElement {
   const copy = props.copy.amp
+  const scope = 'workspace' as const
+  const params = new URLSearchParams({ scope })
+  if (props.sessionId) params.set('session', props.sessionId)
+  const scoped = useGraph(`/amp/scope?${params.toString()}`, parseAmpScope, props.refresh, props.onSettled)
+  const scopeData = scoped.state.status === 'ready' ? scoped.state.value : null
   const plain = copy.plain
   const full = useCopy()
-  const selection = useAmpSelection(props.sessionId, props.refresh)
-  const manifest = useGraph('/amp/manifest', parseAmpManifest, props.refresh, props.onSettled)
-  const storyPath = props.sessionId === null || props.sessionId.length === 0
-    ? null
-    : `/amp/story?session=${encodeURIComponent(props.sessionId)}`
-  const story = useGraph(storyPath, parseAmpStory, props.refresh, props.onSettled)
-  const framePath = props.sessionId === null || props.sessionId.length === 0
-    ? null
-    : `/amp/frame?session=${encodeURIComponent(props.sessionId)}`
+  const manifest = useGraph('/amp/manifest', parseAmpManifest, props.refresh)
+  const storyPath = props.sessionId ? `/amp/story?session=${encodeURIComponent(props.sessionId)}` : null
+  const story = useGraph(storyPath, parseAmpStory, props.refresh)
+  const framePath = props.sessionId ? `/amp/frame?session=${encodeURIComponent(props.sessionId)}` : null
   const frame = useGraph(framePath, parseAmpFrame, props.refresh)
-  const receipts = useGraph('/amp/receipts?limit=20', parseAmpReceipts, props.refresh)
-  const ledger = useGraph('/amp/ledger?limit=20', parseAmpLedger, props.refresh)
+  const planningPath = props.sessionId ? `/amp/planning?session=${encodeURIComponent(props.sessionId)}` : null
+  const planning = useGraph(planningPath, parseAmpPlanning, props.refresh)
+  const planningCopy = AMP_PLANNING_COPY[currentLocale()]
+  React.useEffect(() => {
+    if (!props.sessionId || typeof window.setInterval !== 'function') return
+    const refreshPlanning = (): void => { if (!document.hidden) planning.retry() }
+    const timer = window.setInterval(refreshPlanning, 10000)
+    document.addEventListener('visibilitychange', refreshPlanning)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refreshPlanning)
+    }
+  }, [props.sessionId, planning.retry])
+  const selection = useAmpSelection(props.sessionId, props.refresh)
   const verify = useGraph('/amp/verify', parseAmpVerify, props.refresh)
 
   const refreshAll = (): void => {
-    manifest.retry()
+    scoped.retry()
     story.retry()
     frame.retry()
-    receipts.retry()
-    ledger.retry()
+    planning.retry()
+    manifest.retry()
     verify.retry()
   }
 
   const manifestValue = manifest.state.status === 'ready' ? manifest.state.value : null
-  const storyValue = story.state.status === 'ready' ? story.state.value : null
-  const frameValue = frame.state.status === 'ready' ? frame.state.value : null
-  const receiptValues = receipts.state.status === 'ready' ? receipts.state.value : []
-  const ledgerValue = ledger.state.status === 'ready' ? ledger.state.value : null
+  const scopeSessions = scopeData?.sessions ?? []
+  const scopedSession = scopeSessions.find((entry) => entry.id === props.sessionId) ?? null
+  const storyValue = scope === 'workspace'
+    ? (story.state.status === 'ready' ? story.state.value : null)
+    : scopedSession === null ? null : parseAmpStory(scopedSession.story)
+  const frameValue = scope === 'workspace'
+    ? (frame.state.status === 'ready' ? frame.state.value : null)
+    : scopedSession === null ? null : parseAmpFrame(scopedSession.frame)
+  const selectedTurn = scope === 'workspace' ? selection.value?.selection : undefined
+  const receiptValues = scopeData === null ? [] : parseAmpReceipts(scopeData.receipts)
+  const ledgerValue = scopeData === null ? null : parseAmpLedger({ count: scopeData.totalEntries, entries: scopeData.entries })
   const verifyValue = verify.state.status === 'ready' ? verify.state.value : null
-  const recentReceipts = receiptValues.slice(0, 5)
+  const recentReceipts = receiptValues
   const labelOf = (map: Record<string, { label: string }>, value: string): string => map[value]?.label ?? value
-  const professionKey = storyValue?.turn?.profession ?? selection.value?.selection.profession ?? ''
-  const interactionKey = storyValue?.turn?.interaction ?? selection.value?.selection.interaction ?? ''
-  const sceneKey = storyValue?.turn?.scene ?? selection.value?.selection.scene ?? ''
+  const professionKey = storyValue?.turn?.profession ?? selectedTurn?.profession ?? ''
+  const interactionKey = storyValue?.turn?.interaction ?? selectedTurn?.interaction ?? ''
+  const sceneKey = storyValue?.turn?.scene ?? selectedTurn?.scene ?? ''
   const professionLabel = professionKey.length === 0
     ? ''
     : labelOf(full.professions as unknown as Record<string, { label: string }>, professionKey)
@@ -3959,6 +4225,7 @@ function AmpView(props: ViewProps): React.ReactElement {
   return h(
     MuiBox,
     { sx: { display: 'flex', flexDirection: 'column', gap: 1.5, padding: 1.5, minWidth: 0 } },
+    scopeData?.workspace ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, scopeData.workspace.title) : null,
     h(
       MuiBox,
       { sx: { display: 'flex', alignItems: 'flex-start', gap: 1 } },
@@ -3978,9 +4245,28 @@ function AmpView(props: ViewProps): React.ReactElement {
         ),
       ),
     ),
-    props.sessionId !== null && props.sessionId.length > 0
-      ? null
-      : h(MuiChip, { size: 'small', color: 'warning', variant: 'outlined', label: copy.noSession }),
+    props.sessionId === null || props.sessionId.length === 0
+      ? h(MuiChip, { size: 'small', color: 'warning', variant: 'outlined', label: copy.noSession })
+      : null,
+    h(
+      AmpSection,
+      { title: copy.scopeSessions },
+      scoped.state.status === 'error'
+        ? h(MuiAlert, { severity: 'error' }, `${copy.selection.unavailable} (${scoped.state.httpStatus ?? 'offline'})`)
+        : scopeData === null
+          ? h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, copy.selection.loading)
+          : h(
+            MuiBox,
+            { sx: { display: 'flex', flexDirection: 'column', gap: 0.75 } },
+            h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, fillTemplate(copy.scopeSummary, {
+              sessions: String(scopeData.totalSessions), entries: String(scopeData.totalEntries), receipts: String(scopeData.totalReceipts),
+            })),
+            scopeData.workspace === null ? null : h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, scopeData.workspace.title),
+            scopeData.truncated.sessions || scopeData.truncated.entries || scopeData.truncated.receipts
+              ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, copy.scopeTruncated)
+              : null,
+          ),
+    ),
     manifest.state.status === 'error'
       ? h(MuiAlert, { severity: 'error' }, `${copy.manifest}: ${manifest.state.httpStatus ?? 'offline'}`)
       : null,
@@ -3990,7 +4276,7 @@ function AmpView(props: ViewProps): React.ReactElement {
       AmpSection,
       { title: plain.request },
       storyValue === null || storyValue.turn === null
-        ? h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, story.state.status === 'loading' ? copy.selection.loading : plain.requestEmpty)
+        ? h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, (scope === 'workspace' ? story.state.status === 'loading' : scoped.state.status === 'loading') ? copy.selection.loading : plain.requestEmpty)
         : h(
           React.Fragment,
           null,
@@ -4108,6 +4394,21 @@ function AmpView(props: ViewProps): React.ReactElement {
         ),
     ),
 
+    h(
+      AmpSection,
+      { title: planningCopy.title },
+      !props.sessionId
+        ? h(MuiTypography, { variant: 'body2', color: 'text.secondary' }, copy.noSession)
+        : planning.state.status === 'error' || (planning.state.status === 'ready' && planning.state.value === null)
+          ? h(MuiAlert, {
+            severity: 'error',
+            action: h(MuiButton, { size: 'small', color: 'inherit', onClick: planning.retry }, props.copy.states.retry),
+          }, planningCopy.error)
+          : planning.state.status === 'ready' && planning.state.value !== null
+            ? h(AmpPlanningContent, { value: planning.state.value, copy: planningCopy })
+            : h(MuiTypography, { variant: 'body2', color: 'text.secondary', role: 'status' }, planningCopy.loading),
+    ),
+
     // 2. What it deliberately set aside, named rather than counted.
     storyValue !== null && storyValue.ignored.length > 0
       ? h(
@@ -4196,7 +4497,8 @@ function AmpView(props: ViewProps): React.ReactElement {
     // 4. Can the record be trusted; raw evidence stays in one accordion.
     h(
       AmpSection,
-      { title: plain.trust },
+      { title: copy.globalTrust },
+      h(MuiTypography, { variant: 'body2', color: 'text.secondary', sx: { marginBottom: 1 } }, copy.globalTrustHint),
       h(
         MuiBox,
         { sx: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, marginBottom: 1 } },
@@ -4289,14 +4591,18 @@ function AmpView(props: ViewProps): React.ReactElement {
                     h(MuiTableCell, null, item.revisitIf),
                   ),
                 )),
-                ledgerValue === null
+                verifyValue === null
                   ? null
                   : h(
                     MuiTableRow,
                     null,
                     h(MuiTableCell, { component: 'th' }, copy.tip),
-                    h(MuiTableCell, null, ampShort(ledgerValue.tip, 34)),
+                    h(MuiTableCell, null, ampShort(verifyValue.tip, 34)),
                   ),
+                ...(ledgerValue?.entries ?? []).map((entry) => h(MuiTableRow, { key: `entry-${entry.seq}` },
+                  h(MuiTableCell, { component: 'th' }, `#${entry.seq} · ${entry.kind}`),
+                  h(MuiTableCell, null, ampShort(entry.hash, 34)),
+                )),
                 manifestValue === null
                   ? null
                   : h(
@@ -4335,6 +4641,7 @@ function AmpView(props: ViewProps): React.ReactElement {
  * ------------------------------------------------------------------------- */
 
 interface ViewProps {
+  view: PanelView
   side: PanelSide
   copy: PanelCopy
   path: string | null
@@ -4381,7 +4688,7 @@ interface FilesMenuTarget {
 }
 
 function FilesView(props: ViewProps): React.ReactElement {
-  const { state, retry } = useGraph('/graph/tree', parseTree, props.refresh, props.onSettled)
+  const { state, retry } = useGraph(withPath('/graph/tree', null, props.sessionId), parseTree, props.refresh, props.onSettled)
   // The file tree's root is the workspace root the host actually scanned; the
   // entries below it are never re-rooted on a common path prefix such as `src`.
   // Outermost manifest projects (when the host reports them) become one-level
@@ -4436,7 +4743,6 @@ function FilesView(props: ViewProps): React.ReactElement {
       children: [...projectRows, ...buildFileTree(loose)],
     }]
   }, [state, props.copy])
-  const adapter = React.useMemo(() => entryTreeAdapter(entries), [entries])
   // The Files view owns the tree's expansion state; `VirtualTree` is controlled.
   const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(() => new Set())
   const onToggle = React.useCallback((key: string): void => {
@@ -4463,6 +4769,10 @@ function FilesView(props: ViewProps): React.ReactElement {
       navigate(props.side, 'preview', { path: target.path })
       return
     }
+    if (action === 'outline' || action === 'imports' || action === 'exports' || action === 'dependencies') {
+      navigate(props.side, action, { path: target.path })
+      return
+    }
     if (action === 'locate') {
       navigate(props.side, 'files', { path: target.path })
       return
@@ -4486,12 +4796,7 @@ function FilesView(props: ViewProps): React.ReactElement {
     })
   }
 
-  const tree = h(VirtualTree<VirtualTreeEntry<TreeEntry>>, {
-    adapter,
-    collapsed,
-    onToggle,
-    'aria-label': props.copy.tabs.files,
-    slot: (depth, _index, node) => {
+  const adapter = entryTreeAdapter<TreeEntry>(entries, (depth, _index, node) => {
       const entry = node.value
       const hasChildren = (node.children ?? []).length > 0
       const expanded = !collapsed.has(node.key)
@@ -4531,11 +4836,10 @@ function FilesView(props: ViewProps): React.ReactElement {
             h(MuiListItemText, {
               primary: entry.name,
               secondary: entry.manifest ?? (projectRoot ? undefined : props.copy.scopeWorkspace),
-              primaryTypographyProps: {
-                ...PANEL_ROW_PRIMARY_PROPS,
-                sx: { fontWeight: projectRoot ? 500 : 600 },
-              },
-              secondaryTypographyProps: PANEL_ROW_SECONDARY_PROPS,
+              ...listTextProps(
+                { ...PANEL_ROW_PRIMARY_PROPS, sx: { fontWeight: projectRoot ? 500 : 600 } },
+                PANEL_ROW_SECONDARY_PROPS,
+              ),
             }),
           ),
         )
@@ -4586,7 +4890,7 @@ function FilesView(props: ViewProps): React.ReactElement {
                   navigate(props.side, 'files')
                   return
                 }
-                navigate(props.side, props.side === 'right' ? 'outline' : 'files', { path: entry.path })
+                navigate(props.side, props.side === 'right' ? 'preview' : 'files', { path: entry.path })
               },
             onContextMenu: (event: React.MouseEvent): void => {
               openMenu(event, {
@@ -4608,17 +4912,17 @@ function FilesView(props: ViewProps): React.ReactElement {
           h(MuiListItemText, {
             primary: entry.name,
             secondary: entry.path,
-            primaryTypographyProps: {
-              ...PANEL_ROW_PRIMARY_PROPS,
-              sx: hasChildren ? { fontWeight: 500 } : undefined,
-            },
-            secondaryTypographyProps: PANEL_ROW_SECONDARY_PROPS,
+            ...listTextProps(
+              { ...PANEL_ROW_PRIMARY_PROPS, ...(hasChildren ? { sx: { fontWeight: 500 } } : {}) },
+              PANEL_ROW_SECONDARY_PROPS,
+            ),
           }),
         ),
         preview,
       )
     },
-  })
+  )
+  const tree = h(VirtualTree<VirtualTreeEntry<TreeEntry>>, { adapter, collapsed, onToggle, 'aria-label': props.copy.tabs.files })
   const actions = menu === null
     ? []
     : fileContextMenuItems(props.copy, {
@@ -4673,10 +4977,11 @@ type OutlineRowValue =
  */
 const OUTLINE_EXCLUDED_KINDS: readonly string[] = [
   'variable',
-  'property',
   'static',
   'import',
   'export',
+  'importation',
+  'exportation',
   'line',
   'sentence',
 ]
@@ -4687,11 +4992,13 @@ export function isOutlineStructureKind(kind: string): boolean {
 }
 
 function structureNodes(nodes: readonly OutlineNode[]): OutlineNode[] {
-  return nodes.filter((node) => isOutlineStructureKind(node.kind))
+  return nodes.filter((node) => isOutlineStructureKind(node.kind) && node.name.trim().length > 0)
 }
 
 const EMPTY_OUTLINE_NODES: readonly OutlineNode[] = []
 const EMPTY_OUTLINE_GROUPS: readonly OutlineFileGroup[] = []
+/** Stable empty path list, so a file-scope outline never allocates per render. */
+const EMPTY_OUTLINE_PATHS: readonly string[] = []
 const EMPTY_OUTLINE_PROJECTS: readonly OutlineProject[] = []
 const EMPTY_TREE_PROJECTS: readonly TreeProject[] = []
 
@@ -4816,24 +5123,29 @@ export function groupOutlineByProject(
  * traversal: a node belongs to the last deeper node and a same/shallower node
  * closes the branch.
  */
-function buildOutlineNodeTree(
+export function buildOutlineNodeTree(
   nodes: readonly OutlineNode[],
   prefix: string,
 ): VirtualTreeEntry<OutlineRowValue>[] {
   const roots: VirtualTreeEntry<OutlineRowValue>[] = []
+  const byHandle = new Map<string, VirtualTreeEntry<OutlineRowValue>>()
   const open: Array<{ depth: number; key: string; children: VirtualTreeEntry<OutlineRowValue>[] }> = [
     { depth: -1, key: prefix, children: roots },
   ]
   nodes.forEach((node, index) => {
     while (open.length > 1 && (open[open.length - 1] as { depth: number }).depth >= node.depth) open.pop()
-    const parent = open[open.length - 1] as { key: string; children: VirtualTreeEntry<OutlineRowValue>[] }
-    const key = `${parent.key}.${index}`
+    // Parent handles override fallback kind depths. A missing/filtered parent
+    // leaves the node at the file root instead of nesting it under a sibling.
+    const explicitParent = node.parent === undefined ? undefined : byHandle.get(node.parent)
+    const parent = explicitParent ?? (node.parent === undefined ? open[open.length - 1] : open[0])
+    const key = `${prefix}.${index}`
     const entry: VirtualTreeEntry<OutlineRowValue> = {
       key,
       value: { kind: 'node', node, fallbackPath: null },
       children: [],
     }
-    parent.children.push(entry)
+    ;(parent.children as VirtualTreeEntry<OutlineRowValue>[]).push(entry)
+    if (node.handle !== undefined) byHandle.set(node.handle, entry)
     open.push({ depth: node.depth, key, children: entry.children as VirtualTreeEntry<OutlineRowValue>[] })
   })
   return roots
@@ -4862,9 +5174,62 @@ function outlineGroupEntry(
   }
   return {
     key,
-    value: { kind: 'group', group, title: group.path ?? group.family, nodeCount: nodes.length },
+    value: { kind: 'group', group, title: group.path ?? group.family, nodeCount: group.count ?? nodes.length },
     children: buildOutlineNodeTree(nodes, key).map(fill),
   }
+}
+
+/**
+ * Reactive per-file outline cache.
+ *
+ * The workspace index (`?paths=1`) says which files exist and how many nodes
+ * each has; this hook fetches a file's nodes only once its row is expanded, and
+ * keeps the result so collapsing and re-expanding costs nothing. A `refresh`
+ * transition drops the cache, which is the only invalidation the panel needs:
+ * the host remains the single source of truth.
+ */
+function useOutlineLazyNodes(
+  paths: readonly string[],
+  sessionId: string | null,
+  refresh: number,
+): ReadonlyMap<string, readonly OutlineNode[]> {
+  const [loaded, setLoaded] = React.useState<ReadonlyMap<string, readonly OutlineNode[]>>(() => new Map())
+  const pending = React.useRef(new Set<string>())
+  const signature = paths.join('\u0000')
+
+  React.useEffect(() => {
+    if (refresh === 0) return
+    setLoaded(new Map())
+  }, [refresh])
+
+  React.useEffect(() => {
+    const wanted = paths.filter((path) => !pending.current.has(path))
+    if (wanted.length === 0) return
+    let alive = true
+    for (const path of wanted) pending.current.add(path)
+    void Promise.all(wanted.map(async (path) => ({
+      path,
+      outcome: await fetchGraph(withPath('/graph/outline', path, sessionId)),
+    }))).then((results) => {
+      for (const { path } of results) pending.current.delete(path)
+      if (!alive) return
+      setLoaded((previous) => {
+        const next = new Map(previous)
+        for (const { path, outcome } of results) {
+          if (!outcome.ok) continue
+          const parsed = parseOutline(outcome.value)
+          next.set(path, parsed.scope === 'file' ? structureNodes(parsed.nodes) : [])
+        }
+        return next
+      })
+    })
+    return () => {
+      alive = false
+      pending.current.clear()
+    }
+  }, [signature, sessionId, paths])
+
+  return loaded
 }
 
 /**
@@ -4872,7 +5237,7 @@ function outlineGroupEntry(
  *
  *  - `right/outline` (no `path`): one workspace-root row, then either outermost
  *    manifest projects (project root + manifest caption) or the file groups
- *    directly. Groups default collapsed; clicking a group opens that file.
+ *    directly. Groups default collapsed; clicking a branch expands it in place.
  *  - `right/outline?path=…`: one root row for the current file (name + relative
  *    path) and only its structure nodes. A response that is not file-scoped is
  *    treated as an error state, never rendered as the global group list.
@@ -4889,10 +5254,15 @@ interface OutlineMenuTarget {
 
 function OutlineView(props: ViewProps): React.ReactElement {
   const local = props.path !== null
-  const { state, retry } = useGraph(withPath('/graph/outline', props.path), parseOutline, props.refresh, props.onSettled)
+  // Workspace mode loads the lazy index (one row per file, no nodes); the nodes
+  // of a file are fetched only when its row is expanded. File mode is unchanged.
+  const outlineRoute = local
+    ? withPath('/graph/outline', props.path, props.sessionId)
+    : withPath('/graph/outline?paths=1', null, props.sessionId)
+  const { state, retry } = useGraph(outlineRoute, parseOutline, props.refresh, props.onSettled)
   // The workspace root is part of the global tree only; the tree route is the
   // authoritative fallback when the outline payload does not include `root`.
-  const treeGraph = useGraph(local ? null : '/graph/tree', parseTree, props.refresh)
+  const treeGraph = useGraph(local ? null : withPath('/graph/tree', null, props.sessionId), parseTree, props.refresh)
   const data = state.status === 'ready' ? state.value : null
   const scope = data?.scope ?? 'workspace'
   const groups = data !== null && data.scope === 'workspace' ? data.groups : EMPTY_OUTLINE_GROUPS
@@ -4901,6 +5271,29 @@ function OutlineView(props: ViewProps): React.ReactElement {
     ? treeGraph.state.value.projects
     : EMPTY_TREE_PROJECTS
   const fileNodes = data !== null && data.scope === 'file' ? structureNodes(data.nodes) : EMPTY_OUTLINE_NODES
+  /**
+   * Files the user has expanded. Their nodes are fetched lazily and cached by
+   * {@link useOutlineLazyNodes}; a file that was never opened transfers nothing.
+   */
+  const [openedFiles, setOpenedFiles] = React.useState<ReadonlySet<string>>(() => new Set())
+  const openFile = React.useCallback((path: string | null): void => {
+    if (path === null || path.length === 0) return
+    setOpenedFiles((previous) => (previous.has(path) ? previous : new Set(previous).add(path)))
+  }, [])
+  const loadedFileNodes = useOutlineLazyNodes(
+    local ? EMPTY_OUTLINE_PATHS : [...openedFiles],
+    props.sessionId,
+    props.refresh,
+  )
+  /** The index rows plus the nodes already fetched for the expanded ones. */
+  const mergedGroups = React.useMemo(() => {
+    if (local) return EMPTY_OUTLINE_GROUPS
+    return groups.map((group): OutlineFileGroup => {
+      if (group.path === null) return group
+      const loaded = loadedFileNodes.get(group.path)
+      return loaded === undefined ? group : { ...group, nodes: [...loaded] }
+    })
+  }, [local, groups, loadedFileNodes])
   const workspaceRoot = (data?.root ?? '').length > 0
     ? (data?.root ?? '')
     : treeGraph.state.status === 'ready'
@@ -4958,6 +5351,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
       const path = props.path
       if (path === null || fileNodes.length === 0) return []
       const key = `outline-file:${path}`
+      const family = familyLabel(data?.family ?? '', props.copy)
       const fill = (entry: VirtualTreeEntry<OutlineRowValue>): VirtualTreeEntry<OutlineRowValue> => {
         if (entry.value.kind !== 'node') return entry
         return {
@@ -4969,12 +5363,12 @@ function OutlineView(props: ViewProps): React.ReactElement {
       const children = buildOutlineNodeTree(fileNodes, key).map(fill)
       return [{
         key: `file-root:${path}`,
-        value: { kind: 'root' as const, title: baseName(path), subtitle: path },
+        value: { kind: 'root' as const, title: baseName(path), subtitle: family.length > 0 ? `${family} · ${path}` : path },
         children,
       }]
     }
     const rootTitle = workspaceRoot.length > 0 ? workspaceRoot : props.copy.scopeWorkspace
-    const bucketed = groupOutlineByProject(groups, effectiveProjects)
+    const bucketed = groupOutlineByProject(mergedGroups, effectiveProjects)
     const projectEntries: Array<VirtualTreeEntry<OutlineRowValue>> = bucketed.projects.map((bucket, index) => ({
       key: `project:${index}:${bucket.project.root}`,
       value: { kind: 'project', title: bucket.project.root, manifest: bucket.project.manifest },
@@ -4994,8 +5388,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
       value: { kind: 'root' as const, title: rootTitle, subtitle: null },
       children: [...projectEntries, ...looseEntries],
     }]
-  }, [local, fileNodes, groups, effectiveProjects, workspaceRoot, props.path, props.copy])
-  const adapter = React.useMemo(() => entryTreeAdapter(entries), [entries])
+  }, [local, fileNodes, mergedGroups, effectiveProjects, workspaceRoot, props.path, props.copy])
   // The Outline view owns the tree's expansion state. The global mode starts
   // with every file group collapsed; the state is not reset when the route
   // flips to the local mode and back.
@@ -5048,6 +5441,10 @@ function OutlineView(props: ViewProps): React.ReactElement {
     }
     if (action === 'previewFile') {
       navigate(props.side, 'preview', { path: target.path })
+      return
+    }
+    if (action === 'markKnowledge') {
+      void writeKnowledge(props.sessionId, { action: 'mark', path: target.path, title: target.title })
     }
   }
   if (state.status === 'loading' || state.status === 'idle') {
@@ -5060,15 +5457,10 @@ function OutlineView(props: ViewProps): React.ReactElement {
   }
   const total = local
     ? fileNodes.length
-    : groups.reduce((sum, group) => sum + structureNodes(group.nodes).length, 0)
+    : mergedGroups.reduce((sum, group) => sum + (group.count ?? structureNodes(group.nodes).length), 0)
   if (total === 0) return h(EmptyState, { message: props.copy.outline.empty })
 
-  const tree = h(VirtualTree<VirtualTreeEntry<OutlineRowValue>>, {
-    adapter,
-    collapsed,
-    onToggle,
-    'aria-label': props.copy.tabs.outline,
-    slot: (depth, _index, node) => {
+  const adapter = entryTreeAdapter(entries, (depth, _index, node) => {
       const value = node.value
       const hasChildren = (node.children ?? []).length > 0
       const expanded = !collapsed.has(node.key)
@@ -5076,7 +5468,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
         // Root and project rows are section headings: clicking them folds the
         // section, they never navigate away.
         const heading = value.title.length > 0 ? value.title : props.copy.scopeWorkspace
-        const caption = value.kind === 'project' ? value.manifest : ''
+        const caption = value.kind === 'project' ? value.manifest : value.subtitle ?? ''
         return h(
           MuiBox,
           { sx: PANEL_ROW_SHELL_SX },
@@ -5118,7 +5510,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
                   )
                   : null,
               ),
-              primaryTypographyProps: { component: 'div' },
+              ...listTextProps({ component: 'div' }),
             }),
           ),
         )
@@ -5126,9 +5518,13 @@ function OutlineView(props: ViewProps): React.ReactElement {
       if (value.kind === 'group') {
         const family = familyLabel(value.group.family, props.copy)
         const title = value.title.length > 0 ? value.title : (family.length > 0 ? family : props.copy.scopeWorkspace)
-        // Global mode: click opens the file's local outline; the trailing
-        // chevron is the separate expand/collapse affordance.
-        const toggleAction = hasChildren
+        // A lazy index row is a branch even before its nodes arrive: `nodeCount`
+        // comes from the index, so the chevron and the click target are stable
+        // across the load instead of flipping from "leaf" to "branch".
+        const branch = value.nodeCount > 0
+        // File rows use the same branch interaction as their descendants:
+        // expand in place while children exist, navigate only at a leaf.
+        const toggleAction = branch
           ? h(
             Tip,
             { label: expanded ? props.copy.outlineCollapse : props.copy.outlineExpand },
@@ -5141,6 +5537,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
                 'aria-label': expanded ? props.copy.outlineCollapse : props.copy.outlineExpand,
                 onClick: (event: React.MouseEvent): void => {
                   event.stopPropagation()
+                  openFile(value.group.path)
                   onToggle(node.key)
                 },
               },
@@ -5156,16 +5553,18 @@ function OutlineView(props: ViewProps): React.ReactElement {
             {
               role: 'treeitem',
               'aria-level': depth + 1,
-              'aria-expanded': hasChildren ? expanded : undefined,
+              'aria-expanded': branch ? expanded : undefined,
               sx: PANEL_ROW_SX,
               style: {
                 paddingLeft: 8 + depth * 16,
                 paddingRight: toggleAction === null ? undefined : 40,
               },
               title,
-              onClick: value.group.path === null
-                ? undefined
-                : (): void => { navigate(props.side, 'outline', { path: value.group.path }) },
+              onClick: branch
+                ? (): void => { openFile(value.group.path); onToggle(node.key) }
+                : value.group.path === null
+                  ? undefined
+                  : (): void => { navigate(props.side, 'outline', { path: value.group.path }) },
               onContextMenu: (event: React.MouseEvent): void => {
                 openMenu(event, { path: value.group.path, title })
               },
@@ -5193,11 +5592,10 @@ function OutlineView(props: ViewProps): React.ReactElement {
                   fillTemplate(props.copy.outlineNodeCount, { count: String(value.nodeCount) }),
                 ),
               ),
-              primaryTypographyProps: {
-                ...PANEL_ROW_PRIMARY_PROPS,
-                sx: { fontWeight: 500 },
-              },
-              secondaryTypographyProps: { component: 'div' },
+              ...listTextProps(
+                { ...PANEL_ROW_PRIMARY_PROPS, sx: { fontWeight: 500 } },
+                { component: 'div' },
+              ),
             }),
           ),
           toggleAction,
@@ -5221,7 +5619,7 @@ function OutlineView(props: ViewProps): React.ReactElement {
               'aria-label': props.copy.tip.previewFile,
               onClick: (event: React.MouseEvent): void => {
                 event.stopPropagation()
-                navigate(props.side, 'preview', { path: target })
+                navigate(props.side, 'preview', { path: target, id: value.node.line > 0 ? `source-line:${value.node.line}` : null })
               },
             },
             h(IconPreview, { fontSize: 'small' }),
@@ -5241,12 +5639,10 @@ function OutlineView(props: ViewProps): React.ReactElement {
               paddingLeft: 8 + depth * 16,
               paddingRight: preview === null ? undefined : 40,
             },
-            title: kindLabel,
-            onClick: hasChildren
-              ? (): void => { onToggle(node.key) }
-              : target === null
-                ? undefined
-                : (): void => { navigate(props.side, 'files', { path: target }) },
+            // The visible line is single-line ellipsis, so the full title must be
+            // reachable: the tooltip carries the name, not just the kind.
+            title: value.node.name.length > 0 ? value.node.name : kindLabel,
+            onClick: hasChildren ? (): void => { onToggle(node.key) } : undefined,
             onContextMenu: (event: React.MouseEvent): void => {
               openMenu(event, { path: target, title: value.node.name })
             },
@@ -5261,14 +5657,14 @@ function OutlineView(props: ViewProps): React.ReactElement {
           h(MuiListItemText, {
             primary: value.node.name,
             secondary: value.node.kind.length > 0 ? value.node.kind : undefined,
-            primaryTypographyProps: PANEL_ROW_PRIMARY_PROPS,
-            secondaryTypographyProps: PANEL_ROW_SECONDARY_PROPS,
+            ...listTextProps(PANEL_ROW_PRIMARY_PROPS, PANEL_ROW_SECONDARY_PROPS),
           }),
         ),
         preview,
       )
     },
-  })
+  )
+  const tree = h(VirtualTree<VirtualTreeEntry<OutlineRowValue>>, { adapter, collapsed, onToggle, 'aria-label': props.copy.tabs.outline })
   const actions = menu === null
     ? []
     : outlineContextMenuItems(props.copy, {
@@ -5312,7 +5708,7 @@ const EMPTY_DEPENDENCY_LINKS: readonly DependencyLink[] = []
  * its final height, not mid-animation.
  */
 function DependenciesView(props: ViewProps): React.ReactElement {
-  const { state, retry } = useGraph(withPath('/graph/dependencies', props.path), parseDependencies, props.refresh, props.onSettled)
+  const { state, retry } = useGraph(withPath('/graph/dependencies', props.path, props.sessionId), parseDependencies, props.refresh, props.onSettled)
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const [collapseTick, setCollapseTick] = React.useState(0)
   // Keep the last non-empty cycle list so the Collapse has content to animate
@@ -5324,8 +5720,35 @@ function DependenciesView(props: ViewProps): React.ReactElement {
     () => createVirtualListAdapter(
       links,
       (link, index) => `${link.from}->${link.to}#${index}`,
+      (_index, link) => {
+        const selected = props.path !== null &&
+          (samePath(link.from, props.path) || samePath(link.to, props.path))
+        return h(
+          MuiListItemButton,
+          {
+            role: 'option',
+            'aria-selected': selected,
+            selected,
+            sx: PANEL_ROW_SX,
+            title: `${link.from} → ${link.to}`,
+          },
+          h(MuiListItemIcon, { sx: PANEL_ROW_ICON_SX }, h(IconDependencies, { fontSize: 'small' })),
+          h(MuiListItemText, {
+            primary: h(MuiBox, { component: 'span', sx: DEP_LABEL_SX },
+              h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.from),
+              h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: DEP_ARROW_SX }, '→'),
+              h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.to)),
+            secondary: link.relation.length > 0 || link.cyclic
+              ? h(MuiBox, { component: 'span', sx: DEP_CHIPS_SX },
+                link.relation.length > 0 ? h(MuiChip, { size: 'small', variant: 'outlined', label: link.relation }) : null,
+                link.cyclic ? h(MuiChip, { size: 'small', color: 'warning', icon: h(IconWarning, { fontSize: 'small' }), label: props.copy.cycle }) : null)
+              : undefined,
+            ...listTextProps({ component: 'div' }, { component: 'div' }),
+          }),
+        )
+      },
     ),
-    [links],
+    [links, props.path, props.copy],
   )
 
   if (state.status === 'loading' || state.status === 'idle') {
@@ -5355,53 +5778,6 @@ function DependenciesView(props: ViewProps): React.ReactElement {
       key: `dependencies:${collapseTick}`,
       adapter,
       'aria-label': props.copy.tabs.dependencies,
-      slot: (_index, link) => {
-        const selected = props.path !== null &&
-          (samePath(link.from, props.path) || samePath(link.to, props.path))
-        return h(
-          MuiListItemButton,
-          {
-            role: 'option',
-            'aria-selected': selected,
-            selected,
-            sx: PANEL_ROW_SX,
-            title: `${link.from} → ${link.to}`,
-          },
-          h(
-            MuiListItemIcon,
-            { sx: PANEL_ROW_ICON_SX },
-            h(IconDependencies, { fontSize: 'small' }),
-          ),
-          h(MuiListItemText, {
-            primary: h(
-              MuiBox,
-              { component: 'span', sx: DEP_LABEL_SX },
-              h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.from),
-              h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: DEP_ARROW_SX }, '→'),
-              h(MuiTypography, { variant: 'body2', noWrap: true, sx: DEP_ENDPOINT_SX }, link.to),
-            ),
-            secondary: link.relation.length > 0 || link.cyclic
-              ? h(
-                MuiBox,
-                { component: 'span', sx: DEP_CHIPS_SX },
-                link.relation.length > 0
-                  ? h(MuiChip, { size: 'small', variant: 'outlined', label: link.relation })
-                  : null,
-                link.cyclic
-                  ? h(MuiChip, {
-                    size: 'small',
-                    color: 'warning',
-                    icon: h(IconWarning, { fontSize: 'small' }),
-                    label: props.copy.cycle,
-                  })
-                  : null,
-              )
-              : undefined,
-            primaryTypographyProps: { component: 'div' },
-            secondaryTypographyProps: { component: 'div' },
-          }),
-        )
-      },
     }),
   )
 }
@@ -5674,14 +6050,21 @@ export const MESSAGE_TEXT_SX = {
 const LazyPreviewRenderer = React.lazy(async (): Promise<{
   default: React.ComponentType<PreviewRendererProps>
 }> => {
-  const [markdown, prismModule] = await Promise.all([
+  const [markdown, highlighting] = await Promise.all([
     loadMarkdownModules(),
-    import('prism-react-renderer'),
+    import('./previewHighlight.js'),
   ])
   const { MarkdownView, remarkGfm, remarkMath, rehypeKatex, DOMPurify } = markdown
-  const MuiHighlight = prismModule.Highlight as unknown as Loose
+  const { highlightPreview, previewThemeFor, previewTokenStyle } = highlighting
 
-  const MARKDOWN_COMPONENTS = { input: MarkdownTaskCheckbox }
+  function MarkdownCode(props: { className?: string; children?: React.ReactNode }): React.ReactElement {
+    const language = /language-([\w+-]+)/.exec(props.className ?? '')?.[1]
+    const content = String(props.children ?? '')
+    if (!language) return h('code', { className: props.className }, props.children)
+    const extension = ({ javascript: 'js', typescript: 'ts', shell: 'sh', bash: 'sh', latex: 'tex', markup: 'html' } as Record<string, string>)[language] ?? language
+    return h(CodePreview, { copy: null, path: `fence.${extension}`, content })
+  }
+  const MARKDOWN_COMPONENTS = { input: MarkdownTaskCheckbox, code: MarkdownCode, pre: (props: { children?: React.ReactNode }) => h(MuiBox, { sx: { marginBlock: 1 } }, props.children) }
 
   function MarkdownPreview(props: {
     copy: PanelCopy
@@ -5703,117 +6086,22 @@ const LazyPreviewRenderer = React.lazy(async (): Promise<{
     )
   }
 
-  /** Two high-contrast token sets derived from the MUI palette. */
-  function prismThemeFor(muiTheme: Theme): PrismTheme {
-    const palette = muiTheme.palette
-    const dark = palette.mode === 'dark'
-    return {
-      plain: { color: palette.text.primary, backgroundColor: 'transparent' },
-      styles: [
-        {
-          types: ['comment', 'prolog', 'doctype', 'cdata'],
-          style: { color: palette.text.disabled, fontStyle: 'italic' },
-        },
-        {
-          types: ['punctuation', 'operator'],
-          style: { color: dark ? palette.grey[400] : palette.grey[700] },
-        },
-        {
-          types: ['keyword', 'builtin', 'tag', 'important', 'atrule'],
-          style: { color: palette.primary.main, fontWeight: '600' },
-        },
-        {
-          types: ['string', 'char', 'attr-value', 'regex', 'url'],
-          style: { color: palette.success.main },
-        },
-        {
-          types: ['number', 'boolean', 'constant', 'symbol', 'deleted'],
-          style: { color: palette.warning.main },
-        },
-        {
-          types: ['function', 'class-name', 'function-variable'],
-          style: { color: palette.info.main },
-        },
-        {
-          types: ['variable', 'parameter', 'property', 'attr-name'],
-          style: { color: palette.text.primary },
-        },
-        {
-          types: ['selector', 'rule'],
-          style: { color: palette.secondary.main },
-        },
-      ],
-    }
-  }
-
-  function languageOf(path: string | null): string {
-    if (path === null) return 'plain'
-    const dot = path.lastIndexOf('.')
-    if (dot === -1) return 'plain'
-    return LANGUAGE_BY_EXTENSION[path.slice(dot + 1).toLowerCase()] ?? 'plain'
-  }
-
-  /** Cap highlighting work; the notice always states the shown line count. */
-  function clipCode(content: string): { code: string; truncated: boolean; lines: number } {
-    const allLines = content.split('\n')
-    if (allLines.length <= MAX_CODE_LINES && content.length <= MAX_CODE_BYTES) {
-      return { code: content, truncated: false, lines: allLines.length }
-    }
-    const shown = allLines.slice(0, MAX_CODE_LINES)
-    return { code: shown.join('\n'), truncated: true, lines: shown.length }
-  }
-
   function CodePreview(props: {
-    copy: PanelCopy
+    copy: PanelCopy | null
     path: string
     content: string
   }): React.ReactElement {
     const muiTheme = useTheme()
-    const prismTheme = React.useMemo(() => prismThemeFor(muiTheme), [muiTheme])
-    const clipped = React.useMemo(() => clipCode(props.content), [props.content])
-    const language = languageOf(props.path)
-
-    const render = (renderProps: RenderProps): React.ReactElement =>
-      h(
-        'pre',
-        {
-          className: renderProps.className,
-          style: {
-            ...renderProps.style,
-            margin: 0,
-            padding: 8,
-            overflowX: 'auto',
-            background: 'transparent',
-            fontFamily: 'monospace',
-            fontSize: '1rem',
-            lineHeight: 1.5,
-            whiteSpace: 'pre',
-            tabSize: 2,
-          },
-        },
-        ...renderProps.tokens.map((line, lineIndex) =>
-          h(
-            'div',
-            { ...renderProps.getLineProps({ line }), key: `line:${lineIndex}` },
-            ...line.map((token, tokenIndex) =>
-              h('span', { ...renderProps.getTokenProps({ token }), key: `token:${tokenIndex}` }),
-            ),
-          ),
-        ),
-      )
-
-    return h(
-      MuiBox,
-      { sx: PREVIEW_CODE_BOX_SX, role: 'region', 'aria-label': props.copy.preview, 'data-language': language },
-      h(MuiHighlight, { code: clipped.code, language, theme: prismTheme, children: render }),
-      clipped.truncated
-        ? h(
-          MuiTypography,
-          { variant: 'caption', color: 'text.secondary', sx: MORE_SX },
-          fillTemplate(props.copy.codeTruncated, { lines: String(clipped.lines) }),
-        )
-        : null,
-    )
+    const tokenTheme = React.useMemo(() => previewThemeFor(muiTheme), [muiTheme])
+    const highlighted = React.useMemo(() => highlightPreview(props.path, props.content), [props.path, props.content])
+    return h(MuiBox,
+      { sx: PREVIEW_CODE_BOX_SX, role: 'region', 'aria-label': props.copy?.preview, 'data-language': highlighted.language },
+      h('pre', { style: { ...tokenTheme.plain, margin: 0, padding: 8, overflowX: 'auto', fontFamily: 'monospace', fontSize: '1rem', lineHeight: 1.5, whiteSpace: 'pre', tabSize: 2 } },
+        h('code', null, ...highlighted.tokens.map((token, index) => h('span', {
+          key: index, className: ['token', ...token.types].join(' '), style: previewTokenStyle(tokenTheme, token.types),
+        }, token.content)))),
+      highlighted.truncated && props.copy ? h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: MORE_SX },
+        fillTemplate(props.copy.codeTruncated, { lines: String(highlighted.lines) })) : null)
   }
 
   function PreviewContent(props: {
@@ -5824,7 +6112,14 @@ const LazyPreviewRenderer = React.lazy(async (): Promise<{
     const { copy, data } = props
     if (data.kind === 'xlsx') return h(SheetsPreview, { copy, sheets: data.sheets })
     if (data.kind === 'pptx') return h(SlidesPreview, { copy, slides: data.slides })
-    if (data.kind === 'markdown' || data.kind === 'tex') {
+    if (data.kind === 'pdf') return data.url === null
+      ? h(EmptyState, { message: copy.previewUnsupported })
+      : h('iframe', {
+        src: `${data.url}#page=${data.page}`,
+        title: `${copy.preview}: ${data.path}`,
+        style: { display: 'block', width: '100%', height: 'min(70vh, 760px)', minHeight: 420, border: 0 },
+      })
+    if (data.kind === 'markdown') {
       if (data.content.length === 0) return h(EmptyState, { message: copy.states.empty })
       return h(MarkdownPreview, { copy, content: data.content, math: true })
     }
@@ -5866,7 +6161,8 @@ const LazyPreviewRenderer = React.lazy(async (): Promise<{
 
 function PreviewView(props: ViewProps): React.ReactElement {
   const path = props.path ?? ''
-  const graphPath = path.length === 0 ? null : `/graph/preview?path=${encodeURIComponent(path)}`
+  const sourceLine = /^source-line:([1-9]\d{0,6})$/.exec(props.id ?? '')?.[1]
+  const graphPath = path.length === 0 ? null : withPath('/graph/preview', path, props.sessionId) + (sourceLine ? `&line=${sourceLine}` : '')
   const { state, retry } = useGraph(graphPath, parsePreview, props.refresh, props.onSettled)
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
 
@@ -8330,13 +8626,15 @@ function CanvasSurface(props: CanvasSurfaceProps): React.ReactElement {
 
 function DependenciesCanvasView(props: ViewProps): React.ReactElement {
   const hasPath = props.path !== null
-  const graphPath = hasPath
-    ? `/graph/dependencies?path=${encodeURIComponent(props.path ?? '')}&level=intra`
-    : '/graph/dependencies'
+  const graphPath = withPath(
+    hasPath ? '/graph/dependencies?level=intra' : '/graph/dependencies',
+    props.path,
+    props.sessionId,
+  )
   const deps = useGraph(graphPath, parseDependencies, props.refresh, props.onSettled)
   // The intra route carries symbol names/depths; `level=intra` carries cycles.
   const intra = useGraph(
-    hasPath ? `/graph/intra?path=${encodeURIComponent(props.path ?? '')}` : null,
+    hasPath ? withPath('/graph/intra', props.path, props.sessionId) : null,
     parseIntra,
     props.refresh,
   )
@@ -8373,7 +8671,7 @@ function DependenciesCanvasView(props: ViewProps): React.ReactElement {
 }
 
 function ImportsCanvasView(props: ViewProps): React.ReactElement {
-  const { state, retry } = useGraph(withPath('/graph/imports', props.path), parseImports, props.refresh, props.onSettled)
+  const { state, retry } = useGraph(withPath('/graph/imports', props.path, props.sessionId), parseImports, props.refresh, props.onSettled)
   const graph = React.useMemo(
     () => (state.status === 'ready' ? buildImportsCanvas(state.value, 'imports') : null),
     [state],
@@ -8393,7 +8691,7 @@ function ImportsCanvasView(props: ViewProps): React.ReactElement {
 }
 
 function ExportsCanvasView(props: ViewProps): React.ReactElement {
-  const { state, retry } = useGraph(withPath('/graph/imports', props.path), parseImports, props.refresh, props.onSettled)
+  const { state, retry } = useGraph(withPath('/graph/imports', props.path, props.sessionId), parseImports, props.refresh, props.onSettled)
   const graph = React.useMemo(
     () => (state.status === 'ready' ? buildImportsCanvas(state.value, 'exports') : null),
     [state],
@@ -8805,13 +9103,9 @@ function AgentsView(props: ViewProps): React.ReactElement {
       MuiBox,
       { sx: AGENTS_LIST_SX },
       h(VirtualList<{ agent: AgentInfoData; child: boolean }>, {
-        adapter: createVirtualListAdapter(flatRows, (value) => `${value.agent.id}:${value.child ? 'child' : 'root'}`),
+        adapter: createVirtualListAdapter(flatRows, (value) => `${value.agent.id}:${value.child ? 'child' : 'root'}`,
+          (_index, value) => h(MuiBox, { sx: { height: '100%' } }, row(value.agent, value.child))),
         'aria-label': props.copy.agents,
-        slot: (_index, value) => h(
-          MuiBox,
-          { sx: { height: '100%' } },
-          row(value.agent, value.child),
-        ),
       }),
     ),
     h(
@@ -9019,13 +9313,6 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
     ? messagesGraph.state.value.messages
     : EMPTY_AGENT_MESSAGES
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set())
-  const adapter = React.useMemo(
-    () => createVirtualListAdapter(
-      messages,
-      (message, index) => agentMessageKey(index, message),
-    ),
-    [messages],
-  )
   const rowHeight = React.useMemo(
     () => (index: number, message: AgentMessageData): number =>
       estimateMessageHeight(message, expanded.has(agentMessageKey(index, message))),
@@ -9039,6 +9326,17 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
       return next
     })
   }, [])
+  const adapter = React.useMemo(
+    () => createVirtualListAdapter(messages, (message, index) => agentMessageKey(index, message),
+      (index, message) => h(MessageBubble, {
+        copy: props.copy,
+        message,
+        index,
+        expanded: expanded.has(agentMessageKey(index, message)),
+        onToggle: toggleExpanded,
+      })),
+    [messages, props.copy, expanded, toggleExpanded],
+  )
 
   const header = h(
     MuiBox,
@@ -9130,19 +9428,406 @@ function AgentMessagesView(props: ViewProps): React.ReactElement {
         adapter,
         rowHeight,
         'aria-label': props.copy.agentMessages,
-        slot: (index, message) => h(MessageBubble, {
-          copy: props.copy,
-          message,
-          index,
-          expanded: expanded.has(agentMessageKey(index, message)),
-          onToggle: toggleExpanded,
-        }),
       }),
   )
 }
 
+type InsightKind = 'cognition' | 'capabilities' | 'skills' | 'knowledge'
+const INSIGHT_KINDS: readonly InsightKind[] = ['cognition', 'capabilities', 'skills', 'knowledge']
+
+export function insightDetailId(kind: InsightKind, id: string): string {
+  return JSON.stringify([kind, id])
+}
+
+export function parseInsightDetailId(id: string | null): { kind: InsightKind; id: string } | null {
+  try {
+    const value: unknown = JSON.parse(id ?? '')
+    if (!Array.isArray(value) || value.length !== 2 || !INSIGHT_KINDS.includes(value[0] as InsightKind) || typeof value[1] !== 'string') return null
+    return { kind: value[0] as InsightKind, id: value[1] }
+  } catch { return null }
+}
+
+function ProjectView(props: ViewProps): React.ReactElement {
+  const { state, retry } = useGraph(withPath('/graph/tree', null, props.sessionId), parseTree, props.refresh, props.onSettled)
+  const data = state.status === 'ready' ? state.value : null
+  const projects = data?.projects ?? []
+  const adapter = React.useMemo(() => createVirtualListAdapter(projects, (project) => project.root,
+    (_index, project) => h(MuiListItemButton, {
+      sx: PANEL_ROW_SX,
+      onClick: (): void => navigate(props.side, 'files'),
+      title: project.root,
+    }, h(MuiListItemIcon, { sx: PANEL_ROW_ICON_SX }, h(IconProject, { fontSize: 'small' })),
+    h(MuiListItemText, {
+      primary: baseName(project.root), secondary: `${project.root} · ${project.manifest}`,
+      ...listTextProps(PANEL_ROW_PRIMARY_PROPS, PANEL_ROW_SECONDARY_PROPS),
+    }))), [projects, props.side])
+  if (state.status === 'error') return h(ErrorState, { copy: props.copy, onRetry: retry })
+  if (data === null) return h(LoadingState, { copy: props.copy })
+  return h(MuiBox, null,
+    h(MuiTypography, { variant: 'h6' }, props.copy.project),
+    h(MuiTypography, { variant: 'body2', color: 'text.secondary', sx: { overflowWrap: 'anywhere', marginBottom: 1 } }, data.root),
+    projects.length === 0 ? h(EmptyState, { message: props.copy.states.empty })
+      : h(VirtualList<TreeProject>, { adapter, 'aria-label': props.copy.project }))
+}
+
+/** Normalize older or malformed host responses before any insight row renders. */
+export function parseInsights(value: unknown): AmpInsightsView {
+  const record = asRecord(value)
+  const workspace = asRecord(record?.workspace)
+  const sources = asRecord(record?.sources)
+  const truncated = asRecord(record?.truncated)
+  const items = (kind: InsightKind): InsightItem[] => {
+    const result: InsightItem[] = []
+    for (const raw of firstArray(record, [kind]) ?? []) {
+      const item = asRecord(raw)
+      const id = asString(item?.id)
+      if (item === undefined || id === undefined) continue
+      result.push({
+        id,
+        title: asString(item.title) ?? id,
+        summary: asString(item.summary),
+        status: asString(item.status),
+        source: asString(item.source) ?? '',
+        scope: item.scope === 'workspace' || item.scope === 'installation' ? item.scope : 'session',
+        updatedAt: asString(item.updatedAt),
+        details: asRecord(item.details),
+      })
+    }
+    return result
+  }
+  const source = (kind: InsightKind): AmpInsightsView['sources'][InsightKind] => {
+    const raw = asRecord(sources?.[kind])
+    return { available: raw?.available === true, description: asString(raw?.description) ?? '' }
+  }
+  return {
+    session: asString(record?.session) ?? '',
+    workspace: workspace === undefined ? null : {
+      id: asString(workspace.id) ?? '',
+      title: asString(workspace.title) ?? '',
+      path: asString(workspace.path) ?? '',
+    },
+    cognition: items('cognition'),
+    capabilities: items('capabilities'),
+    skills: items('skills'),
+    knowledge: items('knowledge'),
+    sources: { cognition: source('cognition'), capabilities: source('capabilities'), skills: source('skills'), knowledge: source('knowledge') },
+    truncated: {
+      cognition: truncated?.cognition === true,
+      capabilities: truncated?.capabilities === true,
+      skills: truncated?.skills === true,
+      knowledge: truncated?.knowledge === true,
+    },
+    limit: finiteNumber(record?.limit) ?? 100,
+  }
+}
+
+function InsightsView(props: ViewProps): React.ReactElement {
+  const detail = props.view === 'insight-detail' ? parseInsightDetailId(props.id) : null
+  const kind: InsightKind = detail?.kind ?? (INSIGHT_KINDS.includes(props.view as InsightKind) ? props.view as InsightKind : 'cognition')
+  const endpoint = props.sessionId ? `/amp/insights?session=${encodeURIComponent(props.sessionId)}&limit=100` : null
+  const { state, retry } = useGraph(endpoint, parseInsights, props.refresh, props.onSettled)
+  const data = state.status === 'ready' ? state.value : null
+  const items = data?.[kind] ?? []
+  const copy = props.copy
+  const adapter = React.useMemo(() => createVirtualListAdapter(items, (item) => item.id,
+    (_index, item) => h(MuiListItemButton, {
+      sx: PANEL_ROW_SX, title: item.summary ?? item.title,
+      onClick: (): void => navigate(props.side, 'insight-detail', { id: insightDetailId(kind, item.id) }),
+    }, h(MuiBox, { sx: { width: '100%', minWidth: 0, overflow: 'hidden' } },
+      h(MuiTypography, { component: 'div', variant: 'body2', noWrap: true, sx: { lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis' } }, item.title),
+      h(MuiTypography, { component: 'div', variant: 'caption', color: 'text.secondary', noWrap: true,
+        sx: { display: 'block', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis' } }, item.summary ?? item.source)))), [items, kind, props.side])
+  if (!props.sessionId) return h(EmptyState, { message: copy.amp.noSession })
+  if (state.status === 'error') return h(ErrorState, { copy, onRetry: retry })
+  if (data === null) return h(LoadingState, { copy })
+  const source = data.sources[kind]
+  if (props.view === 'insight-detail') {
+    const item = detail === null ? undefined : items.find((entry) => entry.id === detail.id)
+    return h(MuiBox, { sx: { padding: 1, minWidth: 0 } },
+      h(MuiButton, { onClick: (): void => navigate(props.side, kind) }, copy.outlineBack),
+      item === undefined ? h(EmptyState, { message: copy.insightEmpty }) : h(React.Fragment, null,
+        h(MuiTypography, { variant: 'h6', sx: { overflowWrap: 'anywhere' } }, item.title),
+        h(MuiTypography, { sx: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginBlock: 1 } }, item.summary ?? ''),
+        h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, `${copy.insightScopes[item.scope]} · ${item.source}`),
+        item.status ? h(MuiChip, { label: item.status, size: 'small', sx: { margin: 1 } }) : null,
+        item.updatedAt ? h(MuiTypography, { variant: 'caption', component: 'div' }, item.updatedAt) : null,
+        item.details ? h(MuiBox, { component: 'pre', sx: { ...MONO_SX, whiteSpace: 'pre-wrap' } }, JSON.stringify(item.details, null, 2)) : null))
+  }
+  return h(MuiBox, null,
+    h(MuiTypography, { variant: 'h6' }, copy.insights[kind]),
+    data.workspace ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, data.workspace.title) : null,
+    !source.available ? h(MuiAlert, { severity: 'info', sx: { marginBlock: 1 } }, copy.insightUnavailable)
+      : items.length === 0 ? h(EmptyState, { message: copy.insightEmpty })
+      : h(VirtualList<InsightItem>, { adapter, 'aria-label': copy.insights[kind] }),
+    data.truncated[kind] ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, copy.amp.scopeTruncated) : null)
+}
+
+/**
+ * The Knowledge tab.
+ *
+ * Three sections, all read from the host surfaces:
+ *
+ *  - **knowledge files** (`/graph/knowledge`): the files a user or the agent
+ *    explicitly declared knowledge, each with its scope, tags and index state;
+ *    removing a mark writes through the same route the agent tool uses;
+ *  - **scoped settings** (`/control/settings`): the effective interaction and
+ *    scenario values for this scope, with `reset` restoring inheritance;
+ *  - **control registry** (`/control/registry`): one domain at a time, with a
+ *    per-row `enable`/`disable` toggle. The switch updates the row locally and
+ *    rolls back to the previous state when the host refuses the write.
+ *
+ * A failure is shown as the host's own typed message, never a fabricated one.
+ */
+
+/**
+ * Where a registry toggle writes.
+ *
+ * `skills` is the one registry with a session-scoped runtime projection: the
+ * host provider reads session overrides first, then workspace, then global, so
+ * the panel edits the same rows the session skill catalog renders. Other
+ * registries keep the workspace default.
+ */
+function registryScopeFor(
+  registry: ControlRegistry,
+  sessionId: string | null | undefined,
+): ControlScope {
+  return registry === 'skills' && sessionId ? 'session' : 'workspace'
+}
+
+function KnowledgeView(props: ViewProps): React.ReactElement {
+  const copy = props.copy.knowledgePanel
+  const [rows, setRows] = React.useState<readonly KnowledgeRow[] | null>(null)
+  const [settings, setSettings] = React.useState<readonly ControlSettingRow[] | null>(null)
+  const [registry, setRegistry] = React.useState<ControlRegistry>('environments')
+  const [registryRows, setRegistryRows] = React.useState<readonly ControlRegistryRow[] | null>(null)
+  const [registryError, setRegistryError] = React.useState<string | null>(null)
+  const [registryBusy, setRegistryBusy] = React.useState<string | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+  const [busy, setBusy] = React.useState<string | null>(null)
+  const [attempt, setAttempt] = React.useState(0)
+  const registryScope = registryScopeFor(registry, props.sessionId)
+
+  React.useEffect(() => {
+    let alive = true
+    setRows(null)
+    setSettings(null)
+    setError(null)
+    void Promise.all([
+      fetchKnowledge(props.sessionId),
+      fetchControlSetting('interaction', props.sessionId),
+      fetchControlSetting('scenario', props.sessionId),
+    ]).then(([knowledge, interaction, scenario]) => {
+      if (!alive) return
+      if (knowledge.ok) setRows(knowledge.value)
+      else setError(knowledge.message ?? copy.unavailable)
+      const loaded: ControlSettingRow[] = []
+      if (interaction.ok) loaded.push(interaction.value)
+      if (scenario.ok) loaded.push(scenario.value)
+      setSettings(loaded)
+      if (knowledge.ok && props.onSettled !== undefined) props.onSettled()
+    })
+    return () => {
+      alive = false
+    }
+  }, [props.sessionId, props.refresh, attempt, copy.unavailable, props.onSettled])
+
+  React.useEffect(() => {
+    let alive = true
+    setRegistryRows(null)
+    setRegistryError(null)
+    void fetchControlRegistry(registry, registryScope, props.sessionId).then((outcome) => {
+      if (!alive) return
+      if (outcome.ok) setRegistryRows(outcome.value)
+      else setRegistryError(outcome.message ?? copy.unavailable)
+    })
+    return () => {
+      alive = false
+    }
+  }, [registry, registryScope, props.sessionId, props.refresh, attempt, copy.unavailable])
+
+  /**
+   * Flip one switch optimistically, then reconcile with the host's new version.
+   * A refusal restores just that row, so an unrelated row's state is untouched.
+   */
+  const toggleRegistry = (row: ControlRegistryRow): void => {
+    if (registryBusy !== null) return
+    const next = !row.enabled
+    setRegistryBusy(row.id)
+    setRegistryError(null)
+    setRegistryRows((current) => current === null
+      ? current
+      : current.map((entry) => entry.id === row.id ? { ...entry, enabled: next } : entry))
+    void toggleControlRecord(row.registry, row.id, next, registryScope, props.sessionId, row.version).then((outcome) => {
+      setRegistryBusy(null)
+      if (!outcome.ok) {
+        setRegistryRows((current) => current === null
+          ? current
+          : current.map((entry) => entry.id === row.id ? { ...entry, enabled: row.enabled } : entry))
+        setRegistryError(outcome.message ?? copy.unavailable)
+        return
+      }
+      setRegistryRows((current) => current === null
+        ? current
+        : current.map((entry) => entry.id === row.id
+          ? { ...entry, version: outcome.value.version, source: registryScope }
+          : entry))
+    })
+  }
+
+  const unmark = (path: string): void => {
+    setBusy(path)
+    void writeKnowledge(props.sessionId, { action: 'unmark', path }).then((outcome) => {
+      setBusy(null)
+      if (!outcome.ok) {
+        setError(outcome.message ?? copy.unavailable)
+        return
+      }
+      setRows((previous) => (previous === null ? previous : previous.filter((row) => row.path !== path)))
+    })
+  }
+
+  const reset = (domain: 'interaction' | 'scenario'): void => {
+    setBusy(domain)
+    void resetControlSetting(domain, props.sessionId).then((outcome) => {
+      setBusy(null)
+      if (!outcome.ok) {
+        setError(outcome.message ?? copy.unavailable)
+        return
+      }
+      setAttempt((previous) => previous + 1)
+    })
+  }
+
+  if (error !== null && rows === null) {
+    return h(MuiBox, { sx: { padding: 1 } },
+      h(MuiAlert, { severity: 'info' }, copy.unavailable),
+      h(MuiButton, { size: 'small', onClick: (): void => { setAttempt((previous) => previous + 1) } }, props.copy.states.retry))
+  }
+  if (rows === null) return h(LoadingState, { copy: props.copy })
+
+  const settingRows = settings === null ? [] : [...settings]
+  return h(MuiBox, { sx: { minWidth: 0 } },
+    h(MuiTypography, { variant: 'h6' }, copy.title),
+    error === null ? null : h(MuiAlert, { severity: 'warning', sx: { marginBlock: 1 } }, error),
+    rows.length === 0
+      ? h(EmptyState, { message: copy.empty })
+      : h(MuiBox, { component: 'ul', sx: { listStyle: 'none', margin: 0, padding: 0 } },
+        rows.map((row) => h(MuiListItemButton, {
+          key: `knowledge:${row.path}`,
+          sx: PANEL_ROW_SX,
+          title: row.path,
+          onClick: (): void => navigate(props.side, 'preview', { path: row.path }),
+        },
+        h(MuiListItemIcon, { sx: PANEL_ROW_ICON_SX }, h(IconKnowledge, { fontSize: 'small' })),
+        h(MuiListItemText, {
+          primary: row.title,
+          secondary: `${row.path} · ${row.scope}${row.indexed === false ? ' · not indexed' : ''}`,
+          ...listTextProps(PANEL_ROW_PRIMARY_PROPS, PANEL_ROW_SECONDARY_PROPS),
+        }),
+        row.tags.length === 0 ? null : h(MuiChip, { size: 'small', variant: 'outlined', label: row.tags.join(', ') }),
+        h(Tip, { label: copy.unmark },
+          h(MuiIconButton, {
+            size: 'small',
+            'aria-label': copy.unmark,
+            disabled: busy === row.path,
+            onClick: (event: React.MouseEvent): void => {
+              event.stopPropagation()
+              unmark(row.path)
+            },
+          }, h(IconClose, { fontSize: 'small' })))))),
+
+    h(MuiTypography, { variant: 'subtitle1', sx: { marginTop: 2 } }, copy.settings),
+    settingRows.length === 0
+      ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, copy.unavailable)
+      : h(MuiBox, { component: 'ul', sx: { listStyle: 'none', margin: 0, padding: 0 } },
+        settingRows.map((setting) => {
+          const label = setting.domain === 'interaction' ? copy.interaction : copy.scenario
+          const shown = setting.mix === null
+            ? (setting.value ?? '—')
+            : Object.entries(setting.mix).map(([key, weight]) => `${key} ${weight}`).join(' + ')
+          return h(MuiListItemText, {
+            key: `setting:${setting.domain}`,
+            primary: `${label}: ${shown}`,
+            secondary: fillTemplate(copy.inherited, { scope: setting.source }),
+            ...listTextProps(PANEL_ROW_PRIMARY_PROPS, PANEL_ROW_SECONDARY_PROPS),
+            sx: { paddingInline: 1, display: 'flex', alignItems: 'center', gap: 1 },
+            secondaryAction: h(Tip, { label: copy.reset },
+              h(MuiIconButton, {
+                size: 'small',
+                edge: 'end',
+                'aria-label': copy.reset,
+                disabled: busy === setting.domain || setting.version === 0,
+                onClick: (): void => { reset(setting.domain) },
+              }, h(IconRefresh, { fontSize: 'small' }))),
+          })
+        })),
+
+    h(MuiTypography, { variant: 'subtitle1', sx: { marginTop: 2 } }, copy.registry),
+    h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: { display: 'block', marginBlock: 0.5 } }, copy.registryHint),
+    h(MuiSelect, {
+      value: registry,
+      size: 'small',
+      inputProps: { 'aria-label': copy.registrySelect },
+      onChange: (event: React.ChangeEvent<{ value: unknown }>): void => {
+        if (isControlRegistry(event.target.value)) setRegistry(event.target.value)
+      },
+      sx: { minWidth: 180, maxWidth: 240, marginBottom: 1 },
+    }, ...CONTROL_REGISTRIES.map((id) => h(MuiMenuItem, { key: id, value: id }, copy.registries[id]))),
+    registryError === null ? null : h(MuiTypography, { variant: 'caption', color: 'error', sx: { display: 'block' } }, registryError),
+    registryRows === null
+      ? (registryError === null
+        ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, props.copy.states.loading)
+        : null)
+      : registryRows.length === 0
+        ? h(MuiTypography, { variant: 'caption', color: 'text.secondary' }, copy.registryEmpty)
+        : h(MuiBox, { component: 'ul', sx: { listStyle: 'none', margin: 0, padding: 0 } },
+          registryRows.map((row) => h(MuiListItem, {
+            key: `registry:${row.registry}:${row.id}`,
+            sx: PANEL_ROW_SX,
+            title: row.summary ?? row.id,
+          },
+          h(MuiListItemIcon, { sx: PANEL_ROW_ICON_SX }, h(IconRegistry, { fontSize: 'small' })),
+          h(MuiListItemText, {
+            primary: row.title ?? row.id,
+            secondary: `${row.id} · ${row.source}`,
+            ...listTextProps(PANEL_ROW_PRIMARY_PROPS, PANEL_ROW_SECONDARY_PROPS),
+          }),
+          h(MuiSwitch, {
+            size: 'small',
+            edge: 'end',
+            checked: row.enabled,
+            disabled: registryBusy !== null,
+            onChange: (): void => { toggleRegistry(row) },
+            slotProps: {
+              input: {
+                role: 'switch',
+                'aria-checked': row.enabled,
+                'aria-label': `${row.title ?? row.id} · ${copy.registryToggle}`,
+              },
+            },
+          })))))
+}
+
 const RIGHT_VIEW_REGISTRY: Readonly<Partial<Record<PanelView, React.ComponentType<ViewProps>>>> = {
+  files: FilesView,
   amp: AmpView,
+  missions: PlanningView,
+  goals: PlanningView,
+  plans: PlanningView,
+  collaboration: CollaborationPage,
+  outline: OutlineView,
+  imports: ImportsCanvasView,
+  exports: ExportsCanvasView,
+  dependencies: DependenciesView,
+  project: ProjectView,
+  cognition: InsightsView,
+  capabilities: InsightsView,
+  skills: InsightsView,
+  knowledge: KnowledgeView,
+  preview: PreviewView,
+  'insight-detail': InsightsView,
+  agents: AgentsView,
+  agent: AgentMessagesView,
 }
 
 /* ------------------------------------------------------------------------- *
@@ -9545,12 +10230,12 @@ interface DockedPanelProps {
 
 function DockedPanel(props: DockedPanelProps): React.ReactElement {
   const copy = useCopy().panel
-  const ampOnly = props.tabs.length === 1 && props.tabs[0] === 'amp'
   const panelError = React.useSyncExternalStore(subscribePanelError, getPanelError, getPanelError)
   const [menuAnchor, setMenuAnchor] = React.useState<HTMLElement | null>(null)
   const [refresh, setRefresh] = React.useState(0)
   const [actionBusy, setActionBusy] = React.useState<'refresh' | 'rebuild' | 'index' | null>(null)
   const [notice, setNotice] = React.useState<Notice | null>(null)
+  const graphRevisionRef = React.useRef<string | null>(null)
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
   const [search, setSearch] = React.useState<SearchState>({ status: 'idle', hits: [] })
@@ -9618,10 +10303,9 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
   // from the previous view would hide the manifest at the top. Reset it when
   // the single AMP route mounts or is re-entered.
   React.useEffect(() => {
-    if (!ampOnly) return
     const element = scrollRef.current
     if (element !== null) element.scrollTop = 0
-  }, [ampOnly, navigation.view])
+  }, [navigation.view, props.sessionId])
 
   // Minimized content is unmounted, so abandon any action spinner with it.
   React.useEffect(() => {
@@ -9635,11 +10319,62 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     setSearch({ status: 'idle', hits: [] })
   }, [])
 
+  const navigationSessionRef = React.useRef(props.sessionId)
+  React.useLayoutEffect(() => {
+    if (navigationSessionRef.current === props.sessionId) return
+    navigationSessionRef.current = props.sessionId
+    const next = view === 'insight-detail' ? parseInsightDetailId(id)?.kind ?? 'cognition'
+      : view === 'agent' ? 'agents' : view === 'preview' ? 'files' : view
+    lastViewRef.current = next
+    lastPathRef.current = null
+    outlineScrollRef.current = 0
+    pendingScrollRef.current = null
+    dispatchNavigation({ type: 'navigate', view: next, path: null, id: null })
+    setSearchOpen(false)
+    clearSearch()
+    graphRevisionRef.current = null
+    mirrorHash(props.side, next)
+  }, [props.sessionId, props.side, view, id, clearSearch])
+
   React.useEffect(() => {
     if (props.expanded) return
     setSearchOpen(false)
     clearSearch()
   }, [props.expanded, clearSearch])
+
+  // An agent may index files while this panel is open. Poll only the visible
+  // session's bounded revision; a changed graph invalidates the active view.
+  React.useEffect(() => {
+    if (!props.expanded || props.sessionId === null || typeof window.setInterval !== 'function') return
+    let active = true
+    let pending = false
+    const check = (): void => {
+      if (pending || document.hidden) return
+      pending = true
+      void fetchGraph(`/graph/revision?session=${encodeURIComponent(props.sessionId as string)}`).then((outcome) => {
+        if (!active || !outcome.ok) return
+        const record = asRecord(outcome.value)
+        const root = asString(record?.root)
+        const version = asString(record?.version)
+        if (root === undefined || version === undefined) return
+        const current = `${root}\u0000${version}`
+        if (graphRevisionRef.current !== null && graphRevisionRef.current !== current) {
+          searchSeq.current += 1
+          setSearch({ status: 'idle', hits: [] })
+          setRefresh((previous) => previous + 1)
+        }
+        graphRevisionRef.current = current
+      }).finally(() => { pending = false })
+    }
+    check()
+    const timer = window.setInterval(check, 5000)
+    document.addEventListener('visibilitychange', check)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', check)
+    }
+  }, [props.expanded, props.sessionId])
 
   const togglePanel = (): void => {
     setMenuAnchor(null)
@@ -9683,7 +10418,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     const sequence = searchSeq.current + 1
     searchSeq.current = sequence
     setSearch({ status: 'loading', hits: [] })
-    void fetchGraph(`/graph/search?q=${encodeURIComponent(term)}`).then((outcome) => {
+    void fetchGraph(withPath(`/graph/search?q=${encodeURIComponent(term)}`, null, props.sessionId)).then((outcome) => {
       if (searchSeq.current !== sequence) return
       setSearch(
         outcome.ok
@@ -9691,7 +10426,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           : { status: 'error', hits: [] },
       )
     })
-  }, [])
+  }, [props.sessionId])
 
   /** Immediate search (Enter or the error-state retry); bypasses the debounce. */
   const submitSearch = React.useCallback((): void => {
@@ -9793,7 +10528,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     setMenuAnchor(null)
     setActionBusy('rebuild')
     captureScroll()
-    void rebuildGraph().then((outcome) => {
+    void rebuildGraph(props.sessionId).then((outcome) => {
       if (!outcome.ok) {
         setActionBusy(null)
         if (outcome.status === 409 || outcome.code === 'BUSY') {
@@ -9836,7 +10571,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     if (actionBusy !== null || !props.expanded) return
     setActionBusy('index')
     captureScroll()
-    void indexGraph().then((outcome) => {
+    void indexGraph(props.sessionId).then((outcome) => {
       if (!outcome.ok) {
         setActionBusy(null)
         if (outcome.status === 409 || outcome.code === 'BUSY') {
@@ -9885,6 +10620,10 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     }
     // The agent detail page keeps the title bar and its back button; Escape is
     // the keyboard path back to the roster (deep-linked pages included).
+    if (view === 'insight-detail') {
+      go(parseInsightDetailId(id)?.kind ?? 'cognition')
+      return
+    }
     if (view === 'agent') {
       go('agents')
       return
@@ -10057,7 +10796,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     h(
       MuiCollapse,
       {
-        in: searchOpen && props.expanded && !ampOnly,
+        in: searchOpen && props.expanded,
         orientation: 'horizontal',
         collapsedSize: 0,
         timeout: props.reducedMotion ? 0 : SEARCH_ANIMATION_MS,
@@ -10124,7 +10863,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           sx: CRASH_CHIP_SX,
         }),
       ),
-    props.expanded && !ampOnly
+    props.expanded
       ? h(
         Tip,
         { label: searchOpen ? copy.tip.closeSearch : copy.tip.search },
@@ -10183,19 +10922,19 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
     h(
       MuiBox,
       { sx: PANEL_CONTENT_SX },
-      ampOnly
-        ? null
-        : h(
-          MuiBox,
-          { sx: SCOPE_BAR_SX },
-          outlineBack,
-          scopeChip,
-          h(
-            MuiTypography,
-            { variant: 'caption', color: 'text.secondary', noWrap: true, sx: READ_ONLY_SX },
-            copy.readOnly,
-          ),
+      h(
+        MuiBox,
+        { sx: SCOPE_BAR_SX },
+        outlineBack,
+        view === 'missions' || view === 'goals' || view === 'plans'
+          ? h(MuiTypography, { variant: 'caption', color: 'text.secondary', sx: { flex: 1, overflowWrap: 'anywhere' } }, `${copy.insightScopes.session}: ${props.sessionId ?? copy.amp.noSession}`)
+          : scopeChip,
+        h(
+          MuiTypography,
+          { variant: 'caption', color: 'text.secondary', noWrap: true, sx: READ_ONLY_SX },
+          copy.readOnly,
         ),
+      ),
       h(
         MuiCard,
         { elevation: 0, square: true, sx: CARD_SX },
@@ -10208,7 +10947,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
               // The Outline view stays mounted across its global/local path
               // change so the global collapse state and scroll survive the trip;
               // every other view remounts per selection for its fade.
-              key: view === 'outline' ? 'view:outline' : `view:${view}:${viewPath ?? ''}:${id ?? ''}`,
+              key: view === 'outline' ? `view:outline:${props.sessionId ?? ''}` : `view:${view}:${viewPath ?? ''}:${id ?? ''}:${props.sessionId ?? ''}`,
               in: true,
               appear: true,
               timeout: props.reducedMotion ? 0 : VIEW_FADE_MS,
@@ -10217,6 +10956,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
               'div',
               { style: TRANSITION_SURFACE_STYLE },
               h(PanelScrollProvider, { target: scrollRef }, h(MuiBox, { sx: { minWidth: 0 } }, h(ActiveView, {
+                view,
                 side: props.side,
                 copy,
                 path: viewPath,
@@ -10231,48 +10971,39 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
           ),
         ),
       ),
-      ampOnly
-        ? null
-        : h(
-        MuiBottomNavigation,
+      h(
+        MuiTabs,
         {
-          showLabels: true,
-          // `agent` belongs to the Agents tab; detail pages such as `preview`
-          // are routed but deliberately not tabs, so no tab is selected.
           value: view === 'agent' && props.tabs.includes('agents')
             ? 'agents'
-            : props.tabs.includes(view)
-              ? view
-              : false,
+            : view === 'insight-detail' ? parseInsightDetailId(id)?.kind ?? 'cognition'
+            : view === 'preview' ? 'files'
+            : props.tabs.includes(view) ? view : false,
+          variant: 'scrollable',
+          scrollButtons: 'auto',
+          allowScrollButtonsMobile: true,
+          'aria-label': copy.title,
           sx: NAV_SX,
           onChange: (_event: React.SyntheticEvent, value: string): void => {
             if (!isPanelView(value) || !props.tabs.includes(value)) return
-            // A tab switch keeps the panel's file selection. Preview additionally
-            // falls back to the last picked file, so "select, then Preview"
-            // never lands on an empty preview.
+            if (value === 'files' || value === 'missions' || value === 'goals' || value === 'plans') {
+              go(value)
+              return
+            }
             const carryPath = path ?? lastPathRef.current
             go(value, carryPath !== null ? { path: carryPath } : undefined)
           },
         },
-        ...props.tabs.map((entry) =>
-          h(MuiBottomNavigationAction, {
-            key: entry,
-            value: entry,
-            label: tabLabel(entry, copy),
-            title: tabTip(entry, copy),
-            icon: h(
-              Tip,
-              { label: tabTip(entry, copy) },
-              h(
-                MuiBox,
-                { component: 'span', sx: { display: 'inline-flex' } },
-                h(TAB_ICONS[entry], { fontSize: 'small' }),
-              ),
-            ),
+        ...props.tabs.map((entry) => h(MuiTab, {
+          key: entry,
+          value: entry,
+          label: tabLabel(entry, copy),
+          title: tabTip(entry, copy),
+          icon: h(TAB_ICONS[entry], { fontSize: 'small' }),
+          iconPosition: 'top',
           sx: NAV_ACTION_SX,
-        }),
+        })),
       ),
-    ),
     ),
   )
 
@@ -10308,9 +11039,7 @@ function DockedPanel(props: DockedPanelProps): React.ReactElement {
         ),
       ),
     ),
-    ampOnly
-      ? null
-      : h(
+    h(
       MuiMenuItem,
       { onClick: rebuild, disabled: actionBusy !== null || !props.expanded },
       h(
@@ -10571,7 +11300,7 @@ const FLOATING_PANEL_BUTTON_SX = {
   '&:hover': { backgroundColor: 'action.hover' },
 }
 
-/** The fixed right-hand column: one AMP attention panel. */
+/** The fixed right-hand column: current-session workspace and coordination views. */
 function CoordinationPanelsColumn(props: PanelProps): React.ReactElement | React.ReactPortal {
   const copy = useCopy().panel
   const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')

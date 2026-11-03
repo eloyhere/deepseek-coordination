@@ -380,10 +380,10 @@ soft 阈值可按 0.30–0.90 的比例编辑；hard 为 0.30–0.98，且必须
 
 | 工具 | 用途 |
 |---|---|
-| `coordination_parse` | 解析工作区文件或给定文本。`path`/`text` 二选一；返回引用、诊断、字符集、截断标记和节点卡片，绝不返回文件正文。 |
-| `coordination_describe` | 按 handle 返回一个 `NodeCard`，可选 `summary`/`description`/`usage`/`purpose`；不返回正文。 |
-| `coordination_chain` | 查询一条有界关系链：dependencies、dependents、satisfies、satisfied_by、baseline、prerequisites、unmet、path、cycle。深度 ≤ 8、链接 ≤ 50、约 1,500 tokens；不返回 AST 或图对象。 |
-| `coordination_read` | 唯一返回文件内容的工具。读字节范围（end 不含）或行范围（1 基，end 含），单次上限 256 KiB / 2,000 行 / 16k tokens。 |
+| `coordination_parse` | 解析工作区文件或给定文本。`path`/`text` 二选一；返回引用、诊断、字符集、截断标记和节点卡片，绝不返回文件正文。`verbosity:"compact"`（默认）每卡只留 `identity/kind/name/行区间`；`verbosity:"full"` 返回完整 NodeCard。 |
+| `coordination_describe` | 按 handle 返回一个 `NodeCard`，可选 `summary`/`description`/`usage`/`purpose`；不返回正文。注册表不再持有该 handle 时回退持久化图并重新注册。 |
+| `coordination_chain` | 查询一条有界关系链：dependencies、dependents、satisfies、satisfied_by、baseline、prerequisites、unmet、path、cycle。深度 ≤ 8、链接 ≤ 50、约 1,500 tokens；不返回 AST 或图对象。节点已索引但关系无边时返回 `diagnostic: { code: "no_links", hint }`。 |
+| `coordination_read` | 唯一返回文件内容的工具。接受 `path` 或 `handle`（handle 可叠加显式行/字节范围）。读字节范围（end 不含）或行范围（1 基，end 含），单次上限 256 KiB / 2,000 行 / 16k tokens。 |
 
 P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/动态 import/符号/注释）、CSS/HTML/Markdown（`@import`/`url()`、script/link/img、链接/图片/标题/front matter/fenced div/公式）、TeX（定理类环境、证明、label/ref、数学、`\input`/`\include`）、通用公式（Markdown/TeX/表格/MathML/OMML/unknown；不求值）、词法依赖图（外部过滤、拓扑序、环、层级、孤立点）。畸形输入产生诊断和 `truncated`，不崩溃。
 
@@ -423,7 +423,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 | 工具 | 返回 |
 |---|---|
-| `coordination_selection` | 读取或修改某 session 的五个选择（含 `command` 与 DSH `preset`）；返回带锁、预设和配置投影的 `SelectionState`。 |
+| `coordination_selection` | 读取或修改某 session 的五个选择（含 `command` 与 DSH `preset`）。读取默认 `view:"summary"`（六个维度、锁定、预设 id/name）；`view:"full"` 返回完整 `SelectionState`。 |
 | `coordination_profession` | 读取当前职能记录；仅在活动任务之前/不存在时设置职能。任务已锁时返回 `PROFESSION_LOCKED`，不改选择。 |
 | `coordination_profession_lock` | 读取活动 Turn 的锁定状态/职能，或指定序号 Turn 的状态。 |
 | `coordination_parse` | 无正文的解析投影（引用、诊断、字符集、截断、卡片）。 |
@@ -493,7 +493,7 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 
 | 检查 | 结果 |
 |---|---|
-| `npm test` | **872 tests，871 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 9 s |
+| `npm test` | **1,159 tests，1,158 pass，1 skipped（仅 GC），0 fail**，Node 24.21.0 上约 9 s |
 | `npm run typecheck` / `npm run test:tsc` | 通过 |
 | `npm run build` | 宿主 + 客户端 bundle 通过；MUI 的 `"use client"` directive 警告不致命 |
 | `npm run pack:check` | OK：运行时 tarball 含四个发布文件 |
@@ -514,6 +514,19 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 9. **profile 里可能仍记录着旧的包 spec。** 请核对实际安装的版本（`dsh --profile <name> --dump-config` 或 profile 的 `package.json`）；安装 0.15.0 tarball 或链接已构建的 checkout，不要假定上一次安装已被升级。
 10. **缓存代理是实验性的、默认关闭。** 品牌 profile 是策略默认值而不是实测值，且只对自动前缀缓存的家族改内容；在已经稳定的会话上收益可能接近零——这正是它藏在开关和状态端点后面的原因。
 11. **AMP 一致性是边界级、不是全量。** 清单、注意帧、回执、事件、claim/unknown、goal/plan（以已记录验收标准为闸门）、账本与检查点已接线并校验；封签信封、warrant 的 hypothesis/修订/授权函数已实现且有测试但没有运行时驱动；hypothesis、治理清单、凭据、联邦与 interrupt 预算尚未实现。[`docs/amp-conformance.md`](docs/amp-conformance.md) §7 逐项列出理由，清单的 `self.limits` 也写明两个未测量字段（校准、token 用量）。
+
+## 工具层与上下文优化（未发布）
+
+本版本收紧模型可见的工具边界，并把上下文预算变成可测数字：
+
+- **统一 handle。** `coordination_parse` 与 `coordination_outline` 对同一节点给出同一个确定性 handle；`coordination_describe` 在注册表不再持有该 handle 时回退持久化图并重新注册；`coordination_read` 接受 `handle`（可叠加显式行/字节范围），经 AMP 0.6.0 的 `outlineAddress` 去掉 BOM 前缀并拒绝反向/越界区间。`path` 始终是通用回退。
+- **输出瘦身。** `coordination_parse` 默认 `verbosity:"compact"`（卡片只留 `identity/kind/name/行区间`），`verbosity:"full"` 才返回完整 NodeCard；`coordination_describe` 只返回一张卡（不再有顶层 `fields` 与重复 `reference`）；`coordination_selection` 读取默认 `view:"summary"`（六维、锁定、预设 id/name），`view:"full"` 返回完整 `SelectionState`。
+- **`tookMs`。** 注册表级装饰器为每个工具结果加入可选 `tookMs`（毫秒），工具实现不重复计时。
+- **结构化截断。** `coordination_outline`（文件/工作区）、`coordination_importation`、`coordination_exportation` 在布尔 `truncated` 外返回 `truncation: { returned, total, truncated, next? }`；`next` 给出后续调用（`limit=…` 或 `path=…`）。
+- **每轮 AMP 块。** 上限 4,000 字符（原 8,000），字符串裁剪 160 字符，职责/使命/目标/计划/任务/知识路径分别最多 6/3/3/2/3/6；职责按内容排序（rank 再 id），块以 `stateCard` 收尾并以 `order: 900` 注册。
+- **状态卡。** `stateCard` 含 `objective`、未结 `duties`、执行中 `plan`（`done/total` 与下一任务）、一句 `next`、`constraints` 与 `durable: true`；每步由 SQLite 持久记录重建，聊天压缩不会丢失。`GET /amp/state-card?session=…` 返回当前卡，`?compaction=1` 额外返回最近一次自动压缩前的快照 `{ current, compaction }`。
+- **上下文预算与缓存遥测。** `GET /context/metrics` 返回逐工具字符/近似 token、目录与技能分段哈希、AMP 上限、代理缓存读取比率（`hitRate`、`inputTokens`、`cachedInputTokens`、样本/窗口、前缀漂移）以及当前 `profile`。工具目录从 27,076 字符（≈6,769 tokens）降到 12,283 字符（≈3,071 tokens）。
+- **精简声明与 profile。** wire schema 默认省略逐属性 `description`（类型/枚举/`required`/边界/pattern/默认值保留；`COORDINATION_SCHEMA_DETAIL=full` 恢复）；`COORDINATION_TOOL_PROFILE=core` 只注册读/规划面（16 个工具，≈1,497 tokens），默认 `full` 保留通知/审批等功能。
 
 ## 仓库历史与许可
 
