@@ -577,7 +577,7 @@ implements the same contract natively against its own SQLite database:
 
 Rules enforced (each pinned by `test/control.test.ts`):
 
-1. **Inheritance** `global �� workspace �� session`; the most specific row wins.
+1. **Inheritance** `global → workspace → session`; the most specific row wins.
 2. **Deletion markers**: removing an inherited entry writes a tombstone in the
    narrower scope, so a wider row cannot resurrect it.
 3. **CAS**: `expectedVersion` mismatch is `INVALID_STATE` (HTTP 409); a first
@@ -592,6 +592,6 @@ Rules enforced (each pinned by `test/control.test.ts`):
 
 `src/host/knowledge.ts` records explicit "this file is knowledge" marks
 (`knowledge_file`), scoped `workspace`/`session`, metadata only (title, note,
-tags �� never the body). `coordination_knowledge` and `/graph/knowledge` share
+tags — never the body). `coordination_knowledge` and `/graph/knowledge` share
 that service, and a mark publishes the matching `knowledge` registry record so
 the AMP control surface and the panel cannot disagree.

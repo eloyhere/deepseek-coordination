@@ -1,6 +1,6 @@
 # Changelog
 
-[涓枃](CHANGELOG.zh-CN.md) · English
+[中文](CHANGELOG.zh-CN.md) · English
 
 All notable changes to this repository are documented in this file.
 
@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.23.5 | 2026-11-03 | — | Repair garbled documentation text |
 | 0.23.4 | 2026-11-03 | — | No-timeout takeover dialog and MUI restyle |
 | 0.23.3 | 2026-11-03 | — | Localized plugin-list metadata refresh |
 | 0.23.2 | 2026-11-03 | — | Chinese README tool and route table sync |
@@ -76,6 +77,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
+
+## [0.23.5] — 2026-11-03
+
+### Fixed
+
+- Restored garbled Chinese navigation labels, quotation marks and inline-code delimiters in the English README and changelog.
+- Restored scope-inheritance arrows and the metadata-only separator in the AMP conformance document.
+- Scanned project-owned source, tests, locales, skills, scripts, workflow configuration and documentation for replacement characters, private-use corruption, control characters and common mojibake patterns. Bundled third-party parser tables and mathematical font mappings were reviewed separately and left intact.
 
 ## [0.23.4] — 2026-11-03
 
@@ -152,7 +161,7 @@ Released 2026-11-03. The tool-layer and context-architecture program, plus the f
 - **The tool catalog is dieted, and the diet is measured.** AMP `Goal`/`Plan`/`Duty` arguments now declare a one-line wire schema while `execute` validates the complete local schema with identical rejection messages; the 30-value reference `kind` enum is no longer serialized in every reference slot; the control/environment/knowledge descriptions are shorter. Measured by `GET /context/metrics`, the catalog fell from 27,076 to 18,866 characters (≈6,769 → ≈4,717 tokens) with 23 tools.
 - **Truncated list projections say how much is missing and how to continue.** `coordination_outline` (file and workspace), `coordination_importation` and `coordination_exportation` now return `truncation: { returned, total, truncated, next? }` alongside the boolean `truncated`. `total` is the number of rows the projection held before the cap, so "1 of 3" is distinguishable from "1 of 300"; `next` names the follow-up call (`limit=2`, `path=src/a.ts`) and is omitted when the cap is already at its maximum.
 - **Cache telemetry joins the context budget.** `GET /context/metrics` now reports section hashes for the tool catalog and the localized skill catalog (a changed hash predicts a prefix miss after a locale switch or description edit) and the proxy's cache read ratio: `hitRate`, `inputTokens`, `cachedInputTokens`, samples, window and prefix drift. The cache block reads `proxy.status()`, so it is zeros until the proxy forwards a request, and it never includes prompt content.
-- **A durable state card closes the AMP block and survives compaction.** Each per-turn block now ends with `stateCard`: `objective` (the active goal's statement), open `duties` (count plus three ids), the executing `plan` with `done/total` and its next task, one imperative `next` action, and the effective interaction/scenario `constraints`. It is derived from the plugin's SQLite rows on every step, so compacting chat history — which only rewrites messages — cannot drop it, and `durable: true` states that contract. `GET /amp/state-card?session=… returns the same object; the README's old "8,000 characters / 8 duties" paragraph is corrected to the shipped 4,000-character / 6-duty caps.
+- **A durable state card closes the AMP block and survives compaction.** Each per-turn block now ends with `stateCard`: `objective` (the active goal's statement), open `duties` (count plus three ids), the executing `plan` with `done/total` and its next task, one imperative `next` action, and the effective interaction/scenario `constraints`. It is derived from the plugin's SQLite rows on every step, so compacting chat history — which only rewrites messages — cannot drop it, and `durable: true` states that contract. `GET /amp/state-card?session=…` returns the same object; the README's old "8,000 characters / 8 duties" paragraph is corrected to the shipped 4,000-character / 6-duty caps.
 - **Wire schemas are lean by default.** Per-property `description` strings (4,198 characters, ~22% of the catalog) are no longer declared to the model; types, enums, `required`, bounds, patterns and defaults remain, so DSH validates exactly as before and every tool still validates against its own schema. The catalog fell from 18,866 to 12,283 characters (≈4,717 → ≈3,071 tokens). `COORDINATION_SCHEMA_DETAIL=full` restores the documented declarations. `/context/metrics` now also reports `parameterDescriptionChars` per tool, which is how the 4,198 was measured.
 - **A `core` tool profile reaches the ~2k-token budget.** `COORDINATION_TOOL_PROFILE=core` registers the read/planning surface only (16 tools) and skips control, environment, knowledge, notification, approval and the two workspace mutation tools; from the same per-tool metrics that surface is 5,989 characters ≈ 1,497 tokens, with `/context/metrics` reporting the active `profile`. The default stays `full` (23 tools, 3,071 tokens), because notification and approval are features rather than administration.
 - **Automatic compaction now snapshots the state card before rewriting history.** The plugin owns the proposal (`agent/pre-step` → `maybeCompact`), so it captures `stateCardOf(session)` immediately before calling DSH's `compactIfNeeded`, stores it with the per-session compaction bookkeeping, and includes it in the `compaction/auto` event. `GET /amp/state-card?compaction=1` returns `{ current, compaction }`, making the boundary auditable; the live card is rebuilt from durable rows after compaction, so nothing needs to be re-injected from the summary. Tests drive the real `CoordinationService` with a fake `CompactionPort` (captured card, refused compaction keeps none) and cover the route shape.

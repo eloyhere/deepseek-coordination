@@ -1,10 +1,10 @@
 # deepseek-coordination
 
-**English** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [涓枃鏇存柊鏃ュ織](CHANGELOG.zh-CN.md)
+**English** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md) · [中文更新日志](CHANGELOG.zh-CN.md)
 
 A dual-face Cordis plugin for DeepSeek Harness: the host owns durable coordination state, model-facing tools, an AMP v0.1 protocol layer and an HTTP surface; the client provides docked panels, settings, model-triggered notifications and the service-level takeover dialog.
 
-**Current source: v0.23.4, schema 28.** The 0.23.0 release is the tool-layer and context-architecture program: unified handles, trimmed outputs, `tookMs` on every result, structured truncation, a lean and measured catalog, cache telemetry, a durable state card and a pre-compaction snapshot. 0.23.1 fixes the release workflow's `test:tsc` over the new suites; 0.23.2 syncs the Chinese README's tool and route tables; 0.23.3 refreshes the plugin-list display metadata (`meta.title`/`meta.description`) in both bundled locales; 0.23.4 makes takeover dialogs wait without a timeout (no host-default fallback on cancel) and restyles them with MUI primitives. Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
+**Current source: v0.23.5, schema 28.** The 0.23.0 release is the tool-layer and context-architecture program: unified handles, trimmed outputs, `tookMs` on every result, structured truncation, a lean and measured catalog, cache telemetry, a durable state card and a pre-compaction snapshot. 0.23.1 fixes the release workflow's `test:tsc` over the new suites; 0.23.2 syncs the Chinese README's tool and route tables; 0.23.3 refreshes the plugin-list display metadata (`meta.title`/`meta.description`) in both bundled locales; 0.23.4 makes takeover dialogs wait without a timeout (no host-default fallback on cancel) and restyles them with MUI primitives. Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
 
 | Status | Meaning in this README |
 |---|---|
@@ -61,7 +61,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.23.4.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.23.5.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -202,9 +202,9 @@ The historical build was installed into `%DSH_HOME%\profiles\desktop` with `dsh 
 | Host half loads in the running app | `GET /deepseek-coordination/ping` → `{ ok: true, —}`; `GET /amp/identity` returns a real Ed25519 `kid` |
 | Manifest is signed, and verifiable *outside* the plugin | `digestMatches: true`, `signatureValid: true`, `kidMatches: true` with an independent canonical-JSON + WebCrypto verifier |
 | Real turns produce artifacts | 19 ledger entries: 3 frames (4 slots, 2 exclusions each), `turn.opened` mappings, tool receipts, a `reflect` receipt for a closed turn, and mirrored `pipeline.report` events with their prose elided |
-| Frames are served | `GET /amp/frame?session=… → mode, cycle, digest, slots with `why`, `ignored` with `revisit_if` |
+| Frames are served | `GET /amp/frame?session=…` → mode, cycle, digest, slots with `why`, `ignored` with `revisit_if` |
 | Checkpoints seal the live chain | `POST /amp/checkpoint` → `seq 0` over `count 19`; `GET /amp/verify` → `{ ok: true, reasons: [] }` |
-| Client module is served | `plugins/??deepseek-coordination/client.js&rev=… →3,441,910 bytes, present in `__DSH_BOOT__.entries` |
+| Client module is served | `plugins/??deepseek-coordination/client.js&rev=…` →3,441,910 bytes, present in `__DSH_BOOT__.entries` |
 
 The live run also caught a real defect: `coordination_selection` returned a value DSH rejected as "not lossless JSON". 0.17.2 omits absent projection fields and detaches every tool result through `jsonSafe` before it crosses the boundary. Two operational facts matter:
 
@@ -217,7 +217,7 @@ The five dimensions are session state, not controls. This plugin ships **no drop
 
 | Dimension | Values | What the service enforces |
 |---|---|---|
-| 权限 Permission | DSH preset catalog, or a neutral “follow DSH” state | Written to DSH immediately through `ctx.permissionPresets` (or `POST /permission`) and never persisted in the coordination DB. There is no plugin permission control; the local 权限接管 switch only hides DSH's own access-mode button. |
+| 权限 Permission | DSH preset catalog, or a neutral “follow DSH” state | Written to DSH immediately through `ctx.permissionPresets` (or `POST /permission`) and never persisted in the coordination DB. There is no plugin permission control; the local “权限接管” switch only hides DSH's own access-mode button. |
 | 职能 Profession | decision / outcome / resource / personnel / qualification / execution | Locked for the active task. A different value is refused with `PROFESSION_LOCKED`; changing it means `POST /profession/rebuild` or `/profession/abandon` through the tool/route surface — there is no plugin dialog. |
 | 交互 Interaction | emotion / think / heuristic / converge / orchestrate | Stored for the next turn; frozen while the active turn has a non-cleared goal. |
 | 情景 Scene | dialogue / writing / office / research / engineering / iterate | Stored for the next turn. `writing` sits between `dialogue` and `office`; the scene policy is read by the turn pipeline. |
@@ -391,9 +391,9 @@ Search is configured by environment, not by the settings catalog: `COORDINATION_
 - With `ui.takeover` on, `TakeoverGate` listens to DSH's `approval/request` and `user-questions/request` waterfalls. It records a durable pending row, emits `takeover/pending`, and waits for a human answer delivered through the client routes.
 - The listener registers with `{ prepend: true }`. DSH's own approval and question UI listens to the same waterfalls, and a listener registered later never runs once the GUI claims the request. Note that a deployment approval policy of `never` makes DSH reject before the waterfall, so no dialog can appear regardless of this switch.
 - A pending window has **no timeout**: it waits for the operator until answered or cancelled. Cancel is fail-closed and never delegates: an approval settles `cancelled`, a question settles with no selections, so DSH's default dialog never appears after the custom one closes. Only an aborted request signal or plugin unload calls `next()`, and the gate never turns “nobody answered” into `allowed-once` or a fabricated answer. `unavailable` is the host's fail-closed outcome and is rejected as a user decision.
-- The dialog polls `/takeover/pending` every 1 s only while the local 权限接管 switch is on, the session id is real and the document is visible. The first pending request is rendered; a `1 / N` badge appears for a queue.
+- The dialog polls `/takeover/pending` every 1 s only while the local “权限接管” switch is on, the session id is real and the document is visible. The first pending request is rendered; a `1 / N` badge appears for a queue.
 - Approval offers 仅本次允许 / 拒绝 / 取消; only `allowed-once` and `rejected` are submitted, while cancel/Esc/backdrop use the cancel route (fail-closed, with no host dialog afterwards). Questions render radios for single-select, checkboxes for multi-select and optional free text; submit stays disabled until every question is answered.
-- **Both switches are needed**: host `ui.takeover` (default `false`) opens the gate; the local 权限接管 switch makes the dialog poll. With the host switch off, the gate delegates immediately and there is nothing to show.
+- **Both switches are needed**: host `ui.takeover` (default `false`) opens the gate; the local “权限接管” switch makes the dialog poll. With the host switch off, the gate delegates immediately and there is nothing to show.
 
 ## Cache proxy (experimental, off by default)
 
@@ -513,7 +513,7 @@ Two profiles choose the surface: `full` (default, 23 tools) and **`core`** (`COO
 | `coordination_chain` | Bounded `ChainProjection` plus a `diagnostic` when an indexed workspace has no edges for the requested relation. |
 | `coordination_read` | The only content-returning tool; capped byte/line range; accepts `path` or a node `handle` (node range defaults, BOM-correct offsets). |
 | `coordination_file` | Bounded workspace tree of indexed paths. `mode:"paths"` returns a flat path list (directories end with `/`) at roughly one line per entry; `mode:"tree"` (default) keeps the nested objects. |
-| `coordination_outline` | Structure outline of one file or the workspace. A capped result carries `truncation: { returned, total, truncated, next }`, where `next` names the follow-up call (`limit=…` or `path=…). |
+| `coordination_outline` | Structure outline of one file or the workspace. A capped result carries `truncation: { returned, total, truncated, next }`, where `next` names the follow-up call (`limit=…` or `path=…`). |
 | `coordination_importation` | Import rows of one file or the workspace, with the same `truncation` envelope. |
 | `coordination_exportation` | Export rows of one file or the workspace. |
 
@@ -611,7 +611,7 @@ Known limitations, stated rather than hidden:
 6. **`parser.enabled` still needs registration.** The other file-layer limits retune live; turning the parser off fails closed immediately, but adding/removing the four tools requires the next registration (restart).
 7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog and settings-render tests, the panel render tests and the takeover/bridge/notification/integration tests; visual verification remains manual/screenshot-based.
 8. **Node engine is `>=24.0.0`.** The `attention-manifest-protocol` runtime dependency requires Node 24; CI and this verification use 24.21.0.
-9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.23.4 tarball or link the built checkout rather than assuming a previous install was upgraded.
+9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.23.5 tarball or link the built checkout rather than assuming a previous install was upgraded.
 10. **The cache proxy is experimental and off by default.** Its brand profiles are policy defaults, not measurements, and it only rewrites content for families with an automatic prefix cache; the observable gain on a stable session may be near zero, which is why it ships behind a flag and a status endpoint rather than enabled.
 11. **AMP conformance is boundary-deep, not complete.** Manifests, frames, receipts, events, claims/unknowns, goal/plan pairs (gated on recorded acceptance), the ledger and checkpoints are wired and verified; the sealed envelope and the warrant's hypothesis/revision/authorization functions are implemented and tested but not driven by any path, and hypotheses, governance manifests, credentials, federation and interrupt budgets are not implemented. [`docs/ampConformance.md`](docs/ampConformance.md) §7 lists each gap with its reason, and the manifest's `self.limits` states the two unmeasured fields (calibration, token usage).
 
