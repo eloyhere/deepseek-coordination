@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.23.0 | 2026-11-03 | — | Tool-layer and context-architecture optimization |
 | 0.22.4 | 2026-10-29 | —| Scoped SQL hydration for graph reads |
 | 0.22.3 | 2026-10-29 | —| Graph rows partitioned by workspace |
 | 0.22.2 | 2026-10-29 | —| Settings white-screen fix |
@@ -72,9 +73,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
 
-## [Unreleased]
+## [0.23.0] — 2026-11-03
 
-Work merged after the 0.22.4 release and not yet versioned (source audited 2026-11-03).
+Released 2026-11-03. The tool-layer and context-architecture program, plus the features merged after the 0.22.4 release (source audited 2026-11-03).
 
 ### Added
 

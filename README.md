@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host owns durable coordination state, model-facing tools, an AMP v0.1 protocol layer and an HTTP surface; the client provides docked panels, settings, model-triggered notifications and the service-level takeover dialog.
 
-**Current source: v0.22.4, schema 28.** Work merged after the 0.22.4 release but not yet versioned is listed under `[Unreleased]` in the [changelog](CHANGELOG.md). Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
+**Current source: v0.23.0, schema 28.** The 0.23.0 release is the tool-layer and context-architecture program: unified handles, trimmed outputs, `tookMs` on every result, structured truncation, a lean and measured catalog, cache telemetry, a durable state card and a pre-compaction snapshot. Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
 
 | Status | Meaning in this README |
 |---|---|
@@ -61,7 +61,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.22.4.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.23.0.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -611,12 +611,12 @@ Known limitations, stated rather than hidden:
 6. **`parser.enabled` still needs registration.** The other file-layer limits retune live; turning the parser off fails closed immediately, but adding/removing the four tools requires the next registration (restart).
 7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog and settings-render tests, the panel render tests and the takeover/bridge/notification/integration tests; visual verification remains manual/screenshot-based.
 8. **Node engine is `>=24.0.0`.** The `attention-manifest-protocol` runtime dependency requires Node 24; CI and this verification use 24.21.0.
-9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.22.4 tarball or link the built checkout rather than assuming a previous install was upgraded.
+9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.23.0 tarball or link the built checkout rather than assuming a previous install was upgraded.
 10. **The cache proxy is experimental and off by default.** Its brand profiles are policy defaults, not measurements, and it only rewrites content for families with an automatic prefix cache; the observable gain on a stable session may be near zero, which is why it ships behind a flag and a status endpoint rather than enabled.
 11. **AMP conformance is boundary-deep, not complete.** Manifests, frames, receipts, events, claims/unknowns, goal/plan pairs (gated on recorded acceptance), the ledger and checkpoints are wired and verified; the sealed envelope and the warrant's hypothesis/revision/authorization functions are implemented and tested but not driven by any path, and hypotheses, governance manifests, credentials, federation and interrupt budgets are not implemented. [`docs/ampConformance.md`](docs/ampConformance.md) §7 lists each gap with its reason, and the manifest's `self.limits` states the two unmeasured fields (calibration, token usage).
 
 ## Repository history and license
 
-`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles; `0.12.0` added the per-ecosystem domain layer, the chain `kind` filter, the directory layer and `NodeRecord`; `0.15.0` added AMP v0.1 conformance, now backed by the official npm runtime; `0.16`–`0.22` added warrant-validated claims, takeover windows as AMP attention requests, the plain-language panel and its story view, durable planning artifacts and the single-panel layout. Work merged after 0.22.4 is listed under `[Unreleased]` in the changelog; earlier states remain in git history and tags.
+`0.1.x` is **dsh-os**, a different OS-interaction project, no longer on the branch tip; `0.2.0` became the DSH plugin bundle; `0.3`–`0.6` moved the UI from Angular to MDUI to plain React to Material UI; `0.7`–`0.9` added the five dropdowns, i18n, profession lock, takeover, compaction, the P0 parser, the domain model and the shared data structures; `0.10.0` added the settings catalog, the four file tools, the second data-structure pass and the verified tarball; `0.11.0` added durable settings, DSH-owned reasoning and the experimental cache proxy with brand profiles; `0.12.0` added the per-ecosystem domain layer, the chain `kind` filter, the directory layer and `NodeRecord`; `0.15.0` added AMP v0.1 conformance, now backed by the official npm runtime; `0.16`–`0.22` added warrant-validated claims, takeover windows as AMP attention requests, the plain-language panel and its story view, durable planning artifacts and the single-panel layout; `0.23.0` added the tool-layer and context-architecture program. Earlier states remain in git history and tags.
 
 Apache-2.0 © 2026 Eloy Kim. See [LICENSE](LICENSE). Source: [github.com/eloyhere/deepseek-coordination](https://github.com/eloyhere/deepseek-coordination).
