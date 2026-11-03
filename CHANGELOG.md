@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.23.6 | 2026-11-03 | — | Republish documentation encoding fixes |
 | 0.23.5 | 2026-11-03 | — | Repair garbled documentation text |
 | 0.23.4 | 2026-11-03 | — | No-timeout takeover dialog and MUI restyle |
 | 0.23.3 | 2026-11-03 | — | Localized plugin-list metadata refresh |
@@ -77,6 +78,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
+
+## [0.23.6] — 2026-11-03
+
+### Release
+
+- Republished the documentation encoding fixes as a new patch version because npm does not allow overwriting the published 0.23.5 package.
 
 ## [0.23.5] — 2026-11-03
 
