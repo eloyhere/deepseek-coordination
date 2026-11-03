@@ -514,8 +514,8 @@ function control(spec: ControlSpec): SettingsControl {
 const SESSION_CONTROLS: readonly SettingsControl[] = [
   control({ group: 'session', copy: 'maxTurnPerSession', key: 'maxTurnPerSession', kind: 'number', min: 1, max: 1_000_000, step: 1, wired: true }),
   control({ group: 'session', copy: 'defaultLease', key: 'defaultLease', kind: 'number', min: 1000, max: 86_400_000, step: 1000, wired: true }),
-  // `clarifyTimeout` is the effective takeover/compaction timeout; there is no
-  // second `takeover.timeout` key, so this one row is the only control for it.
+  // `clarifyTimeout` bounds automatic compaction; takeover dialogs never time
+  // out, so this row no longer governs them.
   control({ group: 'session', copy: 'clarifyTimeout', key: 'clarifyTimeout', kind: 'number', min: 1000, max: 600_000, step: 1000, wired: true }),
   control({ group: 'session', copy: 'professionDefault', key: 'defaults.profession', kind: 'enum', options: ProfessionValues, wired: true }),
   control({ group: 'session', copy: 'defaultInteraction', key: 'defaults.interaction', kind: 'enum', options: InteractionValues, wired: true }),

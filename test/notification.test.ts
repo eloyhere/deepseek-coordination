@@ -45,6 +45,9 @@ test('a dialog waits for the user by default and keeps its title', () => {
   assert.equal(request.duration, 0)
   assert.equal(request.anchor, 'top-center')
   assert.equal(request.title, 'Heads up')
+
+  const forced = parseNotificationRequest({ surface: 'dialog', message: 'body', duration: 5000 })
+  assert.equal(forced.duration, 0, 'a dialog ignores an explicit auto-close delay')
 })
 
 test('an explicit duration and anchor win over the defaults', () => {
@@ -151,7 +154,7 @@ test('the per-session queue keeps its newest items and counts the drops', () => 
   assert.deepEqual(notifications.drain(session).map((item) => item.message), ['two', 'three'])
 })
 
-test('undelivered items expire on the clock', () => {
+test('undelivered transient items expire on the clock', () => {
   const clock = new ManualClock(1_700_000_000_000)
   const notifications = new NotificationCenter({ clock })
   notifications.push(session, { surface: 'alert', message: 'stale' })
@@ -163,15 +166,26 @@ test('undelivered items expire on the clock', () => {
   assert.deepEqual(notifications.drain(session), [])
 })
 
+test('an undelivered dialog never expires', () => {
+  const clock = new ManualClock(1_700_000_000_000)
+  const notifications = new NotificationCenter({ clock })
+  notifications.push(session, { surface: 'dialog', message: 'answer me' })
+
+  clock.advance(NOTIFICATION_LIMITS.ttl * 10)
+  assert.equal(notifications.size(session), 1, 'a dialog waits for the operator')
+  assert.deepEqual(notifications.drain(session).map((item) => item.surface), ['dialog'])
+})
+
 test('only the expired items leave a mixed queue', () => {
   const clock = new ManualClock(1_700_000_000_000)
   const notifications = new NotificationCenter({ clock })
   notifications.push(session, { surface: 'alert', message: 'old' })
+  notifications.push(session, { surface: 'dialog', message: 'sticky' })
   clock.advance(60_000)
   notifications.push(session, { surface: 'alert', message: 'new' })
 
   clock.advance(NOTIFICATION_LIMITS.ttl - 60_000 + 1)
-  assert.deepEqual(notifications.drain(session).map((item) => item.message), ['new'])
+  assert.deepEqual(notifications.drain(session).map((item) => item.message), ['sticky', 'new'])
 })
 
 test('an empty session id can never be addressed', () => {

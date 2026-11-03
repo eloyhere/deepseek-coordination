@@ -1764,8 +1764,8 @@ const ZH_CATALOG_FIELDS: Readonly<Record<SettingsCatalogFieldId, SettingsFieldCo
     hint: '资源锁默认租用多久；调用方只能要得更短。',
   },
   clarifyTimeout: {
-    label: '澄清与接管超时',
-    hint: '接管窗口和自动压缩等待答案的毫秒数；这是唯一的超时键。',
+    label: '澄清与压缩超时',
+    hint: '自动压缩等待答案的毫秒数；接管弹窗始终等待用户，不使用此超时。',
   },
   defaultCommand: {
     label: '默认命令',
@@ -2962,8 +2962,8 @@ const EN_CATALOG_FIELDS: Readonly<Record<SettingsCatalogFieldId, SettingsFieldCo
     hint: 'Default resource-lock lease in milliseconds; callers may ask for less.',
   },
   clarifyTimeout: {
-    label: 'Clarify & takeover timeout',
-    hint: 'Milliseconds a takeover or compaction waits for an answer; the only timeout key.',
+    label: 'Clarify & compaction timeout',
+    hint: 'Milliseconds automatic compaction waits for an answer; takeover dialogs wait for the operator instead and never use this timeout.',
   },
   defaultCommand: {
     label: 'Default command',

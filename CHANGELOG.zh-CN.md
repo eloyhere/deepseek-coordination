@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.23.4 | 2026-11-03 | — | 接管弹窗去超时与 MUI 重做 |
 | 0.23.3 | 2026-11-03 | — | 插件列表多语言元数据刷新 |
 | 0.23.2 | 2026-11-03 | — | 中文 README 工具与路由表同步 |
 | 0.23.1 | 2026-11-03 | — | 发布流程测试类型检查修复 |
@@ -72,6 +73,21 @@
 | 0.1.5 | 2026-10-13 | `b29c0e3` | workflow_plan 与缓存实测 |
 | 0.1.2 | 2026-10-13 | `e4fade7` | permissions 在无 permission.json 时可用 |
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
+
+## [0.23.4] — 2026-11-03
+
+### 修复
+
+- **接管弹窗不再超时，关闭后也不会再弹出 DSH 的默认弹窗。** `TakeoverGate` 不再给 pending 窗口挂 `clarifyTimeout`，窗口一直等待用户回答或取消。取消改为 fail-closed：审批结算为 `cancelled`，提问以空选择结算，不再调用 `next()`，因此自定义弹窗关闭后宿主默认弹窗不会跟着出现。只有请求 signal 中止或插件卸载才委托。`clarifyTimeout` 现在只约束自动压缩。
+- **通知的 dialog 永不过期。** 每会话 TTL 跳过 `dialog` 项，dialog 也忽略显式 `duration`；只有 snackbar、alert、popover 会按延迟关闭或过期。
+
+### 变更
+
+- **接管弹窗改用 MUI 原语。** 以 Typography 变体、`Stack` 间距、`Divider`、`Chip`、`Alert`、outlined/contained `Button` 角色与主题色取代手写像素样式；选项描述用 caption，自定义答案解析用 outlined `TextField`，弹窗内容按 paper 滚动，长问卷也能读。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`、`npm run build`、`npm run pack:check`（15 个必需运行时文件齐全）。
 
 ## [0.23.3] — 2026-11-03
 

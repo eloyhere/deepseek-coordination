@@ -31,8 +31,14 @@ import Dialog from '@mui/material/Dialog'
 import DialogTitle from '@mui/material/DialogTitle'
 import DialogContent from '@mui/material/DialogContent'
 import DialogActions from '@mui/material/DialogActions'
+import Alert from '@mui/material/Alert'
+import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
+import Divider from '@mui/material/Divider'
+import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
+import Typography from '@mui/material/Typography'
 import Radio from '@mui/material/Radio'
 import RadioGroup from '@mui/material/RadioGroup'
 import Checkbox from '@mui/material/Checkbox'
@@ -68,10 +74,22 @@ const MuiDialogContent: React.ComponentType<Record<string, unknown>> =
   DialogContent as unknown as React.ComponentType<Record<string, unknown>>
 const MuiDialogActions: React.ComponentType<Record<string, unknown>> =
   DialogActions as unknown as React.ComponentType<Record<string, unknown>>
+const MuiAlert: React.ComponentType<Record<string, unknown>> =
+  Alert as unknown as React.ComponentType<Record<string, unknown>>
+const MuiBox: React.ComponentType<Record<string, unknown>> =
+  Box as unknown as React.ComponentType<Record<string, unknown>>
 const MuiButton: React.ComponentType<Record<string, unknown>> =
   Button as unknown as React.ComponentType<Record<string, unknown>>
+const MuiChip: React.ComponentType<Record<string, unknown>> =
+  Chip as unknown as React.ComponentType<Record<string, unknown>>
+const MuiDivider: React.ComponentType<Record<string, unknown>> =
+  Divider as unknown as React.ComponentType<Record<string, unknown>>
+const MuiStack: React.ComponentType<Record<string, unknown>> =
+  Stack as unknown as React.ComponentType<Record<string, unknown>>
 const MuiTextField: React.ComponentType<Record<string, unknown>> =
   TextField as unknown as React.ComponentType<Record<string, unknown>>
+const MuiTypography: React.ComponentType<Record<string, unknown>> =
+  Typography as unknown as React.ComponentType<Record<string, unknown>>
 const MuiRadio: React.ComponentType<Record<string, unknown>> =
   Radio as unknown as React.ComponentType<Record<string, unknown>>
 const MuiRadioGroup: React.ComponentType<Record<string, unknown>> =
@@ -91,55 +109,18 @@ const TAKEOVER_TITLE_ID = 'deepseek-coordination-takeover-title'
 
 /* ------------------------------------------------------------------------- *
  * Styles
+ *
+ * MUI owns typography, spacing and colour roles here: variants and `sx` scale
+ * with the host theme instead of pinning pixel sizes, and dividers/stack spacing
+ * replace the hand-drawn borders the old form used.
  * ------------------------------------------------------------------------- */
 
-const TITLE_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 8,
-  fontSize: 14,
-  fontWeight: 600,
-  paddingBottom: 4,
-}
-const QUEUE_STYLE: React.CSSProperties = {
-  marginLeft: 'auto',
-  fontSize: 11,
-  fontWeight: 400,
-  padding: '1px 6px',
-  borderRadius: 8,
-  border: '1px solid var(--dsw-alias-separator, #d0d0d0)',
-  color: 'var(--dsw-alias-label-secondary, #666)',
-}
-const HEADING_STYLE: React.CSSProperties = { fontSize: 13, fontWeight: 600, marginBottom: 6 }
-const TOOL_STYLE: React.CSSProperties = {
-  display: 'inline-block',
-  fontSize: 11,
-  padding: '1px 6px',
-  borderRadius: 4,
-  backgroundColor: 'var(--dsw-alias-fill-secondary, rgba(0, 0, 0, 0.06))',
-  marginBottom: 4,
-}
-const REASON_STYLE: React.CSSProperties = { fontSize: 13, lineHeight: 1.45, whiteSpace: 'pre-wrap' }
-const ERROR_STYLE: React.CSSProperties = { margin: '8px 0 0', fontSize: 12, color: '#a15c00' }
-const QUESTION_STYLE: React.CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 4,
-  paddingTop: 8,
-  marginTop: 8,
-  borderTop: '1px solid var(--dsw-alias-separator, #e0e0e0)',
-}
-const QUESTION_HEADER_STYLE: React.CSSProperties = { fontSize: 11, opacity: 0.7 }
-const QUESTION_TEXT_STYLE: React.CSSProperties = { fontSize: 13, fontWeight: 600 }
-const DETAIL_STYLE: React.CSSProperties = { fontSize: 12, opacity: 0.8, whiteSpace: 'pre-wrap' }
-const OPTIONS_STYLE: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 0 }
-const OPTION_DESCRIPTION_STYLE: React.CSSProperties = {
-  display: 'block',
-  fontSize: 11,
-  opacity: 0.7,
-  whiteSpace: 'pre-wrap',
-}
-const CUSTOM_STYLE: React.CSSProperties = { marginTop: 4 }
+const TITLE_SX = { pb: 1.5, display: 'flex', alignItems: 'center', gap: 1 }
+const ACTIONS_SX = { px: 3, pb: 2, pt: 1.5, gap: 1 }
+const OPTION_SX = { alignItems: 'flex-start', m: 0, py: 0.5, width: '100%' }
+const QUESTION_SX = { pt: 0.5 }
+const OPTION_LABEL_SX = { display: 'flex', flexDirection: 'column', gap: 0.25, py: 0.25 }
+const CUSTOM_SX = { mt: 1 }
 
 /* ------------------------------------------------------------------------- *
  * Payload narrowing (the host payload is untrusted shape)
@@ -427,19 +408,26 @@ function TakeoverRequest(props: {
     }
   }
 
-  const button = (label: string, onClick: () => void, disabled: boolean): React.ReactElement =>
-    React.createElement(MuiButton, { size: 'small', onClick, disabled }, label)
+  type ButtonVariant = 'text' | 'outlined' | 'contained'
+  const button = (
+    label: string,
+    onClick: () => void,
+    disabled: boolean,
+    variant: ButtonVariant = 'text',
+    extra: Record<string, unknown> = {},
+  ): React.ReactElement =>
+    React.createElement(MuiButton, { size: 'small', variant, onClick, disabled, ...extra }, label)
 
   const actions: React.ReactElement[] = []
   if (item.type === 'approval' && approval !== null) {
     actions.push(
-      button(takeover.allowOnce, () => { answerApproval('allowed-once') }, busy),
-      button(takeover.reject, () => { answerApproval('rejected') }, busy),
+      button(takeover.allowOnce, () => { answerApproval('allowed-once') }, busy, 'contained'),
+      button(takeover.reject, () => { answerApproval('rejected') }, busy, 'outlined', { color: 'error' }),
       button(takeover.cancel, close, busy),
     )
   } else if (item.type === 'question' && questions.length > 0) {
     actions.push(
-      button(takeover.submit, submitQuestions, busy || !complete),
+      button(takeover.submit, submitQuestions, busy || !complete, 'contained'),
       button(takeover.cancel, close, busy),
     )
   } else {
@@ -448,11 +436,9 @@ function TakeoverRequest(props: {
   }
 
   const heading = item.type === 'approval' ? takeover.approvalTitle : takeover.questionTitle
-  const content: React.ReactNode[] = [
-    React.createElement('div', { key: 'heading', style: HEADING_STYLE }, heading),
-  ]
+  const body: React.ReactNode[] = []
   if (item.type === 'approval') {
-    content.push(React.createElement(ApprovalBody, {
+    body.push(React.createElement(ApprovalBody, {
       key: 'approval',
       copy,
       locale: props.locale,
@@ -460,10 +446,11 @@ function TakeoverRequest(props: {
     }))
   } else {
     if (questions.length === 0) {
-      content.push(React.createElement('p', { key: 'empty', style: ERROR_STYLE }, takeover.hostError))
+      body.push(React.createElement(MuiAlert, { key: 'empty', severity: 'error', variant: 'outlined' }, takeover.hostError))
     }
-    for (const question of questions) {
-      content.push(React.createElement(QuestionBlock, {
+    questions.forEach((question, index) => {
+      if (index > 0) body.push(React.createElement(MuiDivider, { key: `divider-${question.id}` }))
+      body.push(React.createElement(QuestionBlock, {
         key: question.id,
         copy,
         question,
@@ -473,10 +460,10 @@ function TakeoverRequest(props: {
           setSelection((previous) => ({ ...previous, [question.id]: next }))
         },
       }))
-    }
+    })
   }
   if (error !== null) {
-    content.push(React.createElement('p', { key: 'error', style: ERROR_STYLE, role: 'alert' }, error))
+    body.push(React.createElement(MuiAlert, { key: 'error', severity: 'error', variant: 'outlined' }, error))
   }
 
   return React.createElement(
@@ -486,25 +473,39 @@ function TakeoverRequest(props: {
       onClose: close,
       maxWidth: 'sm',
       fullWidth: true,
+      scroll: 'paper',
       'aria-labelledby': TAKEOVER_TITLE_ID,
     },
     React.createElement(
       MuiDialogTitle,
-      { id: TAKEOVER_TITLE_ID, sx: TITLE_STYLE },
-      takeover.title,
+      { id: TAKEOVER_TITLE_ID, sx: TITLE_SX },
+      React.createElement(
+        MuiTypography,
+        { variant: 'h6', component: 'span', sx: { fontWeight: 600 } },
+        takeover.title,
+      ),
       props.queueTotal > 1
-        ? React.createElement(
-          'span',
-          { style: QUEUE_STYLE },
-          fillTemplate(takeover.queueLabel, {
+        ? React.createElement(MuiChip, {
+          size: 'small',
+          variant: 'outlined',
+          label: fillTemplate(takeover.queueLabel, {
             index: String(props.queueIndex),
             total: String(props.queueTotal),
           }),
-        )
+        })
         : null,
     ),
-    React.createElement(MuiDialogContent, null, ...content),
-    React.createElement(MuiDialogActions, null, ...actions),
+    React.createElement(
+      MuiDialogContent,
+      { dividers: true },
+      React.createElement(
+        MuiStack,
+        { spacing: 2 },
+        React.createElement(MuiTypography, { variant: 'subtitle1', sx: { fontWeight: 600 } }, heading),
+        ...body,
+      ),
+    ),
+    React.createElement(MuiDialogActions, { sx: ACTIONS_SX }, ...actions),
   )
 }
 
@@ -515,22 +516,36 @@ function ApprovalBody(props: {
 }): React.ReactElement {
   const approval = props.approval
   if (approval === null) {
-    return React.createElement('p', { style: ERROR_STYLE }, props.copy.takeover.hostError)
+    return React.createElement(MuiAlert, { severity: 'error', variant: 'outlined' }, props.copy.takeover.hostError)
   }
   const reason = localizedReason(approval, props.locale)
   const reasonNode = reason.length === 0
     ? null
-    : approval.reason.length > 0 && approval.reason !== reason
+    : (() => {
+      const text = React.createElement(
+        MuiTypography,
+        {
+          variant: 'body2',
+          component: 'div',
+          sx: { whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'text.secondary' },
+        },
+        reason,
+      )
       // The localized sentence is on screen; the original stays available.
-      ? React.createElement(MuiTooltip, { title: approval.reason, placement: 'top', describeChild: true },
-        React.createElement('span', { style: REASON_STYLE }, reason))
-      : React.createElement('span', { style: REASON_STYLE }, reason)
+      return approval.reason.length > 0 && approval.reason !== reason
+        ? React.createElement(MuiTooltip, { title: approval.reason, placement: 'top', describeChild: true }, text)
+        : text
+    })()
   return React.createElement(
-    'div',
-    null,
+    MuiStack,
+    { spacing: 1.25 },
     approval.toolName.length === 0
       ? null
-      : React.createElement('div', { style: TOOL_STYLE }, approval.toolName),
+      : React.createElement(
+        MuiBox,
+        null,
+        React.createElement(MuiChip, { size: 'small', variant: 'outlined', label: approval.toolName }),
+      ),
     reasonNode,
   )
 }
@@ -556,12 +571,17 @@ function QuestionBlock(props: {
   }
   const optionLabel = (option: TakeoverOptionView): React.ReactNode =>
     React.createElement(
-      'span',
-      null,
-      option.label,
+      MuiBox,
+      { sx: OPTION_LABEL_SX },
+      React.createElement(MuiTypography, { variant: 'body2', component: 'span' }, option.label),
       option.description === undefined
         ? null
-        : React.createElement('span', { style: OPTION_DESCRIPTION_STYLE }, option.description),
+        : React.createElement(MuiTypography, {
+          variant: 'caption',
+          component: 'span',
+          color: 'text.secondary',
+          sx: { whiteSpace: 'pre-wrap' },
+        }, option.description),
     )
   const optionNodes = question.options.map((option) => {
     if (single) {
@@ -570,8 +590,9 @@ function QuestionBlock(props: {
         {
           key: option.label,
           value: option.label,
-          control: React.createElement(MuiRadio, { value: option.label, disabled }),
+          control: React.createElement(MuiRadio, { value: option.label, disabled, size: 'small' }),
           label: optionLabel(option),
+          sx: OPTION_SX,
         },
       )
     }
@@ -583,6 +604,7 @@ function QuestionBlock(props: {
         control: React.createElement(MuiCheckbox, {
           checked,
           disabled,
+          size: 'small',
           onChange: (event: { target: { checked: boolean } }) => {
             if (event.target.checked) {
               withSelected([...draft.selected, option.label])
@@ -592,6 +614,7 @@ function QuestionBlock(props: {
           },
         }),
         label: optionLabel(option),
+        sx: OPTION_SX,
       },
     )
   })
@@ -600,24 +623,37 @@ function QuestionBlock(props: {
       MuiRadioGroup,
       {
         value: draft.selected[0] ?? '',
+        'aria-label': question.question,
         onChange: (event: { target: { value: string } }) => {
           withSelected([String(event.target.value)])
         },
+        sx: { gap: 0.25 },
       },
       ...optionNodes,
     )
-    : React.createElement('div', { style: OPTIONS_STYLE }, ...optionNodes)
+    : React.createElement(MuiStack, { spacing: 0.25 }, ...optionNodes)
 
   return React.createElement(
-    'div',
-    { style: QUESTION_STYLE },
+    MuiStack,
+    { spacing: 1, sx: QUESTION_SX },
     question.header === undefined
       ? null
-      : React.createElement('div', { style: QUESTION_HEADER_STYLE }, question.header),
-    React.createElement('div', { style: QUESTION_TEXT_STYLE }, question.question),
+      : React.createElement(MuiTypography, {
+        variant: 'overline',
+        color: 'text.secondary',
+        sx: { letterSpacing: 0.6 },
+      }, question.header),
+    React.createElement(MuiTypography, {
+      variant: 'body1',
+      sx: { fontWeight: 600, whiteSpace: 'pre-wrap' },
+    }, question.question),
     question.detail === undefined
       ? null
-      : React.createElement('div', { style: DETAIL_STYLE }, question.detail),
+      : React.createElement(MuiTypography, {
+        variant: 'body2',
+        color: 'text.secondary',
+        sx: { whiteSpace: 'pre-wrap' },
+      }, question.detail),
     question.options.length === 0 ? null : optionsNode,
     React.createElement(MuiTextField, {
       size: 'small',
@@ -629,7 +665,7 @@ function QuestionBlock(props: {
       // land on the FormControl root and lose the accessible name.
       slotProps: { htmlInput: { 'aria-label': copy.takeover.customPlaceholder } },
       disabled,
-      sx: CUSTOM_STYLE,
+      sx: CUSTOM_SX,
       onChange: (event: { target: { value: string } }) => {
         const custom = event.target.value
         props.onChange({

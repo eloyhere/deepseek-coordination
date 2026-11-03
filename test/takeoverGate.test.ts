@@ -314,8 +314,8 @@ test("an approval accepts only the three human outcomes", async () => {
   });
 });
 
-test("a timeout cancels the window and delegates without auto-allowing", async () => {
-  await withHarness({ takeover: true, clarifyTimeout: 20 }, async (context) => {
+test("a window never times out and waits for the operator", async () => {
+  await withHarness({ takeover: true, clarifyTimeout: 15 }, async (context) => {
     const approval = approvalDelegate();
     const promise = context.gate.handleApproval(
       approvalRequest(),
@@ -323,18 +323,27 @@ test("a timeout cancels the window and delegates without auto-allowing", async (
     );
     const view = context.gate.list()[0]!;
 
-    assert.equal(await promise, "unavailable");
-    assert.equal(approval.calls(), 1);
-    assert.notEqual(await promise, "allowed-once");
-    assert.equal(context.takeover.get(view.handle).status, "cancelled");
-    assert.deepEqual(context.gate.list(), []);
+    await delay(40);
+    assert.equal(
+      context.takeover.get(view.handle).status,
+      "pending",
+      "the dialog outlives the old timeout",
+    );
+    assert.deepEqual(
+      context.gate.list().map((entry) => entry.handle),
+      [view.handle],
+    );
+    assert.equal(approval.calls(), 0, "the host default never runs");
+
     assert.equal(
       context.gate.answer(view.handle, {
         kind: "approval",
         outcome: "allowed-once",
       }),
-      false,
+      true,
     );
+    assert.equal(await promise, "allowed-once");
+    assert.equal(approval.calls(), 0);
   });
 });
 
@@ -511,7 +520,7 @@ test("a multi-select question accepts every offered label once", async () => {
   });
 });
 
-test("a question timeout cancels the window and delegates", async () => {
+test("a question window also never times out", async () => {
   await withHarness({ takeover: true, clarifyTimeout: 15 }, async (context) => {
     const question = questionDelegate();
     const promise = context.gate.handleQuestion(
@@ -520,10 +529,17 @@ test("a question timeout cancels the window and delegates", async () => {
     );
     const view = context.gate.list()[0]!;
 
+    await delay(40);
+    assert.equal(context.takeover.get(view.handle).status, "pending");
+    assert.equal(question.calls(), 0);
+
+    assert.equal(context.gate.cancel(view.handle), true);
     assert.deepEqual(await promise, { answers: [] });
-    assert.equal(question.calls(), 1);
-    assert.equal(context.takeover.get(view.handle).status, "cancelled");
-    assert.deepEqual(context.gate.list(), []);
+    assert.equal(
+      question.calls(),
+      0,
+      "cancel does not fall through to the host default dialog",
+    );
   });
 });
 
@@ -531,7 +547,7 @@ test("a question timeout cancels the window and delegates", async () => {
  * Cancel, list and settlement hygiene
  * ------------------------------------------------------------------------- */
 
-test("cancel closes the window, delegates and is idempotent", async () => {
+test("cancel closes the window without opening the host default dialog", async () => {
   await withHarness({ takeover: true }, async (context) => {
     const question = questionDelegate();
     const promise = context.gate.handleQuestion(
@@ -542,7 +558,11 @@ test("cancel closes the window, delegates and is idempotent", async () => {
 
     assert.equal(context.gate.cancel(view.handle), true);
     assert.deepEqual(await promise, { answers: [] });
-    assert.equal(question.calls(), 1);
+    assert.equal(
+      question.calls(),
+      0,
+      "the question is answered fail-closed instead of delegating",
+    );
     assert.equal(context.takeover.get(view.handle).status, "cancelled");
     assert.equal(
       context.gate.cancel(view.handle),
@@ -554,6 +574,27 @@ test("cancel closes the window, delegates and is idempotent", async () => {
       context.gate.answer(view.handle, { kind: "question", answers: [] }),
       false,
     );
+  });
+});
+
+test("cancel closes an approval as cancelled instead of delegating", async () => {
+  await withHarness({ takeover: true }, async (context) => {
+    const approval = approvalDelegate();
+    const promise = context.gate.handleApproval(
+      approvalRequest(),
+      approval.next,
+    );
+    const view = context.gate.list()[0]!;
+
+    assert.equal(context.gate.cancel(view.handle), true);
+    assert.equal(await promise, "cancelled");
+    assert.equal(
+      approval.calls(),
+      0,
+      "the host default dialog never appears after an operator cancel",
+    );
+    assert.equal(context.takeover.get(view.handle).status, "cancelled");
+    assert.deepEqual(context.gate.list(), []);
   });
 });
 
@@ -600,7 +641,7 @@ test("list filters one session and sorts by creation time", async () => {
   });
 });
 
-test("settling removes the abort listener and the pending timer", async () => {
+test("settling removes the abort listener", async () => {
   await withHarness({ takeover: true, clarifyTimeout: 25 }, async (context) => {
     const controller = new AbortController();
     const approval = approvalDelegate();
@@ -620,7 +661,7 @@ test("settling removes the abort listener and the pending timer", async () => {
     );
     assert.equal(await promise, "rejected");
 
-    // Neither the abort listener nor the timeout may fire after settlement.
+    // A settled window must ignore a later abort.
     controller.abort();
     await delay(40);
     assert.equal(approval.calls(), 0);
@@ -659,7 +700,7 @@ test("a synchronous pending listener may answer the new window", async () => {
     assert.equal(
       approval.calls(),
       0,
-      "the timeout armed before the announcement must be cleared",
+      "a window answered during its announcement stays settled",
     );
   });
 });
@@ -833,7 +874,7 @@ test('a rejected approval and a cancelled window settle differently', async () =
     );
     const cancelHandle = context.gate.list()[0]?.handle as string;
     assert.equal(context.gate.cancel(cancelHandle), true);
-    assert.equal(await pendingCancel, 'unavailable');
+    assert.equal(await pendingCancel, 'cancelled');
 
     assert.deepEqual(observed.settled.map((entry) => entry.outcome), [
       'denied',
@@ -842,19 +883,26 @@ test('a rejected approval and a cancelled window settle differently', async () =
   });
 });
 
-test('a window that times out settles as expired', async () => {
+test('an unanswered window never expires', async () => {
   const observed = observedRecorder();
   await withHarness(
     { takeover: true, clarifyTimeout: 10, observed },
     async (context) => {
       const approval = approvalDelegate();
-      const value = await context.gate.handleApproval(
-        approvalRequest('observer-timeout'),
+      const pending = context.gate.handleApproval(
+        approvalRequest('observer-wait'),
         approval.next,
       );
-      assert.equal(value, 'unavailable');
-      assert.equal(approval.calls(), 1);
-      assert.deepEqual(observed.settled.map((entry) => entry.outcome), ['expired']);
+      const handle = context.gate.list()[0]?.handle as string;
+
+      await delay(40);
+      assert.equal(context.takeover.get(handle).status, 'pending');
+      assert.equal(observed.settled.length, 0);
+      assert.equal(approval.calls(), 0);
+
+      assert.equal(context.gate.cancel(handle), true);
+      assert.equal(await pending, 'cancelled');
+      assert.deepEqual(observed.settled.map((entry) => entry.outcome), ['withdrawn']);
     },
   );
 });

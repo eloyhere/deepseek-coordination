@@ -10,10 +10,14 @@
  *
  * The gate never synthesizes a decision. It records a durable pending window
  * through `TakeoverModule`, announces it on the coordination event bus, and
- * waits for a human answer delivered through `answer()` (the HTTP route). A
- * timeout, an aborted request signal, an explicit `cancel()`, or plugin unload
- * cancels the window and delegates with `next()` — it never turns "nobody
- * answered" into `allowed-once` or into a fabricated question answer.
+ * waits for a human answer delivered through `answer()` (the HTTP route).
+ *
+ * A window has **no timeout**: it stays pending until the operator answers it,
+ * cancels it, aborts the owning request, or the plugin unloads. Cancelling is
+ * fail-closed and never delegates to DSH's own dialog: an approval answers
+ * `cancelled`, a question answers with no selections. Only an aborted request
+ * signal, a disabled takeover or plugin unload call `next()`; the operator never
+ * sees a second, host-default popup after closing this one.
  *
  * Payloads are rebuilt from the waterfall event instead of forwarding it: the
  * event carries an agent object and an AbortSignal, while the takeover row is a
@@ -38,6 +42,13 @@ import { InvalidArgumentError } from '../shared/error.js'
 export type TakeoverGateAnswer =
   | { kind: 'approval'; outcome: 'allowed-once' | 'rejected' | 'cancelled' }
   | { kind: 'question'; answers: { id: string; selected: string[]; custom?: string }[] }
+
+/**
+ * Internal settlement value. `cancelled` is never accepted from the wire: it is
+ * produced only by `cancel()` so the waterfall can close fail-closed instead of
+ * falling through to DSH's default dialog.
+ */
+type PendingAnswer = TakeoverGateAnswer | { kind: 'cancelled' }
 
 /** One pending window as the Client sees it (v24 §16). */
 export interface PendingTakeoverView {
@@ -75,9 +86,8 @@ interface PendingEntry {
   readonly type: 'approval' | 'question'
   readonly questions: readonly TakeoverQuestion[]
   settled: boolean
-  timer?: ReturnType<typeof setTimeout>
   removeAbort?: () => void
-  resolve: (answer: TakeoverGateAnswer | undefined) => void
+  resolve: (answer: PendingAnswer | undefined) => void
 }
 
 /** A question reduced to the fields the dialog and validation need. */
@@ -229,8 +239,10 @@ export class TakeoverGate {
   }
 
   /**
-   * Cancel one pending window and delegate to the host. Returns `false` when the
-   * handle is unknown or already settled, so a double click cannot fail loudly.
+   * Cancel one pending window without falling through to DSH's default dialog.
+   * An approval settles `cancelled`; a question settles with no selections.
+   * Returns `false` when the handle is unknown or already settled, so a double
+   * click cannot fail loudly.
    */
   cancel(handle: string): boolean {
     if (typeof handle !== 'string' || handle.length === 0) return false
@@ -242,7 +254,7 @@ export class TakeoverGate {
     } catch {
       // Already terminal.
     }
-    entry.resolve(undefined)
+    entry.resolve({ kind: 'cancelled' })
     this.notifySettled(entry.view, 'withdrawn')
     return true
   }
@@ -273,7 +285,9 @@ export class TakeoverGate {
     if (pending === undefined) return next()
 
     const answered = await pending
-    if (answered === undefined || answered.kind !== 'approval') return next()
+    if (answered === undefined) return next()
+    if (answered.kind === 'cancelled') return 'cancelled'
+    if (answered.kind !== 'approval') return next()
     return answered.outcome
   }
 
@@ -303,7 +317,9 @@ export class TakeoverGate {
     if (pending === undefined) return next()
 
     const answered = await pending
-    if (answered === undefined || answered.kind !== 'question') return next()
+    if (answered === undefined) return next()
+    if (answered.kind === 'cancelled') return { answers: [] }
+    if (answered.kind !== 'question') return next()
     return { answers: answered.answers }
   }
 
@@ -312,9 +328,10 @@ export class TakeoverGate {
    * ----------------------------------------------------------------------- */
 
   /**
-   * Record the row, announce the view and arm the timeout and abort listener.
+   * Record the row, announce the view and arm the abort listener.
    * Returns `undefined` when no durable window could be recorded; every such
    * failure delegates to the host rather than answering on the user's behalf.
+   * There is deliberately no timeout: the dialog waits for the operator.
    */
   private open(
     type: 'approval' | 'question',
@@ -322,7 +339,7 @@ export class TakeoverGate {
     session: number | undefined,
     signal: AbortSignal | undefined,
     questions: readonly TakeoverQuestion[],
-  ): Promise<TakeoverGateAnswer | undefined> | undefined {
+  ): Promise<PendingAnswer | undefined> | undefined {
     if (signal?.aborted === true) return undefined
 
     let requested: TakeoverResult
@@ -346,8 +363,8 @@ export class TakeoverGate {
       payload,
       created: this.clock.now(),
     }
-    let resolveAnswer!: (answer: TakeoverGateAnswer | undefined) => void
-    const promise = new Promise<TakeoverGateAnswer | undefined>((resolve) => {
+    let resolveAnswer!: (answer: PendingAnswer | undefined) => void
+    const promise = new Promise<PendingAnswer | undefined>((resolve) => {
       resolveAnswer = resolve
     })
     const entry: PendingEntry = {
@@ -369,18 +386,13 @@ export class TakeoverGate {
           signal.removeEventListener('abort', onAbort)
         }
       } catch {
-        // A foreign AbortSignal-like object may not support listeners; the
-        // timeout still bounds the wait.
+        // A foreign AbortSignal-like object may not support listeners; the abort
+        // path is then simply unavailable, and the dialog still waits.
       }
     }
 
-    entry.timer = setTimeout(() => {
-      this.delegate(entry, 'expired')
-    }, this.timeoutMilliseconds())
-    unrefTimer(entry.timer)
-
     // Announce last: a listener may answer synchronously, and settlement then
-    // clears the timer and abort listener installed above.
+    // clears the abort listener installed above.
     this.notifyRequested(view)
     this.events?.emit('takeover/pending', { ...view })
     return promise
@@ -389,8 +401,9 @@ export class TakeoverGate {
   /**
    * Cancel the row, detach every listener and let the handler call `next()`.
    *
-   * `outcome` distinguishes a window that ran out of time (`expired`) from one
-   * that was aborted or unloaded (`withdrawn`); both delegate identically.
+   * Delegation happens only when the owning request was aborted or the plugin is
+   * unloading; an operator cancel settles through {@link cancel} instead and
+   * never reaches this method.
    */
   private delegate(entry: PendingEntry, outcome: TakeoverSettlement = 'withdrawn'): void {
     if (!this.settle(entry)) return
@@ -424,17 +437,13 @@ export class TakeoverGate {
   }
 
   /**
-   * Claim one entry exactly once: remove it from the map, clear the timer and
-   * detach the abort listener. A second claim returns `false`.
+   * Claim one entry exactly once: remove it from the map and detach the abort
+   * listener. A second claim returns `false`.
    */
   private settle(entry: PendingEntry): boolean {
     if (entry.settled) return false
     entry.settled = true
     if (this.pending.get(entry.view.handle) === entry) this.pending.delete(entry.view.handle)
-    if (entry.timer !== undefined) {
-      clearTimeout(entry.timer)
-      entry.timer = undefined
-    }
     if (entry.removeAbort !== undefined) {
       try {
         entry.removeAbort()
@@ -449,13 +458,6 @@ export class TakeoverGate {
   /** Delegate every open request; used when the plugin unloads. */
   private disposeAll(): void {
     for (const entry of [...this.pending.values()]) this.delegate(entry, 'withdrawn')
-  }
-
-  /** `clarifyTimeout` bounds a real event; a non-finite value falls back to 30s. */
-  private timeoutMilliseconds(): number {
-    const configured = this.config.clarifyTimeout
-    if (!Number.isFinite(configured)) return 30000
-    return Math.min(Math.max(0, Math.floor(configured)), 2_147_483_647)
   }
 
   /**
@@ -693,14 +695,4 @@ function customOf(value: unknown): string | undefined {
     throw new InvalidArgumentError('question custom text must be a string')
   }
   return value.length === 0 ? undefined : value
-}
-
-/* ------------------------------------------------------------------------- *
- * Timer helpers
- * ------------------------------------------------------------------------- */
-
-/** Do not let a pending window's timeout hold a short-lived process open. */
-function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
-  const candidate = timer as unknown as { unref?: () => void }
-  if (typeof candidate.unref === 'function') candidate.unref()
 }

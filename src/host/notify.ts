@@ -201,7 +201,9 @@ export function parseNotificationRequest(input: unknown): NotificationRequest {
     severity,
     ...(title === undefined ? {} : { title }),
     message,
-    duration: optionalDuration(record.duration, surface),
+    // A dialog is a decision surface: it never auto-closes, even if the model
+    // supplies a duration. Only transient surfaces honour the delay.
+    duration: surface === 'dialog' ? 0 : optionalDuration(record.duration, surface),
     anchor: optionalAnchor(record.anchor, surface),
     actions: optionalActions(record.actions),
   }
@@ -294,7 +296,9 @@ export class NotificationCenter {
       this.queues.delete(key)
       return []
     }
-    const alive = queue.filter((item) => now - item.created <= this.ttl)
+    // Dialogs wait for the operator: TTL never expires one. Transient surfaces
+    // keep the bounded TTL so an undelivered toast cannot accumulate forever.
+    const alive = queue.filter((item) => item.surface === 'dialog' || now - item.created <= this.ttl)
     if (alive.length === 0) {
       this.queues.delete(key)
     } else if (alive.length !== queue.length) {

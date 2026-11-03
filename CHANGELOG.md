@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.23.4 | 2026-11-03 | — | No-timeout takeover dialog and MUI restyle |
 | 0.23.3 | 2026-11-03 | — | Localized plugin-list metadata refresh |
 | 0.23.2 | 2026-11-03 | — | Chinese README tool and route table sync |
 | 0.23.1 | 2026-11-03 | — | Release CI test typecheck fix |
@@ -75,6 +76,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
+
+## [0.23.4] — 2026-11-03
+
+### Fixed
+
+- **Takeover dialogs no longer time out, and closing one never opens DSH's default dialog.** `TakeoverGate` no longer arms `clarifyTimeout` on a pending window; the window stays pending until the operator answers or cancels. Cancel now settles fail-closed — an approval answers `cancelled`, a question answers with no selections — instead of calling `next()`, so the host-default dialog never follows the custom one. Only an aborted request signal or plugin unload delegates. `clarifyTimeout` now bounds automatic compaction only.
+- **Notification dialogs never expire.** The per-session TTL skips `dialog` items, and a dialog ignores an explicit `duration`; only transient surfaces (snackbar, alert, popover) auto-close or expire.
+
+### Changed
+
+- **The takeover dialog uses MUI's own primitives.** Typography variants, `Stack` spacing, `Divider`, `Chip`, `Alert`, outlined/contained `Button` roles and theme colours replace the hand-written pixel styles. Option descriptions use the caption role, custom answers use an outlined `TextField`, and the dialog scrolls its paper content, so long multi-question forms stay readable.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test`, `npm run build`, `npm run pack:check` (15 required runtime files present).
 
 ## [0.23.3] — 2026-11-03
 

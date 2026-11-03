@@ -127,8 +127,8 @@ export function coordinationNotificationToolDefinition(
           type: 'string',
           enum: [...NOTIFICATION_SURFACES],
           description: zh
-            ? '弹出方式：snackbar（右下角 toast）、alert（顶部横幅）、dialog（模态框）、popover（角落卡片）。'
-            : 'Presentation: snackbar (bottom-right toast), alert (top banner), dialog (modal), popover (corner card).',
+            ? '弹出方式：snackbar（右下角 toast）、alert（顶部横幅）、dialog（模态框，始终等待用户，不会自动关闭）、popover（角落卡片）。'
+            : 'Presentation: snackbar (bottom-right toast), alert (top banner), dialog (modal that always waits; never auto-closes), popover (corner card).',
         },
         message: {
           type: 'string',
@@ -154,8 +154,8 @@ export function coordinationNotificationToolDefinition(
           minimum: 0,
           maximum: NOTIFICATION_LIMITS.maxDuration,
           description: zh
-            ? `自动关闭毫秒数：0 表示等用户关闭；非零范围 ${NOTIFICATION_LIMITS.minDuration}–${NOTIFICATION_LIMITS.maxDuration}。`
-            : `Auto-close delay in ms: 0 waits for the user; otherwise ${NOTIFICATION_LIMITS.minDuration}–${NOTIFICATION_LIMITS.maxDuration}.`,
+            ? `自动关闭毫秒数：0 表示等用户关闭；非零范围 ${NOTIFICATION_LIMITS.minDuration}–${NOTIFICATION_LIMITS.maxDuration}。dialog 忽略此字段，始终等待用户。`
+            : `Auto-close delay in ms: 0 waits for the user; otherwise ${NOTIFICATION_LIMITS.minDuration}–${NOTIFICATION_LIMITS.maxDuration}. Ignored for dialog, which always waits.`,
         },
         anchor: {
           type: 'string',

@@ -78,7 +78,7 @@ export const NOTIFICATION_LIMITS = {
   actionLabel: 60,
   /** Pending items kept per session; the oldest is dropped beyond this. */
   queue: 20,
-  /** How long an undelivered item stays queued. */
+  /** How long an undelivered transient item stays queued; dialogs never expire. */
   ttl: 5 * 60 * 1000,
   /** Lower bound for an explicit `duration` (below it a snackbar is a flicker). */
   minDuration: 1000,

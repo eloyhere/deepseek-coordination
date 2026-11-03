@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host owns durable coordination state, model-facing tools, an AMP v0.1 protocol layer and an HTTP surface; the client provides docked panels, settings, model-triggered notifications and the service-level takeover dialog.
 
-**Current source: v0.23.3, schema 28.** The 0.23.0 release is the tool-layer and context-architecture program: unified handles, trimmed outputs, `tookMs` on every result, structured truncation, a lean and measured catalog, cache telemetry, a durable state card and a pre-compaction snapshot. 0.23.1 fixes the release workflow's `test:tsc` over the new suites; 0.23.2 syncs the Chinese README's tool and route tables; 0.23.3 refreshes the plugin-list display metadata (`meta.title`/`meta.description`) in both bundled locales. Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
+**Current source: v0.23.4, schema 28.** The 0.23.0 release is the tool-layer and context-architecture program: unified handles, trimmed outputs, `tookMs` on every result, structured truncation, a lean and measured catalog, cache telemetry, a durable state card and a pre-compaction snapshot. 0.23.1 fixes the release workflow's `test:tsc` over the new suites; 0.23.2 syncs the Chinese README's tool and route tables; 0.23.3 refreshes the plugin-list display metadata (`meta.title`/`meta.description`) in both bundled locales; 0.23.4 makes takeover dialogs wait without a timeout (no host-default fallback on cancel) and restyles them with MUI primitives. Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
 
 | Status | Meaning in this README |
 |---|---|
@@ -61,7 +61,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.23.3.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.23.4.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -390,9 +390,9 @@ Search is configured by environment, not by the settings catalog: `COORDINATION_
 
 - With `ui.takeover` on, `TakeoverGate` listens to DSH's `approval/request` and `user-questions/request` waterfalls. It records a durable pending row, emits `takeover/pending`, and waits for a human answer delivered through the client routes.
 - The listener registers with `{ prepend: true }`. DSH's own approval and question UI listens to the same waterfalls, and a listener registered later never runs once the GUI claims the request. Note that a deployment approval policy of `never` makes DSH reject before the waterfall, so no dialog can appear regardless of this switch.
-- A timeout, an aborted request signal, an explicit cancel, or plugin unload calls `next()`; the gate never turns “nobody answered” into `allowed-once` or a fabricated answer. `unavailable` is the host's fail-closed outcome and is rejected as a user decision.
+- A pending window has **no timeout**: it waits for the operator until answered or cancelled. Cancel is fail-closed and never delegates: an approval settles `cancelled`, a question settles with no selections, so DSH's default dialog never appears after the custom one closes. Only an aborted request signal or plugin unload calls `next()`, and the gate never turns “nobody answered” into `allowed-once` or a fabricated answer. `unavailable` is the host's fail-closed outcome and is rejected as a user decision.
 - The dialog polls `/takeover/pending` every 1 s only while the local 权限接管 switch is on, the session id is real and the document is visible. The first pending request is rendered; a `1 / N` badge appears for a queue.
-- Approval offers 仅本次允许 / 拒绝 / 取消; only `allowed-once` and `rejected` are submitted, while cancel/Esc/backdrop use the cancel route. Questions render radios for single-select, checkboxes for multi-select and optional free text; submit stays disabled until every question is answered.
+- Approval offers 仅本次允许 / 拒绝 / 取消; only `allowed-once` and `rejected` are submitted, while cancel/Esc/backdrop use the cancel route (fail-closed, with no host dialog afterwards). Questions render radios for single-select, checkboxes for multi-select and optional free text; submit stays disabled until every question is answered.
 - **Both switches are needed**: host `ui.takeover` (default `false`) opens the gate; the local 权限接管 switch makes the dialog poll. With the host switch off, the gate delegates immediately and there is nothing to show.
 
 ## Cache proxy (experimental, off by default)
@@ -611,7 +611,7 @@ Known limitations, stated rather than hidden:
 6. **`parser.enabled` still needs registration.** The other file-layer limits retune live; turning the parser off fails closed immediately, but adding/removing the four tools requires the next registration (restart).
 7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog and settings-render tests, the panel render tests and the takeover/bridge/notification/integration tests; visual verification remains manual/screenshot-based.
 8. **Node engine is `>=24.0.0`.** The `attention-manifest-protocol` runtime dependency requires Node 24; CI and this verification use 24.21.0.
-9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.23.3 tarball or link the built checkout rather than assuming a previous install was upgraded.
+9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.23.4 tarball or link the built checkout rather than assuming a previous install was upgraded.
 10. **The cache proxy is experimental and off by default.** Its brand profiles are policy defaults, not measurements, and it only rewrites content for families with an automatic prefix cache; the observable gain on a stable session may be near zero, which is why it ships behind a flag and a status endpoint rather than enabled.
 11. **AMP conformance is boundary-deep, not complete.** Manifests, frames, receipts, events, claims/unknowns, goal/plan pairs (gated on recorded acceptance), the ledger and checkpoints are wired and verified; the sealed envelope and the warrant's hypothesis/revision/authorization functions are implemented and tested but not driven by any path, and hypotheses, governance manifests, credentials, federation and interrupt budgets are not implemented. [`docs/ampConformance.md`](docs/ampConformance.md) §7 lists each gap with its reason, and the manifest's `self.limits` states the two unmeasured fields (calibration, token usage).
 

@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、11 个模型可见工具、AMP v0.1 协议层和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.23.3（2026-11-03）。** 0.23.0 是工具层与上下文架构优化：统一 handle、输出瘦身、`tookMs`、结构化截断、可量化的精简目录、缓存遥测、持久状态卡与压缩前快照；0.23.1 修复发布流程对新测试套件的 `test:tsc` 检查；0.23.2 把中文 README 的工具表（24 个工具）与路由表同步到当前源码；0.23.3 更新插件列表在两种语言下的显示元数据（`meta.title`/`meta.description`）。底部不再有协调下拉框；停靠面板保持普通读者可读的说法并设 16px 字号下限。详细条目见 [CHANGELOG](CHANGELOG.zh-CN.md)。
+**当前版本：v0.23.4（2026-11-03）。** 0.23.0 是工具层与上下文架构优化：统一 handle、输出瘦身、`tookMs`、结构化截断、可量化的精简目录、缓存遥测、持久状态卡与压缩前快照；0.23.1 修复发布流程对新测试套件的 `test:tsc` 检查；0.23.2 把中文 README 的工具表（24 个工具）与路由表同步到当前源码；0.23.3 更新插件列表在两种语言下的显示元数据（`meta.title`/`meta.description`）；0.23.4 让接管弹窗不再超时（取消也不再回落到宿主默认弹窗），并按 MUI 原语重做界面。底部不再有协调下拉框；停靠面板保持普通读者可读的说法并设 16px 字号下限。详细条目见 [CHANGELOG](CHANGELOG.zh-CN.md)。
 
 | 状态 | 含义 |
 |---|---|
@@ -329,9 +329,9 @@ deepseek-coordination/
 
 - 打开 `ui.takeover` 后，`TakeoverGate` 监听 DSH 的 `approval/request` 与 `user-questions/request` 瀑布。它写一条持久 pending 行、发出 `takeover/pending`，等待客户端路由送来人工答案。
 - 监听器用 `{ prepend: true }` 注册。DSH 自己的审批/提问 UI 监听同一个瀑布，注册晚的监听器在 GUI 认领请求后永远不会执行。注意：部署的审批策略为 `never` 时，DSH 在进入瀑布之前就直接拒绝，此时无论开关如何都不会出现对话框。
-- 超时、请求 signal 中止、显式取消或插件卸载都会调用 `next()`；闸门绝不把“没人回答”变成 `allowed-once` 或编造的问题答案。`unavailable` 是宿主 fail-closed 的结果，不作为用户决定接受。
+- 弹窗**没有超时**：窗口一直等待，直到用户回答或取消。取消是 fail-closed 且不再委托：审批结算为 `cancelled`，提问以空选择结算，因此关闭自定义弹窗后 DSH 的默认弹窗不会再出现。只有请求 signal 中止或插件卸载才调用 `next()`；闸门绝不把“没人回答”变成 `allowed-once` 或编造的问题答案。`unavailable` 是宿主 fail-closed 的结果，不作为用户决定接受。
 - 对话框只在以下条件同时成立时每 1 秒轮询 `/takeover/pending`：本机“权限接管”开关打开、session id 真实、页面可见。它渲染第一条 pending 请求；队列多于一条时显示 `1 / N` 徽标。
-- 审批提供 仅本次允许 / 拒绝 / 取消；只提交 `allowed-once` 与 `rejected`，取消/Esc/点背景走 cancel 路由。提问按单选渲染 radio、多选渲染 checkbox，并允许每题自由文本；所有问题答完前提交按钮禁用。
+- 审批提供 仅本次允许 / 拒绝 / 取消；只提交 `allowed-once` 与 `rejected`，取消/Esc/点背景走 cancel 路由（fail-closed，之后不会再弹宿主默认框）。提问按单选渲染 radio、多选渲染 checkbox，并允许每题自由文本；所有问题答完前提交按钮禁用。
 - **两个开关都需要**：宿主 `ui.takeover`（默认 `false`）负责打开闸门，本机“权限接管”负责让对话框轮询。宿主开关关闭时闸门立即委托，没有窗口可显示。
 
 ## 缓存代理（实验性，默认关闭）
