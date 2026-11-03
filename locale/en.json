@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Coordination Workspace",
-    "description": "Coordination records, docked panels, a searchable settings page, model-triggered notifications and the takeover dialog for DeepSeek Harness."
+    "description": "Coordination workspace for DeepSeek Harness: durable missions, goals, plans and duties, model-facing file/graph/search tools, an AMP v0.1 layer, searchable settings, notifications, approvals, the takeover dialog and a read-only panel."
   }
 }

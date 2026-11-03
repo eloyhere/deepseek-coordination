@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "协作工作区",
-    "description": "为 DeepSeek Harness 提供协作记录、停靠面板、可搜索的设置页、模型触发的通知与接管对话框。"
+    "description": "DeepSeek Harness 的协作工作区：持久使命/目标/计划/职责、面向模型的文件与图/搜索工具、AMP v0.1 协议层、可搜索设置页、通知、审批、接管对话框与只读停靠面板。"
   }
 }

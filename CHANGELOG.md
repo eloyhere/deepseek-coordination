@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.23.3 | 2026-11-03 | — | Localized plugin-list metadata refresh |
 | 0.23.2 | 2026-11-03 | — | Chinese README tool and route table sync |
 | 0.23.1 | 2026-11-03 | — | Release CI test typecheck fix |
 | 0.23.0 | 2026-11-03 | — | Tool-layer and context-architecture optimization |
@@ -74,6 +75,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
+
+## [0.23.3] — 2026-11-03
+
+### Changed
+
+- **The plugin list describes the current surface in both languages.** `locale/en.json` and `locale/zh.json` keep `meta.title` and replace `meta.description` with the shipped capability: durable missions/goals/plans/duties, model-facing file/graph/search tools, the AMP v0.1 layer, searchable settings, notifications, approvals, the takeover dialog and the read-only dock. DSH reads these dictionaries without activating the plugin, falling back to the package `description` for English; a host-locale switch needs a client reload or restart to re-read the cached metadata.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (1,159 tests, 1,158 pass, 1 skipped), `npm run build`, `npm run pack:check` (15 required runtime files present, including `locale/*.json`).
 
 ## [0.23.2] — 2026-11-03
 
