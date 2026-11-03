@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.23.2 | 2026-11-03 | — | 中文 README 工具与路由表同步 |
 | 0.23.1 | 2026-11-03 | — | 发布流程测试类型检查修复 |
 | 0.23.0 | 2026-11-03 | — | 工具层与上下文架构优化 |
 | 0.22.4 | 2026-10-29 | — | 图谱读取按范围下推 SQL |
@@ -70,6 +71,16 @@
 | 0.1.5 | 2026-10-13 | `b29c0e3` | workflow_plan 与缓存实测 |
 | 0.1.2 | 2026-10-13 | `e4fade7` | permissions 在无 permission.json 时可用 |
 | 0.1.0–0.1.1 | 2026-10-13 | `c2dae0c` | dsh-os 初始发布与 README 重写 |
+
+## [0.23.2] — 2026-11-03
+
+### 变更
+
+- **中文 README 重新与发布面一致。** 工具表补齐到 24 个工具——选择、职能、规划、协作、控制、知识、workspace、环境、通知、审批、搜索、索引、文件与图工具——并写入当前契约（summary 视图、handle 读取、`verbosity`、`mode:"paths"`、截断信封）。路由表补上通知、审批、控制、知识、`/amp/state-card`、`/amp/scope`、`/amp/insights`、`/context/metrics`、`/graph/preview/pdf` 与 `/graph/revision`，并删除过期的「11 个工具 / 33 条路由」计数。
+
+### 已验证
+
+- `npm run typecheck`、`npm run test:tsc`、`npm test`（1,159 tests，1,158 pass，1 skipped）、`npm run build`、`npm run pack:check`（15 个必需运行时文件齐全）。
 
 ## [0.23.1] — 2026-11-03
 

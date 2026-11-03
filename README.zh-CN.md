@@ -4,7 +4,7 @@
 
 一个面向 DeepSeek Harness 的双端 Cordis 插件：宿主端持有协调 SQLite 数据库、11 个模型可见工具、AMP v0.1 协议层和一组 HTTP 路由；浏览器端在输入框挂载五个下拉框，并提供设置目录与服务级接管对话框。
 
-**当前版本：v0.23.1（2026-11-03）。** 0.23.0 是工具层与上下文架构优化：统一 handle、输出瘦身、`tookMs`、结构化截断、可量化的精简目录、缓存遥测、持久状态卡与压缩前快照；0.23.1 修复发布流程对新测试套件的 `test:tsc` 检查。底部不再有协调下拉框；停靠面板保持普通读者可读的说法并设 16px 字号下限。详细条目见 [CHANGELOG](CHANGELOG.zh-CN.md)。
+**当前版本：v0.23.2（2026-11-03）。** 0.23.0 是工具层与上下文架构优化：统一 handle、输出瘦身、`tookMs`、结构化截断、可量化的精简目录、缓存遥测、持久状态卡与压缩前快照；0.23.1 修复发布流程对新测试套件的 `test:tsc` 检查；0.23.2 把中文 README 的工具表（24 个工具）与路由表（含通知/审批/控制/状态卡/metrics 等新端点）同步到当前源码。底部不再有协调下拉框；停靠面板保持普通读者可读的说法并设 16px 字号下限。详细条目见 [CHANGELOG](CHANGELOG.zh-CN.md)。
 
 | 状态 | 含义 |
 |---|---|
@@ -17,7 +17,7 @@
 | 组成 | 位置 | 作用 |
 |---|---|---|
 | Bundle | `cordis.patch.yml`、`package.json` 的 `dsh.bundle` | 把一行 `deepseek-coordination` 插入 DSH profile 的 bundle 列表。 |
-| 宿主端 | `lib/index.mjs`（ESM，Node） | `CoordinationService`、`coordination` SQLite 库、11 个工具、33 条路由路径 / 36 个方法处理器和 agent 钩子。 |
+| 宿主端 | `lib/index.mjs`（ESM，Node） | `CoordinationService`、`coordination` SQLite 库、协调工具集、HTTP 路由与 agent 钩子。 |
 | 协议层 | `src/protocol/`、`src/host/amp.ts`、`src/host/amp-store.ts` | AMP v0.1：签名清单、每个 turn 一张带显式排除项的注意帧、turn 与工具调用各一条回执、append-only 账本、签名检查点。 |
 | 浏览器端 | `lib/client.js`（CJS，浏览器，`__ModuleLoader__` 包装） | React 18 + Material UI 9：输入框下拉框、设置页、接管对话框。 |
 | 数据库 | 默认 `%DSH_HOME%\coordination\coordination.db` | 插件自有 SQLite 文件；68 张表、15 个触发器、67 个索引，schema 版本 25。从不打开 DSH 的 `harness` 库。 |
@@ -376,7 +376,7 @@ soft 阈值可按 0.30–0.90 的比例编辑；hard 为 0.30–0.98，且必须
 
 ## 文件工具、解析器与 Chain
 
-文件层以四个模型可见工具接线，加上三个输入框工具与四个只读图工具，共 11 个（见[工具与路由](#工具与路由)）：
+文件层工具（解析、读取、图投影）与选择、规划、协作、控制、环境、知识、通知、审批、搜索和 workspace 工具一起注册，完整列表见[工具与路由](#工具与路由)：
 
 | 工具 | 用途 |
 |---|---|
@@ -426,27 +426,49 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 | `coordination_selection` | 读取或修改某 session 的五个选择（含 `command` 与 DSH `preset`）。读取默认 `view:"summary"`（六个维度、锁定、预设 id/name）；`view:"full"` 返回完整 `SelectionState`。 |
 | `coordination_profession` | 读取当前职能记录；仅在活动任务之前/不存在时设置职能。任务已锁时返回 `PROFESSION_LOCKED`，不改选择。 |
 | `coordination_profession_lock` | 读取活动 Turn 的锁定状态/职能，或指定序号 Turn 的状态。 |
-| `coordination_parse` | 无正文的解析投影（引用、诊断、字符集、截断、卡片）。 |
-| `coordination_describe` | 无正文的 `NodeCard` 和请求的元数据字段。 |
-| `coordination_chain` | 只返回有界 `ChainProjection`。 |
-| `coordination_read` | 唯一返回内容的工具；有上限的字节/行范围。 |
-| `coordination_file` | 已索引路径的有界工作区树。 |
-| `coordination_outline` | 单个文件或整个工作区的结构大纲。 |
-| `coordination_importation` | 单个文件或工作区的导入行。 |
-| `coordination_exportation` | 单个文件或工作区的导出行。 |
+| `coordination_mission` | 列出、创建、激活、完成或放弃持久会话使命，按 AMP 优先级/FIFO 准入。 |
+| `coordination_goal` | 创建带可观察成功标准的目标并推进其 AMP 生命周期。 |
+| `coordination_plan` | 创建/转换计划；更新任务时检查前置依赖与完成条件。 |
+| `coordination_collaboration` | 列出原生后代与职责，分配职责、提交证据并记录所有者评审。 |
+| `coordination_control` | AMP 作用域控制：在 global → workspace → session 上读写注册表元数据与 interaction/scenario 设置，支持继承、墓碑、CAS `expectedVersion`、`dryRun` 与 `applyTo`。 |
+| `coordination_knowledge` | 把工作区文件标记为知识，或改标题/标签/取消标记；标记镜像到 `knowledge` 注册表。 |
+| `coordination_workspace` | 工作区工具：`structure`（`coordination_file` 投影）、`build`/`test`（同名 `package.json` 脚本，命令不可覆盖）、`run`（经 `ctx.shell` 的显式命令，仍受运维沙箱约束）。 |
+| `coordination_workspace_adjust` | 调整本工作区注册表：`register`/`update`/`remove`/`enable`/`disable`/`link`，范围固定为 workspace。 |
+| `coordination_environment` | 管理环境注册表（list/get/set/refresh/remove/enable/disable），支持 CAS 与 dryRun；值为 name、description、variables 与 enabled。新库首次播种 `env.local`（项目根、git/node/npm/pnpm/python/java/pwsh 路径与 path/pathext 等变量，绝不含密钥）；`refresh` 重新发现并合并且不覆盖手改。 |
+| `coordination_notification` | 在 Web GUI 为会话弹一条通知：`snackbar`/`alert`/`dialog`/`popover`，含 severity、title、自动关闭 `duration`、anchor 与最多四个只关闭按钮。单向，不返回答案。 |
+| `coordination_approve` | 在模态框中请人明确批准/拒绝并等待点击；返回 `approved`/`rejected`/`cancelled`/`expired`，超时、中止或卸载绝不视为同意。 |
+| `coordination_search` | 查询运维内部 Elasticsearch（默认 `simple_query_string` 全字段）；返回有界命中 id、分数与截断 `_source`；连接信息只来自 `COORDINATION_ES_*`。仅当 `COORDINATION_ES_URL`（或 `COORDINATION_ES_SEARCH=1`）设置时注册。 |
+| `coordination_index` | 在配置边界内索引变更文件或重建已知路径。 |
+| `coordination_parse` | 无正文的解析投影（引用、诊断、字符集、截断、卡片）。`verbosity:"compact"`（默认）每卡只留 `identity/kind/name/行区间`；`verbosity:"full"` 返回完整 NodeCard。 |
+| `coordination_describe` | 无正文的 `NodeCard` 和请求的元数据字段。注册表不再持有该 handle 时回退持久化图并重新注册。 |
+| `coordination_chain` | 只返回有界 `ChainProjection`；节点已索引但关系无边时返回 `diagnostic: { code: "no_links", hint }`。 |
+| `coordination_read` | 唯一返回内容的工具；有上限的字节/行范围。接受 `path` 或节点 `handle`（handle 可叠加显式范围）。 |
+| `coordination_file` | 已索引路径的有界工作区树。`mode:"paths"` 返回扁平路径列表（目录以 `/` 结尾），`mode:"tree"`（默认）保留嵌套对象。 |
+| `coordination_outline` | 单个文件或整个工作区的结构大纲。被截断时带 `truncation: { returned, total, truncated, next? }`，`next` 给出后续调用（`limit=…` 或 `path=…`）。 |
+| `coordination_importation` | 单个文件或工作区的导入行，同样带 `truncation` 信封。 |
+| `coordination_exportation` | 单个文件或工作区的导出行，同样带 `truncation` 信封。 |
 
-所有路由都在 `/deepseek-coordination` 下，共 **33 条路径 / 36 个方法处理器**：
+所有路由都在 `/deepseek-coordination` 下，主要面如下（`?session=` 只是本地宿主 UI 的观测选择器，不是鉴权，也不建立协作工具的操作者身份）：
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
 | GET | `/ping` | 存活检查；返回插件名、`pong`、当前语言。 |
 | GET | `/proxy/status` | 缓存代理状态：只有计数、id 与哈希（无正文）。 |
 | POST | `/echo` | 回显 JSON body（诊断用）。 |
+| GET | `/context/metrics` | 静态上下文预算与缓存遥测：逐工具字符/近似 token、目录与技能分段哈希、当前语言技能目录大小、AMP 上限，以及代理缓存读取比率（`hitRate`、输入、样本、窗口、前缀漂移）。不计 DSH 自身提示。 |
+| GET | `/notify/pending` | 为 `?session=` 取走排队通知（每条最多投递一次）。 |
+| POST | `/notify` | 入队一条通知 `{ session, surface, message, … }`，校验与工具一致。 |
+| GET | `/approve/pending` | `?session=` 的等待同意窗口；不取走，对话框继续显示同一请求。 |
+| POST | `/approve/answer` | 提交一个决定 `{ session, id, approved }`；只有 `approved: true` 才算批准。 |
+| POST | `/approve/cancel` | 撤回一个窗口 `{ session, id }`（Esc、点背景与取消走这里）。 |
 | GET, POST | `/selection` | 读 `SelectionState`；修改五个选择。 |
 | GET | `/presets` | 投影 DSH 权限预设目录。 |
 | POST | `/permission` | 立即应用一个 DSH 预设。 |
 | GET, POST | `/config` | 读 `{ values, defaults }`；应用扁平配置补丁。 |
 | POST | `/config/compaction` | `auto`/`soft`/`hard` 的兼容补丁。 |
+| GET, POST | `/control/registry` | 读有效作用域注册表；执行一次 `register`/`update`/`remove`/`default_*`/`link`/`unlink`。 |
+| GET, POST | `/control/settings` | 读有效 interaction/scenario 设置；`set` 或 `reset`。 |
+| GET, POST | `/graph/knowledge` | 列出知识文件及其索引标记；标记、更新或取消一个。 |
 | GET | `/takeover/pending` | 某 session 的待处理审批/提问窗口。 |
 | POST | `/takeover/answer` | 提交合法人工答案；非法答案保持窗口。 |
 | POST | `/takeover/cancel` | 取消窗口并交还宿主默认处理。 |
@@ -461,6 +483,11 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 | GET | `/amp/ledger` | 链头与条目（`?limit=`、`?full=1`）。 |
 | GET | `/amp/verify` | 重算链结论与最新检查点。 |
 | POST | `/amp/checkpoint` | 对当前链头签检查点。 |
+| GET | `/amp/planning`、`/amp/missions`、`/amp/goals`、`/amp/plans` | 持久规划投影（`?session=`）。 |
+| GET | `/amp/collaboration` | 所选原生 DSH 会话持有或受派的职责。 |
+| GET | `/amp/state-card` | 紧凑状态卡：`objective`、未结 `duties`、执行中 `plan`（`done/total` 与下一任务）、一句 `next`、`constraints` 与 `durable: true`；每步由持久记录重建，压缩不丢失。`?compaction=1` 返回 `{ current, compaction }`，后者是最近一次自动压缩前的快照（没有则 `null`）。 |
+| GET | `/amp/scope` | 有界作用域快照（`?scope=global\|default\|workspace` 与各 limit）。 |
+| GET | `/amp/insights` | 会话认知日志、清单能力、技能与知识；每个来源都报告可用/不可用。 |
 | GET | `/graph/tree` | 有界工作区树（`?root=` 覆盖）。 |
 | GET | `/graph/outline` | 文件或工作区结构大纲。 |
 | GET | `/graph/intra` | 文件内符号与边。 |
@@ -470,10 +497,12 @@ P0 解析器是词法级、确定性的：JS/TS/JSX（import/export/`require`/�
 | GET | `/graph/agents` | 只读代理名册与预计进度。 |
 | GET | `/graph/agents/messages` | 有界、`no-store` 的代理对话记录。 |
 | GET | `/graph/preview` | 唯一承载正文的文件路由；有界、`no-store`。 |
+| GET | `/graph/preview/pdf` | TeX 预览的编译 PDF 字节（`?path=&session=`），`no-store`；源文件仍须可读。 |
+| GET | `/graph/revision` | 已解析工作区的 `no-store` 图修订哈希，供面板失效缓存。 |
 | POST | `/graph/index` | 索引新工作区（运行中返回 `409 BUSY`）。 |
 | POST | `/graph/rebuild` | 重新解析已索引路径（运行中返回 `409 BUSY`）。 |
 
-没有 `coordination_write` 或 `coordination_refresh` 工具。四个文件工具与四个图工具的说明目前是内联中英双语，因为共享 `ToolName` 表还没有它们的键；三个输入框工具使用共享 copy 表。
+没有 `coordination_write` 或 `coordination_refresh` 工具。文件、图、控制、知识、通知、审批、规划与协作工具的说明目前是内联中英双语，因为共享 `ToolName` 表还没有它们的键；选择类工具使用共享 copy 表。
 
 ## 数据、隐私与安全
 

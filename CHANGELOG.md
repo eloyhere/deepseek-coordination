@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.23.2 | 2026-11-03 | — | Chinese README tool and route table sync |
 | 0.23.1 | 2026-11-03 | — | Release CI test typecheck fix |
 | 0.23.0 | 2026-11-03 | — | Tool-layer and context-architecture optimization |
 | 0.22.4 | 2026-10-29 | —| Scoped SQL hydration for graph reads |
@@ -73,6 +74,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
+
+## [0.23.2] — 2026-11-03
+
+### Changed
+
+- **The Chinese README matches the shipped surface again.** Its tool table now lists all 24 tools — selection, profession, planning, collaboration, control, knowledge, workspace, environment, notification, approval, search, index, file and graph tools — with the current contracts (summary view, handle reads, `verbosity`, `mode:"paths"`, truncation envelopes). The route table gained the notification, approval, control, knowledge, `/amp/state-card`, `/amp/scope`, `/amp/insights`, `/context/metrics`, `/graph/preview/pdf` and `/graph/revision` endpoints, and the stale "11 tools / 33 routes" counts were removed.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (1,159 tests, 1,158 pass, 1 skipped), `npm run build`, `npm run pack:check` (15 required runtime files present).
 
 ## [0.23.1] — 2026-11-03
 

@@ -4,7 +4,7 @@
 
 A dual-face Cordis plugin for DeepSeek Harness: the host owns durable coordination state, model-facing tools, an AMP v0.1 protocol layer and an HTTP surface; the client provides docked panels, settings, model-triggered notifications and the service-level takeover dialog.
 
-**Current source: v0.23.1, schema 28.** The 0.23.0 release is the tool-layer and context-architecture program: unified handles, trimmed outputs, `tookMs` on every result, structured truncation, a lean and measured catalog, cache telemetry, a durable state card and a pre-compaction snapshot. 0.23.1 fixes the release workflow's `test:tsc` over the new suites. Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
+**Current source: v0.23.2, schema 28.** The 0.23.0 release is the tool-layer and context-architecture program: unified handles, trimmed outputs, `tookMs` on every result, structured truncation, a lean and measured catalog, cache telemetry, a durable state card and a pre-compaction snapshot. 0.23.1 fixes the release workflow's `test:tsc` over the new suites; 0.23.2 syncs the Chinese README's tool and route tables with the shipped surface. Durable missions, goals, plans and collaboration duties are exposed through tools and independent panel navigation. Composer coordination dropdowns are removed. Optional skills, commands and dynamic context depend on the services mounted by the runtime; source registration does not establish that this build is loaded in a running app.
 
 | Status | Meaning in this README |
 |---|---|
@@ -61,7 +61,7 @@ Install the packed tarball, not the GitHub source:
 
 ```powershell
 npm pack
-dsh plugin --profile <name> add .\deepseek-coordination-0.23.1.tgz
+dsh plugin --profile <name> add .\deepseek-coordination-0.23.2.tgz
 dsh --profile <name> --dump-config   # expect a deepseek-coordination layer
 ```
 
@@ -611,7 +611,7 @@ Known limitations, stated rather than hidden:
 6. **`parser.enabled` still needs registration.** The other file-layer limits retune live; turning the parser off fails closed immediately, but adding/removing the four tools requires the next registration (restart).
 7. **No browser E2E test.** The UI is covered by types, build, the settings-catalog and settings-render tests, the panel render tests and the takeover/bridge/notification/integration tests; visual verification remains manual/screenshot-based.
 8. **Node engine is `>=24.0.0`.** The `attention-manifest-protocol` runtime dependency requires Node 24; CI and this verification use 24.21.0.
-9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.23.1 tarball or link the built checkout rather than assuming a previous install was upgraded.
+9. **A profile can still record an older package spec.** Verify the installed version (`dsh --profile <name> --dump-config` or the profile's `package.json`); install the 0.23.2 tarball or link the built checkout rather than assuming a previous install was upgraded.
 10. **The cache proxy is experimental and off by default.** Its brand profiles are policy defaults, not measurements, and it only rewrites content for families with an automatic prefix cache; the observable gain on a stable session may be near zero, which is why it ships behind a flag and a status endpoint rather than enabled.
 11. **AMP conformance is boundary-deep, not complete.** Manifests, frames, receipts, events, claims/unknowns, goal/plan pairs (gated on recorded acceptance), the ledger and checkpoints are wired and verified; the sealed envelope and the warrant's hypothesis/revision/authorization functions are implemented and tested but not driven by any path, and hypotheses, governance manifests, credentials, federation and interrupt budgets are not implemented. [`docs/ampConformance.md`](docs/ampConformance.md) §7 lists each gap with its reason, and the manifest's `self.limits` states the two unmeasured fields (calibration, token usage).
 

@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.23.1",
+  "version": "0.23.2",
   "description": "A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, AMP planning/collaboration/control tools, notifications, registered skills and optional commands/context; the web half provides docked panels, a searchable settings page, notification surfaces and the takeover dialog.",
   "keywords": [
     "deepseek-harness",
