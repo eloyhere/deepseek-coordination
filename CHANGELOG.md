@@ -19,6 +19,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.23.1 | 2026-11-03 | — | Release CI test typecheck fix |
 | 0.23.0 | 2026-11-03 | — | Tool-layer and context-architecture optimization |
 | 0.22.4 | 2026-10-29 | —| Scoped SQL hydration for graph reads |
 | 0.22.3 | 2026-10-29 | —| Graph rows partitioned by workspace |
@@ -72,6 +73,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 | 0.1.2 | 2026-10-13 | `e4fade7` | Permission commands without `permission.json` |
 | 0.1.0—.1.1 | 2026-10-13 | `c2dae0c` | dsh-os initial publication and README rewrite |
 
+
+## [0.23.1] — 2026-11-03
+
+### Fixed
+
+- **The release workflow's test type check now passes.** `npm run test:tsc` (which type-checks `test/`, unlike `npm run typecheck`) failed on the new suites: the fake `CompactionPort` is imported from `module.js` with typed parameters, the parse-card union is narrowed before reading `fingerprint`, and the state-card fixtures are explicitly typed. No runtime or API change.
+
+### Verified
+
+- `npm run typecheck`, `npm run test:tsc`, `npm test` (1,159 tests, 1,158 pass, 1 skipped), `npm run build`, `npm run pack:check` (15 required runtime files present).
 
 ## [0.23.0] — 2026-11-03
 

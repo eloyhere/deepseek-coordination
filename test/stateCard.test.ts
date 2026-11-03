@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Duty } from '../src/host/ampCollaboration.js'
-import { buildStateCard, stateCardOf } from '../src/host/stateCard.js'
+import { buildStateCard, stateCardOf, type PlanningView } from '../src/host/stateCard.js'
 
 function duty(overrides: Partial<Duty> & { id: string }): Duty {
   return {
@@ -42,14 +42,14 @@ const runningPlan = {
   abandon_if: [],
   status: 'executing',
   created: '2026-01-01T00:00:00Z',
-} as unknown as ReturnType<typeof planningOf>['plans'][number]
+} as unknown as PlanningView['plans'][number]
 
-function planningOf() {
+function planningOf(): PlanningView {
   return {
     missions: [{ id: 'mission-1', session: 's1', goal: 'goal-1', priority: 1, status: 'active' as const, created: 1, updated: 1 }],
     goals: [{ goal: { amp: '0.1', kind: 'goal', id: 'goal-1', statement: 'Ship the parser', success: [], value: 1, priority: 1 }, state: 'active' as const }],
     plans: [runningPlan],
-  }
+  } as unknown as PlanningView
 }
 
 test('the card names the objective, the plan and its next task', () => {

@@ -59,7 +59,8 @@ test('withLeanSchemas transforms registrations, and full detail is a pass-throug
   const registry = { register: (value: CoordinationToolDefinition) => { recorded.push(value); return () => { recorded.pop() } } }
 
   withLeanSchemas(registry, 'lean').register(definition)
-  assert.equal(recorded[0]?.parameters.properties?.path.description, undefined)
+  const parameters = recorded[0]?.parameters as { properties: { path: { description?: string } } }
+  assert.equal(parameters.properties.path.description, undefined)
   assert.equal(recorded[0]?.description, 'Read a file.')
 
   withLeanSchemas(registry, 'full').register(definition)

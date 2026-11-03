@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { CoordinationService } from '../src/host/coordination.js'
-import type { CompactionPort, DshRuntime } from '../src/host/dsh.js'
+import type { DshRuntime } from '../src/host/dsh.js'
+import type { AgentView, CompactionPort } from '../src/host/module.js'
 import { testConfig, insertSession } from './helpers.js'
 
 test('maybeCompact captures the state card before the history is rewritten', async () => {
@@ -25,7 +26,7 @@ test('maybeCompact captures the state card before the history is rewritten', asy
       calls.push('compactNow')
       return null
     },
-    async compactIfNeeded(_agent, trigger) {
+    async compactIfNeeded(_agent: AgentView, trigger: 'pressure' | 'context-overflow') {
       calls.push(trigger)
       return { compacted: true }
     },

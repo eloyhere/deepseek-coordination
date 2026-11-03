@@ -36,6 +36,10 @@ import type { ParsedFile } from '../src/host/parseService.js'
 import type { NodeMetadata } from '../src/host/text/parser.js'
 import { testConfig } from './helpers.js'
 
+/** Parse cards are a `NodeCard | ParseCompactCard` union; the fingerprint is on the full card. */
+const cardFingerprint = (card: unknown): string | undefined =>
+  (card as { fingerprint?: string } | undefined)?.fingerprint
+
 /* ------------------------------------------------------------------------- *
  * Fixtures
  * ------------------------------------------------------------------------- */
@@ -231,7 +235,7 @@ test('handles and chain edges survive closing the database and building a new ru
       const parsedB = (await first.get('coordination_parse').execute({ path: 'src/b.ts', verbosity: 'full' })) as ParseToolValue
       aHandle = parsedA.cards[0]?.identity as string
       bHandle = parsedB.cards[0]?.identity as string
-      aFingerprint = parsedA.cards[0]?.fingerprint as string
+      aFingerprint = cardFingerprint(parsedA.cards[0]) as string
       assert.equal(aHandle, fileHandleFor('src/a.ts'))
       assert.equal(bHandle, fileHandleFor('src/b.ts'))
       assert.equal(parsedA.dependencies.files, 1)
@@ -332,14 +336,14 @@ test('re-parsing refreshes the persisted card instead of duplicating the handle'
       workspace.write('src/retune.ts', 'export const one = 1\nexport const two = 2\n')
       const second = (await registry.get('coordination_parse').execute({ path: 'src/retune.ts', verbosity: 'full' })) as ParseToolValue
       assert.equal(second.cards[0]?.identity, handle)
-      assert.notEqual(second.cards[0]?.fingerprint, first.cards[0]?.fingerprint)
+      assert.notEqual(cardFingerprint(second.cards[0]), cardFingerprint(first.cards[0]))
       assert.equal(db.count('snapshot'), snapshots)
       assert.ok(db.count('node') >= nodes)
       assert.ok(db.count('edge') >= edges)
       // Node rows are keyed by a project-scoped handle; the API handle stays stable.
       const storedHandle = `${projectHandleFor(workspace.root)}\u0000${handle}`
       const row = db.get<{ fingerprint: string }>('SELECT fingerprint FROM node WHERE handle = ?', storedHandle)
-      assert.equal(row?.fingerprint, second.cards[0]?.fingerprint)
+      assert.equal(row?.fingerprint, cardFingerprint(second.cards[0]))
     } finally {
       dispose()
       db.close()
