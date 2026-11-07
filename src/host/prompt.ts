@@ -1,0 +1,99 @@
+/** The AMP operating contract injected into every agent's system prompt. */
+import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-system-prompt'
+import type { AmpHost } from './amp.js'
+
+export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
+  const moduleLines = host.agentModules
+    .map((module) => `- attention_manifest_protocol_${module.module}: ${module.summary}`)
+    .join('\n')
+
+  ctx.systemPrompt.section({
+    name: 'deepseek-coordination:amp-contract',
+    order: ctx.systemPrompt.getSectionOrder('MCP_SERVERS') + 10,
+    text: [
+      '## Attention Manifest Protocol (AMP 0.7.9)',
+      '',
+      'This host exposes AMP as fifteen module tools named `attention_manifest_protocol_<module>`.',
+      'Each tool takes a `verb` and a lossless `arguments` object. Call `attention_manifest_protocol_discover`',
+      'first when you do not know a module\'s verbs, authority or mutating status.',
+      '',
+      moduleLines,
+      '- attention_manifest_protocol_replace: replace text in a workspace file by literal string, regular expression, line range, UTF-8 byte range or outline node; mutating and CAS-guarded by expectedBufferVersion/expectedBaseHash.',
+      '',
+      'Rules:',
+      '- Read before you write. `get`/`list`/`read` verbs are safe; verbs marked mutating change durable state and require an idempotency key, which the host supplies from the tool call id.',
+      '- Outline before content. Before exploring a project, read its outline with `workspace.list` (or `workspace.read` on the project root). Before reading a file, read its outline with `workspace.outline` or the first `workspace.read`, whose `phase: "outline"` response must be reviewed first. Only then request content ranges; the host enforces the fixed order project outline, then file outline, then content and returns the missing outline instead of content.',
+      '- Record uncertainty explicitly: cite evidence ids with `evidence.cite`, report progress with `task.report_progress` or `turn.report`, and propose plans with `plan.propose_draft` instead of silently changing course.',
+      '- Workspace tools stay inside the session workspace root; writes use compare-and-swap with the revision returned by the preceding read.',
+      '- `execution.run` is the only AMP verb that dispatches another DSH tool. Do not use it to call AMP protocol tools.',
+      '- The host owns session, turn, receipt and verification lifecycles; the model never creates or closes them.',
+    ].join('\n'),
+  })
+
+  ctx.systemPrompt.context({
+    name: 'deepseek-coordination:takeover',
+    order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE') + 11,
+    required: false,
+    interpolate: false,
+    text: (assembly) => {
+      const agent = (assembly as { agent?: { session?: { header?: { cwd?: string } } } }).agent
+      return host.preferencesFor(agent?.session?.header?.cwd).get().takeoverFileRead
+        ? [
+          'File-read takeover is enabled, and every target must be read in outline form first.',
+          'For a project: call `attention_manifest_protocol_workspace.list` on the workspace root (or `workspace.read`/`workspace.outline` on the root directory) and review the project outline before opening any file.',
+          'For a file: call `attention_manifest_protocol_workspace.outline` first, or rely on the first `workspace.read`, whose `phase: "outline"` response lists the file outline; review it, then repeat the read with `startLine`/`endLine` or a byte range for only the content you need.',
+          'The host enforces the order project outline, then file outline, then content; a content request made before the outline returns the outline instead.',
+          'Prefer these verbs over the harness native file reader so the read is journaled, bounded and CAS-aware.',
+          'Fall back to the native reader only when AMP cannot address the path (outside the workspace root or a binary document), and follow the same outline-first order.',
+        ].join(' ')
+        : ''
+    },
+  })
+
+  ctx.systemPrompt.context({
+    name: 'deepseek-coordination:file-write-takeover',
+    order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE') + 13,
+    required: false,
+    interpolate: false,
+    text: (assembly) => {
+      const agent = (assembly as { agent?: { session?: { header?: { cwd?: string } } } }).agent
+      if (!host.preferencesFor(agent?.session?.header?.cwd).get().takeoverFileWrite) return ''
+      return [
+        'File-write takeover is enabled: use `attention_manifest_protocol_workspace.write` for full writes and `attention_manifest_protocol_replace` for targeted replacements inside the session workspace.',
+        'Read the file with `attention_manifest_protocol_workspace.read` before changing it. For write, pass the returned `revision` as `expectedRevision`; for replace, use `expectedBufferVersion` and/or `expectedBaseHash` from the same snapshot.',
+        'Replace supports literal string, regular expression, line range, UTF-8 byte range and outline node targets, with `all` or a one-based `occurrence`; use `dryRun: true` on write to preview.',
+        'Native write and replace tools are disabled while this takeover is active. If a CAS guard conflicts, read the latest file and reapply the intended edit. Fall back to native file tools only for paths outside the workspace or format-aware binary documents.',
+      ].join(' ')
+    },
+  })
+
+  ctx.systemPrompt.context({
+    name: 'deepseek-coordination:search-takeover',
+    order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE') + 12,
+    required: false,
+    interpolate: false,
+    text: (assembly) => {
+      const agent = (assembly as { agent?: { session?: { header?: { cwd?: string } } } }).agent
+      if (!host.preferencesFor(agent?.session?.header?.cwd).get().takeoverSearch) return ''
+      return [
+        'Search takeover is enabled: use `attention_manifest_protocol_discover` with `action: "search"` for project file-name or file-content searches instead of native search tools.',
+        'AMP discover performs the ranking; choose `scope` as `files`, `content`, or `both`, and pass `path`, `include`, and `exclude` to control the workspace-relative search scope.',
+        'Search results only identify matching files and line locations; before reading content, get the file outline with `attention_manifest_protocol_workspace.outline` (or the first `workspace.read` outline phase), then read only the relevant ranges.',
+      ].join(' ')
+    },
+  })
+
+  ctx.systemPrompt.context({
+    name: 'deepseek-coordination:bound',
+    order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE') + 10,
+    required: false,
+    interpolate: false,
+    text: (assembly) => {
+      const agent = (assembly as { agent?: { id: string; session: { header?: { cwd?: string } } } }).agent
+      if (agent === undefined) return ''
+      const cwd = agent.session.header?.cwd
+      return `AMP binding: session ${agent.id}${cwd === undefined ? '' : `, workspace ${cwd}`}. AMP modules: ${host.agentModules.length}; exposed verbs: ${host.catalog.length}.`
+    },
+  })
+}

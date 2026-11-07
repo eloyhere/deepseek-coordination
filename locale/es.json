@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Coordinación (AMP 0.7.9)",
+    "description": "Host del Attention Manifest Protocol para DeepSeek Harness: quince módulos de agente, la superficie de descubrimiento, un núcleo SQLite ejecutable, superficies de notificación y paneles AMP de solo lectura."
+  }
+}

@@ -15,10 +15,82 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.24.0] - 2026-11-07
+
+### Added
+
+- Workspace-scoped AMP persistence: one kernel store per workspace root at
+  `<workspace>/.deepseek-coordination/amp.sqlite`, with `host-state.json` for the
+  host-side AMP state (status lines, notes, mailboxes, citations, execution
+  handles) and `preferences.json` for takeover switches. A restart restores
+  plans, draft tasks and status lines; `storage: 'user'` and an explicit
+  `storePath` keep the machine-wide and shared-store layouts available, and
+  `/amp/status` reports the active layout under `storage`. A workspace inherits
+  the machine-wide preferences on first use, and `scripts/migrateStore.mjs`
+  copies a legacy store with `VACUUM INTO` while DSH is stopped.
+- Bidirectional DSH ↔ AMP binding: sessions, turns, goals, todo plans/tasks and
+  tool actions project into the AMP kernel; `attention_manifest_protocol_harness`
+  and `/amp goal|mission|plan|todos|feedback` write harness state through its own
+  commands and tools.
+- Harness feedback triggers from `turn.report`, `goal.submit_evidence` and the
+  bridge's explicit `feedback` operation.
+- `/deepseek-coordination/amp/sync` for live projection counters and deferred
+  settlements; the AMP status bar is capped at the composer card width.
+- AMP attention compilation in the real model request: prompt, goal, todo plan,
+  recent tools and workspace are compiled under `contextBudgetTokens` and
+  injected as `<amp_attention>`; exclusions are recorded and exposed through
+  `/deepseek-coordination/amp/context`.
+
+### Changed
+
+- Upgraded `attention-manifest-protocol` from the 0.6-era coordination layer to
+  **0.7.9** and adopted its executable kernel, agent surface and gateway.
+- Rebuilt the plugin around AMP: fifteen agent-tier module tools plus the
+  standalone `attention_manifest_protocol_replace` tool (50 tools, 49 module
+  verbs), the `attention_manifest_protocol_discover` bootstrap, 10 skills, 2
+  commands, a system-prompt contract and read-only HTTP routes.
+- Added `replace` with string, regex, line, UTF-8 byte and outline targets,
+  all-matches and CAS guards (`expectedBufferVersion`, `expectedBaseHash`);
+  `discover` accepts a single query, an array of queries, or case-insensitive
+  regular expressions.
+- Registered the eight host-tier AMP modules through the kernel snapshot,
+  receipts, evidence and the gateway journal, and kept the four hidden modules
+  internal.
+- Replaced the old 400 KB client panel with a compact AMP status strip, a module
+  dialog and an all-MUI settings page; adapted the client half to DSH
+  0.2.2-rc.1 slots, locale and the lazy-CJS bundle envelope. Settings begin with
+  direct takeover switches, and file-write takeover is enforced by a tool guard
+  that denies native write/replace/edit calls and redirects to AMP.
+- Removed the obsolete `semantic-typescript` freeze guard now that 2.0.1 no
+  longer mutates global prototypes.
+
+### Fixed
+
+- A settings-page white screen when an unopened store reports `kernel: null`:
+  the snapshot signature now treats `null` as absent.
+- Empty AMP surfaces after `0.7.9`: session lists tolerate missing workflow
+  arrays/context, `/amp/modules` no longer depends on a live tool lookup, and
+  session-root resolution falls back to the last workspace. `/amp/status` and
+  `/amp/modules` return diagnostics instead of an empty 400.
+- Added a settings render-error boundary and `/amp/client-report` so a future
+  render failure is visible and reportable instead of blank.
+
+### Removed
+
+- The coordination SQLite schema and service, graph/text/cognition/emotion
+  engines, composer dropdowns, takeover and approval dialogs, bundled skill
+  files, and the old `src/protocol` compatibility layer.
+
+### Kept
+
+- The `snackbar` / `alert` / `dialog` / `popover` notification components and the
+  `coordination_notification` tool.
+
 ## Release map
 
 | Version | Date | Commit | Summary |
 |---|---|---|---|
+| 0.24.0 | 2026-11-07 | — | AMP 0.7.9, replace tool, MUI settings, guarded takeover |
 | 0.23.6 | 2026-11-03 | — | Republish documentation encoding fixes |
 | 0.23.5 | 2026-11-03 | — | Repair garbled documentation text |
 | 0.23.4 | 2026-11-03 | — | No-timeout takeover dialog and MUI restyle |

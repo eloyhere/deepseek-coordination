@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Koordination (AMP 0.7.9)",
+    "description": "Attention-Manifest-Protocol-Host für DeepSeek Harness: fünfzehn Agentenmodule, die Discovery-Oberfläche, ein ausführbarer SQLite-Kernel, Benachrichtigungsoberflächen und schreibgeschützte AMP-Panels."
+  }
+}

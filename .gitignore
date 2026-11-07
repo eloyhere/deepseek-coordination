@@ -34,3 +34,10 @@ npm-debug.log*
 
 # Scratch probes left by other sessions (never committed)
 .asar-*
+
+# Research scratch (harness SDK extracts, legacy source, docs snapshots)
+.research/
+.tmp-*
+
+# AMP runtime data written by this plugin into the workspace it serves
+.deepseek-coordination/

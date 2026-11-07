@@ -1,15 +1,15 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.23.6",
-  "description": "A dual-face Cordis plugin for DeepSeek Harness: the host half owns a coordination SQLite database, AMP planning/collaboration/control tools, notifications, registered skills and optional commands/context; the web half provides docked panels, a searchable settings page, notification surfaces and the takeover dialog.",
+  "version": "0.24.0",
+  "description": "Attention Manifest Protocol (AMP 0.7.9) host for DeepSeek Harness: fifteen agent modules, a discovery surface, an executable kernel, notification surfaces and read-only AMP panels.",
   "keywords": [
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
     "cordis",
-    "plugin",
-    "bundle",
-    "settings-ui"
+    "amp",
+    "attention-manifest-protocol",
+    "agent-coordination"
   ],
   "license": "Apache-2.0",
   "author": "Eloy Kim <eloy.kim@outlook.com>",
@@ -47,8 +47,7 @@
     "locale/*.json",
     "icon.svg",
     "NOTICE",
-    "docs/ampConformance.md",
-    "skills/**/*.md"
+    "scripts/migrateStore.mjs"
   ],
   "dsh": {
     "bundle": {
@@ -56,45 +55,51 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-locale"
       ],
-      "platform": "web",
-      "immediately": true
+      "platform": "web"
     }
   },
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:tsc": "tsc -p tsconfig.test.json --noEmit",
-    "test:build": "tsdown --config tsdown.test.config.ts",
-    "test": "npm run test:build && node --test .tmp/test-build",
+    "test": "npm run build && node --test test/smoke.test.mjs test/handlers.test.mjs test/client.test.mjs test/sync.test.mjs test/catalog.test.mjs test/vcsignore.test.mjs test/persistence.test.mjs test/dialogGate.test.mjs test/providerContextCompat.test.mjs test/search.test.mjs test/preferences.test.mjs test/ampData.test.mjs",
     "prepack": "npm run build",
+    "test:dialogs:browser": "node test/browser/dialogs.browser.mjs",
     "pack:check": "node scripts/checkPack.mjs"
   },
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=24.0.0",
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.7 || >=0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.7 || >=0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.7 || >=0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.7 || >=0.2.1-rc.2",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.7 || >=0.2.1-rc.2",
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-client-locale": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-locale": "^0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.7 || ^0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.2.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.2",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.7",
-    "@types/dompurify": "^3.0.5",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-agent": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-locale": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-commands": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-skill": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-util-values": "0.2.2-rc.1",
     "@types/node": "^26.2.0",
     "@types/react": "~18.3.1",
     "react": "^18.2.0",
@@ -102,22 +107,12 @@
     "typescript": "^5.6.0"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.4",
+    "@deepseek-ai/schemastery": "3.19.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^9.5.0",
     "@mui/material": "^9.5.0",
-    "attention-manifest-protocol": "^0.6.0",
-    "dompurify": "^3.4.17",
-    "fast-xml-parser": "^5.11.2",
-    "fflate": "^0.8.3",
-    "katex": "^0.19.0",
-    "mammoth": "^1.13.0",
-    "prism-react-renderer": "^2.4.1",
-    "react-dom": "^18.2.0",
-    "react-markdown": "^10.1.0",
-    "rehype-katex": "^7.0.1",
-    "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "attention-manifest-protocol": "0.7.9",
+    "react-dom": "^18.2.0"
   }
 }

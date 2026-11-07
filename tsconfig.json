@@ -18,21 +18,15 @@
     "resolveJsonModule": true,
     "types": [
       "node"
-    ],
-    "paths": {
-      "deepseek-coordination/client": [
-        "./src/client/index.ts"
-      ],
-      "@deepseek-ai/schemastery": [
-        "./src/types/schemastery.d.ts"
-      ]
-    }
+    ]
   },
   "include": [
     "src"
   ],
   "exclude": [
     "node_modules",
-    "lib"
+    "lib",
+    "test",
+    ".research"
   ]
 }

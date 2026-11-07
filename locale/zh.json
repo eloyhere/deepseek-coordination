@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "协作工作区",
-    "description": "DeepSeek Harness 的协作工作区：持久使命/目标/计划/职责、面向模型的文件与图/搜索工具、AMP v0.1 协议层、可搜索设置页、通知、审批、接管对话框与只读停靠面板。"
+    "title": "协作协议（AMP 0.7.9）",
+    "description": "DeepSeek Harness 的注意力清单协议宿主：十五个智能体模块、发现入口、可执行的 SQLite 内核、通知界面与只读 AMP 面板。"
   }
 }

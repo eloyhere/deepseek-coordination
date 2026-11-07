@@ -13,10 +13,59 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
+## [0.24.0] — 2026-11-07
+
+### 变更
+
+- **工作区级 AMP 持久化。** 每个工作区根一个内核库：
+  `<工作区>/.deepseek-coordination/amp.sqlite`；同目录的 `host-state.json`
+  保存宿主侧状态（状态行、备注、信箱、引用、执行句柄），`preferences.json`
+  保存接管开关。重启后计划、草稿任务与状态行都能恢复；`storage: 'user'` 与
+  显式 `storePath` 分别保留机器级与共享库布局，`/amp/status` 的 `storage`
+  字段返回当前布局。工作区首次使用会继承机器级偏好，`scripts/migrateStore.mjs`
+  可在 DSH 停止时用 `VACUUM INTO` 复制旧库。
+- 将 `attention-manifest-protocol` 从 0.6 时代的协调层升级到 **0.7.9**，
+  并接入其可执行内核、智能体面与网关。
+- 以 AMP 为核心重构插件：15 个 agent 层模块工具，加上独立的
+  `attention_manifest_protocol_replace`（共 50 个工具、49 个模块动词）、
+  `attention_manifest_protocol_discover` 引导入口、10 个技能、2 个人工命令、
+  系统提示词契约和只读 HTTP 路由。
+- 新增 `replace`：支持字面量、正则、行、UTF-8 字节与大纲节点目标，
+  支持全量匹配和 CAS 校验（`expectedBufferVersion`、`expectedBaseHash`）；
+  `discover` 支持单字符串、字符串数组和大小写不敏感正则。
+- 通过内核快照、收据、证据与网关日志注册 8 个 host 层 AMP 模块，
+  4 个 hidden 模块保持内部。
+- 用紧凑的 AMP 状态条、模块对话框和全 MUI 设置页替换旧的 400 KB 客户端面板；
+  客户端适配 DSH 0.2.2-rc.1 的 slot、locale 与 lazy-CJS bundle 封装。
+  设置页以接管开关开头，文件写入接管由工具守卫真正执行：原生
+  write/replace/edit 会被拒绝并指向 AMP。
+- 移除过时的 `semantic-typescript` 冻结保护；2.0.1 已不再修改全局原型。
+
+### 修复
+
+- 未打开的存储返回 `kernel: null` 时设置页白屏：快照签名现在把 `null`
+  当作缺失处理。
+- AMP 0.7.9 后界面无数据：会话列表容忍缺失的工作流数组/上下文，
+  `/amp/modules` 不再依赖运行期工具查找，会话根解析回退到最近工作区；
+  `/amp/status` 与 `/amp/modules` 返回诊断而不是空的 400。
+- 增加设置页渲染错误边界与 `/amp/client-report`，后续渲染异常会显示并上报，
+  不再白屏。
+
+### 移除
+
+- 协调 SQLite schema 与服务、图/文本/认知/情感引擎、输入框下拉、
+  接管与审批对话框、内置技能文件，以及旧 `src/protocol` 兼容层。
+
+### 保留
+
+- `snackbar` / `alert` / `dialog` / `popover` 通知组件与
+  `coordination_notification` 工具。
+
 ## 版本索引
 
 | 版本 | 日期 | 提交 | 摘要 |
 |---|---|---|---|
+| 0.24.0 | 2026-11-07 | — | AMP 0.7.9、replace 工具、MUI 设置页、受守卫的接管 |
 | 0.23.6 | 2026-11-03 | — | 重新发布文档编码修复 |
 | 0.23.5 | 2026-11-03 | — | 修复文档乱码 |
 | 0.23.4 | 2026-11-03 | — | 接管弹窗去超时与 MUI 重做 |

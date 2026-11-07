@@ -25,7 +25,7 @@
 import * as React from 'react'
 import Alert from '@mui/material/Alert'
 import Snackbar from '@mui/material/Snackbar'
-import Dialog from '@mui/material/Dialog'
+import { BlockingDialog } from './modal.js'
 import DialogTitle from '@mui/material/DialogTitle'
 import DialogContent from '@mui/material/DialogContent'
 import DialogContentText from '@mui/material/DialogContentText'
@@ -34,9 +34,11 @@ import Popover from '@mui/material/Popover'
 import Paper from '@mui/material/Paper'
 import Button from '@mui/material/Button'
 import Typography from '@mui/material/Typography'
-import { currentLocale, useCopy } from './i18n.js'
+import { useCopy } from './i18n.js'
+import { useAmpPreferences } from './preferences.js'
 import { usableSession } from './bridge.js'
-import type { Locale } from '../shared/i18n.js'
+import type { Copy } from '../shared/i18n.js'
+
 import type { NotificationAnchor, NotificationItem, NotificationSeverity } from '../shared/notification.js'
 
 const h = React.createElement
@@ -45,7 +47,6 @@ const h = React.createElement
 type MuiComponent = React.ComponentType<Record<string, unknown>>
 const MuiSnackbar = Snackbar as unknown as MuiComponent
 const MuiAlert = Alert as unknown as MuiComponent
-const MuiDialog = Dialog as unknown as MuiComponent
 const MuiDialogTitle = DialogTitle as unknown as MuiComponent
 const MuiDialogContent = DialogContent as unknown as MuiComponent
 const MuiDialogContentText = DialogContentText as unknown as MuiComponent
@@ -74,15 +75,6 @@ const ALERT_HOST_STYLE: React.CSSProperties = {
 
 const BODY_STYLE: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
 const ACTIONS_STYLE: React.CSSProperties = { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }
-
-const LABELS: Readonly<Record<Locale, { dismiss: string; close: string; notification: string }>> = {
-  'zh-CN': { dismiss: '知道了', close: '关闭', notification: '通知' },
-  'en-US': { dismiss: 'Got it', close: 'Close', notification: 'Notification' },
-}
-
-function labelsOf(locale: Locale): (typeof LABELS)[Locale] {
-  return LABELS[locale] ?? LABELS['en-US']
-}
 
 /** One parsed notification from the wire; anything else is dropped. */
 function isNotificationItem(value: unknown): value is NotificationItem {
@@ -168,16 +160,15 @@ function bodyOf(item: NotificationItem): React.ReactElement {
 }
 
 /** One surface element; the caller owns open/close state. */
-function renderSurface(item: NotificationItem, locale: Locale, dismiss: () => void): React.ReactElement {
-  const labels = labelsOf(locale)
+function renderSurface(item: NotificationItem, labels: Copy, dismiss: () => void): React.ReactElement {
   const severity = item.severity as NotificationSeverity
   const body = bodyOf(item)
 
   if (item.surface === 'dialog') {
     return h(
-      MuiDialog,
-      { key: item.id, open: true, onClose: dismiss, fullWidth: true, maxWidth: 'sm' },
-      h(MuiDialogTitle, null, item.title ?? labels.notification),
+      BlockingDialog,
+      { key: item.id, titleId: `amp-notice-${item.id}` },
+      h(MuiDialogTitle, { id: `amp-notice-${item.id}` }, item.title ?? labels.notification),
       h(
         MuiDialogContent,
         null,
@@ -262,15 +253,19 @@ export interface NotificationHostProps {
  * known.
  */
 export function NotificationHost(props: NotificationHostProps): React.ReactElement | null {
-  // Subscribe to locale changes for the button labels; the copy value itself is
-  // not read here, only used as the re-render trigger.
-  useCopy()
-  const locale = currentLocale()
+  // Subscribe to locale changes for the button labels; the copy is the
+  // re-render trigger and the labels the active surface reads.
+  const copy = useCopy()
+  const { preferences } = useAmpPreferences()
   const session = usableSession(props.sessionId) ? props.sessionId.trim() : null
   const [queue, setQueue] = React.useState<readonly NotificationItem[]>([])
 
   React.useEffect(() => {
     if (session === null) return
+    if (!preferences.takeoverNotifications) {
+      setQueue([])
+      return
+    }
     let stopped = false
     const tick = async (): Promise<void> => {
       if (stopped) return
@@ -291,7 +286,7 @@ export function NotificationHost(props: NotificationHostProps): React.ReactEleme
       stopped = true
       window.clearInterval(timer)
     }
-  }, [session])
+  }, [session, preferences.takeoverNotifications])
 
   const current = queue[0]
 
@@ -306,11 +301,12 @@ export function NotificationHost(props: NotificationHostProps): React.ReactEleme
 
   // Auto-close for every surface that has a delay; `0` waits for the user.
   React.useEffect(() => {
-    if (current === undefined || current.duration <= 0) return undefined
+    if (current === undefined || current.surface === 'dialog' || current.duration <= 0) return undefined
     const timer = window.setTimeout(() => { close(current.id) }, current.duration)
     return () => { window.clearTimeout(timer) }
   }, [current, close])
 
+  if (!preferences.takeoverNotifications) return null
   if (current === undefined) return null
-  return renderSurface(current, locale, () => { close(current.id) })
+  return renderSurface(current, copy, () => { close(current.id) })
 }

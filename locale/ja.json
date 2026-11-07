@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "コーディネーション（AMP 0.7.9）",
+    "description": "DeepSeek Harness 向けの Attention Manifest Protocol ホスト：15 個のエージェントモジュール、ディスカバリーサーフェス、実行可能な SQLite カーネル、通知サーフェス、読み取り専用の AMP パネル。"
+  }
+}

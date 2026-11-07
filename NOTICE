@@ -1,12 +1,17 @@
 deepseek-coordination
 Copyright 2026 Eloy Kim
 
-This product uses the Attention Manifest Protocol (AMP v0.1) implementation
-published as the `attention-manifest-protocol` npm package, version 0.4.5,
+This product uses the Attention Manifest Protocol (AMP) implementation
+published as the `attention-manifest-protocol` npm package, version 0.7.1,
 Copyright 2026 Eloy Kim, licensed under the Apache License, Version 2.0.
 
-The package provides the normative protocol operations used by this plugin.
-`src/protocol/` retains host-specific artifact builders and compatibility code;
-`src/host/amp.ts` and `src/host/amp-store.ts` adapt AMP to this plugin's lifecycle,
-Node key persistence, and SQLite ledger. `docs/amp-conformance.md` records the
-wired surfaces and deliberate gaps.
+The package provides the protocol surface, the executable kernel, the agent
+gateway, the SQLite/entity persistence stack and the protocol types used by
+this plugin. `src/host/amp.ts` binds the kernel and gateway to DeepSeek
+Harness identity and lifetime; `src/host/handlers/` implements the host verbs;
+`src/host/tools.ts` projects the fifteen agent modules onto `ctx.tools`.
+
+AMP 0.7.1 depends on `semantic-typescript`, whose `Optional` module freezes
+`Function.prototype` at import time. `src/host/freezeGuard.ts` refuses to
+freeze shared built-in prototypes so DSH's own schemastery-based plugin
+configs keep working, and every AMP import is dynamic so the guard runs first.

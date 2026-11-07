@@ -1,1729 +1,726 @@
 /**
- * AMP conformance service: turns coordination state into protocol artifacts.
+ * The AMP host: a per-workspace SQLite protocol kernel, one agent gateway, one
+ * bounded call journal, and the module catalog the harness registers tools for.
  *
- * The plugin keeps its relational domain model (sessions, turns, plans, scores);
- * this service is the only place where that state becomes AMP v0.1. It builds
- * three artifacts and never fabricates a fourth:
+ * AMP 0.7.9 is a protocol, not a server: it ships the surface (module names,
+ * verbs, authority), the executable kernel, and a thin gateway. This class is
+ * the host adapter that binds both to DSH identity, workspace roots and
+ * lifetime.
  *
- *  - **Manifest** — a signed self-declaration. Capability confidence and tier are
- *    derived from recorded receipts (M-1), never from configuration; calibration
- *    reports the worst error (`ece: 1`) while no receipt carries both a
- *    predicted and a realized VOI, and says so in `self.limits`.
- *  - **Frame** — one immutable attention snapshot per turn: at most five slots,
- *    each with a required `why` (A-1), and an explicit `ignored` list built from
- *    the scene policy knobs this host deliberately does not enforce. Excluding a
- *    knob is recorded with a `revisit_if` trigger instead of being silent.
- *  - **Receipt / Event** — the settlement objects. A turn closes with one
- *    `reflect` receipt whose `usage.ms` is the measured turn duration; each tool
- *    call closes with a `read`/`attend`/`act` receipt. Both are appended to the
- *    hash-chained ledger, so calibration has ground truth.
- *
- * Everything here is append-only: no method updates or deletes an artifact.
+ * Persistence follows the workspace: `session.header.cwd` selects the store, so
+ * a project's goals, plans, tasks, attention, receipts and evidence live in
+ * `<root>/.deepseek-coordination/amp.sqlite` instead of the user's home
+ * directory. `storePath` pins one shared store and `storage: 'user'` restores
+ * the machine-wide layout; both keep the kernel root-independent.
  */
-import type { CoordinationConfig } from './config.js'
-import type { CoordinationDatabase } from './database.js'
-import type { Clock, HandleGenerator } from './handle.js'
-import type { CoordinationEventBus } from './module.js'
+import { existsSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type {
-  Interaction,
-  Profession,
-  Scene,
-  SceneProfile,
-  TurnStatus,
-  Validation,
-} from '../shared/enum.js'
-import type {
-  AmpEvent,
-  AttentionRequest,
-  Budget,
-  Capability,
-  Claim,
-  EvidenceItem,
-  Frame,
-  FrameMode,
-  Goal,
-  Ignored,
-  InterruptClass,
-  InterruptRecord,
-  InterruptStatus,
-  KeyPair,
-  LedgerCheckpoint,
-  LedgerSnapshot,
-  Manifest,
-  Plan,
-  Receipt,
-  ReceiptOp,
-  Ref,
-  FrameDraft,
-  Slot,
-  UnknownItem,
-} from '../protocol/index.js'
-import type { RefTable as AmpRefTable } from 'attention-manifest-protocol/boundary'
-import type { SnapshotVerdict as AmpSnapshotVerdict } from 'attention-manifest-protocol/ledger/persistence.js'
-import { canonical as ampCanonical, digestOf as ampDigestOf } from 'attention-manifest-protocol/semantic/canonical.js'
-import { deriveConfidence as ampDeriveConfidence, validateClaim as ampValidateClaim } from 'attention-manifest-protocol/warrant/warrant.js'
-import { RefTable as AmpRefTableImpl, frameFrom as ampFrameFrom } from 'attention-manifest-protocol/boundary'
-import { generateSigningKey as ampGenerateSigningKey, signManifest as ampSignManifest, verifyManifest as ampVerifyManifest } from 'attention-manifest-protocol/manifest/sign.js'
-import { sealCheckpoint as ampSealCheckpoint, verifyCheckpoint as ampVerifyCheckpoint, verifySnapshotAgainstCheckpoint as ampVerifySnapshotAgainstCheckpoint } from 'attention-manifest-protocol/ledger/checkpoint.js'
+  AgentBinding,
+  AgentGateway,
+  AgentSurface,
+  GatewayCallRecord,
+  GatewayHandler,
+  SurfaceModule,
+  ToolDescriptor,
+} from 'attention-manifest-protocol/agent'
+import type { Kernel } from 'attention-manifest-protocol/kernel'
+import type { Config } from './config.js'
+import { AMP_PREFIX } from './names.js'
+import type { AmpProtocol } from './protocol.js'
+import type { AmpSync } from './sync.js'
+import type { HarnessBridge } from './bridge.js'
+import type { AmpContextOptimizer } from './context.js'
+import { AmpPreferencesStore } from './preferences.js'
 import {
-  GENESIS,
-  buildAttentionRequest,
-  buildInterruptRecord,
-  exportPrivateKey,
-  exportPublicKey,
-  idFrom,
-  importPrivateKey,
-  importPublicKey,
-  interruptOutcome,
-  isId,
-  makeEvent,
-  makeReceipt,
-  validateGoal,
-  validatePlan,
-} from '../protocol/index.js'
-import { AmpStore, type StoredManifest } from './ampStore.js'
-import { decodePlanStep } from './plan.js'
-import type { CoordinationToolDefinition, CoordinationToolRegistry } from './tools.js'
-import { jsonSafe } from '../shared/jsonSafe.js'
+  AmpStateStore,
+  fileBytes,
+  inheritUserPreferences,
+  PREFERENCES_FILE,
+  STATE_FILE,
+  storageLayout,
+  storeDirectoryName,
+  storeIdentity,
+  type AmpStorageLayout,
+} from './storage.js'
+import { ensureStoreIgnored } from './vcsIgnore.js'
+import { createHandlers } from './handlers/index.js'
+import { asRecord, jsonSafe } from './json.js'
+import { observeView, projectSessionLists, sessionContext, meaningful, type SessionViewContext, type ViewRow } from './sessionView.js'
+import type { AmpCallResult, AmpModule } from './types.js'
 
-/** The agent id every artifact in this installation is issued under. */
-export const AMP_AGENT_ID = 'deepseek-coordination'
-
-/** Default tenant label for a single-host install. */
-export const AMP_TENANT_DEFAULT = 'local'
-
-/** The single human principal this install has; AMP refs need an id. */
-export const AMP_HUMAN_ID = 'local-user'
-
-/** How long one signed manifest stays valid before it is reissued. */
-const ManifestTtlMs = 12 * 60 * 60 * 1000
-
-/** How many recent receipts one manifest build aggregates. */
-const ReceiptScan = 2000
-
-/** A capability this host advertises; its tier/confidence are derived, not given. */
-export interface AmpCapabilityInput {
-  /** Model-facing tool name, e.g. `coordination_read`. */
-  name: string
-  label: string
-  kind: Capability['kind']
-}
-
-/**
- * The coordination model-facing capabilities, declared once.
- *
- * The names must match `src/host/tools.ts`; `test/ampProtocol.test.ts` asserts
- * that every registered capability id is a legal AMP id and that the list has no
- * duplicates. A capability's `tier`/`confidence` are NOT written here — they are
- * derived from recorded receipts in {@link AmpService.manifest}.
- */
-export const COORDINATION_CAPABILITIES: readonly AmpCapabilityInput[] = [
-  { name: 'coordination_collaboration', label: 'assign and review session-bound multiagent duties', kind: 'tool' },
-  { name: 'coordination_mission', label: 'queue and settle durable AMP missions', kind: 'tool' },
-  { name: 'coordination_goal', label: 'create AMP goals and transition their lifecycle', kind: 'tool' },
-  { name: 'coordination_plan', label: 'manage AMP plans and dependency-checked task progress', kind: 'tool' },
-  { name: 'coordination_selection', label: 'read or patch the five composer choices', kind: 'tool' },
-  { name: 'coordination_profession', label: 'read or set the locked profession', kind: 'tool' },
-  { name: 'coordination_profession_lock', label: 'inspect the profession lock of a turn', kind: 'tool' },
-  { name: 'coordination_parse', label: 'body-free parse projection of one file', kind: 'tool' },
-  { name: 'coordination_describe', label: 'one node card and its requested fields', kind: 'tool' },
-  { name: 'coordination_chain', label: 'bounded relationship projection', kind: 'tool' },
-  { name: 'coordination_read', label: 'the single authorized content read', kind: 'tool' },
-  { name: 'coordination_file', label: 'bounded workspace tree', kind: 'tool' },
-  { name: 'coordination_outline', label: 'structure outline of a file or workspace', kind: 'tool' },
-  { name: 'coordination_importation', label: 'import rows of a file or workspace', kind: 'tool' },
-  { name: 'coordination_exportation', label: 'export rows of a file or workspace', kind: 'tool' },
-  { name: 'coordination_index', label: 'refresh the bounded workspace index', kind: 'tool' },
-]
-
-/** Concrete facts behind the panel narrative; not a protocol object. */
-export interface AmpStory {
-  session: string
-  turn: {
-    ordinal: number
-    status: string
-    created: number
-    profession: string
-    interaction: string
-    scene: string
-    validation: string
-  } | null
-  /** The turn's own prompt, bounded; `truncated` says whether it was cut. */
-  prompt: { excerpt: string; truncated: boolean } | null
-  goal: { content: string } | null
-  plan: { steps: Array<{ intent: string; expect: string }> } | null
-  ignored: Array<{ target: string; reason: string; revisit: string }>
-}
-/** What a frame/receipt needs to know about one turn, without any content. */
-export interface AmpTurnFacts {
-  /** DSH session id (opaque, safe to store). */
-  session: string
-  /** Turn handle; the frame and receipt ids derive from it. */
-  turn: string
-  ordinal: number
-  profession: Profession
-  interaction: Interaction
-  scene: Scene
-  validation: Validation
-  sceneProfile: SceneProfile
-  created: number
-  goal?: { handle: string }
-  plan?: { handle: string }
-  status: TurnStatus
-  finished?: number
-  diagnostics?: readonly { code: string }[]
-  /** The comprehension row, when the turn ran one; the only claim source. */
-  cognition?: AmpCognitionInput
-  /** The plan row and its decoded steps; emitted only when every step has an expectation. */
-  planFacts?: AmpPlanFacts
-}
-
-/**
- * The comprehension facts a claim can be built from.
- *
- * `prompt` is passed so the claim's evidence can be anchored **verbatim**: a
- * claim is promoted to T1 only when its statement appears literally in the
- * user's prompt, which is the one entailment this host can actually check. A
- * paraphrase stays T0. Nothing else is inferred.
- */
-export interface AmpCognitionInput {
-  /** Comprehension row handle; part of every claim's provenance. */
-  id: string
-  prompt: string
-  intent: string
-  requirement: string
-  constraint: string
-  assumption: string
-  ambiguity: string
-  confidence: number
-  created: number
-}
-
-/** The four comprehension fields that become claims, in a stable order. */
-export const CognitionFields = ['intent', 'requirement', 'constraint', 'assumption'] as const
-
-/** One comprehension field name. */
-export type CognitionField = (typeof CognitionFields)[number]
-
-export interface AmpToolFacts {
-  tool: string
-  ok: boolean
-  ms: number
-}
-
-/** What a takeover window announces when it opens. */
-export interface AttentionRequestFacts {
-  /** Takeover window handle. */
-  handle: string
-  /** DSH session id, when known. */
-  session?: string
-  type: 'approval' | 'question'
-  /** The tool an approval is about, when the waterfall named one. */
-  tool?: string
-  requestedAt: number
-  expiresAt?: number
-}
-
-/**
- * How a takeover window settled.
- *
- * `granted` is a one-time approval, `answered` a question the human answered,
- * `denied` an explicit rejection, `expired` no answer inside the window, and
- * `withdrawn` a cancel or an unload.
- */
-export interface InterruptSettlementFacts extends AttentionRequestFacts {
-  settledAt: number
-  outcome: 'granted' | 'denied' | 'answered' | 'expired' | 'withdrawn'
-}
-
-/** One plan step as the plan module decoded it. */
-export interface AmpPlanStep {
-  /** The step's own text, used as the task intent. */
-  statement: string
-  /** Recorded acceptance; the plan is emitted only when every step has one. */
-  expect: string
-}
-
-/** What the plan artifact needs from the relational plan/goal rows. */
-export interface AmpPlanFacts {
-  plan: {
-    handle: string
-    created: number
-    /** Plugin plan status (`draft` … `abandoned`). */
-    status: string
-    /** The plan's constraint text; it becomes `abandon_if`. */
-    constraint: string
-  }
-  /** The turn's goal row; without it a plan has no `goal` Ref and is not emitted. */
-  goal?: { handle: string; content: string }
-  steps: readonly AmpPlanStep[]
-}
-
-export interface AmpOptions {
-  db: CoordinationDatabase
-  config: CoordinationConfig
-  handles: HandleGenerator
-  clock: Clock
-  agentId?: string
-  tenant?: string
-  capabilities?: readonly AmpCapabilityInput[]
-  onPlan?: (session: string, goal: Goal, plan: Plan) => void
-  logger?: { warn(message: string): void; debug?(message: string): void }
-}
-
-/** Event types the service mirrors from the module bus into the ledger. */
-const MirroredEvents = [
-  'selection/changed',
-  'selection/permission',
-  'takeover/requested',
-  'takeover/resolved',
-  'takeover/pending',
-  'compaction/auto',
-  'pipeline/report',
-] as const
-
-const iso = (ms: number): string => new Date(ms).toISOString()
-
-/**
- * Frame mode from the composer's interaction choice.
- *
- * The mapping is policy, not measurement: each interaction names the dominant
- * attention posture of the turn (reflect on affect, explore on analysis, exploit
- * on convergence, triage on orchestration).
- */
-export function frameModeOf(interaction: Interaction): FrameMode {
-  switch (interaction) {
-    case 'emotion':
-      return 'reflect'
-    case 'think':
-      return 'explore'
-    case 'heuristic':
-      return 'explore'
-    case 'orchestrate':
-      return 'triage'
-    case 'converge':
-    default:
-      return 'exploit'
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** The AMP host service: kernel, gateway, module catalog and journal. */
+    amp: AmpHost
   }
 }
 
-/** Tool name → the AMP verb whose receipt settles it. */
-export function receiptOpOf(tool: string): ReceiptOp {
-  switch (tool) {
-    case 'coordination_read':
-    case 'coordination_parse':
-    case 'coordination_describe':
-    case 'coordination_chain':
-    case 'coordination_file':
-    case 'coordination_outline':
-    case 'coordination_importation':
-    case 'coordination_exportation':
-      return 'read'
-    case 'coordination_selection':
-    case 'coordination_profession':
-    case 'coordination_profession_lock':
-      return 'attend'
-    default:
-      return 'act'
-  }
+interface CallFrame {
+  readonly exec: ToolRunContext
+  readonly module: string
+  readonly verb: string
+  /** Workspace root of the calling agent; absent when the agent has no cwd. */
+  readonly root: string | undefined
 }
 
-/** Turn status → receipt outcome. A cancelled turn is blocked, not failed. */
-export function outcomeOf(status: TurnStatus): Receipt['outcome'] {
-  switch (status) {
-    case 'done':
-      return 'success'
-    case 'failed':
-      return 'failure'
-    case 'cancelled':
-      return 'blocked'
-    default:
-      return 'partial'
-  }
+/** A gateway call plus the session/workspace it was made for. */
+type JournalRecord = GatewayCallRecord & {
+  readonly sessionId?: string
+  readonly root?: string
 }
 
-/**
- * Stable AMP id for a tool.
- *
- * Tool names are already legal AMP ids (`_` is in the id character class), so
- * the name is used unchanged; only a name the grammar rejects is repaired.
- */
-export function toolRefId(tool: string): string {
-  return isId(tool) ? tool : idFrom(tool, 'tool')
+interface StorageFailure {
+  readonly at: string
+  readonly root: string | null
+  readonly storePath: string
+  readonly message: string
 }
 
-/** Stable AMP id for one turn's frame. */
-export function frameIdOf(turn: string): string {
-  return `frame-${turn}`
+type IdentityLookup = { get?: (id: string) => unknown }
+
+function cwdOf(value: unknown): string | undefined {
+  const header = asRecord(asRecord(value)?.header)
+  const cwd = header?.cwd
+  return typeof cwd === 'string' && cwd.trim().length > 0 ? resolve(cwd) : undefined
 }
 
-/** Stable AMP id for one turn's receipt. */
-export function receiptIdOf(turn: string): string {
-  return `receipt-${turn}`
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-
-const idLike = /^[A-Za-z0-9._:-]{1,64}$/
-
-/**
- * Ledger projection of a bus payload.
- *
- * The ledger stores pointers and measured numbers, never prose: an id-shaped
- * string is kept, any other string becomes `[text omitted]`, deep objects are
- * capped. A governance event therefore cannot leak prompt or tool-output text
- * into the append-only chain by accident.
- */
-export function ledgerProjection(value: unknown, depth = 0): unknown {
-  if (value === null || typeof value === 'number' || typeof value === 'boolean') return value
-  if (typeof value === 'string') return idLike.test(value) ? value : '[text omitted]'
-  if (depth >= 4) return '[depth]'
-  if (Array.isArray(value)) return value.slice(0, 20).map((item) => ledgerProjection(item, depth + 1))
-  if (!isRecord(value)) return '[value]'
-  const projected: Record<string, unknown> = {}
-  for (const [key, item] of Object.entries(value).slice(0, 40)) {
-    projected[key] = ledgerProjection(item, depth + 1)
-  }
-  return projected
-}
-
-/**
- * The AMP-facing facade over the coordination database.
- *
- * Construct one per service; it is stateless apart from the cached signing key
- * and the cached manifest, and it never owns a timer.
- */
-export class AmpService {
-  readonly agentId: string
-  readonly tenant: string
-  readonly store: AmpStore
-  private readonly db: CoordinationDatabase
-  private readonly config: CoordinationConfig
-  private readonly handles: HandleGenerator
-  private readonly clock: Clock
-  private readonly capabilities: readonly AmpCapabilityInput[]
-  private readonly logger: AmpOptions['logger']
-  private readonly onPlan: AmpOptions['onPlan']
-  private ready: Promise<void> | undefined
-  private keyPair: KeyPair | undefined
-  private publicKeyText = ''
-  private manifestCache:
-    | { manifest: Manifest; expiresMs: number; policyDigest: string }
-    | undefined
-  private readonly pending = new Set<Promise<unknown>>()
-
-  constructor(options: AmpOptions) {
-    this.config = options.config
-    this.handles = options.handles
-    this.clock = options.clock
-    this.agentId = options.agentId ?? AMP_AGENT_ID
-    this.tenant = options.tenant ?? AMP_TENANT_DEFAULT
-    this.capabilities = options.capabilities ?? []
-    this.logger = options.logger
-    this.onPlan = options.onPlan
-    this.db = options.db
-    this.store = new AmpStore(options.db)
-  }
-
-  /* --------------------------------------------------------------------- *
-   * Identity
-   * --------------------------------------------------------------------- */
-
-  /** Loads or creates this installation's Ed25519 identity. Idempotent. */
-  async ensure(): Promise<void> {
-    if (this.ready === undefined) {
-      this.ready = this.loadKey().catch((error: unknown) => {
-        this.ready = undefined
-        throw error
-      })
-    }
-    await this.ready
-  }
-
-  private async loadKey(): Promise<void> {
-    const stored = this.store.key()
-    if (stored !== undefined) {
-      const privateKey = await importPrivateKey(stored.privateKey)
-      const publicKey = await importPublicKey(stored.publicKey)
-      this.keyPair = { kid: stored.kid, publicKey, privateKey }
-      this.publicKeyText = stored.publicKey
-      return
-    }
-
-    // Generate first, then derive the kid from the public key, so two profiles
-    // that copy the database never claim the same key id with different keys.
-    const generated = await ampGenerateSigningKey('pending')
-    const raw = await exportPublicKey(generated.publicKey)
-    const kid = `ed25519-${ampDigestOf(raw).slice(7, 23)}`
-    const pkcs8 = await exportPrivateKey(generated.privateKey)
-    this.store.saveKey({
-      kid,
-      alg: 'ed25519',
-      publicKey: raw,
-      privateKey: pkcs8,
-      created: this.clock.now(),
-    })
-    this.keyPair = { kid, publicKey: generated.publicKey, privateKey: generated.privateKey }
-    this.publicKeyText = raw
-  }
-
-  private key(): KeyPair {
-    if (this.keyPair === undefined) {
-      throw new Error('AMP identity is not ready; await ensure() first')
-    }
-    return this.keyPair
-  }
-
-  /** Public identity only: the private key never leaves the store. */
-  async identity(): Promise<{ kid: string; alg: 'ed25519'; publicKey: string }> {
-    await this.ensure()
-    return { kid: this.key().kid, alg: 'ed25519', publicKey: this.publicKeyText }
-  }
-
-  /* --------------------------------------------------------------------- *
-   * Manifest
-   * --------------------------------------------------------------------- */
-
-  /**
-   * The current signed manifest, reissued when it expires or when the policy
-   * digest changes. A manifest is never mutated; a new one is appended.
-   */
-  async manifest(): Promise<Manifest> {
-    await this.ensure()
-    const now = this.clock.now()
-    const policyDigest = this.policyDigest()
-    const cached = this.manifestCache
-    if (cached !== undefined && cached.expiresMs > now && cached.policyDigest === policyDigest) {
-      return cached.manifest
-    }
-
-    const receipts = this.receiptRows()
-    const frameRef = this.latestFrameRef()
-    const manifest = (await ampSignManifest(
-      {
-        amp: '0.1',
-        kind: 'manifest',
-        agent: { id: this.agentId, name: 'deepseek-coordination', role: 'coordination' },
-        issued: iso(now),
-        expires: iso(now + ManifestTtlMs),
-        identity: {
-          values: [
-            { id: 'value-verifiable-amendment', statement: 'state changes are appended, never rewritten', weight: 1 },
-            { id: 'value-explicit-exclusion', statement: 'a deliberate exclusion is recorded with its revisit trigger', weight: 0.9 },
-            { id: 'value-no-content-in-ledger', statement: 'the ledger stores pointers and measurements, not prompt or file text', weight: 1 },
-          ],
-          constraints: [
-            { id: 'constraint-host-only-approvals', statement: 'a permission preset is applied through the host, never persisted here', enforcement: 'hard' },
-            { id: 'constraint-read-only-graph', statement: 'every workspace graph route is read-only', enforcement: 'hard' },
-            { id: 'constraint-no-private-key-on-wire', statement: 'the private signing key never crosses the HTTP surface', enforcement: 'hard' },
-          ],
-        },
-        capabilities: this.capabilitiesFrom(receipts),
-        concepts: this.conceptRefs(),
-        attention: {
-          policy_digest: policyDigest,
-          ...(frameRef === undefined ? {} : { frame: frameRef }),
-          budget: this.attentionBudget(),
-        },
-        self: {
-          calibration: this.calibration(receipts),
-          limits: this.selfLimits(receipts),
-        },
-      },
-      this.key(),
-    )) as unknown as Manifest
-
-    this.store.saveManifest(manifest, ampCanonical(manifest))
-    this.manifestCache = { manifest, expiresMs: now + ManifestTtlMs, policyDigest }
-    return manifest
-  }
-
-  /** Recomputes the manifest digest and signature; `false` means it was altered. */
-  async verifyManifestSignature(manifest: Manifest): Promise<{ ok: boolean; reasons: string[] }> {
-    await this.ensure()
-    return await ampVerifyManifest(manifest, this.key().publicKey)
-  }
-
-  private policyDigest(): string {
-    return ampDigestOf({
-      profession: this.config.profession,
-      plan: this.config.plan,
-      compaction: this.config.compaction,
-      scenes: this.config.scenes,
-      tools: this.config.tools,
-      chains: this.config.chain,
-    })
-  }
-
-  private attentionBudget(): Budget {
-    // The task lease is the only attention budget this host actually enforces;
-    // inventing token or interrupt budgets would make the manifest a wish.
-    return { ms: Math.max(1, Math.trunc(this.config.defaultLease)) }
-  }
-
-  private conceptRefs(): Ref[] {
-    return [
-      { kind: 'concept', id: 'profession-decision', label: 'decision' },
-      { kind: 'concept', id: 'profession-outcome', label: 'outcome' },
-      { kind: 'concept', id: 'profession-resource', label: 'resource' },
-      { kind: 'concept', id: 'profession-personnel', label: 'personnel' },
-      { kind: 'concept', id: 'profession-qualification', label: 'qualification' },
-      { kind: 'concept', id: 'profession-execution', label: 'execution' },
-    ]
-  }
-
-  /**
-   * Capability block derived from receipts (M-1).
-   *
-   * `tier` is T2 once a successful call observation exists (an observation
-   * recorded by this agent), T0 otherwise. `confidence` is the Laplace-smoothed
-   * success rate — a declared formula, so it can be recomputed from the ledger
-   * rather than trusted.
-   */
-  private capabilitiesFrom(receipts: readonly Receipt[]): Capability[] {
-    return this.capabilities.map((input) => {
-      const refId = toolRefId(input.name)
-      const calls = receipts.filter((receipt) => receipt.target?.kind === 'tool' && receipt.target.id === refId)
-      const successes = calls.filter((receipt) => receipt.outcome === 'success')
-      const confidence = (successes.length + 1) / (calls.length + 2)
-      return {
-        id: refId,
-        label: input.label,
-        kind: input.kind,
-        confidence: Math.round(confidence * 1000) / 1000,
-        tier: successes.length > 0 ? 'T2' : 'T0',
-        cost: { calls: 1 },
-        ...(input.kind === 'tool' ? { limits: ['read-only'] } : {}),
-        evidence: successes.slice(0, 3).map((receipt) => ({ kind: 'receipt' as const, id: receipt.id })),
-      }
-    })
-  }
-
-  /**
-   * Measured calibration.
-   *
-   * With no receipt that carries both a predicted and a realized VOI, nothing is
-   * measured, and `ece: 1` is the honest upper bound (maximal error) rather than
-   * `0`, which would claim perfect calibration from zero evidence.
-   */
-  private calibration(receipts: readonly Receipt[]): { ece: number; buckets: { lo: number; hi: number; predicted: number; observed: number; n: number }[] } {
-    const pairs = receipts.filter(
-      (receipt) => typeof receipt.predicted_voi === 'number' && typeof receipt.realized_voi === 'number',
-    )
-    if (pairs.length === 0) {
-      return { ece: 1, buckets: [] }
-    }
-    const buckets = Array.from({ length: 10 }, (_unused, index) => ({
-      lo: index / 10,
-      hi: (index + 1) / 10,
-      predicted: 0,
-      observed: 0,
-      n: 0,
-    }))
-    for (const receipt of pairs) {
-      const predicted = receipt.predicted_voi as number
-      const index = Math.min(9, Math.max(0, Math.floor(predicted * 10)))
-      const bucket = buckets[index]
-      bucket.predicted += predicted
-      bucket.observed += receipt.realized_voi as number
-      bucket.n += 1
-    }
-    let ece = 0
-    const filled = buckets.filter((bucket) => bucket.n > 0)
-    for (const bucket of filled) {
-      bucket.predicted /= bucket.n
-      bucket.observed /= bucket.n
-      ece += (bucket.n / pairs.length) * Math.abs(bucket.observed - bucket.predicted)
-    }
-    return { ece: Math.round(ece * 1000) / 1000, buckets: filled }
-  }
-
-  private selfLimits(receipts: readonly Receipt[]): string[] {
-    const limits: string[] = []
-    const calibrated = receipts.some(
-      (receipt) => typeof receipt.predicted_voi === 'number' && typeof receipt.realized_voi === 'number',
-    )
-    if (!calibrated) {
-      limits.push('calibration is not measured: no receipt carries both predicted_voi and realized_voi')
-    }
-    limits.push('token usage is owned by the host and is not observable per turn; usage.ms is measured')
-    return limits
-  }
-
-  /* --------------------------------------------------------------------- *
-   * Frames
-   * --------------------------------------------------------------------- */
-
-  /**
-   * Opens the frame for one turn.
-   *
-   * The ignored list is the point: every scene knob this host does not enforce
-   * is named, with the condition that would bring it back.
-   */
-  async openTurn(facts: AmpTurnFacts): Promise<Frame> {
-    await this.ensure()
-    const frameId = frameIdOf(facts.turn)
-    const refs = this.refTable(facts)
-    const slots = this.slotsFor(facts, refs)
-    const ignored = this.ignoredFor(facts)
-    const draft: FrameDraft = {
-      id: frameId,
-      agent: this.agentId,
-      cycle: Math.max(0, Math.trunc(facts.ordinal)),
-      ts: iso(facts.created),
-      mode: frameModeOf(facts.interaction),
-      ...(facts.goal === undefined ? {} : { goal: { kind: 'goal' as const, id: goalIdOf(facts.goal.handle) } }),
-      slots,
-      ignored,
-      budget: { allocated: this.attentionBudget(), spent: {} },
-      note: `frame for turn ${facts.turn} in scene ${facts.scene}`,
-    }
-    const { frame } = ampFrameFrom(draft, refs, { now: () => iso(this.clock.now()) })
-    const protocolFrame = frame as unknown as Frame
-    this.store.append('frame', protocolFrame, protocolFrame.ts)
-    await this.event('turn.opened', {
-      session: facts.session,
-      turn: facts.turn,
-      frame: frame.id,
-      ordinal: facts.ordinal,
-      scene: facts.scene,
-      profession: facts.profession,
-    })
-    return protocolFrame
-  }
-
-  /** Latest frame for one session, found through the `turn.opened` events. */
-  async latestFrameFor(session: string): Promise<Frame | undefined> {
-    const events = this.store.recent('event', 400) as AmpEvent[]
-    const frames = this.store.recent('frame', 400) as Frame[]
-    const byId = new Map(frames.map((frame) => [frame.id, frame]))
-    for (const event of events) {
-      if (event.type !== 'turn.opened') continue
-      const payload = event.payload
-      if (payload === undefined || payload.session !== session) continue
-      const frame = byId.get(String(payload.frame))
-      if (frame !== undefined) return frame
-    }
-    return undefined
-  }
-
-  /**
-   * Concrete facts for the panel narrative.
-   *
-   * The frame is deliberately content-free (ids and rationale only), so a
-   * reader cannot tell what was actually asked or planned from it. This view is
-   * not a protocol object: it joins the latest turn row with its prompt excerpt,
-   * goal text and decoded plan steps, and the ignored list of the latest frame,
-   * all read-only and bounded.
-   */
-  async storyFor(session: string): Promise<AmpStory> {
-    const sessionRow = this.db.get<{ identity: number }>(
-      'SELECT identity FROM session WHERE handle = ?',
-      session,
-    )
-    const turn = sessionRow === undefined
-      ? undefined
-      : this.db.get<{
-        ordinal: number
-        status: string
-        created: number
-        profession: string
-        interaction: string
-        scene: string
-        validation: string
-        prompt: number | null
-        goal: number | null
-        plan: number | null
-      }>(
-        'SELECT ordinal, status, created, profession, interaction, scene, validation, prompt, goal, plan FROM turn WHERE session = ? ORDER BY ordinal DESC LIMIT 1',
-        sessionRow.identity,
-      )
-    if (turn === undefined) {
-      return { session, turn: null, prompt: null, goal: null, plan: null, ignored: [] }
-    }
-
-    const promptRow = turn.prompt === null
-      ? undefined
-      : this.db.get<{ content: string }>('SELECT content FROM prompt WHERE identity = ?', turn.prompt)
-    const goalRow = turn.goal === null
-      ? undefined
-      : this.db.get<{ content: string }>('SELECT content FROM goal WHERE identity = ?', turn.goal)
-    const planRow = turn.plan === null
-      ? undefined
-      : this.db.get<{ step: string }>('SELECT step FROM plan WHERE identity = ?', turn.plan)
-    const parsed = planRow === undefined ? undefined : decodePlanStep(planRow.step)
-
-    const frame = await this.latestFrameFor(session)
-    return {
-      session,
-      turn: {
-        ordinal: turn.ordinal,
-        status: turn.status,
-        created: turn.created,
-        profession: turn.profession,
-        interaction: turn.interaction,
-        scene: turn.scene,
-        validation: turn.validation,
-      },
-      prompt: promptRow === undefined ? null : promptExcerpt(promptRow.content),
-      goal: goalRow === undefined ? null : { content: goalRow.content.trim().slice(0, 800) },
-      plan: parsed === undefined
-        ? null
-        : {
-          steps: [
-            ...parsed.steps.map((step) => ({ intent: step.step.trim(), expect: (step.acceptance ?? '').trim() })),
-            ...parsed.drafts.map((draft) => ({ intent: draft.task.trim(), expect: draft.acceptance.trim() })),
-          ].filter((step) => step.intent.length > 0).slice(0, 12),
-        },
-      ignored: (frame?.ignored ?? []).map((item) => ({
-        target: `${item.target.kind}:${item.target.id}`,
-        reason: item.reason,
-        revisit: item.revisit_if,
-      })),
-    }
-  }
-
-
-  private refTable(facts: AmpTurnFacts): AmpRefTable {
-    const refs = AmpRefTableImpl.forScope('run', this.agentId)
-    refs.add('task', facts.turn, { kind: 'task', id: facts.turn })
-    refs.add('memory', promptIdOf(facts.turn), { kind: 'memory', id: promptIdOf(facts.turn) })
-    refs.add('concept', professionIdOf(facts.profession), { profession: facts.profession })
-    refs.add('concept', sceneIdOf(facts.scene), { scene: facts.scene })
-    refs.add('concept', interactionIdOf(facts.interaction), { interaction: facts.interaction })
-    refs.add('concept', validationIdOf(facts.validation), { validation: facts.validation })
-    for (const knob of PolicyKnobs) {
-      refs.add('concept', knob, { policy: knob })
-    }
-    if (facts.goal !== undefined) {
-      refs.add('goal', goalIdOf(facts.goal.handle), { goal: facts.goal.handle })
-    }
-    if (facts.plan !== undefined) {
-      refs.add('plan', planIdOf(facts.plan.handle), { plan: facts.plan.handle })
-    }
-    return refs
-  }
-
-  private slotsFor(facts: AmpTurnFacts, refs: AmpRefTable): Slot[] {
-    const zero = { tokens: 0 }
-    const slots: Slot[] = []
-    if (facts.goal !== undefined) {
-      slots.push({
-        target: { kind: 'goal', id: goalIdOf(facts.goal.handle) },
-        role: 'goal',
-        salience: 1,
-        cost: zero,
-        why: 'the goal row attached to this turn is the operative objective',
-        state: 'active',
-      })
-    }
-    slots.push({
-      target: { kind: 'memory', id: promptIdOf(facts.turn) },
-      role: 'question',
-      salience: 0.95,
-      cost: zero,
-      why: 'the user prompt for this turn is the request being served',
-      state: 'active',
-    })
-    slots.push({
-      target: { kind: 'task', id: facts.turn },
-      role: 'process',
-      salience: 0.9,
-      cost: zero,
-      why: `turn ${facts.ordinal} is the task this frame allocates attention to`,
-      state: 'active',
-    })
-    slots.push({
-      target: { kind: 'concept', id: professionIdOf(facts.profession) },
-      role: 'concept',
-      salience: 0.8,
-      cost: zero,
-      why: `the locked profession "${facts.profession}" decides which checks this task must pass`,
-      state: 'active',
-    })
-    slots.push({
-      target: { kind: 'concept', id: interactionIdOf(facts.interaction) },
-      role: 'concept',
-      salience: 0.6,
-      cost: zero,
-      why: `interaction "${facts.interaction}" shapes how the response is delivered`,
-      state: 'active',
-    })
-    if (facts.plan !== undefined) {
-      slots.push({
-        target: { kind: 'plan', id: planIdOf(facts.plan.handle) },
-        role: 'artifact',
-        salience: 0.7,
-        cost: zero,
-        why: 'the plan row carries the steps this turn intends to execute',
-        state: 'active',
-      })
-    }
-    // Every target must resolve; `refs` was built for exactly these slots.
-    for (const slot of slots) {
-      if (!refs.has(slot.target)) {
-        throw new Error(`frame slot target ${slot.target.kind}:${slot.target.id} was not registered`)
-      }
-    }
-    return slots
-  }
-
-  /**
-   * Deliberate exclusions, derived from the resolved scene policy.
-   *
-   * These are the same knobs `TurnPipeline` reports as deferred; moving them
-   * onto the frame means a reader of the ledger sees them *before* the turn, not
-   * only inside an in-memory report.
-   */
-  private ignoredFor(facts: AmpTurnFacts): Ignored[] {
-    const profile = facts.sceneProfile
-    const ignored: Ignored[] = [
-      {
-        target: { kind: 'concept', id: 'policy-max-iteration' },
-        reason: 'blocked',
-        revisit_if: 'a loop driver consumes scene.maxIteration',
-      },
-      {
-        target: { kind: 'concept', id: 'policy-allow-bash' },
-        reason: 'out_of_scope',
-        revisit_if: 'the host exposes a per-turn bash permission port',
-      },
-    ]
-    if (!profile.allowWeb) {
-      ignored.push({
-        target: { kind: 'concept', id: 'policy-allow-web' },
-        reason: 'out_of_scope',
-        revisit_if: 'the scene or config allows web search again',
-      })
-    }
-    return ignored
-  }
-
-  /* --------------------------------------------------------------------- *
-   * Settlement
-   * --------------------------------------------------------------------- */
-
-  /** Closes a turn with one `reflect` receipt and one `turn.closed` event. */
-  async closeTurn(facts: AmpTurnFacts): Promise<Receipt> {
-    await this.ensure()
-    const at = iso(facts.finished ?? this.clock.now())
-    const elapsed =
-      facts.finished === undefined
-        ? undefined
-        : Math.max(0, Math.trunc(facts.finished - facts.created))
-    const receipt = makeReceipt({
-      id: receiptIdOf(facts.turn),
-      op: 'reflect',
-      outcome: outcomeOf(facts.status),
-      at,
-      target: { kind: 'frame', id: frameIdOf(facts.turn) },
-      ...(elapsed === undefined ? {} : { ms: elapsed }),
-      usage: elapsed === undefined ? {} : { ms: elapsed },
-      note: `turn ${facts.turn} closed as ${facts.status}${
-        facts.diagnostics === undefined || facts.diagnostics.length === 0
-          ? ''
-          : ` (${facts.diagnostics.map((item) => item.code).join(', ')})`
-      }`,
-    })
-    this.store.append('receipt', receipt, at)
-    await this.event('turn.closed', {
-      session: facts.session,
-      turn: facts.turn,
-      receipt: receipt.id,
-      status: facts.status,
-      outcome: receipt.outcome,
-    })
-    if (facts.cognition !== undefined) {
-      await this.recordCognition(facts)
-    }
-    if (facts.planFacts !== undefined) {
-      await this.recordPlan(facts.planFacts, facts.session)
-    }
-    return receipt
-  }
-
-  /**
-   * Turns one comprehension row into warrant-validated claims and unknowns.
-   *
-   * The rule that keeps this honest: a claim is promoted to `T1` only when its
-   * statement appears **verbatim** in the user's prompt, and the evidence item
-   * quotes that anchor with a digest. A paraphrase stays `T0` with no evidence,
-   * because this host cannot check an entailment it did not observe. Every claim
-   * is passed through `validateClaim`; an invalid one is dropped and logged, not
-   * stored.
-   */
-  private async recordCognition(facts: AmpTurnFacts): Promise<void> {
-    const cognition = facts.cognition
-    if (cognition === undefined) return
-    const at = iso(cognition.created)
-    const claims: string[] = []
-
-    for (const field of CognitionFields) {
-      const claim = buildClaim(facts, cognition, field, at)
-      if (claim === undefined) continue
-      this.store.append('claim', claim, claim.created)
-      claims.push(claim.id)
-    }
-
-    const unknown = buildUnknown(facts, cognition, at)
-    if (unknown !== undefined) {
-      this.store.append('unknown', unknown, unknown.since)
-    }
-
-    if (claims.length === 0 && unknown === undefined) return
-    await this.event('cognition.recorded', {
-      turn: facts.turn,
-      comprehension: cognition.id,
-      claims,
-      ...(unknown === undefined ? {} : { unknown: unknown.id }),
-    })
-  }
-
-  /**
-   * Emits the `Goal` + `Plan` pair, but only when the plan is actually
-   * monitorable.
-   *
-   * The gate is the protocol's rule: every task needs an `expect`, a plan needs
-   * `abandon_if`, and a goal needs at least one observable success criterion.
-   * This host can only satisfy those from **recorded acceptance** on each plan
-   * step and the plan's own constraint text; when either is missing the pair is
-   * not emitted and a `plan.deferred` event names the gap instead. That is the
-   * difference between "no plan artifact" and "a plan artifact nobody can check".
-   */
-  private async recordPlan(facts: AmpPlanFacts, session: string): Promise<void> {
-    const at = iso(facts.plan.created)
-    const goal = facts.goal
-    const steps = facts.steps
-    const reason = planDeferReason(facts)
-    if (reason !== undefined || goal === undefined) {
-      await this.event('plan.deferred', {
-        plan: facts.plan.handle,
-        reason: reason ?? 'missing-goal',
-        steps: steps.length,
-      })
-      return
-    }
-
-    const goalId = goalIdOf(goal.handle)
-    const planId = planIdOf(facts.plan.handle)
-    const criteria = steps.map((step, index) => ({
-      id: idFrom(`${facts.plan.handle}-${index}`, 'criterion'),
-      statement: collapseWhitespace(step.expect, 500),
-      check: collapseWhitespace(step.expect, 500),
-      kind: 'assert' as const,
-    }))
-    const goalObject: Goal = {
-      amp: '0.1',
-      kind: 'goal',
-      id: goalId,
-      statement: collapseWhitespace(goal.content, 1000),
-      success: criteria,
-      // Turn-derived goals have no inferred ranking; explicit missions use caller priorities.
-      value: 0.5,
-      priority: 1,
-      horizon: 'task',
-    }
-    const planObject: Plan = {
-      amp: '0.1',
-      kind: 'plan',
-      id: planId,
-      goal: { kind: 'goal', id: goalId },
-      tasks: steps.map((step, index) => ({
-        id: idFrom(`${facts.plan.handle}-${index}`, 'plan-task'),
-        intent: collapseWhitespace(step.statement, 500),
-        actor: 'self',
-        pre: [],
-        expect: {
-          observation: collapseWhitespace(step.expect, 500),
-          check: collapseWhitespace(step.expect, 500),
-        },
-        // The plugin has no per-step risk classification; 1 is the
-        // conservative "undoable with a clear reversal" default.
-        irreversibility: 1,
-        status: planTaskStatus(facts.plan.status),
-      })),
-      edges: steps.slice(1).map((_step, index) => [
-        idFrom(`${facts.plan.handle}-${index}`, 'plan-task'),
-        idFrom(`${facts.plan.handle}-${index + 1}`, 'plan-task'),
-      ]),
-      commitment_window: 1,
-      budget: this.attentionBudget(),
-      abandon_if: [
-        {
-          id: idFrom(facts.plan.handle, 'abandon'),
-          statement: collapseWhitespace(facts.plan.constraint, 500),
-          check: collapseWhitespace(facts.plan.constraint, 500),
-          kind: 'assert',
-        },
-      ],
-      status: planStatusOf(facts.plan.status),
-      created: at,
-    }
-
-    const goalProblems = validateGoal(goalObject)
-    const planProblems = validatePlan(planObject)
-    if (goalProblems.length > 0 || planProblems.length > 0) {
-      await this.event('plan.deferred', {
-        plan: facts.plan.handle,
-        reason: 'invalid-artifact',
-        problems: [...goalProblems, ...planProblems].length,
-      })
-      return
-    }
-
-    this.db.transaction(() => {
-      this.onPlan?.(session, goalObject, planObject)
-      this.store.append('goal', goalObject, at)
-      this.store.append('plan', planObject, at)
-    })
-    await this.event('plan.recorded', {
-      goal: goalObject.id,
-      plan: planObject.id,
-      tasks: planObject.tasks.length,
-    })
-  }
-
-  /**
-   * Announces one attention request for a takeover window.
-   *
-   * The request is an AMP object, but an `EntryKind` is closed (event, frame,
-   * receipt, claim, hypothesis, unknown, goal, plan), so the document travels as
-   * the payload of an `attention.requested` event. Nothing is invented here: the
-   * window handle, the class (approval → commitment, question → curiosity) and
-   * the urgency are the plugin's fixed policy, and `why_now`/`if_ignored` state
-   * what the gate actually does.
-   */
-  async requestAttention(facts: AttentionRequestFacts): Promise<AttentionRequest> {
-    await this.ensure()
-    const request = buildAttentionRequest({
-      id: attentionRequestIdOf(facts.handle),
-      from: { kind: 'agent', id: this.agentId },
-      to: { kind: 'human', id: AMP_HUMAN_ID },
-      target: attentionTargetOf(facts),
-      class: attentionClassOf(facts.type),
-      urgency: attentionUrgencyOf(facts.type),
-      why_now:
-        facts.type === 'approval'
-          ? `the host blocked ${facts.tool ?? 'a tool call'} pending a human decision`
-          : 'the agent needs a human answer before it can continue',
-      if_ignored: 'the call falls back to the host default and cannot proceed as asked',
-      cost: { interrupts: 1 },
-      ...(facts.expiresAt === undefined ? {} : { expires: iso(facts.expiresAt) }),
-      fallback: 'escalate',
-    })
-    await this.event('attention.requested', {
-      request,
-      window: facts.handle,
-      type: facts.type,
-      ...(facts.session === undefined ? {} : { session: facts.session }),
-    })
-    return request
-  }
-
-  /**
-   * Settles one window with an `InterruptRecord` and one `ask` receipt.
-   *
-   * The receipt is the chain settlement (`usage.interrupts` is 1 only when the
-   * human actually granted or answered); the record rides in the
-   * `interrupt.settled` event for the same closed-enum reason as the request.
-   */
-  async recordInterrupt(facts: InterruptSettlementFacts): Promise<InterruptRecord> {
-    await this.ensure()
-    const at = iso(facts.settledAt)
-    const ms = Math.max(0, Math.trunc(facts.settledAt - facts.requestedAt))
-    const receiptId = askReceiptIdOf(facts.handle)
-    const record = buildInterruptRecord({
-      id: interruptIdOf(facts.handle),
-      request: attentionRequestIdOf(facts.handle),
-      class: attentionClassOf(facts.type),
-      target: attentionTargetOf(facts),
-      urgency: attentionUrgencyOf(facts.type),
-      status: facts.outcome,
-      at,
-      cost: { interrupts: facts.outcome === 'granted' || facts.outcome === 'answered' ? 1 : 0 },
-      reason: interruptReasonOf(facts.outcome),
-      receipt: receiptId,
-    })
-    const receipt = makeReceipt({
-      id: receiptId,
-      op: 'ask',
-      outcome: interruptOutcome(facts.outcome),
-      at,
-      ms,
-      usage: { interrupts: record.granted ? 1 : 0, ms },
-      target: record.target,
-      note: `${facts.type}:${facts.outcome}`,
-    })
-    this.store.append('receipt', receipt, at)
-    await this.event('interrupt.settled', {
-      interrupt: record,
-      window: facts.handle,
-      type: facts.type,
-      ...(facts.session === undefined ? {} : { session: facts.session }),
-    })
-    return record
-  }
-
-  /** Records one tool invocation as a receipt plus an event. */
-  async recordTool(facts: AmpToolFacts): Promise<Receipt> {
-    await this.ensure()
-    const ms = Math.max(0, Math.trunc(facts.ms))
-    const receipt = makeReceipt({
-      id: this.handles.next('receipt'),
-      op: receiptOpOf(facts.tool),
-      outcome: facts.ok ? 'success' : 'failure',
-      ms,
-      usage: { calls: 1, ms },
-      target: { kind: 'tool', id: toolRefId(facts.tool) },
-      note: `tool ${facts.tool}`,
-    })
-    this.store.append('receipt', receipt, receipt.at)
-    await this.event('tool.invoked', {
-      tool: facts.tool,
-      ok: facts.ok,
-      ms,
-      receipt: receipt.id,
-    })
-    return receipt
-  }
-
-  /** Appends one typed event. */
-  async event(
-    type: string,
-    payload?: Record<string, unknown>,
-    options: { refs?: Ref[]; caused_by?: string; at?: string } = {},
-  ): Promise<AmpEvent> {
-    await this.ensure()
-    const event = makeEvent({
-      id: this.handles.next('event'),
-      actor: { kind: 'agent', id: this.agentId },
-      type,
-      at: options.at ?? iso(this.clock.now()),
-      ...(payload === undefined ? {} : { payload }),
-      ...(options.refs === undefined ? {} : { refs: options.refs }),
-      ...(options.caused_by === undefined ? {} : { caused_by: options.caused_by }),
-    })
-    this.store.append('event', event, event.at)
-    return event
-  }
-
-  /* --------------------------------------------------------------------- *
-   * Reads, verification and checkpoints
-   * --------------------------------------------------------------------- */
-
-  frames(limit = 50): Frame[] {
-    return this.store.recent('frame', limit) as Frame[]
-  }
-
-  receipts(limit = 50): Receipt[] {
-    return this.store.recent('receipt', limit) as Receipt[]
-  }
-
-  /**
-   * Recomputes the chain and cross-checks the last checkpoint.
-   *
-   * The checkpoint witnesses a *prefix* of the chain, not the whole of it: an
-   * entry appended after sealing is legal, so the comparison runs against the
-   * first `checkpoint.count` entries. A chain shorter than the checkpoint
-   * declares is the interesting failure — it means entries were deleted.
-   */
-  async verify(): Promise<
-    AmpSnapshotVerdict & { tip: string; count: number; checkpoint?: { seq: number; tip: string; count: number } }
-  > {
-    await this.ensure()
-    const snapshot = this.store.snapshot(this.agentId)
-    const reasons = [...this.store.verify().reasons]
-    const latest = this.store.latestCheckpoint()
-    let checkpoint: { seq: number; tip: string; count: number } | undefined
-
-    if (latest !== undefined) {
-      const stored: LedgerCheckpoint = {
-        amp: '0.1',
-        kind: 'ledger-checkpoint',
-        tenant: latest.tenant,
-        agent: latest.agent,
-        seq: latest.seq,
-        count: latest.count,
-        tip: latest.tip,
-        ...(latest.prev === null ? {} : { prev: latest.prev }),
-        issued: latest.issued,
-        kid: latest.kid,
-        sig: latest.sig,
-      }
-      const signature = await ampVerifyCheckpoint(stored, this.key().publicKey)
-      reasons.push(...signature.reasons)
-
-      if (latest.count > snapshot.count) {
-        reasons.push(
-          `checkpoint ${latest.seq} witnesses ${latest.count} entries but only ${snapshot.count} remain`,
-        )
-      } else {
-        const prefixEntries = snapshot.entries.slice(0, latest.count)
-        const prefix: LedgerSnapshot = {
-          amp: '0.1',
-          kind: 'ledger-snapshot',
-          agent: snapshot.agent,
-          tip: prefixEntries.at(-1)?.hash ?? GENESIS,
-          count: prefixEntries.length,
-          entries: prefixEntries,
-        }
-        const prefixVerdict = await ampVerifySnapshotAgainstCheckpoint(prefix, stored)
-        reasons.push(...prefixVerdict.reasons)
-      }
-      checkpoint = { seq: latest.seq, tip: latest.tip, count: latest.count }
-    }
-
-    const unique = reasons.filter((reason, index) => reasons.indexOf(reason) === index)
-    return {
-      ok: unique.length === 0,
-      reasons: unique,
-      tip: snapshot.tip,
-      count: snapshot.count,
-      ...(checkpoint === undefined ? {} : { checkpoint }),
-    }
-  }
-
-  /** Seals the current tip as a signed checkpoint. */
-  async checkpoint(): Promise<LedgerCheckpoint> {
-    await this.ensure()
-    const snapshot = this.store.snapshot(this.agentId)
-    const latest = this.store.latestCheckpoint()
-    const previous: LedgerCheckpoint | undefined =
-      latest === undefined
-        ? undefined
-        : {
-            amp: '0.1',
-            kind: 'ledger-checkpoint',
-            tenant: latest.tenant,
-            agent: latest.agent,
-            seq: latest.seq,
-            count: latest.count,
-            tip: latest.tip,
-            ...(latest.prev === null ? {} : { prev: latest.prev }),
-            issued: latest.issued,
-            kid: latest.kid,
-            sig: latest.sig,
-          }
-    const checkpoint = await ampSealCheckpoint(snapshot, this.key(), {
-      tenant: this.tenant,
-      ...(previous === undefined ? {} : { previous }),
-    })
-    this.store.saveCheckpoint(checkpoint)
-    return checkpoint
-  }
-
-  /** Latest stored manifest body, or `undefined` before the first issue. */
-  storedManifest(): StoredManifest | undefined {
-    return this.store.latestManifest()
-  }
-
-  /* --------------------------------------------------------------------- *
-   * Observers and lifecycle
-   * --------------------------------------------------------------------- */
-
-  /**
-   * Mirrors a whitelist of module-bus events into the ledger.
-   *
-   * Only structure is copied (`ledgerProjection`), so no prompt, question or
-   * tool-output text reaches the append-only chain. Each append is tracked so a
-   * test can await {@link flush} instead of racing it.
-   */
-  observe(bus: CoordinationEventBus): () => void {
-    const disposers = MirroredEvents.map((type: string) =>
-      bus.on(type, (payload: unknown) => {
-        // The event `type` already names the source (`takeover.pending`), so the
-        // projection is the payload itself — no wrapper object to nest through.
-        const projected = ledgerProjection(payload)
-        this.track(
-          this.event(type.replace('/', '.'), isRecord(projected) ? projected : { value: projected }).catch(
-            (error: unknown) => {
-              this.logger?.debug?.(`amp observer failed for ${type}: ${describe(error)}`)
-              return undefined
-            },
-          ),
-        )
-      }),
-    )
-    return () => {
-      for (const dispose of disposers) dispose()
-    }
-  }
-
-  /** Fire-and-forget wrapper that keeps the promise awaitable through {@link flush}. */
-  track<T>(promise: Promise<T>): Promise<T> {
-    const tracked = promise as Promise<unknown>
-    this.pending.add(tracked)
-    void tracked
-      .catch(() => undefined)
-      .finally(() => {
-        this.pending.delete(tracked)
-      })
-    return promise
-  }
-
-  /** Debug log through the host logger, when one was supplied. */
-  debug(message: string): void {
-    this.logger?.debug?.(message)
-  }
-
-  /** Waits for every tracked append (write-behind receipts/events). */
-  async flush(): Promise<void> {
-    while (this.pending.size > 0) {
-      await Promise.allSettled([...this.pending])
-    }
-  }
-
-  private receiptRows(): Receipt[] {
-    return this.store.recent('receipt', ReceiptScan) as Receipt[]
-  }
-
-  private latestFrameRef(): Ref | undefined {
-    const frame = this.store.recent('frame', 1)[0] as Frame | undefined
-    return frame === undefined ? undefined : { kind: 'frame', id: frame.id }
-  }
-}
-
-/* ------------------------------------------------------------------------- *
- * Tool receipts
- * ------------------------------------------------------------------------- */
-
-/**
- * Runs one tool call and settles it as a receipt.
- *
- * The receipt is written behind the call: the model gets its value first, and a
- * failed append is swallowed (the ledger then has one entry fewer, never a
- * fabricated one). Timing is measured with the wall clock and is the only
- * quantity recorded — no arguments and no result text.
- */
-export async function timedToolCall<T>(
-  amp: AmpService,
-  tool: string,
-  run: () => Promise<T> | T,
-): Promise<T> {
-  const started = Date.now()
-  try {
-    const raw = await run()
-    // DSH detaches every tool result into plain JSON and rejects the call when
-    // that is lossy (nested `undefined`, `NaN`, class instances...). Coerce here
-    // once, at the boundary, instead of failing the model's call.
-    const safe = jsonSafe(raw)
-    if (safe.changed) {
-      amp.debug(`tool ${tool} output needed JSON coercion before it could cross the tool boundary`)
-    }
-    amp.track(amp.recordTool({ tool, ok: true, ms: Date.now() - started })).catch(() => undefined)
-    return safe.value
-  } catch (error) {
-    amp.track(amp.recordTool({ tool, ok: false, ms: Date.now() - started })).catch(() => undefined)
-    throw error
-  }
-}
-
-/**
- * Wraps a tool registry so every registered definition is receipted.
- *
- * The definition itself is passed through unchanged (`name`, `description`,
- * `parameters`, `output`), so this decorator cannot change what the model sees;
- * only `execute` is wrapped.
- */
-export function withAmpReceipts(
-  registry: CoordinationToolRegistry,
-  amp: AmpService,
-): CoordinationToolRegistry {
+function moduleRecord(source: SurfaceModule): AmpModule {
   return {
-    register: (definition: CoordinationToolDefinition) =>
-      registry.register({
-        ...definition,
-        execute: (args, exec) =>
-          timedToolCall(amp, definition.name, () => definition.execute(args, exec)),
-      }),
+    module: source.module,
+    tier: source.tier,
+    summary: source.summary,
+    verbs: source.exposed.map((verb) => ({
+      verb: verb.verb,
+      mutating: verb.mutating,
+      authority: [...verb.authority],
+      summary: verb.summary,
+    })),
+    withheld: source.withheld.map((item) => ({ verb: item.verb, reason: item.reason })),
   }
 }
 
-/* ------------------------------------------------------------------------- *
- * Cognition: comprehension → warrant-validated claims
- * ------------------------------------------------------------------------- */
+/** A gateway failure projected as a tool error. */
+export class AmpCallError extends Error {
+  readonly code: string
 
-const Placeholders = new Set(['none', 'n/a', 'na', '-', '—', '无', '暂无', '不适用', 'null', 'undefined'])
-
-/** Collapse whitespace and bound a string; the ledger never stores a wall of text. */
-function collapseWhitespace(value: string, max: number): string {
-  const text = value.replace(/\s+/g, ' ').trim()
-  return text.length > max ? `${text.slice(0, max).trimEnd()}…` : text
-}
-
-/** Case- and whitespace-insensitive form used only to detect a verbatim anchor. */
-function normalizeForMatch(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, ' ').trim()
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'AmpCallError'
+    this.code = code
+  }
 }
 
 /**
- * The longest verbatim piece of `statement` that appears in `prompt`.
- *
- * Tries the whole statement, then each sentence. There is no fuzzy matching on
- * purpose: "the prompt entails this claim" is a checkable statement, while
- * "the prompt is similar to this claim" is not, and only the former may raise a
- * claim above T0.
+ * One storage directory: its kernel (opened lazily), takeover preferences and
+ * durable host-side state. Several workspace roots can share a slot when an
+ * explicit `storePath` or `storage: 'user'` pins one store.
  */
-function verbatimAnchor(prompt: string, statement: string): string | undefined {
-  const normalizedPrompt = normalizeForMatch(prompt)
-  if (normalizedPrompt.length === 0) return undefined
-  if (statement.length >= 8 && normalizedPrompt.includes(normalizeForMatch(statement))) {
-    return statement
+class StoreSlot {
+  readonly root: string | undefined
+  readonly layout: AmpStorageLayout
+  readonly preferences: AmpPreferencesStore
+  readonly state: AmpStateStore
+  private readonly protocol: AmpProtocol
+  private readonly config: Config
+  private kernelInstance: Kernel | undefined
+
+  constructor(protocol: AmpProtocol, config: Config, root: string | undefined, layout: AmpStorageLayout) {
+    this.protocol = protocol
+    this.config = config
+    this.root = root
+    this.layout = layout
+    this.preferences = new AmpPreferencesStore(join(layout.directory, PREFERENCES_FILE), {
+      takeoverFileRead: false,
+      takeoverFileWrite: false,
+      takeoverSearch: false,
+      takeoverNotifications: config.notifications,
+      contextOptimization: config.contextOptimization,
+      autoRefresh: true,
+      compactCatalog: false,
+    })
+    this.state = new AmpStateStore(join(layout.directory, STATE_FILE))
   }
-  for (const segment of statement.split(/[。.;；!?！？\n]/)) {
-    const trimmed = segment.trim()
-    if (trimmed.length >= 8 && normalizedPrompt.includes(normalizeForMatch(trimmed))) {
-      return trimmed
+
+  hasKernel(): boolean {
+    return this.kernelInstance !== undefined
+  }
+
+  peekKernel(): Kernel | undefined {
+    return this.kernelInstance
+  }
+
+  kernel(): Kernel {
+    if (this.kernelInstance !== undefined) return this.kernelInstance
+    this.kernelInstance = this.protocol.kernel.createKernel({
+      tenantId: this.config.tenantId,
+      rootId: this.config.rootId,
+      storePath: this.layout.storePath,
+      clock: () => new Date().toISOString(),
+    })
+    return this.kernelInstance
+  }
+
+  close(): void {
+    this.state.dispose()
+    this.kernelInstance?.close()
+    this.kernelInstance = undefined
+  }
+}
+
+export class AmpHost {
+  readonly ctx: Context
+  readonly config: Config
+  readonly modules: readonly AmpModule[]
+  readonly surface: AgentSurface
+  readonly catalog: readonly ToolDescriptor[]
+  readonly gateway: AgentGateway
+  readonly protocol: AmpProtocol
+  /** DSH→AMP projector, attached by the composition root. */
+  sync?: AmpSync
+  /** AMP→DSH command/tool/feedback bridge, attached by the composition root. */
+  bridge?: HarnessBridge
+  /** AMP attention → DSH prompt context optimizer, attached by the composition root. */
+  contextOptimizer?: AmpContextOptimizer
+  /** Last client render failures, exposed through the diagnostic route. */
+  readonly clientErrors: Array<Record<string, unknown>> = []
+
+  private readonly slots = new Map<string, StoreSlot>()
+  private readonly failures: StorageFailure[] = []
+  private fallbackSlot: StoreSlot | undefined
+  /** Last workspace root seen from a tool call or session; used outside a call. */
+  private primaryRoot: string | undefined
+  private kernelJournal: JournalRecord[] = []
+  private readonly callFrame = new AsyncLocalStorage<CallFrame>()
+  private readonly observedViews = new Map<string, SessionViewContext>()
+  private readonly historyViews = new Map<string, { session: unknown; seq: unknown; generation: unknown; view: SessionViewContext }>()
+  private readonly turnPositions = new Map<string, { turn: number; step: number }>()
+
+  constructor(ctx: Context, config: Config, protocol: AmpProtocol) {
+    this.ctx = ctx
+    this.config = config
+    this.protocol = protocol
+    const all = protocol.agent.SURFACE_MODULES.map(moduleRecord)
+    this.modules = all
+    const only = config.modules
+    if (only !== undefined && only.length > 0) {
+      const invalid = only.filter((name) => !all.some((item) => item.module === name && item.tier === 'agent'))
+      if (invalid.length > 0) {
+        throw new Error(`unknown or non-agent AMP module(s): ${invalid.join(', ')}`)
+      }
     }
+    this.surface = protocol.agent.createAgentSurface(only === undefined || only.length === 0 ? undefined : { only })
+    this.catalog = this.surface.tools
+    this.gateway = new protocol.agent.AgentGateway({
+      surface: this.surface,
+      handlers: createHandlers(this),
+      authorize: () => true,
+      onCall: (record) => {
+        const frame = this.callFrame.getStore()
+        const sessionId = frame?.exec.agent?.id
+        this.kernelJournal.push({
+          ...record,
+          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(frame?.root === undefined ? {} : { root: frame.root }),
+        })
+        while (this.kernelJournal.length > this.config.maxJournal) this.kernelJournal.shift()
+      },
+    })
   }
-  return undefined
-}
 
-export function claimIdOf(turn: string, field: CognitionField): string {
-  return idFrom(`${turn}-${field}`, 'claim')
-}
+  /** Agent-tier modules, in surface order. */
+  get agentModules(): readonly AmpModule[] {
+    return this.modules.filter((item) => item.tier === 'agent' && this.toolNames().some((name) => name.startsWith(`${AMP_PREFIX}_${item.module}.`)))
+  }
 
-export function evidenceIdOf(turn: string, field: CognitionField): string {
-  return idFrom(`${turn}-${field}`, 'evidence')
-}
+  toolNames(): readonly string[] {
+    return this.catalog.map((tool) => tool.name)
+  }
 
-export function unknownIdOf(turn: string): string {
-  return idFrom(`${turn}-ambiguity`, 'unknown')
-}
+  toolFor(module: string, verb: string): ToolDescriptor | undefined {
+    return this.catalog.find((tool) => tool.module === module && tool.verb === verb)
+  }
 
-/**
- * One comprehension field as a claim.
- *
- * Tier `T1` (sourced, entailment) only when the statement is verbatim in the
- * prompt; otherwise `T0` (assumed) with no evidence. `confidence` is always
- * derived from tier + evidence (M-1), never read from the comprehension row.
- * An invalid claim returns `undefined` — it is dropped, never stored.
- */
-function buildClaim(
-  facts: AmpTurnFacts,
-  cognition: AmpCognitionInput,
-  field: CognitionField,
-  at: string,
-): Claim | undefined {
-  const raw = cognition[field]
-  const statement = collapseWhitespace(raw, 1000)
-  if (statement.length < 4 || Placeholders.has(raw.trim().toLowerCase())) return undefined
+  /** The tool call currently running on this async resource, if any. */
+  currentExec(): ToolRunContext | undefined {
+    return this.callFrame.getStore()?.exec
+  }
 
-  const anchor = verbatimAnchor(cognition.prompt, statement)
-  const evidence: EvidenceItem[] =
-    anchor === undefined
-      ? []
-      : [
-          {
-            id: evidenceIdOf(facts.turn, field),
-            kind: 'testimony',
-            trust: 'asserted',
-            independence: 1,
-            relation: 'supports',
-            entails: true,
-            origin: `prompt:${facts.turn}`,
-            ref: { kind: 'memory', id: promptIdOf(facts.turn) },
-            excerpt: anchor.slice(0, 200),
-            digest: ampDigestOf(anchor),
-            at,
+  currentModule(): { module: string; verb: string } | undefined {
+    const frame = this.callFrame.getStore()
+    return frame === undefined ? undefined : { module: frame.module, verb: frame.verb }
+  }
+
+  /** Invoke one AMP verb through the gateway with DSH-bound identity. */
+  async call(module: string, verb: string, parameters: unknown, exec: ToolRunContext): Promise<AmpCallResult> {
+    const descriptor = this.toolFor(module, verb)
+    if (descriptor === undefined) {
+      throw new AmpCallError('unknown_tool', `AMP module "${module}" has no exposed verb "${verb}"`)
+    }
+    const args = asRecord(parameters) ?? {}
+    const binding = this.bindingFor(exec.agent)
+    const idempotencyKey = descriptor.mutating ? exec.callId : undefined
+    const root = this.rootOfAgent(exec.agent)
+    if (root !== undefined) this.primaryRoot = root
+    // Outside the call frame this is the same store `kernel()` resolves; keep
+    // one root for the call so the state flush cannot drift to another store.
+    const stateRoot = root ?? this.primaryRoot
+    const run = (): AmpCallResult | Promise<AmpCallResult> => {
+      const pending = this.gateway.call(descriptor.name, args, {
+        binding,
+        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+      })
+      if (pending instanceof Promise) {
+        return pending.then(
+          (value) => ({ module, verb, value: jsonSafe(value) }),
+          (error: unknown) => {
+            throw this.projectError(error)
           },
-        ]
-
-  const claim: Claim = {
-    amp: '0.1',
-    kind: 'claim',
-    id: claimIdOf(facts.turn, field),
-    statement,
-    tier: anchor === undefined ? 'T0' : 'T1',
-    status: anchor === undefined ? 'conjecture' : 'held',
-    warrant: {
-      evidence,
-      inference: anchor === undefined ? 'abduction' : 'deduction',
-      strength: evidence.length > 0 ? 1 : 0,
-    },
-    provenance: { source: `comprehension:${cognition.id}`, kind: 'inference', trust: 'self', at },
-    created: at,
+        )
+      }
+      return { module, verb, value: jsonSafe(pending) }
+    }
+    const result = this.callFrame.run({ exec, module, verb, root }, run)
+    // Host-side state has no kernel aggregate, and AMP marks some of its verbs
+    // read-only even though the host answers them by updating that state (for
+    // example `session.report_status`). Persist after every call; the store
+    // skips the write when the document did not change.
+    return Promise.resolve(result).finally(() => {
+      this.flushState(stateRoot)
+    })
   }
-  claim.confidence = ampDeriveConfidence(claim)
-  return ampValidateClaim(claim).length === 0 ? claim : undefined
-}
 
-/** The comprehension's ambiguity as an open unknown; importance is measured. */
-function buildUnknown(
-  facts: AmpTurnFacts,
-  cognition: AmpCognitionInput,
-  at: string,
-): UnknownItem | undefined {
-  const question = collapseWhitespace(cognition.ambiguity, 600)
-  if (question.length < 4 || Placeholders.has(cognition.ambiguity.trim().toLowerCase())) return undefined
-  const confidence = Number.isFinite(cognition.confidence) ? cognition.confidence : 0.5
-  const importance = Math.round(Math.max(0, Math.min(1, 1 - confidence)) * 1000) / 1000
-  return {
-    amp: '0.1',
-    kind: 'unknown',
-    id: unknownIdOf(facts.turn),
-    question,
-    importance,
-    blocking: false,
-    since: at,
-    status: 'open',
+  /** Model-facing binding for one agent; values are never read from arguments. */
+  bindingFor(agent: Agent | undefined): AgentBinding {
+    if (agent === undefined) {
+      throw new AmpCallError('binding_invalid', 'AMP calls must run on behalf of an agent')
+    }
+    const position = this.turnPositions.get(agent.id)
+    return {
+      tenantId: this.config.tenantId,
+      principalId: agent.id,
+      sessionId: agent.id,
+      ...(position === undefined ? {} : { turnId: this.turnId(agent.id, position.turn) }),
+      policyVersion: 'dsh-amp-0.7.9',
+      cancellationEpoch: 0,
+    }
+  }
+
+  turnId(sessionId: string, turn: number): string {
+    return `turn:${sessionId}:${turn}`
+  }
+
+  /** Current workspace root on the active AMP call frame. */
+  rootOfCurrentCall(): string | undefined {
+    return this.callFrame.getStore()?.root
+  }
+
+  /** Workspace root carried by an agent, when it declares one. */
+  rootOfAgent(agent: unknown): string | undefined {
+    return cwdOf(asRecord(agent)?.session)
+  }
+
+  /** Workspace root of a session, live or restored. */
+  rootOfSession(sessionId: string): string | undefined {
+    const self = this.ctx as unknown as { agents?: IdentityLookup; sessions?: IdentityLookup }
+    try {
+      const agent = self.agents?.get?.(sessionId)
+      const fromAgent = cwdOf(asRecord(agent)?.session)
+      if (fromAgent !== undefined) return fromAgent
+    } catch {
+      // A stale or non-live session id must not make /amp/status fail.
+    }
+    try {
+      const session = self.sessions?.get?.(sessionId)
+      const fromSession = cwdOf(session)
+      if (fromSession !== undefined) return fromSession
+    } catch {
+      // Fall through to the last observed workspace root.
+    }
+    return this.primaryRoot
+  }
+
+  /** Track DSH turn/step positions from the durable session feed. */
+  observeSessionEvent(session: { id: string }, event: { type: string; data?: unknown }): void {
+    const data = asRecord(event.data)
+    if (data === undefined) return
+    const view = this.observedViews.get(session.id) ?? sessionContext([])
+    observeView(view, event.type, data)
+    this.observedViews.set(session.id, view)
+    const turn = typeof data.turn === 'number' ? data.turn : undefined
+    if (turn === undefined) return
+    const step = typeof data.step === 'number' ? data.step : 0
+    if (event.type === 'turn/start' || event.type === 'step/start' || event.type === 'step/end' || event.type === 'turn/end') {
+      this.turnPositions.set(session.id, { turn, step })
+    }
+  }
+
+  currentTurn(sessionId: string): number | undefined {
+    return this.turnPositions.get(sessionId)?.turn
+  }
+
+  /** Create or return the AMP session row for one DSH session. */
+  ensureSession(sessionId: string, root?: string): void {
+    const kernel = this.kernel(root ?? this.rootOfSession(sessionId))
+    const session = kernel.ports.services.session
+    try {
+      session.find(sessionId).get()
+      return
+    } catch {
+      // Not created yet.
+    }
+    kernel.flow.startSession({ sessionId, actor: 'dsh-host' })
+  }
+
+  /** Create or return the AMP turn row for the session's current DSH turn. */
+  ensureTurn(sessionId: string, turn?: number, root?: string): string {
+    const kernel = this.kernel(root ?? this.rootOfSession(sessionId))
+    this.ensureSession(sessionId, root)
+    const number = turn ?? this.currentTurn(sessionId) ?? 0
+    const id = this.turnId(sessionId, number)
+    const service = kernel.ports.services.turn
+    try {
+      service.find(id).get()
+      return id
+    } catch {
+      // Not created yet.
+    }
+    kernel.flow.beginTurn({ turnId: id, sessionId, actor: 'dsh-host' })
+    return id
+  }
+
+  /** Kernel for a workspace root; opens the store on first use. */
+  kernel(root?: string): Kernel {
+    const resolved = this.resolveRoot(root)
+    const slot = this.slotAt(resolved)
+    try {
+      return slot.kernel()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.failures.push({ at: new Date().toISOString(), root: resolved ?? null, storePath: slot.layout.storePath, message })
+      while (this.failures.length > 10) this.failures.shift()
+      // A read-only or locked workspace must not take AMP down: keep the
+      // machine-wide fallback so the protocol surface stays usable.
+      const fallback = this.fallbackStorage()
+      return fallback.kernel()
+    }
+  }
+
+  /** Takeover preferences for a workspace root (machine-wide when unknown). */
+  preferencesFor(root?: string): AmpPreferencesStore {
+    return this.slotAt(this.resolveRoot(root)).preferences
+  }
+
+  /** Runtime takeover switches, resolved against one live Session's workspace. */
+  preferencesForSession(sessionId?: string): AmpPreferencesStore {
+    if (sessionId !== undefined) {
+      try {
+        const agent = this.ctx.agents.get(sessionId as never)
+        const cwd = agent?.session.header?.cwd
+        if (typeof cwd === 'string' && cwd.length > 0) return this.preferencesFor(cwd)
+      } catch {
+        // Use the current/default root when the Session is no longer live.
+      }
+    }
+    return this.preferencesFor()
+  }
+
+  notificationTakeoverEnabled(sessionId?: string): boolean {
+    return this.preferencesForSession(sessionId).get().takeoverNotifications
+  }
+
+  /** Runtime takeover switches, resolved against the active workspace. */
+  get preferences(): AmpPreferencesStore {
+    return this.preferencesFor()
+  }
+
+  /** Durable per-session notes (turn reports, clarifications, focus requests). */
+  get notes(): Map<string, unknown[]> {
+    return this.slotAt(this.resolveRoot()).state.notes
+  }
+
+  /** Latest status line per session. */
+  get statusLines(): Map<string, string> {
+    return this.slotAt(this.resolveRoot()).state.statusLines
+  }
+
+  /** Per-session cooperation mailboxes. */
+  get mailboxes(): Map<string, unknown[]> {
+    return this.slotAt(this.resolveRoot()).state.mailboxes
+  }
+
+  /** Scoped result handles returned by `execution.run`. */
+  get handles(): Map<string, unknown> {
+    return this.slotAt(this.resolveRoot()).state.handles
+  }
+
+  /** Evidence ids cited by the current session. */
+  get citations(): Set<string> {
+    return this.slotAt(this.resolveRoot()).state.citations
+  }
+
+  /** Last text read per workspace path, used by `workspace.diff`. */
+  get baseContents(): Map<string, string> {
+    return this.slotAt(this.resolveRoot()).state.baseContents
+  }
+
+  /** Storage layout, open stores and any fallback the host had to take. */
+  storage(root?: string): Record<string, unknown> {
+    const primary = root === undefined ? this.primaryRoot : resolve(root)
+    const planned = storageLayout(this.config, primary)
+    return {
+      mode: planned.mode,
+      storeDirectory: storeDirectoryName(this.config),
+      defaultRoot: primary ?? null,
+      storePath: planned.storePath,
+      directory: planned.directory,
+      roots: [...this.slots.values()].map((slot) => {
+        const snapshot = slot.peekKernel()?.snapshot()
+        return {
+          root: slot.root ?? null,
+          mode: slot.layout.mode,
+          storePath: slot.layout.storePath,
+          directory: slot.layout.directory,
+          open: slot.hasKernel(),
+          exists: existsSync(slot.layout.storePath),
+          bytes: fileBytes(slot.layout.storePath) ?? null,
+          entities: snapshot?.store.entities ?? null,
+          events: snapshot?.store.events ?? null,
+        }
+      }),
+      fallbacks: [...this.failures],
+    }
+  }
+
+  findEntity(kind: string, id: string, root?: string): Record<string, unknown> | undefined {
+    const kernel = this.kernel(root)
+    try {
+      const rows = (kernel.store as unknown as { list(kind: string): readonly unknown[] }).list(kind)
+      return rows.map(asRecord).find((row) => row !== undefined && row.id === id)
+    } catch {
+      return undefined
+    }
+  }
+
+  listEntities(kind: string, sessionId?: string, root?: string): readonly Record<string, unknown>[] {
+    const kernel = this.kernel(root)
+    try {
+      const rows = (kernel.store as unknown as { list(kind: string): readonly unknown[] }).list(kind)
+      return rows
+        .map(asRecord)
+        .filter((row): row is Record<string, unknown> => row !== undefined)
+        .filter((row) => {
+          if (sessionId === undefined) return true
+          if (row.sessionId === sessionId || row.id === sessionId || asRecord(row.scope)?.sessionId === sessionId) return true
+          if (kind === 'attention') return asRecord(row.scope)?.sessionId === sessionId
+          return false
+        })
+    } catch {
+      return []
+    }
+  }
+
+  private currentSessionContext(sessionId: string): SessionViewContext {
+    let agent: unknown
+    let session: ViewRow | undefined
+    try { agent = (this.ctx as unknown as { agents?: IdentityLookup }).agents?.get?.(sessionId) } catch { /* Not live. */ }
+    session = asRecord(asRecord(agent)?.session)
+    if (!session) {
+      try { session = asRecord((this.ctx as unknown as { sessions?: IdentityLookup }).sessions?.get?.(sessionId)) } catch { /* Not restored. */ }
+    }
+    let view = sessionContext([])
+    if (session && typeof session.deriveMessages === 'function') {
+      const generation = asRecord(session.surface)?.contentGeneration
+      const cached = this.historyViews.get(sessionId)
+      if (cached?.session === session && cached.seq === session.seq && cached.generation === generation) {
+        view = cached.view
+      } else {
+        try {
+          const messages = (session.deriveMessages as () => readonly unknown[]).call(session)
+          view = sessionContext(messages)
+          this.historyViews.set(sessionId, { session, seq: session.seq, generation, view })
+        } catch { /* Keep event-observed labels when history is unavailable. */ }
+      }
+    }
+    const observed = this.observedViews.get(sessionId)
+    const combined: SessionViewContext = {
+      request: view.request ?? observed?.request,
+      latestRequest: observed?.latestRequest ?? view.latestRequest,
+      calls: new Map([...view.calls, ...(observed?.calls ?? [])]),
+      todos: observed?.todos.length ? observed.todos : view.todos,
+      turnRequests: observed?.turnRequests ?? new Map(),
+    }
+    try {
+      const goals = this.ctx.get('goals') as { get?: (agent: unknown) => unknown } | undefined
+      combined.goal = meaningful(asRecord(goals?.get?.(agent))?.objective)
+    } catch { /* Goal service is optional. */ }
+    return combined
+  }
+
+  /** Project one session's actual workflow state and persisted attention. */
+  sessionLists(sessionId: string, root?: string): Record<string, readonly Record<string, unknown>[]> {
+    const rootForSession = root ?? this.rootOfSession(sessionId)
+    const kernel = this.kernel(rootForSession)
+    const workflow = kernel.ports.workflow.snapshot()
+    const entities = Array.isArray(workflow.entities) ? workflow.entities : []
+    const attempts = Array.isArray(workflow.attempts) ? workflow.attempts : []
+    const workflowKinds = ['session', 'turn', 'intent', 'mission', 'goal', 'plan', 'task', 'action']
+    const groups: Record<string, readonly ViewRow[]> = {}
+    for (const kind of workflowKinds) {
+      groups[kind] = entities.filter((row) => row.kind === kind && row.sessionId === sessionId) as unknown as ViewRow[]
+    }
+    groups.action_attempt = attempts.filter((row) => row.sessionId === sessionId) as unknown as ViewRow[]
+    for (const kind of ['attention', 'evidence']) groups[kind] = this.listEntities(kind, sessionId, rootForSession)
+    // AMP 0.7.9 declares profession policies but this host has no session-bound
+    // profession provider. Never query an unsupported entity kind or invent one.
+    groups.profession = []
+    const detached = jsonSafe(groups) as unknown as Record<string, ViewRow[]>
+    let context: SessionViewContext
+    try {
+      context = this.currentSessionContext(sessionId)
+    } catch {
+      context = sessionContext([])
+    }
+    return projectSessionLists(detached, context) as unknown as Record<string, readonly Record<string, unknown>[]>
+  }
+
+  /** Status snapshot: catalog, storage layout, the active kernel and journal. */
+  snapshot(root?: string, sessionId?: string, withLists = false): Record<string, unknown> {
+    const requested = root === undefined
+      ? sessionId === undefined ? this.primaryRoot : this.rootOfSession(sessionId)
+      : resolve(root)
+    const resolved = requested === undefined ? undefined : resolve(requested)
+    const slot = resolved === undefined
+      ? undefined
+      : this.slots.get(storeIdentity(storageLayout(this.config, resolved).storePath))
+    let kernel: unknown = null
+    try {
+      const snapshot = slot?.peekKernel()?.snapshot()
+      if (snapshot !== undefined) {
+        const entities = sessionId === undefined
+          ? snapshot.entities
+          : snapshot.entities.filter((entity) => entity.sessionId === sessionId)
+        const counts = sessionId === undefined
+          ? snapshot.counts
+          : entities.reduce<Record<string, number>>((next, entity) => {
+            next[entity.kind] = (next[entity.kind] ?? 0) + 1
+            return next
+          }, {})
+        // `/amp/status` is a dashboard snapshot, not the full store dump; the
+        // `/amp/kernel` route remains the place to inspect every entity. This
+        // keeps a polling client from re-parsing the whole workflow each tick.
+        kernel = jsonSafe({
+          ...snapshot,
+          entities: undefined,
+          counts,
+          store: sessionId === undefined ? snapshot.store : { ...snapshot.store, entities: entities.length },
+        })
+      }
+    } catch {
+      kernel = null
+    }
+    let lists: Record<string, readonly Record<string, unknown>[]> | undefined
+    let listsError: string | undefined
+    if (withLists && sessionId !== undefined) {
+      try {
+        lists = this.sessionLists(sessionId, resolved)
+      } catch (error) {
+        // A projection bug must not make the whole session status unreadable;
+        // the panel keeps its counts and can show a targeted diagnostic.
+        listsError = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error)
+        lists = {}
+      }
+    }
+    return {
+      tenantId: this.config.tenantId,
+      rootId: this.config.rootId,
+      ...(resolved === undefined ? {} : { root: resolved }),
+      ...(sessionId === undefined ? {} : { sessionId }),
+      modules: this.modules.length,
+      agentModules: this.agentModules.length,
+      exposedTools: this.catalog.length,
+      storage: this.storage(resolved),
+      kernel,
+      journal: this.journalEntries(sessionId).slice(-50),
+      ...(lists === undefined ? {} : { lists }),
+      ...(listsError === undefined ? {} : { listsError }),
+    }
+  }
+
+  journalEntries(sessionId?: string, root?: string): readonly GatewayCallRecord[] {
+    const resolved = root === undefined ? undefined : resolve(root)
+    return this.kernelJournal.filter((entry) => (
+      (sessionId === undefined || entry.sessionId === sessionId)
+      && (resolved === undefined || entry.root === undefined || entry.root === resolved)
+    ))
+  }
+
+  close(): void {
+    for (const slot of this.slots.values()) {
+      try {
+        slot.close()
+      } catch {
+        // A store that cannot close must not block the remaining stores.
+      }
+    }
+    this.slots.clear()
+    this.historyViews.clear()
+    this.observedViews.clear()
+    this.fallbackSlot = undefined
+  }
+
+  private resolveRoot(explicit?: string): string | undefined {
+    if (explicit !== undefined && explicit.trim().length > 0) return resolve(explicit)
+    const frame = this.callFrame.getStore()
+    if (frame?.root !== undefined) return frame.root
+    return this.primaryRoot
+  }
+
+  private slotAt(root: string | undefined): StoreSlot {
+    const layout = storageLayout(this.config, root)
+    const key = storeIdentity(layout.storePath)
+    const existing = this.slots.get(key)
+    if (existing !== undefined) return existing
+    if (layout.mode === 'workspace') {
+      inheritUserPreferences(layout.directory)
+      if (root !== undefined) ensureStoreIgnored(root, layout.directory)
+    }
+    const slot = new StoreSlot(this.protocol, this.config, root, layout)
+    this.slots.set(key, slot)
+    return slot
+  }
+
+  private fallbackStorage(): StoreSlot {
+    if (this.fallbackSlot !== undefined) return this.fallbackSlot
+    const layout = storageLayout({ ...this.config, storePath: undefined, storage: 'user' }, undefined)
+    const slot = new StoreSlot(this.protocol, this.config, undefined, layout)
+    this.fallbackSlot = slot
+    this.slots.set(storeIdentity(layout.storePath), slot)
+    return slot
+  }
+
+  private flushState(root: string | undefined): void {
+    try {
+      this.slotAt(root).state.flush()
+    } catch {
+      // Best effort.
+    }
+    try {
+      this.fallbackSlot?.state.flush()
+    } catch {
+      // Best effort.
+    }
+  }
+
+  private projectError(error: unknown): AmpCallError {
+    if (error instanceof AmpCallError) return error
+    const record = asRecord(error)
+    const code = typeof record?.code === 'string' ? record.code : 'handler_failed'
+    const message = error instanceof Error ? error.message : String(error)
+    return new AmpCallError(code, message)
   }
 }
-
-/* ------------------------------------------------------------------------- *
- * Fact helpers (shared with the service that builds the facts)
- * ------------------------------------------------------------------------- */
-
-/** The policy knobs a frame may exclude; registered as concepts per frame. */
-export const PolicyKnobs = [
-  'policy-allow-bash',
-  'policy-allow-web',
-  'policy-max-iteration',
-] as const
-
-export function professionIdOf(profession: Profession): string {
-  return idFrom(profession, 'profession')
-}
-
-export function sceneIdOf(scene: Scene): string {
-  return idFrom(scene, 'scene')
-}
-
-export function interactionIdOf(interaction: Interaction): string {
-  return idFrom(interaction, 'interaction')
-}
-
-export function validationIdOf(validation: Validation): string {
-  return idFrom(validation, 'validation')
-}
-
-export function promptIdOf(turn: string): string {
-  return idFrom(turn, 'prompt')
-}
-
-export function goalIdOf(handle: string): string {
-  return idFrom(handle, 'goal')
-}
-
-export function planIdOf(handle: string): string {
-  return idFrom(handle, 'plan')
-}
-
-/* ---- attention-request / interrupt ids and policy ---------------------- */
-
-export function attentionRequestIdOf(handle: string): string {
-  return idFrom(handle, 'attention')
-}
-
-export function interruptIdOf(handle: string): string {
-  return idFrom(handle, 'interrupt')
-}
-
-export function askReceiptIdOf(handle: string): string {
-  return idFrom(handle, 'ask-receipt')
-}
-
-/**
- * Class of an approval/question window.
- *
- * An approval is a `commitment`: the host promised to ask before acting. A
- * question is `curiosity`: the agent needs information, not permission.
- */
-export function attentionClassOf(type: 'approval' | 'question'): InterruptClass {
-  return type === 'approval' ? 'commitment' : 'curiosity'
-}
-
-/** Urgency is fixed policy: a blocked effect outranks a clarification. */
-export function attentionUrgencyOf(type: 'approval' | 'question'): 1 | 2 | 3 | 4 | 5 {
-  return type === 'approval' ? 4 : 3
-}
-
-/** The object whose attention is requested: the tool, or the open question set. */
-export function attentionTargetOf(facts: AttentionRequestFacts): Ref {
-  return facts.tool === undefined || facts.tool.length === 0
-    ? { kind: 'question', id: idFrom(facts.handle, 'takeover') }
-    : { kind: 'tool', id: toolRefId(facts.tool) }
-}
-
-/** Human-readable settlement reason; the status stays the machine-readable field. */
-export function interruptReasonOf(outcome: InterruptSettlementFacts['outcome']): string {
-  switch (outcome) {
-    case 'granted':
-      return 'human granted the call once'
-    case 'answered':
-      return 'human answered the question'
-    case 'denied':
-      return 'human rejected the call'
-    case 'expired':
-      return 'no human answer inside the response window'
-    case 'withdrawn':
-    default:
-      return 'window cancelled or plugin unloaded'
-  }
-}
-
-/* ---- plan artifact gates ------------------------------------------------- */
-
-/**
- * Why the plan pair cannot be emitted, or `undefined` when it can.
- *
- * Every branch is a missing *recorded* fact, never a judgement: no steps, a step
- * without acceptance, or no constraint to abandon on.
- */
-export function planDeferReason(facts: AmpPlanFacts): string | undefined {
-  if (facts.goal === undefined) return 'missing-goal'
-  if (facts.steps.length === 0) return 'no-steps'
-  if (facts.steps.some((step) => step.expect.trim().length === 0)) return 'missing-expect'
-  if (facts.plan.constraint.trim().length === 0) return 'missing-abandon-if'
-  return undefined
-}
-
-/** Plugin plan status → AMP plan status. `scored` is still a draft. */
-export function planStatusOf(status: string): Plan['status'] {
-  switch (status) {
-    case 'active':
-      return 'executing'
-    case 'done':
-      return 'done'
-    case 'failed':
-    case 'abandoned':
-    case 'rebuilt':
-      return 'abandoned'
-    case 'draft':
-    case 'scored':
-    default:
-      return 'draft'
-  }
-}
-
-/** Legacy plan status is coarse: active does not prove any individual task started. */
-export function planTaskStatus(status: string): Plan['tasks'][number]['status'] {
-  switch (status) {
-    case 'active':
-      return 'pending'
-    case 'done':
-      return 'done'
-    case 'failed':
-      return 'failed'
-    case 'abandoned':
-    case 'rebuilt':
-      return 'skipped'
-    default:
-      return 'pending'
-  }
-}
-
-/** One bounded, single-line prompt excerpt for the panel narrative. */
-export function promptExcerpt(content: string, limit: number = 220): { excerpt: string; truncated: boolean } {
-  const flat = content.replace(/\s+/g, ' ').trim()
-  if (flat.length <= limit) return { excerpt: flat, truncated: false }
-  return { excerpt: `${flat.slice(0, limit)}…`, truncated: true }
-}
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-
-
-
