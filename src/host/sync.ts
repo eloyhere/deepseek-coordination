@@ -29,6 +29,31 @@ interface ActionRecord {
   readonly attemptId: string
 }
 
+/** One `compaction/summary` observation; an audit index, not an AMP entity. */
+interface CompactionObservation {
+  readonly sessionId: string
+  readonly compactionId: string
+  readonly summarySeq?: number
+  readonly shadowedSeqs: readonly number[]
+  readonly shadowedTokenCount?: number
+  readonly at: string
+}
+
+/** One seeded-fork or subagent lineage observation; never a workflow write. */
+interface ForkObservation {
+  readonly sessionId: string
+  readonly sourceSessionId?: string
+  readonly boundary: number
+  readonly at: string
+  readonly kind: 'fork' | 'subagent'
+}
+
+/** In-process cap for the bounded compaction audit ledger. */
+const MAX_COMPACTION_LEDGER = 50
+
+/** In-process cap for the bounded fork/subagent audit ledger. */
+const MAX_FORK_LEDGER = 50
+
 function has(service: { find(id: string): { isPresent(): boolean } }, id: string): boolean {
   try {
     return service.find(id).isPresent()
@@ -46,6 +71,32 @@ function acceptanceOf(goalId: string): Record<string, unknown> {
   }
 }
 
+/** Read a non-empty string, or `undefined`. */
+function stringOf(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+/** Read a non-negative safe integer, or `undefined`. */
+function integerOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+/** Read a numeric list defensively, dropping malformed members. */
+function integerListOf(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  const integers: number[] = []
+  for (const entry of value) {
+    const integer = integerOf(entry)
+    if (integer !== undefined) integers.push(integer)
+  }
+  return integers
+}
+
+/** Current wall-clock time as an ISO string. */
+function nowIso(): string {
+  return new Date().toISOString()
+}
+
 export class AmpSync {
   private readonly ctx: Context
   private readonly host: AmpHost
@@ -54,7 +105,11 @@ export class AmpSync {
   private readonly actions = new Map<string, ActionRecord>()
   private readonly errors: string[] = []
   private readonly deferred: unknown[] = []
-  private readonly counters = { session: 0, turn: 0, goal: 0, plan: 0, task: 0, action: 0, result: 0 }
+  /** Bounded audit ledger of compaction summaries observed from session events. */
+  private readonly compactions: CompactionObservation[] = []
+  /** Bounded audit ledger of seeded forks and subagent children. */
+  private readonly forks: ForkObservation[] = []
+  private readonly counters = { session: 0, turn: 0, goal: 0, plan: 0, task: 0, action: 0, result: 0, compaction: 0, fork: 0, subagent: 0 }
 
   constructor(ctx: Context, host: AmpHost) {
     this.ctx = ctx
@@ -73,19 +128,31 @@ export class AmpSync {
   }
 
   status(): Record<string, unknown> {
-    return { counters: { ...this.counters }, goals: this.goals.size, chains: this.chains.size, actions: this.actions.size, errors: this.errors.slice(-20), deferred: this.deferred.slice(-20) }
+    return {
+      counters: { ...this.counters },
+      goals: this.goals.size,
+      chains: this.chains.size,
+      actions: this.actions.size,
+      errors: this.errors.slice(-20),
+      deferred: this.deferred.slice(-20),
+      compactions: this.compactions.slice(-20),
+      forks: this.forks.slice(-20),
+    }
   }
 
   onAgentCreated(agent: Agent): void {
     this.host.ensureSession(agent.id, this.host.rootOfAgent(agent))
     this.counters.session += 1
+    this.observeLineage(agent)
   }
 
   onSessionEvent(session: { id: string }, event: { type: string; data?: unknown }): void {
     this.safe(`session/event ${event.type}`, () => {
+      const raw = asRecord(event)
       const data = asRecord(event.data)
-      if (data === undefined) return
+      if (raw === undefined || data === undefined) return
       const turn = typeof data.turn === 'number' ? data.turn : undefined
+      const seq = integerOf(raw.seq)
       switch (event.type) {
         case 'turn/start':
           if (turn !== undefined) {
@@ -107,6 +174,13 @@ export class AmpSync {
           break
         case 'todo/write':
           this.syncTodos(session.id, turn, data)
+          break
+        case 'compaction/summary':
+          this.observeCompaction(session.id, data, seq)
+          break
+        case 'compaction/start':
+        case 'compaction/end':
+          // Lifecycle brackets are observed but the audit fact is the summary.
           break
         default:
           break
@@ -146,7 +220,70 @@ export class AmpSync {
     }
   }
 
-  private settleTurn(sessionId: string, turn: number, reason: unknown): void {
+  /**
+   * Append one compaction summary to the audit ledger.
+   *
+   * Only `compactionId` is required; every other field degrades to absent or
+   * empty so a malformed payload never throws or touches AMP workflow state.
+   */
+  private observeCompaction(sessionId: string, data: Record<string, unknown>, seq: number | undefined): void {
+    const compactionId = stringOf(data.compactionId)
+    if (compactionId === undefined) return
+    const shadowedTokenCount = integerOf(data.shadowedTokenCount)
+    this.compactions.push({
+      sessionId,
+      compactionId,
+      ...(seq === undefined ? {} : { summarySeq: seq }),
+      shadowedSeqs: integerListOf(data.shadowedSeqs),
+      ...(shadowedTokenCount === undefined ? {} : { shadowedTokenCount }),
+      at: nowIso(),
+    })
+    this.counters.compaction += 1
+    while (this.compactions.length > MAX_COMPACTION_LEDGER) this.compactions.shift()
+  }
+
+  /**
+   * Classify an agent's durable header into the lineage audit ledger.
+   *
+   * A seeded ordinary session records a `fork`; an `origin: 'subagent'` child
+   * records a `subagent` regardless of seeding. Missing headers and malformed
+   * fields are ignored: no AMP workflow entity or receipt is ever created.
+   */
+  private observeLineage(agent: Agent): void {
+    try {
+      const handle = asRecord(agent)
+      const session = asRecord(handle?.session)
+      const header = asRecord(session?.header)
+      if (header === undefined) return
+      const sessionId = stringOf(handle?.id) ?? stringOf(header.id)
+      if (sessionId === undefined) return
+      const subagent = header.origin === 'subagent'
+      if (!subagent && header.isSeeded !== true) return
+      const sourceSessionId = stringOf(header.parentSession)
+      this.forks.push({
+        sessionId,
+        ...(sourceSessionId === undefined ? {} : { sourceSessionId }),
+        boundary: integerOf(session?.inheritedEventCount) ?? 0,
+        at: nowIso(),
+        kind: subagent ? 'subagent' : 'fork',
+      })
+      if (subagent) this.counters.subagent += 1
+      else this.counters.fork += 1
+      while (this.forks.length > MAX_FORK_LEDGER) this.forks.shift()
+    } catch {
+      // A malformed header must not disturb the session projection.
+    }
+  }
+
+  /**
+   * Close one DSH turn in the AMP workflow.
+   *
+   * Live `turn/end` events call this directly. Recovery also calls it for
+   * historical `turn/end` events after a reload so turns created before the
+   * reload do not stay `interpreting` forever. The method is idempotent: it
+   * leaves an already-settled turn untouched and never creates a turn.
+   */
+  settleTurn(sessionId: string, turn: number, reason: unknown): void {
     const id = this.host.turnId(sessionId, turn)
     const service = this.kernelFor(sessionId).ports.services.turn
     try {

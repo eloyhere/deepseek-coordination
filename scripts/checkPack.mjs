@@ -12,6 +12,8 @@ import { join } from 'node:path'
 const REQUIRED = [
   'lib/index.mjs',
   'lib/index.d.mts',
+  'lib/compaction-backend.mjs',
+  'lib/compaction-backend.d.mts',
   'lib/client.js',
   'cordis.patch.yml',
   'locale/en.json',

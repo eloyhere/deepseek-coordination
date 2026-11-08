@@ -1,53 +1,63 @@
-/** Native top-layer modal; MUI supplies its content, the browser makes the page inert. */
+/** Modal shell shared by takeover dialogs and model notifications.
+ *
+ * This deliberately uses MUI's `Dialog` rather than a native `<dialog>`:
+ * takeover can open a notification while an approval/question modal is already
+ * open, and two native top-layer dialogs made the second one unreliable (and a
+ * `showModal()` exception unmounted the whole dock entry). MUI's portal stacks
+ * modals in one z-index ladder, which is also the host's own pattern.
+ */
 import * as React from 'react'
-import { createPortal } from 'react-dom'
+import Dialog from '@mui/material/Dialog'
 import Paper from '@mui/material/Paper'
 
 const h = React.createElement
+const MuiDialog = Dialog as unknown as React.ComponentType<Record<string, unknown>>
 const MuiPaper = Paper as unknown as React.ComponentType<Record<string, unknown>>
-let openDialogs = 0
-let previousOverflow = ''
 
 export interface BlockingDialogProps {
   titleId: string
   children?: React.ReactNode
 }
 
-export function BlockingDialog({ titleId, children }: BlockingDialogProps): React.ReactElement | null {
-  const ref = React.useRef<HTMLDialogElement>(null)
-  React.useLayoutEffect(() => {
-    const dialog = ref.current
-    if (dialog === null) return
-    if (openDialogs++ === 0) previousOverflow = document.documentElement.style.overflow
-    document.documentElement.style.overflow = 'hidden'
-    dialog.showModal()
-    return () => {
-      dialog.close()
-      if (--openDialogs === 0) document.documentElement.style.overflow = previousOverflow
-    }
-  }, [])
-  if (typeof document === 'undefined') return null
-  return createPortal(h(React.Fragment, null,
-    h('style', null, '.amp-blocking-dialog::backdrop{background:rgb(0 0 0 / 50%)}'),
-    h('dialog', {
-      ref,
-      className: 'amp-blocking-dialog',
-      'data-amp-dialog': true,
-      'aria-labelledby': titleId,
-      'aria-modal': true,
-      // Both light-dismiss and Escape must leave the request pending. Only an
-      // explicit action in the dialog may settle it.
-      onCancel: (event: React.SyntheticEvent) => event.preventDefault(),
-      onKeyDown: (event: React.KeyboardEvent) => event.stopPropagation(),
-      style: {
-        padding: 0, border: 0, borderRadius: 12, margin: 'auto',
-        width: 'min(600px, calc(100vw - 32px))', maxHeight: 'calc(100dvh - 48px)',
-        color: 'var(--dsw-alias-label-primary, #202124)',
-        background: 'var(--dsw-alias-bg-base, #fff)',
+export function BlockingDialog({ titleId, children }: BlockingDialogProps): React.ReactElement {
+  return h(
+    MuiDialog,
+    {
+      open: true,
+      onClose: (event: { preventDefault?: () => void }) => {
+        // Light-dismiss and Escape leave the request pending. Only an explicit
+        // action in the dialog may settle it.
+        event.preventDefault?.()
       },
-    }, h(MuiPaper, {
-      elevation: 0,
-      sx: { color: 'inherit', bgcolor: 'inherit', p: 3, overflowWrap: 'anywhere' },
-    }, children)),
-  ), document.body)
+      disableEscapeKeyDown: true,
+      maxWidth: 'sm',
+      fullWidth: true,
+      'aria-labelledby': titleId,
+      slotProps: {
+        paper: {
+          sx: {
+            borderRadius: 3,
+            color: 'var(--dsw-alias-label-primary, #202124)',
+            background: 'var(--dsw-alias-bg-base, #fff)',
+            overflow: 'hidden',
+          },
+        },
+      },
+    },
+    h(
+      MuiPaper,
+      {
+        elevation: 0,
+        sx: {
+          color: 'inherit',
+          bgcolor: 'inherit',
+          p: 3,
+          overflowWrap: 'anywhere',
+          maxHeight: 'calc(100dvh - 64px)',
+          overflowY: 'auto',
+        },
+      },
+      children,
+    ),
+  )
 }

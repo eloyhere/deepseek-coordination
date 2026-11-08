@@ -3,6 +3,45 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { AmpHost } from './amp.js'
 
+/** A prompt variable provider; the assembly context is narrowed structurally. */
+type PromptVariableProvider = (context: unknown) => string | undefined
+
+/** The subset of `systemPrompt.variable()` this plugin relies on. */
+type PromptVariableRegistrar = (name: string, provider: PromptVariableProvider) => () => void
+
+/** Read a non-empty agent id from an opaque assembly context. */
+function agentIdOf(context: unknown): string | undefined {
+  const agent = (context as { agent?: { id?: unknown } } | undefined)?.agent
+  return typeof agent?.id === 'string' && agent.id.length > 0 ? agent.id : undefined
+}
+
+/**
+ * Register the AMP scalar prompt variables.
+ *
+ * `systemPrompt.variable()` is absent from the minimal contexts used by older
+ * compositions, so a missing method is a silent no-op. Each registration is
+ * isolated: a duplicate name or an unsupported provider must not fail plugin
+ * activation or skip the remaining variables.
+ */
+function registerAmpPromptVariables(ctx: Context, host: AmpHost): void {
+  const register = (ctx.systemPrompt as unknown as { variable?: PromptVariableRegistrar }).variable
+  if (typeof register !== 'function') return
+  const define = (name: string, provider: PromptVariableProvider): void => {
+    try {
+      register.call(ctx.systemPrompt, name, provider)
+    } catch {
+      // The variable is optional; a failed registration only means templates
+      // cannot reference it.
+    }
+  }
+  define('amp_tenant', () => host.config.tenantId)
+  define('amp_contract', () => 'AMP 0.7.9')
+  define('amp_budget_tokens', () => String(host.config.contextBudgetTokens))
+  define('amp_module_count', () => String(host.agentModules.length))
+  define('amp_session', (context) => agentIdOf(context) ?? 'unbound')
+}
+
+/** The AMP operating contract, dynamic contexts and prompt variables for one host. */
 export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
   const moduleLines = host.agentModules
     .map((module) => `- attention_manifest_protocol_${module.module}: ${module.summary}`)
@@ -96,4 +135,6 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
       return `AMP binding: session ${agent.id}${cwd === undefined ? '' : `, workspace ${cwd}`}. AMP modules: ${host.agentModules.length}; exposed verbs: ${host.catalog.length}.`
     },
   })
+
+  registerAmpPromptVariables(ctx, host)
 }

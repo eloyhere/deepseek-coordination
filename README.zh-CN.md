@@ -135,6 +135,8 @@ AMP 注意力已经接入真实模型请求，而不只是面板展示：
 4. `GET /deepseek-coordination/amp/context` 返回编译次数、条目数、排除数和
    最近一次包大小。
 
+> 逐通道接线契约、排除账本与现状矩阵见 [wire.md](wire.md)。
+
 配置：
 
 ```yaml

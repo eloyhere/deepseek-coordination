@@ -40,6 +40,27 @@ export default defineConfig([
     },
   },
   {
+    // Optional composition seam. Kept out of the main host entry so profiles
+    // without `@deepseek-ai/dsh-compaction` can still load the plugin; a
+    // deployment that replaces `ctx.compaction` imports this subpath.
+    name: `${PLUGIN_ID}/compaction-backend`,
+    entry: { 'compaction-backend': 'src/host/compactionBackend.ts' },
+    outDir: 'lib',
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2022',
+    dts: true,
+    clean: false,
+    deps: {
+      neverBundle: (id) =>
+        id === '@deepseek-ai/cordis' ||
+        id.startsWith('@deepseek-ai/') ||
+        id === 'attention-manifest-protocol' ||
+        id.startsWith('attention-manifest-protocol/') ||
+        id.startsWith('semantic-typescript'),
+    },
+  },
+  {
     name: `${PLUGIN_ID}/client`,
     entry: { client: 'src/client/index.ts' },
     outDir: 'lib',

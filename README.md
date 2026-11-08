@@ -186,6 +186,9 @@ AMP attention is wired into the actual model request, not only the panel:
 4. `GET /deepseek-coordination/amp/context` reports compilations, item count,
    exclusions and the last package size.
 
+> See [wire.md](wire.md) for the per-channel wiring contract, exclusion ledgers
+> and status matrix.
+
 Configuration:
 
 ```yaml

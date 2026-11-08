@@ -20,6 +20,7 @@ import Bolt from '@mui/icons-material/Bolt'
 import History from '@mui/icons-material/History'
 import {
   COUNT_ORDER,
+  formatClock,
   formatCount,
   mutatingVerbs,
   shortToolName,
@@ -35,6 +36,7 @@ import { useAmpPreferences } from './preferences.js'
 import { currentLocale } from './i18n.js'
 import {
   ErrorNotice,
+  InfoRow,
   LoadingRows,
   M,
   MetricTile,
@@ -263,6 +265,7 @@ function AmpDetails(props: {
           }, formatCount(counts[kind])),
         )),
       ),
+      h(ContextSection, { data, t }),
       h(M.Box, { sx: { mt: 2 } }, h(SectionTitle, {
         title: t('sessionLists'),
         hint: t('currentSession'),
@@ -340,6 +343,44 @@ function AmpDetails(props: {
         },
         t('close'),
       ),
+    ),
+  )
+}
+
+/** Compact context/compile health block for the detail dialog. */
+function ContextSection(props: {
+  readonly data: AmpSnapshot
+  readonly t: (key: string) => string
+}): React.ReactElement | null {
+  const { data, t } = props
+  const context = data.context
+  if (context === null) return null
+  const diagnostics = context.contextDiagnostics
+  const recovery = context.recovery
+  const outputs = context.outputs
+  const lag = diagnostics?.lag ?? context.lag ?? 1
+  const exclusions = diagnostics?.compilerExclusions ?? context.compilerExclusions ?? 0
+  const hostExclusions = context.hostExclusionCount ?? context.hostExclusions?.length ?? 0
+  const compiledAt = diagnostics?.lastCompileAt
+  const parsed = compiledAt === undefined ? NaN : Date.parse(compiledAt)
+  const compiledLabel = Number.isFinite(parsed) ? formatClock(parsed, currentLocale()) : '—'
+  return h(
+    M.Box,
+    { sx: { mt: 2 } },
+    h(SectionTitle, { title: t('context'), hint: lag === 0 ? t('contextLagReady') : t('contextLagPending') }),
+    h(
+      M.Paper,
+      { variant: 'outlined', sx: { border: `1px solid ${T.border}`, borderRadius: T.radius, backgroundColor: T.surface, px: 1.25, py: 0.75 } },
+      h(InfoRow, { label: t('contextLag'), value: String(lag), mono: true, tone: lag === 0 ? 'success' : 'warning' }),
+      h(InfoRow, { label: t('contextExclusions'), value: formatCount(exclusions), mono: true, tone: exclusions > 0 ? 'warning' : 'success' }),
+      h(InfoRow, { label: t('contextHostExclusions'), value: formatCount(hostExclusions), mono: true }),
+      h(InfoRow, { label: t('contextLastCompile'), value: compiledLabel, mono: true }),
+      h(InfoRow, { label: t('contextRecovery'), value: `${formatCount(recovery?.sessions)} / ${formatCount(recovery?.failures)} ${t('failures')}`, mono: true }),
+      h(InfoRow, {
+        label: t('contextOutputs'),
+        value: `${formatCount(outputs?.spill?.records)} · ${formatCount(outputs?.retention?.records)} · ${formatCount(outputs?.prune?.records)} · ${formatCount(outputs?.compaction?.records)}`,
+        mono: true,
+      }),
     ),
   )
 }

@@ -100,11 +100,77 @@ export interface AmpSync {
   readonly deferred?: readonly unknown[]
 }
 
+/** One compiler exclusion projected by `/amp/context`. */
+export interface AmpContextExclusion {
+  readonly id?: string
+  readonly reason?: string
+  readonly detail?: string
+}
+
+/** Diagnostics for the last AMP context compile. */
+export interface AmpContextDiagnostics {
+  readonly lag?: number
+  readonly pending?: boolean
+  readonly lastCompileAt?: string
+  readonly compilerExclusions?: number
+  readonly lastExclusions?: readonly AmpContextExclusion[]
+}
+
+/** The last `agent/pre-step` capture, already bounded by the host. */
+export interface AmpCaptureSummary {
+  readonly sessionId?: string
+  readonly turn?: number
+  readonly step?: number
+  readonly capturedAt?: string
+  readonly promptChars?: number
+  readonly messages?: number
+  readonly items?: number
+  readonly errors?: number
+}
+
+/** Bounded output-channel counters from the P2 trackers. */
+export interface AmpContextOutputs {
+  readonly spill?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
+  readonly retention?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
+  readonly prune?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
+  readonly compaction?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
+  readonly failures?: number
+}
+
+/** The `/amp/context` read model: compile, capture, recovery and output health. */
+export interface AmpContext {
+  readonly enabled?: boolean
+  readonly compilations?: number
+  readonly failures?: number
+  readonly excluded?: number
+  readonly lastTokens?: number
+  readonly lastItems?: number
+  readonly lastCharacters?: number
+  readonly budgetTokens?: number
+  readonly compilerExclusions?: number
+  readonly compilerExclusionsDetailed?: readonly AmpContextExclusion[]
+  readonly contextDiagnostics?: AmpContextDiagnostics
+  readonly hostExclusions?: readonly unknown[]
+  readonly hostExclusionCount?: number
+  readonly capture?: { readonly lastCapture?: AmpCaptureSummary }
+  readonly lastCapture?: AmpCaptureSummary
+  readonly recovery?: {
+    readonly sessions?: number
+    readonly agents?: number
+    readonly events?: number
+    readonly hydrations?: number
+    readonly failures?: number
+  }
+  readonly outputs?: AmpContextOutputs
+  readonly lag?: number
+}
+
 export interface AmpSnapshot {
   readonly status: AmpStatus | null
   readonly modules: readonly AmpModule[]
   readonly journal: readonly AmpJournalEntry[]
   readonly sync: AmpSync | null
+  readonly context: AmpContext | null
   readonly loading: boolean
   readonly error: boolean
   readonly updatedAt: number | null
@@ -115,6 +181,7 @@ export const STATUS_ROUTE = '/deepseek-coordination/amp/status'
 export const MODULES_ROUTE = '/deepseek-coordination/amp/modules'
 export const JOURNAL_ROUTE = '/deepseek-coordination/amp/journal'
 export const SYNC_ROUTE = '/deepseek-coordination/amp/sync'
+export const CONTEXT_ROUTE = '/deepseek-coordination/amp/context'
 
 /** How many calls the settings page keeps on screen; the host keeps more. */
 export const JOURNAL_LIMIT = 200
@@ -146,6 +213,7 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
     modules: [],
     journal: [],
     sync: null,
+    context: null,
     loading: true,
     error: false,
     updatedAt: null,
@@ -162,7 +230,7 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
       const scope = sessionId === undefined
         ? ''
         : `?session=${encodeURIComponent(sessionId)}${withLists ? '&lists=1' : ''}`
-      const [status, modules, journal, sync] = await Promise.all([
+      const [status, modules, journal, sync, context] = await Promise.all([
         fetchJson<AmpStatus>(`${STATUS_ROUTE}${scope}`, controller.signal),
         fetchJson<{ modules?: readonly AmpModule[] }>(MODULES_ROUTE, controller.signal),
         fetchJson<{ entries?: readonly AmpJournalEntry[] }>(
@@ -170,6 +238,7 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
           controller.signal,
         ),
         fetchJson<AmpSync>(SYNC_ROUTE, controller.signal),
+        fetchJson<AmpContext>(CONTEXT_ROUTE, controller.signal),
       ])
       if (stopped) return
       setState((previous) => {
@@ -178,6 +247,7 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
           modules: modules?.modules ?? previous.modules,
           journal: journal?.entries ?? previous.journal,
           sync: sync ?? previous.sync,
+          context: context ?? previous.context,
           loading: false,
           error: status === null,
           updatedAt: status === null ? previous.updatedAt : Date.now(),
@@ -185,7 +255,7 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
         // The host returns fresh objects on every poll. Comparing their
         // serialized projection keeps the 5 s poll from re-rendering 27
         // Accordions (and every tab panel) while nothing actually changed.
-        const signature = snapshotSignature(next.status, next.modules, next.journal, next.sync)
+        const signature = snapshotSignature(next.status, next.modules, next.journal, next.sync, next.context)
         if (signatureRef.current === signature && !previous.loading && previous.error === next.error) return previous
         signatureRef.current = signature
         return next
@@ -251,6 +321,7 @@ export function snapshotSignature(
   modules: readonly AmpModule[],
   journal: readonly AmpJournalEntry[],
   sync: AmpSync | null,
+  context: AmpContext | null = null,
 ): string {
   return JSON.stringify({
     counts: status?.kernel?.counts,
@@ -272,6 +343,22 @@ export function snapshotSignature(
     ]),
     journal: journal.map((entry) => [entry.tool, entry.ok, entry.mutating, entry.error, entry.durationMs]),
     sync: sync?.counters,
+    context: context === null
+      ? null
+      : [
+        context.contextDiagnostics?.lag,
+        context.contextDiagnostics?.lastCompileAt,
+        context.contextDiagnostics?.compilerExclusions,
+        context.lastCapture?.turn,
+        context.lastCapture?.step,
+        context.lastCapture?.capturedAt,
+        context.recovery?.failures,
+        context.hostExclusionCount,
+        context.outputs?.spill?.records,
+        context.outputs?.retention?.records,
+        context.outputs?.prune?.records,
+        context.outputs?.compaction?.records,
+      ],
     lists: status?.lists === undefined
       ? undefined
       : Object.fromEntries(Object.entries(status.lists).map(([kind, items]) => [

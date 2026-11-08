@@ -76,7 +76,13 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
   const disposers: Array<() => void> = []
   let clientReport: unknown = null
   const route = (path: string, handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>): void => {
-    disposers.push(webServer.register({ kind: 'exact', path, handler }))
+    try {
+      disposers.push(webServer.register({ kind: 'exact', path, handler }))
+    } catch {
+      // A reload can leave a route owned by an earlier, aborted registration.
+      // Keep registering the remaining routes: one stale path must not hide
+      // the dialog/notification routes that follow it.
+    }
   }
 
   route(`${ROUTE_PREFIX}/ping`, (request, response) => {
@@ -147,26 +153,6 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
     ok(response, { entries: jsonSafe(entries.slice(-limit)) })
   })
 
-  route(`${ROUTE_PREFIX}/amp/client-report`, async (request, response) => {
-    if (request.method === 'GET') return ok(response, { errors: dependencies.host.clientErrors.slice(-20) })
-    if (request.method !== 'POST') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'GET or POST only')
-    const body = await readJsonBody(request)
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return fail(response, 400, 'INVALID_ARGUMENT', 'body must be a JSON object')
-    }
-    const record = body as Record<string, unknown>
-    const text = (key: string): string => typeof record[key] === 'string' ? (record[key] as string).slice(0, 8_000) : ''
-    dependencies.host.clientErrors.push({
-      at: new Date().toISOString(),
-      surface: text('surface') || 'unknown',
-      message: text('message'),
-      stack: text('stack'),
-      componentStack: text('componentStack'),
-    })
-    if (dependencies.host.clientErrors.length > 50) dependencies.host.clientErrors.splice(0, dependencies.host.clientErrors.length - 50)
-    return ok(response, { recorded: true })
-  })
-
   route(`${ROUTE_PREFIX}/amp/preferences`, async (request, response) => {
     const preferences = dependencies.host.preferencesFor(rootOf(urlOf(request), dependencies.host))
     if (request.method === 'GET') return ok(response, preferences.get())
@@ -216,12 +202,27 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
   })
 
   route(`${ROUTE_PREFIX}/amp/client-report`, async (request, response) => {
-    if (request.method === 'GET') return ok(response, { report: clientReport })
+    if (request.method === 'GET') {
+      return ok(response, { report: clientReport, errors: dependencies.host.clientErrors.slice(-20) })
+    }
     if (request.method !== 'POST') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'GET or POST only')
     const body = await readJsonBody(request)
     if (body === null) return fail(response, 400, 'INVALID_ARGUMENT', 'body must be a JSON object')
     const report = (typeof body === 'object' && !Array.isArray(body) ? body : { value: body }) as Record<string, unknown>
     clientReport = { ...report, receivedAt: new Date().toISOString() }
+    const text = (key: string): string => typeof report[key] === 'string' ? (report[key] as string).slice(0, 8_000) : ''
+    if (text('message').length > 0 || text('stack').length > 0) {
+      dependencies.host.clientErrors.push({
+        at: new Date().toISOString(),
+        surface: text('surface') || 'unknown',
+        message: text('message'),
+        stack: text('stack'),
+        componentStack: text('componentStack'),
+      })
+      if (dependencies.host.clientErrors.length > 50) {
+        dependencies.host.clientErrors.splice(0, dependencies.host.clientErrors.length - 50)
+      }
+    }
     if (report.locale !== undefined) dependencies.onLocale?.(report.locale)
     ok(response, { accepted: true })
   })

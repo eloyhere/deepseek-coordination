@@ -34,6 +34,10 @@
       "types": "./lib/index.d.mts",
       "default": "./lib/index.mjs"
     },
+    "./compaction-backend": {
+      "types": "./lib/compaction-backend.d.mts",
+      "default": "./lib/compaction-backend.mjs"
+    },
     "./client": "./lib/client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg",
@@ -42,8 +46,11 @@
   "files": [
     "lib/index.mjs",
     "lib/index.d.mts",
+    "lib/compaction-backend.mjs",
+    "lib/compaction-backend.d.mts",
     "lib/client.js",
     "cordis.patch.yml",
+    "wire.md",
     "locale/*.json",
     "icon.svg",
     "NOTICE",
@@ -65,7 +72,7 @@
   "scripts": {
     "build": "tsdown --config tsdown.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/smoke.test.mjs test/handlers.test.mjs test/client.test.mjs test/sync.test.mjs test/catalog.test.mjs test/vcsignore.test.mjs test/persistence.test.mjs test/dialogGate.test.mjs test/providerContextCompat.test.mjs test/search.test.mjs test/preferences.test.mjs test/ampData.test.mjs",
+    "test": "npm run build && node --test test/smoke.test.mjs test/handlers.test.mjs test/client.test.mjs test/sync.test.mjs test/catalog.test.mjs test/vcsignore.test.mjs test/persistence.test.mjs test/dialogGate.test.mjs test/providerContextCompat.test.mjs test/search.test.mjs test/preferences.test.mjs test/ampData.test.mjs test/wireFoundation.test.mjs test/channelsInput.test.mjs test/outputChannels.test.mjs test/lineage.test.mjs test/promptVariables.test.mjs test/recovery.test.mjs test/tombstones.test.mjs test/syncCoverage.test.mjs test/diagnostics.test.mjs test/faultInjection.test.mjs test/release.test.mjs",
     "prepack": "npm run build",
     "test:dialogs:browser": "node test/browser/dialogs.browser.mjs",
     "pack:check": "node scripts/checkPack.mjs"
@@ -93,10 +100,15 @@
     "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
     "@deepseek-ai/dsh-commands": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.2.2-rc.1",
     "@deepseek-ai/dsh-host-webserver": "0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-output-retention": "0.2.2-rc.1",
     "@deepseek-ai/dsh-session": "0.2.2-rc.1",
     "@deepseek-ai/dsh-skill": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-spill": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-subagent": "0.2.2-rc.1",
     "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.1",
     "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
     "@deepseek-ai/dsh-util-values": "0.2.2-rc.1",

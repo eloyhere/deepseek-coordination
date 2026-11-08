@@ -168,6 +168,9 @@ test('routes bind through ctx.inject when webServer appears after apply', async 
     assert.ok(paths.includes('/deepseek-coordination/ping'))
     assert.ok(paths.includes('/deepseek-coordination/amp/status'))
     assert.ok(paths.includes('/deepseek-coordination/notify/pending'))
+    // A real webServer rejects a second registration of the same path; the
+    // fake would otherwise hide a duplicate that silently drops later routes.
+    assert.equal(new Set(paths).size, paths.length, `duplicate route in ${paths.join(', ')}`)
   } finally {
     for (const dispose of disposers) dispose()
     rmSync(directory, { recursive: true, force: true })

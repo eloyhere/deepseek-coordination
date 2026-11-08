@@ -67,7 +67,7 @@ export type AmpSettingsProps = PropsRuntime<'settings.section'> & {
   readonly t?: (key: string) => string
 }
 
-type CatalogTab = 'modules' | 'kernel' | 'journal'
+type CatalogTab = 'modules' | 'kernel' | 'context' | 'journal'
 type TierFilter = 'all' | 'agent' | 'host' | 'hidden'
 type JournalFilter = 'all' | 'failed' | 'mutating'
 type IconComponent = React.ComponentType<Record<string, unknown>>
@@ -747,6 +747,112 @@ function KernelTab(props: {
   )
 }
 
+/** Format one host ISO instant through the active page locale. */
+function timeLabel(value: string | undefined): string {
+  if (typeof value !== 'string' || value.length === 0) return '—'
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? formatClock(parsed, currentLocale()) : value
+}
+
+function ContextTab(props: {
+  readonly data: ReturnType<typeof useAmpData>
+  readonly t: (key: string) => string
+}): React.ReactElement {
+  const { data, t } = props
+  const context = data.context
+  if (context === null) {
+    return data.loading
+      ? h(LoadingRows, { rows: 4, label: t('loading') })
+      : h(EmptyState, { title: t('contextUnavailable'), hint: t('unavailableHint') })
+  }
+
+  const diagnostics = context.contextDiagnostics
+  const recovery = context.recovery
+  const outputs = context.outputs
+  const capture = context.lastCapture ?? context.capture?.lastCapture
+  const exclusions = diagnostics?.lastExclusions ?? context.compilerExclusionsDetailed ?? []
+  const lag = diagnostics?.lag ?? context.lag ?? 1
+  const lagHint = lag === 0 ? t('contextLagReady') : t('contextLagPending')
+  const exclusionCount = diagnostics?.compilerExclusions ?? context.compilerExclusions ?? exclusions.length
+  const hostExclusionCount = context.hostExclusionCount ?? context.hostExclusions?.length ?? 0
+
+  return h(
+    M.Stack,
+    { spacing: 1.5 },
+    h(SectionTitle, { title: t('contextStatus'), hint: lagHint }),
+    h(
+      M.Paper,
+      { variant: 'outlined', sx: { border: `1px solid ${T.border}`, borderRadius: T.radius, backgroundColor: T.surface, px: 1.25, py: 0.75 } },
+      h(InfoRow, { label: t('contextLag'), value: String(lag), mono: true, tone: lag === 0 ? 'success' : 'warning' }),
+      h(InfoRow, { label: t('contextLastCompile'), value: timeLabel(diagnostics?.lastCompileAt), mono: true }),
+      h(InfoRow, { label: t('contextExclusions'), value: formatCount(exclusionCount), mono: true, tone: exclusionCount > 0 ? 'warning' : 'success' }),
+      h(InfoRow, { label: t('contextHostExclusions'), value: formatCount(hostExclusionCount), mono: true }),
+    ),
+    h(SectionTitle, { title: t('contextExclusions'), hint: `${formatCount(exclusionCount)}` }),
+    exclusions.length === 0
+      ? h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.tertiary, fontSize: 10.5 } }, t('contextNoExclusions'))
+      : h(
+        M.Paper,
+        { variant: 'outlined', sx: { border: `1px solid ${T.border}`, borderRadius: T.radius, backgroundColor: T.surface, px: 1.25, py: 0.5 } },
+        ...exclusions.slice(0, 8).map((exclusion, index) => h(
+          M.Stack,
+          {
+            key: `${exclusion.id ?? 'exclusion'}-${index}`,
+            direction: 'row',
+            alignItems: 'center',
+            spacing: 0.75,
+            sx: { py: 0.45, minWidth: 0, borderTop: index === 0 ? 'none' : `1px solid ${T.border}` },
+          },
+          h(
+            M.Typography,
+            { variant: 'caption', noWrap: true, sx: { flex: 1, minWidth: 0, color: T.text, fontFamily: T.mono, fontSize: 10.5 } },
+            exclusion.id ?? '—',
+          ),
+          h(M.Chip, {
+            size: 'small',
+            label: exclusion.reason ?? 'unknown',
+            sx: chipSx(exclusion.reason === 'unmounted' ? 'neutral' : 'warning', 16),
+          }),
+        )),
+      ),
+    h(SectionTitle, { title: t('contextCapture'), hint: capture === undefined ? t('contextNoCapture') : undefined }),
+    capture === undefined
+      ? h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.tertiary, fontSize: 10.5 } }, t('contextNoCapture'))
+      : h(
+        M.Paper,
+        { variant: 'outlined', sx: { border: `1px solid ${T.border}`, borderRadius: T.radius, backgroundColor: T.surface, px: 1.25, py: 0.75 } },
+        h(InfoRow, { label: t('turns'), value: `${formatCount(capture.turn)} / ${formatCount(capture.step)}`, mono: true }),
+        h(InfoRow, { label: t('updated'), value: timeLabel(capture.capturedAt), mono: true }),
+        h(InfoRow, { label: t('contextLag'), value: `${formatCount(capture.promptChars)} chars`, mono: true }),
+        h(InfoRow, { label: t('modules'), value: `${formatCount(capture.messages)} msg · ${formatCount(capture.items)} items`, mono: true }),
+      ),
+    h(SectionTitle, { title: t('contextRecovery') }),
+    h(
+      M.Paper,
+      { variant: 'outlined', sx: { border: `1px solid ${T.border}`, borderRadius: T.radius, backgroundColor: T.surface, px: 1.25, py: 0.75 } },
+      h(InfoRow, { label: t('sessions'), value: formatCount(recovery?.sessions), mono: true }),
+      h(InfoRow, { label: t('agents'), value: formatCount(recovery?.agents), mono: true }),
+      h(InfoRow, { label: t('events'), value: formatCount(recovery?.events), mono: true }),
+      h(InfoRow, { label: t('contextHydrations'), value: formatCount(recovery?.hydrations), mono: true }),
+      h(InfoRow, {
+        label: t('failures'),
+        value: formatCount(recovery?.failures),
+        mono: true,
+        tone: (recovery?.failures ?? 0) > 0 ? 'warning' : 'success',
+      }),
+    ),
+    h(SectionTitle, { title: t('contextOutputs'), hint: `${formatCount(outputs?.failures)} ${t('failures')}` }),
+    h(
+      M.Paper,
+      { variant: 'outlined', sx: { border: `1px solid ${T.border}`, borderRadius: T.radius, backgroundColor: T.surface, px: 1.25, py: 0.75 } },
+      h(InfoRow, { label: t('contextSpill'), value: formatCount(outputs?.spill?.records), mono: true }),
+      h(InfoRow, { label: t('contextRetention'), value: formatCount(outputs?.retention?.records), mono: true }),
+      h(InfoRow, { label: t('contextPrune'), value: formatCount(outputs?.prune?.records), mono: true }),
+      h(InfoRow, { label: t('contextCompaction'), value: formatCount(outputs?.compaction?.records), mono: true }),
+    ),
+  )
+}
+
 function JournalRow(props: { readonly entry: AmpJournalEntry; readonly t: (key: string) => string }): React.ReactElement {
   const { entry, t } = props
   const ok = entry.ok !== false
@@ -895,6 +1001,7 @@ function AmpSettingsContent(props: AmpSettingsProps): React.ReactElement {
       },
       h(M.Tab, { value: 'modules', label: t('catalog') }),
       h(M.Tab, { value: 'kernel', label: t('kernel') }),
+      h(M.Tab, { value: 'context', label: t('context') }),
       h(M.Tab, { value: 'journal', label: t('journal') }),
     )),
     h(
@@ -912,6 +1019,11 @@ function AmpSettingsContent(props: AmpSettingsProps): React.ReactElement {
         M.Box,
         { sx: { display: tab === 'kernel' ? 'block' : 'none' } },
         h(KernelTab, { data, t }),
+      ),
+      h(
+        M.Box,
+        { sx: { display: tab === 'context' ? 'block' : 'none' } },
+        h(ContextTab, { data, t }),
       ),
       h(
         M.Box,
