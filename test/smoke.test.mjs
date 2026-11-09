@@ -160,6 +160,7 @@ test('routes bind through ctx.inject when webServer appears after apply', async 
     const paths = []
     overrides.webServer = {
       register(route) {
+        if (route.path === '/deepseek-coordination/amp/client-report') throw new Error('duplicate route')
         paths.push(route.path)
         return () => {}
       },
