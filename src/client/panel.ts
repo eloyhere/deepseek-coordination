@@ -28,6 +28,7 @@ import {
   useAmpData,
   type AmpJournalEntry,
   type AmpListItem,
+  type AmpModule,
   type AmpSnapshot,
 } from './ampData.js'
 import { ampTranslate } from './ampCopy.js'
@@ -46,6 +47,7 @@ import {
   chipSx,
   dialogPaperSx,
   h,
+  surfaceSx,
 } from './ampUi.js'
 
 export type AmpPanelProps = PropsRuntime<'conversation.input.dock'> & {
@@ -132,6 +134,28 @@ function localToolName(tool: string): string {
   if (module === 'project') return `项目 · ${verbLabel}`
   if (module === 'evidence') return `证据 · ${verbLabel}`
   return `${module} · ${verbLabel}`
+}
+
+function ModuleRow(props: {
+  readonly module: AmpModule
+  readonly t: (key: string) => string
+}): React.ReactElement {
+  const { module, t } = props
+  return h(
+    M.Stack,
+    { direction: 'row', alignItems: 'center', spacing: 1, sx: { py: 0.45, minWidth: 0 } },
+    h(M.Typography, {
+      variant: 'caption',
+      noWrap: true,
+      sx: { width: 92, flex: '0 0 auto', fontFamily: T.mono, fontSize: 11, color: T.text },
+    }, module.module),
+    h(M.Typography, {
+      variant: 'caption',
+      noWrap: true,
+      sx: { flex: 1, minWidth: 0, color: T.tertiary, fontSize: 10.5 },
+    }, module.summary ?? ''),
+    h(M.Chip, { size: 'small', label: `${(module.verbs?.length ?? 0)} ${t('verbs')}`, sx: chipSx('accent', 16) }),
+  )
 }
 
 function AmpDetails(props: {
@@ -235,6 +259,21 @@ function AmpDetails(props: {
         h(MetricTile, { label: t('verbs'), value: formatCount(verbs), hint: `${formatCount(mutating)} ${t('mutating')}`, icon: Bolt, tone: 'warning' }),
         h(MetricTile, { label: t('entities'), value: formatCount(entities), hint: `${formatCount(counts.session)} ${t('sessions')} · ${formatCount(counts.turn)} ${t('turns')}`, icon: Memory }),
         h(MetricTile, { label: t('calls'), value: formatCount(data.journal.length), hint: `${formatCount(failed)} ${t('failures')}`, icon: History, tone: failed > 0 ? 'error' : 'success' }),
+      ),
+      h(
+        M.Box,
+        { sx: { mt: 2 } },
+        h(SectionTitle, {
+          title: t('catalog'),
+          hint: `${formatCount(modules)} ${t('agentModules')} · ${formatCount(verbs)} ${t('verbs')}`,
+        }),
+        h(
+          M.Paper,
+          { variant: 'outlined', sx: { ...surfaceSx, px: 1, py: 0.5 } },
+          ...data.modules
+            .filter((module) => module.tier === 'agent')
+            .map((module) => h(ModuleRow, { key: module.module, module, t })),
+        ),
       ),
       h(M.Box, { sx: { mt: 2 } }, h(SectionTitle, { title: t('kernel'), hint: t('kernelCounts') })),
       h(
@@ -425,11 +464,11 @@ export function AmpPanel(props: AmpPanelProps): React.ReactElement {
             px: 1.5,
             py: 1,
             borderRadius: T.radiusSm,
-            border: `1px solid ${T.border}`,
+            border: `1px solid ${T.borderStrong}`,
             backgroundColor: T.surface,
             color: T.text,
             transition: 'background-color 120ms ease, border-color 120ms ease',
-            '&:hover': { backgroundColor: T.hover, borderColor: T.borderStrong },
+            '&:hover': { backgroundColor: T.hover, borderColor: T.accent },
             '&.Mui-focusVisible': { outline: `2px solid ${T.focus}`, outlineOffset: 1 },
           },
         },

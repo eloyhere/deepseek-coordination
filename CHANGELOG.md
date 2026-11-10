@@ -15,7 +15,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
-## [0.27.4] - 2026-11-10
+## [0.27.5] - 2026-11-10
+
+### Changed
+
+- The dock status strip now uses the stronger border token and the accent colour on hover, so its outline is visible in both light and dark themes.
+- The detail dialog lists the agent modules that extend the prompt: module name, summary and verb count, matching the prompt contract exactly.
+
+## [0.27.4] - 2026-11-10 - 2026-11-10
 
 ### Fixed
 
