@@ -19,7 +19,7 @@ function walkFiles(root: string, limit = 200): string[] {
     if (files.length >= limit) return
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       if (files.length >= limit) return
-      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.amp')) continue
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.deepseek-coordination' || entry.name.startsWith('.amp')) continue
       const absolute = join(directory, entry.name)
       if (entry.isDirectory()) {
         if (depth < 2) walk(absolute, depth + 1)

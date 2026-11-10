@@ -45,3 +45,9 @@ npm-debug.log*
 # AMP lease and fence artifacts written next to edited files
 *.lock
 *.fence
+
+# AMP runtime data written by deepseek-coordination
+C:/Users/Hasee/AppData/Local/Temp/amp-plugin-Ma1EuC/
+
+# AMP runtime data written by deepseek-coordination
+C:/Users/Hasee/AppData/Local/Temp/amp-plugin-6RZPt8/

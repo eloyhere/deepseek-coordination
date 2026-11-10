@@ -15,7 +15,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
-## [0.27.2] - 2026-11-10
+## [0.27.3] - 2026-11-10
+
+### Fixed
+
+- Every store layout now ensures .deepseek-coordination/ is ignored by the enclosing VCS, including a custom storePath inside the repository (previously only default workspace layouts did).
+- project.outline no longer walks into the internal .deepseek-coordination directory.
+
+## [0.27.2] - 2026-11-10 - 2026-11-10
 
 ### Fixed
 

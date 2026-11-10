@@ -701,10 +701,11 @@ export class AmpHost {
     const key = storeIdentity(layout.storePath)
     const existing = this.slots.get(key)
     if (existing !== undefined) return existing
-    if (layout.mode === 'workspace') {
-      inheritUserPreferences(layout.directory)
-      if (root !== undefined) ensureStoreIgnored(root, layout.directory)
-    }
+    // Ignore bookkeeping applies to every layout: a custom storePath inside the
+    // repository must not be committed either. `ensureStoreIgnored` is a no-op
+    // when the directory is outside the repository.
+    if (root !== undefined) ensureStoreIgnored(root, layout.directory)
+    if (layout.mode === 'workspace') inheritUserPreferences(layout.directory)
     const slot = new StoreSlot(this.protocol, this.config, root, layout)
     this.slots.set(key, slot)
     return slot

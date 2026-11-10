@@ -13,7 +13,14 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
-## [0.27.2] — 2026-11-10
+## [0.27.3] — 2026-11-10
+
+### 修复
+
+- 所有存储布局都会确保外围版本控制忽略 .deepseek-coordination/，包括仓库内自定义 storePath 的情况（此前仅默认工作区布局生效）。
+- project.outline 不再遍历内部 .deepseek-coordination 目录。
+
+## [0.27.2] — 2026-11-10 — 2026-11-10
 
 ### 修复
 
