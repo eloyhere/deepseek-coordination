@@ -281,6 +281,10 @@ test('reading a project directory returns its outline instead of failing', async
     assert.ok(sub.value.value.entries.some((entry) => entry.path.endsWith('a.ts')), JSON.stringify(sub.value.value.entries))
     const file = await workspaceTool.execute({ verb: 'read', arguments: { path: 'src/a.ts' } }, execFor(workspace, 'call-file'))
     assert.equal(file.value.value.phase, 'outline')
+    const projectTool = tools.get('attention_manifest_protocol_project')
+    const projectOutline = await projectTool.execute({ verb: 'outline', arguments: {} }, execFor(workspace, 'call-project-outline'))
+    assert.equal(projectOutline.value.ok, true, JSON.stringify(projectOutline.value))
+    assert.ok(projectOutline.value.value.nodes.some((node) => node.path === 'README.md'), JSON.stringify(projectOutline.value.value))
   } finally {
     for (const dispose of disposers) dispose()
     rmSync(directory, { recursive: true, force: true })

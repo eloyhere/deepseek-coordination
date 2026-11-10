@@ -3,11 +3,11 @@
 **简体中文** · [English](README.md) · [更新日志](CHANGELOG.zh-CN.md)
 
 面向 **DeepSeek Harness 0.2.2-rc.1**（Windows 桌面版）的注意力清单协议（AMP）宿主插件。
-它把依赖从旧的 0.6 协调层升级到 **AMP 0.8.0**，移除过时的协调功能，保留通知组件，
+它把依赖从旧的 0.6 协调层升级到 **AMP 0.9.0**，移除过时的协调功能，保留通知组件，
 并把 AMP 的模块面注册进 Harness 宿主。
 
 ```
-AMP 0.8.0                              DeepSeek Harness 0.2.2-rc.1
+AMP 0.9.0                              DeepSeek Harness 0.2.2-rc.1
 ┌───────────────────────────┐          ┌──────────────────────────────────┐
 │ 智能体面（27 个模块）      │          │ ctx.tools   ← 15 个模块工具      │
 │ 15 agent / 8 host / 4 hid │  ──────► │ ctx.systemPrompt ← AMP 契约      │
@@ -35,11 +35,11 @@ AMP 0.8.0                              DeepSeek Harness 0.2.2-rc.1
 
 ## AMP 模块面
 
-AMP 0.8.0 定义 29 个模块，本插件全部以三种方式之一注册：
+AMP 0.9.0 定义 29 个模块，本插件全部以三种方式之一注册：
 
 | 层级 | 数量 | 注册方式 |
 |---|---:|---|
-| `agent` | 17 | 每个模块一个 `attention_manifest_protocol_<module>` DSH 工具，通过 `{ verb, arguments }` 暴露动词，共 60 个动词。0.8.0 新增 `elaboration`（构建诊断、解释、propose）与 `draft`（open/write/patch/diff/check）。 |
+| `agent` | 17 | 每个模块一个 `attention_manifest_protocol_<module>` DSH 工具，通过 `{ verb, arguments }` 暴露动词，共 61 个动词。0.8.0 新增 `elaboration`（构建诊断、解释、propose）与 `draft`（open/write/patch/diff/check）。 |
 | `host` | 8 | 宿主服务/路由：`capability`、`manifest`、`provenance`、`receipt`、`verification`、`retrieval`、`model`、`runtime`；宿主发布 `ctx.amp`（`AmpHost`），其他插件可注入该服务访问内核端口、网关日志、收据与证据。 |
 | `hidden` | 4 | 仅内部：`workflow`、`policy`、`profession`、`behaviour`，永不暴露给模型。 |
 
@@ -47,14 +47,14 @@ AMP 0.8.0 定义 29 个模块，本插件全部以三种方式之一注册：
 支持 `query`、`module`、`tier` 过滤，返回完整目录及 mutating/authority 信息。`query`
 可以是字符串或字符串数组；传 `regex: true` 时，每个条目按不区分大小写的正则表达式匹配。
 同一工具还支持 `action: "search"` 搜索项目文件。开启设置里的「接管搜索」后，会使用
-AMP 0.8.0 内置的 `createSessionFileDiscoveryProvider`、`collectDiscoveryCandidates` 和
+AMP 0.9.0 内置的 `createSessionFileDiscoveryProvider`、`collectDiscoveryCandidates` 和
 `discover` 排名，不重复实现排序算法。通过 `scope` 选择 `files`、`content` 或 `both`，并可传入
 相对工作区的 `path`、`include`/`exclude` glob、`maxFiles`、`maxFileBytes`、`limit`、
 `maxPerModule`、`minimumScore`。
 搜索限制在项目目录、跳过依赖和生成目录，并限制内容快照大小；结果提供文件路径和行号，
 后续可用 `attention_manifest_protocol_workspace.read` 读取内容。
 
-> AMP 0.8.0 只发布工具**名称与权限**，不发布参数 schema。因此本宿主为每个模块
+> AMP 0.9.0 只发布工具**名称与权限**，不发布参数 schema。因此本宿主为每个模块
 > 提供一个带类型的 `verb` 和一个无损 `arguments` 对象，而不是 60 个带点的工具名。
 > 网关仍然强制宿主绑定身份、mutating 动词的幂等键、权限钩子，并为每次调用记录一条日志。
 
@@ -246,7 +246,7 @@ bundle 的 factory 与三个 slot 注册。`test/persistence.test.mjs` 另外用
 
 ### `semantic-typescript` 冻结保护
 
-AMP 0.8.0 依赖的 `semantic-typescript@2` 在 `Optional` 模块里执行
+AMP 0.9.0 依赖的 `semantic-typescript@2` 在 `Optional` 模块里执行
 `Object.freeze(Object.getPrototypeOf(Optional))`，会冻结 `Function.prototype`，
 从而破坏 DSH 所有插件配置使用的 schemastery。`src/host/freezeGuard.ts` 在任何
 AMP 导入之前运行，拒绝冻结 `Function.prototype`/`Object.prototype`/`Array.prototype`，
@@ -255,11 +255,11 @@ AMP 导入之前运行，拒绝冻结 `Function.prototype`/`Object.prototype`/`A
 
 ## 已知限制
 
-- AMP 0.8.0 不提供参数 schema；模块工具的 `arguments` 由各处理函数校验，而非协议。
+- AMP 0.9.0 不提供参数 schema；模块工具的 `arguments` 由各处理函数校验，而非协议。
 - `workspace.document_outline` 返回 `supported: false`，指向 DSH 的 Office 工具；
   未内置二进制大纲解析器。
 - `execution.run` 拒绝分发 AMP 协议工具，避免递归。
 - `turn.respond` 在 AMP 中记录模型响应意图；对话转录仍由 DSH 拥有。
 - 内核执行器端口未接线：工作流动作属于宿主，模型效果通过 `execution.run`
   或普通 DSH 工具执行。
-- AMP 0.8.0 与 0.6.0 不兼容，旧 AMP 数据库不会迁移。
+- AMP 0.9.0 与 0.6.0 不兼容，旧 AMP 数据库不会迁移。

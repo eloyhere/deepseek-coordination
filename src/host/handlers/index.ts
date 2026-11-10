@@ -8,6 +8,7 @@ import { cooperationHandlers } from './cooperation.js'
 import { executionHandlers } from './execution.js'
 import { planningHandlers } from './planning.js'
 import { projectHandlers } from './project.js'
+import { projectOutlineHandlers } from '../projectOutline.js'
 import { sessionHandlers } from './session.js'
 import { workspaceHandlers } from './workspace.js'
 
@@ -17,6 +18,7 @@ export function createHandlers(host: AmpHost): Record<string, GatewayHandler> {
     ...planningHandlers(host),
     ...attentionHandlers(host),
     ...projectHandlers(host),
+    ...projectOutlineHandlers(host),
     ...workspaceHandlers(host),
     ...elaborationHandlers(host),
     ...draftHandlers(host),

@@ -4,12 +4,12 @@
 
 An Attention Manifest Protocol (AMP) host for **DeepSeek Harness 0.2.2-rc.1** on the
 Windows desktop build. The plugin upgrades `attention-manifest-protocol` from the
-old 0.6-era coordination layer to **AMP 0.8.0**, removes the obsolete coordination
+old 0.6-era coordination layer to **AMP 0.9.0**, removes the obsolete coordination
 surface, keeps the notification components, and registers the AMP module surface
 with the harness host.
 
 ```
-AMP 0.8.0                              DeepSeek Harness 0.2.2-rc.1
+AMP 0.9.0                              DeepSeek Harness 0.2.2-rc.1
 ┌───────────────────────────┐          ┌──────────────────────────────────┐
 │ agent surface (27 modules)│          │ ctx.tools   ← 15 module tools    │
 │ 15 agent / 8 host / 4 hid │  ──────► │ ctx.systemPrompt ← AMP contract  │
@@ -40,12 +40,12 @@ AMP 0.8.0                              DeepSeek Harness 0.2.2-rc.1
 
 ## The AMP module surface
 
-AMP 0.8.0 defines 29 modules. All of them are registered with the harness in one
+AMP 0.9.0 defines 29 modules. All of them are registered with the harness in one
 of three ways:
 
 | Tier | Count | Registered as |
 |---|---:|---|
-| `agent` | 17 | One `attention_manifest_protocol_<module>` DSH tool each, exposing its verbs through `{ verb, arguments }`; 60 verbs total. `elaboration` (build diagnostics, explain, propose) and `draft` (open, write, patch, diff, check) are new in 0.8.0. |
+| `agent` | 17 | One `attention_manifest_protocol_<module>` DSH tool each, exposing its verbs through `{ verb, arguments }`; 61 verbs total. `elaboration` (build diagnostics, explain, propose) and `draft` (open, write, patch, diff, check) are new in 0.8.0. |
 | `host` | 8 | Host services/routes: `capability`, `manifest`, `provenance`, `receipt`, `verification`, `retrieval`, `model`, `runtime`. The host publishes `ctx.amp` (`AmpHost`) so other plugins can inject the service and reach the kernel ports, gateway journal, receipts and evidence. |
 | `hidden` | 4 | Internal only: `workflow`, `policy`, `profession`, `behaviour`. They are never offered to the model. |
 
@@ -62,7 +62,7 @@ The agent tools are:
 | `attention_manifest_protocol_task` | `get`, `list_ready`, `report_progress` |
 | `attention_manifest_protocol_action` | `get`, `list` |
 | `attention_manifest_protocol_attention` | `context`, `get`, `request_focus` |
-| `attention_manifest_protocol_project` | `rules`, `metadata`, `environment`, `describe_environment`, `configure_environment`, `put_rule` |
+| `attention_manifest_protocol_project` | `rules`, `metadata`, `environment`, `describe_environment`, `configure_environment`, `put_rule`, `outline` |
 | `attention_manifest_protocol_workspace` | `list`, `read`, `outline`, `document_outline`, `diff`, `write` |
 | `attention_manifest_protocol_cooperation` | `inbox`, `send`, `report_result` |
 | `attention_manifest_protocol_evidence` | `get`, `list`, `cite` |
@@ -74,7 +74,7 @@ The agent tools are:
 `query` accepts a string or an array of strings; set `regex: true` to treat each
 entry as a case-insensitive regular expression. The same tool accepts
 `action: "search"` for project file discovery. When the **Take over search**
-preference is enabled, `discover` uses AMP 0.8.0's
+preference is enabled, `discover` uses AMP 0.9.0's
 `createSessionFileDiscoveryProvider`, `collectDiscoveryCandidates` and
 `discover` ranker; it does not implement a second ranking algorithm. Set
 `scope` to `files`, `content` or `both`, and optionally pass a workspace-relative
@@ -83,7 +83,7 @@ preference is enabled, `discover` uses AMP 0.8.0's
 and dependency directories, limits content snapshots and returns file paths and
 line locations for follow-up reads through `attention_manifest_protocol_workspace.read`.
 
-> AMP 0.8.0 ships tool **names and authority**, not argument schemas. This host
+> AMP 0.9.0 ships tool **names and authority**, not argument schemas. This host
 > therefore exposes one typed `verb` plus a lossless `arguments` object per module
 > instead of 60 separate dotted tool names. The gateway still enforces host-bound
 > identity, the mutating-idempotency rule, the authority hook and one journal
@@ -344,7 +344,7 @@ and that `storage: 'user'` and an explicit `storePath` keep their layouts.
 
 ### The `semantic-typescript` freeze guard
 
-AMP 0.8.0 depends on `semantic-typescript@2`, whose `Optional` class executes
+AMP 0.9.0 depends on `semantic-typescript@2`, whose `Optional` class executes
 `Object.freeze(Object.getPrototypeOf(Optional))` — freezing `Function.prototype`.
 That breaks schemastery, which DSH uses for every plugin config. `src/host/freezeGuard.ts`
 runs before any AMP import, refuses to freeze `Function.prototype`/`Object.prototype`/
@@ -353,7 +353,7 @@ why the host bundle can safely load alongside the rest of the harness.
 
 ## Known limits
 
-- AMP 0.8.0 does not ship argument schemas; the module-tool `arguments` object is
+- AMP 0.9.0 does not ship argument schemas; the module-tool `arguments` object is
   validated by each handler, not by the protocol.
 - `workspace.document_outline` answers `supported: false` and points at DSH's
   Office tools; no binary outline parser is bundled.
@@ -363,5 +363,5 @@ why the host bundle can safely load alongside the rest of the harness.
   owner of the actual conversation transcript.
 - The kernel executor port is not wired: `workflow` actions are host-only, and
   model effects run through `execution.run` or ordinary DSH tools.
-- AMP 0.8.0 is not wire-compatible with 0.6.0 artifacts; an existing 0.6-era AMP
+- AMP 0.9.0 is not wire-compatible with 0.6.0 artifacts; an existing 0.6-era AMP
   database is not migrated.

@@ -13,6 +13,16 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
+## [0.27.0] — 2026-11-10
+
+### 变更
+
+- 升级到 `attention-manifest-protocol@0.9.0`。
+- `project.outline` 改由 AMP 的 `ProjectOutline` 提供：树由真实文件大纲构建（含 id、kind、range 与 versionHash），支持 `path` 子树与 `query` 候选，文件集合变化时重建。
+- 大纲目标支持 AMP 的可选 `versionHash`：按节点 id 编辑时，若大纲基于不同文本计算，会以 `version_conflict` 失败。
+- 继承 `0.8.1` 的环境播种：仅当宿主配置了 `environment.patch` 或 `source` 时 `startSession` 才播种，且从不覆盖非零版本。
+- 代理面扩展到 17 个模块共 61 个动词（总计 29 个模块）。
+
 ## [0.26.0] — 2026-11-10
 
 ### 变更

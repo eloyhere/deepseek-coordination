@@ -117,7 +117,7 @@ test('discovery returns all 29 AMP modules', async () => {
     assert.equal(value.discovered, 29)
     const agentModules = value.modules.filter((module) => module.tier === 'agent')
     assert.equal(agentModules.length, 17)
-    assert.equal(agentModules.reduce((total, module) => total + module.verbs.length, 0), 60)
+    assert.equal(agentModules.reduce((total, module) => total + module.verbs.length, 0), 61)
   })
 })
 

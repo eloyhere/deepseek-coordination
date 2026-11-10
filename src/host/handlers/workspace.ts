@@ -45,7 +45,7 @@ interface AmpProtocolSurface {
 const mounts = new WeakMap<AmpHost, Map<string, Workspace>>()
 
 /** One AMP Workspace (and its NodeFileStorage) per resolved workspace root. */
-function workspaceOf(host: AmpHost): Workspace {
+export function workspaceOf(host: AmpHost): Workspace {
   const root = resolve(rootOf(host))
   let byRoot = mounts.get(host)
   if (byRoot === undefined) {

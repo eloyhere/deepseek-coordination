@@ -15,6 +15,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.27.0] - 2026-11-10
+
+### Changed
+
+- Upgraded to `attention-manifest-protocol@0.9.0`.
+- `project.outline` is now served by AMP's `ProjectOutline`: the tree is built from the real AMP file outlines (ids, kinds, ranges and version hashes), supports `path` subtrees and `query` candidates, and is rebuilt when the file set changes.
+- Outline targets accept AMP's optional `versionHash`, so editing by node id fails with `version_conflict` when the outline was computed from different text.
+- Environment seeding from `0.8.1` is inherited: `startSession` seeds only when the host configured `environment.patch` or `source`, and never overwrites a non-zero environment version.
+- The agent surface grows to 61 verbs across 17 modules (29 modules in total).
+
 ## [0.26.0] - 2026-11-10
 
 ### Changed

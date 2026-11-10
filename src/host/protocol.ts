@@ -9,6 +9,7 @@
 import type * as AgentModule from 'attention-manifest-protocol/agent'
 import type * as FileModule from 'attention-manifest-protocol/file'
 import type * as KernelModule from 'attention-manifest-protocol/kernel'
+import type * as ProjectModule from 'attention-manifest-protocol/project'
 import type * as WorkspaceModule from 'attention-manifest-protocol/workspace'
 
 export interface AmpProtocol {
@@ -16,19 +17,21 @@ export interface AmpProtocol {
   readonly kernel: typeof KernelModule
   readonly workspace: typeof WorkspaceModule
   readonly file: typeof FileModule
+  readonly project: typeof ProjectModule
 }
 
 let pending: Promise<AmpProtocol> | undefined
 
 export function loadAmpProtocol(): Promise<AmpProtocol> {
   pending ??= (async () => {
-    const [agent, kernel, workspace, file] = await Promise.all([
+    const [agent, kernel, workspace, file, project] = await Promise.all([
       import('attention-manifest-protocol/agent'),
       import('attention-manifest-protocol/kernel'),
       import('attention-manifest-protocol/workspace'),
       import('attention-manifest-protocol/file'),
+      import('attention-manifest-protocol/project'),
     ])
-    return { agent, kernel, workspace, file }
+    return { agent, kernel, workspace, file, project }
   })()
   return pending
 }
