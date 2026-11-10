@@ -35,7 +35,7 @@ function registerAmpPromptVariables(ctx: Context, host: AmpHost): void {
     }
   }
   define('amp_tenant', () => host.config.tenantId)
-  define('amp_contract', () => 'AMP 0.7.9')
+  define('amp_contract', () => 'AMP 0.9.0')
   define('amp_budget_tokens', () => String(host.config.contextBudgetTokens))
   define('amp_module_count', () => String(host.agentModules.length))
   define('amp_session', (context) => agentIdOf(context) ?? 'unbound')
@@ -51,7 +51,7 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
     name: 'deepseek-coordination:amp-contract',
     order: ctx.systemPrompt.getSectionOrder('MCP_SERVERS') + 10,
     text: [
-      '## Attention Manifest Protocol (AMP 0.7.9)',
+      '## Attention Manifest Protocol (AMP 0.9.0)',
       '',
       'This host exposes AMP as seventeen module tools named `attention_manifest_protocol_<module>`.',
       'Each tool takes a `verb` and a lossless `arguments` object. Call `attention_manifest_protocol_discover`',

@@ -13,7 +13,15 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
-## [0.27.0] — 2026-11-10
+## [0.27.1] — 2026-11-10
+
+### 修复
+
+- ping 路由、discovery 目录、命令标签、提示词契约与客户端面板统一报告 AMP `0.9.0`，不再残留 `0.7.9`。
+- `project.outline` 为根节点与目录节点补齐 AMP `ProjectOutline` 要求的正数 `version`，该动词在真实工作区可用。
+- 归一化 `src/host/routes.ts`、`src/host/amp.ts`、`src/index.ts` 中 AMP 拒绝编辑的 CRLF/LF 混用。
+
+## [0.27.0] — 2026-11-10 — 2026-11-10
 
 ### 变更
 

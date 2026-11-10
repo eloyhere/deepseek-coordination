@@ -15,7 +15,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
-## [0.27.0] - 2026-11-10
+## [0.27.1] - 2026-11-10
+
+### Fixed
+
+- Reports AMP as `0.9.0` everywhere (ping route, discovery catalog, command labels, prompt contract and client panel) instead of the stale `0.7.9` literal.
+- `project.outline` now supplies a positive `version` for the root and directory nodes that AMP `ProjectOutline` requires, so the verb works on real workspaces.
+- Normalized CRLF/LF mixtures in `src/host/routes.ts`, `src/host/amp.ts` and `src/index.ts` that AMP refused to edit.
+
+## [0.27.0] - 2026-11-10 - 2026-11-10
 
 ### Changed
 

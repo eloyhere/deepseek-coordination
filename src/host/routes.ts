@@ -89,7 +89,7 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
 
   route(`${ROUTE_PREFIX}/ping`, (request, response) => {
     if (request.method !== 'GET') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'GET only')
-    ok(response, { name: 'deepseek-coordination', version: dependencies.version, protocol: 'attention-manifest-protocol', amp: '0.7.9' })
+    ok(response, { name: 'deepseek-coordination', version: dependencies.version, protocol: 'attention-manifest-protocol', amp: '0.9.0' })
   })
 
   route(`${ROUTE_PREFIX}/amp/status`, (request, response) => {

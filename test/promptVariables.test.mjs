@@ -71,7 +71,7 @@ test('registers the five AMP prompt variables with stable scalar values', () => 
     'amp_tenant',
   ])
   assert.equal(variables.get('amp_tenant')({}), 't')
-  assert.equal(variables.get('amp_contract')({}), 'AMP 0.7.9')
+  assert.equal(variables.get('amp_contract')({}), 'AMP 0.9.0')
   assert.equal(variables.get('amp_budget_tokens')({}), '1200')
   assert.equal(variables.get('amp_module_count')({}), '2')
 })

@@ -2,7 +2,7 @@
  * The AMP host: a per-workspace SQLite protocol kernel, one agent gateway, one
  * bounded call journal, and the module catalog the harness registers tools for.
  *
- * AMP 0.7.9 is a protocol, not a server: it ships the surface (module names,
+ * AMP 0.9.0 is a protocol, not a server: it ships the surface (module names,
  * verbs, authority), the executable kernel, and a thin gateway. This class is
  * the host adapter that binds both to DSH identity, workspace roots and
  * lifetime.
@@ -307,7 +307,7 @@ export class AmpHost {
       principalId: agent.id,
       sessionId: agent.id,
       ...(position === undefined ? {} : { turnId: this.turnId(agent.id, position.turn) }),
-      policyVersion: 'dsh-amp-0.7.9',
+      policyVersion: 'dsh-amp-0.9.0',
       cancellationEpoch: 0,
     }
   }
@@ -590,7 +590,7 @@ export class AmpHost {
     }
     groups.action_attempt = attempts.filter((row) => row.sessionId === sessionId) as unknown as ViewRow[]
     for (const kind of ['attention', 'evidence']) groups[kind] = this.listEntities(kind, sessionId, rootForSession)
-    // AMP 0.7.9 declares profession policies but this host has no session-bound
+    // AMP 0.9.0 declares profession policies but this host has no session-bound
     // profession provider. Never query an unsupported entity kind or invent one.
     groups.profession = []
     const detached = jsonSafe(groups) as unknown as Record<string, ViewRow[]>

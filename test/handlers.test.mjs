@@ -177,7 +177,7 @@ test('workspace read/write stays inside the session root and CAS-guards writes',
   }
 })
 
-test('attention_manifest_protocol_replace edits workspace files through AMP 0.7.9', async () => {
+test('attention_manifest_protocol_replace edits workspace files through AMP 0.9.0', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'amp-replace-'))
   const workspace = join(directory, 'ws')
   const { mkdirSync } = await import('node:fs')

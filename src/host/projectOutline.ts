@@ -66,6 +66,7 @@ function outlineOf(host: AmpHost): ProjectOutline {
     name: root.slice(root.lastIndexOf('\\') + 1) || root,
     summary: root,
     hash: 'sha256:0',
+    version: 1,
   }]
   const directories = new Set<string>()
   for (const file of files) {
@@ -82,6 +83,7 @@ function outlineOf(host: AmpHost): ProjectOutline {
       name: directory.slice(directory.lastIndexOf('/') + 1),
       summary: directory,
       hash: 'sha256:0',
+      version: 1,
       parentPath: parent ?? '.',
     })
   }
