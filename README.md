@@ -130,12 +130,28 @@ node scripts/migrateStore.mjs --to <workspace>
 while DSH is stopped. The helper copies the legacy store with SQLite's
 `VACUUM INTO`, so its WAL sidecars are never copied by hand. On first use a
 workspace also inherits the machine-wide `preferences.json`, so the takeover
-switches survive the layout change. The **Take over file writes** switch is
-enforced by a tool guard: while it is on for a workspace, native
-`write`/`replace`/`edit` calls are denied and point to
-`attention_manifest_protocol_workspace.write`, whose `content` mode performs a
-full write and whose `startLine`/`endLine` + `replacement` mode performs a
-targeted replace, both guarded by the revision returned from `workspace.read`.
+switches survive the layout change.
+
+**Take over file reads** and **Take over file writes** share one outline-first
+discipline, because a transcript should carry the relevant range rather than a
+whole file:
+
+1. **Outline first.** A file is outlined before any of it is read. The first
+   `workspace.read` answers with `phase: "outline"`, and `workspace.outline`
+   requests the outline directly.
+2. **Read by outline node.** Once the outline is known, content is read with the
+   node's `startLine`/`endLine` (or byte range) instead of the whole document.
+   Short files with no outline nodes and binary documents are the documented
+   exceptions.
+3. **Write by outline node.** While the write switch is on, native
+   `write`/`replace`/`edit` calls are denied and point to
+   `attention_manifest_protocol_workspace.write`. `replace` accepts an outline
+   node id (`mode: "outline"`) as well as a line or byte range inside one, and
+   the revision returned by the preceding read guards the change with
+   compare-and-swap; a full `content` write is reserved for new files and
+   documents without an outline.
+4. **Re-read after writing.** A write changes the revision, so the next edit
+   starts from a fresh outline instead of a stale revision.
 
 The kernel creates the AMP entity tables (32) and indexes, the workflow writer,
 budget ledger, attention/context compiler, receipts, verification and evidence

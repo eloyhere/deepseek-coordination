@@ -15,6 +15,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.24.3] - 2026-11-10
+
+### Changed
+
+- Documented the outline-first discipline shared by both takeovers. With
+  **Take over file reads** enabled, a file is outlined before it is read and
+  content is then taken by outline-node ranges instead of whole-file dumps.
+  With **Take over file writes** enabled, the outline is read before any write,
+  the change targets an outline node (`replace` `mode: "outline"`) or a range
+  inside one, and the revision from that read guards the write. Short files
+  with no outline nodes and binary documents are the documented exceptions; a
+  write changes the revision, so the next edit starts from a fresh outline.
+
 ## [0.24.2] - 2026-11-10
 
 ### Fixed

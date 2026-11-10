@@ -1,6 +1,6 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.24.2",
+  "version": "0.24.3",
   "description": "Attention Manifest Protocol (AMP 0.7.9) host for DeepSeek Harness: fifteen agent modules, a discovery surface, an executable kernel, notification surfaces and read-only AMP panels.",
   "keywords": [
     "deepseek-harness",

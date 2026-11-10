@@ -93,10 +93,19 @@ node scripts/migrateStore.mjs --to <工作区>
 
 该脚本用 SQLite 的 `VACUUM INTO` 复制旧库，不需要手工处理 WAL 旁文件。
 工作区首次使用时还会继承机器级的 `preferences.json`，接管开关不会因布局切换而丢失。
-「接管文件写入」由工具守卫真正执行：开启后该工作区的原生 `write`/`replace`/`edit`
-会被拒绝，并指向 `attention_manifest_protocol_workspace.write`；其 `content` 模式用于完整写入，
-`startLine`/`endLine` 加 `replacement` 模式用于定向替换，均以 `workspace.read` 返回的
-revision 做 CAS 校验。
+
+「接管文件读取」与「接管文件写入」共用一条「大纲优先」的纪律：上下文里应该只带相关范围，
+而不是整份文件。
+
+1. **先读大纲。** 读取任何内容前先取大纲：首次 `workspace.read` 返回 `phase: "outline"`，
+   也可以直接调用 `workspace.outline`。
+2. **按大纲节点范围读取。** 拿到大纲后，用节点的 `startLine`/`endLine`（或字节范围）
+   读取正文，不再整文件通读；无大纲节点的短文件与二进制文档是明示的例外。
+3. **按大纲节点写入。** 写入接管开启时，原生 `write`/`replace`/`edit` 会被拒绝，并指向
+   `attention_manifest_protocol_workspace.write`；`replace` 支持用大纲节点 id
+   （`mode: "outline"`）或节点内的行/字节范围定位，写入以前一次读取返回的 revision
+   做 CAS 校验；`content` 全量写入只用于新文件与没有大纲的文档。
+4. **写完重新读大纲。** 写入会改变 revision，下一次编辑必须从新的大纲开始，不能沿用旧版本。
 
 内核创建 AMP 的 32 张实体表和索引、工作流写入器、预算账本、注意力/上下文编译器、
 收据、验证与证据链。`session`、`turn`、`intent`、`mission`、`goal`、`plan`、
