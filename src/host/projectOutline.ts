@@ -111,7 +111,7 @@ function outlineOf(host: AmpHost): ProjectOutline {
       name: file.slice(file.lastIndexOf('/') + 1),
       summary: summary.length > 0 ? summary : file.slice(file.lastIndexOf('/') + 1),
       hash: hash.length > 0 ? hash : 'sha256:0',
-      version,
+      version: version > 0 ? version : 1,
       parentPath: parent ?? '.',
     })
   }

@@ -15,7 +15,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
-## [0.27.1] - 2026-11-10
+## [0.27.2] - 2026-11-10
+
+### Fixed
+
+- project.outline falls back to ersion: 1 for files that cannot be mounted (binary or oversized), which AMP requires and previously made the verb fail in real workspaces.
+
+## [0.27.1] - 2026-11-10 - 2026-11-10
 
 ### Fixed
 

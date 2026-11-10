@@ -170,7 +170,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.27.1',
+          version: '0.27.2',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler
