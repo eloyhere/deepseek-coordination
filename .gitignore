@@ -41,3 +41,7 @@ npm-debug.log*
 
 # AMP runtime data written by this plugin into the workspace it serves
 .deepseek-coordination/
+
+# AMP lease and fence artifacts written next to edited files
+*.lock
+*.fence
