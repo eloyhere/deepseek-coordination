@@ -13,6 +13,21 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
+## [0.26.0] — 2026-11-10
+
+### 变更
+
+- **破坏性：** workspace 的读取、大纲、写入、diff 与替换全部改走 AMP 自带的 `Workspace`、`WorkspaceFile` 与 `NodeFileStorage`，不再维护插件自己的平行实现。
+- 写入 CAS 改为 AMP 原生 `expectedBaseHash` / `expectedBufferVersion`；`expectedRevision` 仍作为 `expectedBaseHash` 的别名接受。
+- `workspace.outline` 返回 AMP 大纲节点（`id`、`name`、`kind`、`line`、`endLine`），覆盖 JSON 及 AMP 支持的全部语言。
+- `workspace.document_outline` 通过 AMP `documentOutline` 解析 Office/二进制文档；不支持格式返回 `supported: false`，不再是统一占位。
+- `workspace.diff` 返回 AMP 结构化 `FileDiff`（`base`、`baseHash`、`bufferVersion`、`hunks`、`summary`、`truncated`）。
+- `attention_manifest_protocol_replace` 改为经 AMP `NodeFileStorage` 挂载，插件不再自带文件系统端口。
+
+### 保留
+
+- `workspace.list` 与新建文件仍由宿主完成：AMP 没有目录列表 API，且无法挂载尚不存在的文件。
+
 ## [0.25.0] — 2026-11-10
 
 ### 新增

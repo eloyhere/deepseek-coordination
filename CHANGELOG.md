@@ -15,6 +15,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.26.0] - 2026-11-10
+
+### Changed
+
+- **Breaking:** workspace reads, outlines, writes, diffs and replacements now run through AMP's own `Workspace`, `WorkspaceFile` and `NodeFileStorage` instead of the plugin's parallel implementations.
+- Write CAS switches to AMP-native `expectedBaseHash` / `expectedBufferVersion`; `expectedRevision` stays accepted as an alias for `expectedBaseHash`.
+- `workspace.outline` returns AMP outline entries (`id`, `name`, `kind`, `line`, `endLine`) and therefore covers JSON and every language AMP parses.
+- `workspace.document_outline` now parses Office/binary documents through AMP `documentOutline`; unsupported formats report `supported: false` instead of a blanket stub.
+- `workspace.diff` returns AMP's structured `FileDiff` (`base`, `baseHash`, `bufferVersion`, `hunks`, `summary`, `truncated`).
+- `attention_manifest_protocol_replace` now mounts through AMP `NodeFileStorage`; the plugin no longer ships its own filesystem port.
+
+### Kept
+
+- `workspace.list` and new-file creation stay host-side: AMP has no directory listing and cannot mount a file that does not exist yet.
+
 ## [0.25.0] - 2026-11-10
 
 ### Added

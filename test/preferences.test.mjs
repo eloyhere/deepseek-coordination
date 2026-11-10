@@ -42,7 +42,7 @@ test('write takeover guard blocks native writes only for enabled workspaces', ()
     const reason = guard({ name, agent })
     assert.match(reason, /workspace\.write/)
     assert.match(reason, /replace/)
-    assert.match(reason, /expectedRevision/)
+    assert.match(reason, /expectedBaseHash/)
   }
   assert.equal(guard({ name: 'write', agent: { session: { header: { cwd: '/other' } } } }), undefined)
 })
@@ -77,7 +77,7 @@ test('write takeover context follows live workspace preferences independently of
   assert.match(sections.get('deepseek-coordination:amp-contract').text, /Outline before content/)
   assert.match(sections.get('deepseek-coordination:amp-contract').text, /project outline, then file outline, then content/)
   assert.match(write.text(assembly('project-b')), /workspace\.write/)
-  assert.match(write.text(assembly('project-b')), /expectedRevision/)
+  assert.match(write.text(assembly('project-b')), /expectedBaseHash/)
   assert.equal(read.text(assembly('project-b')), '')
   preferences.get('project-a').takeoverFileWrite = true
   assert.match(write.text(assembly('project-a')), /File-write takeover is enabled/)

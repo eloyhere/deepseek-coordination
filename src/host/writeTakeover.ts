@@ -19,6 +19,6 @@ export function fileWriteTakeoverGuard(host: AmpHost): (execution: GuardedExecut
     if (!FILE_WRITE_TOOL_NAMES.includes(execution.name)) return undefined
     const root = host.rootOfAgent(execution.agent)
     if (!host.preferencesFor(root).get().takeoverFileWrite) return undefined
-    return 'File-write takeover is enabled. Use attention_manifest_protocol_workspace.write for full writes, or attention_manifest_protocol_replace for string, regex, line, byte or outline replacements. Read first, then pass expectedRevision for write or expectedBufferVersion/expectedBaseHash for replace. Native write/replace is disabled for this workspace.'
+    return 'File-write takeover is enabled. Use attention_manifest_protocol_workspace.write for full writes, or attention_manifest_protocol_replace for string, regex, line, byte or outline replacements. Read first, then pass expectedBaseHash and/or expectedBufferVersion. Native write/replace is disabled for this workspace.'
   }
 }

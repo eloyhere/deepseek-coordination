@@ -1,113 +1,38 @@
 /**
  * Standalone AMP `attention_manifest_protocol_replace` tool.
  *
- * AMP 0.7.9 ships the replace contract and handler; this adapter supplies the
- * host's filesystem as a `FileStoragePort` and registers the handler under the
- * protocol name. Replace remains an AMP path, so the file-write takeover guard
- * never blocks it.
+ * The replace contract, handler and filesystem adapter all come from AMP:
+ * `createReplaceToolHandler` resolves the target on a mounted `WorkspaceFile`
+ * and `NodeFileStorage` supplies the root-confined, hash-checked commit. This
+ * adapter only wires the agent workspace root into that AMP stack.
  */
-import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
-import type {
-  FileLease,
-  FileRef,
-  FileStoragePort,
-  StoredFile,
-} from 'attention-manifest-protocol/file'
 import type { Workspace } from 'attention-manifest-protocol/workspace'
 import type { AmpHost } from './amp.js'
 import { jsonSafe } from './json.js'
 
-function inside(root: string, target: string): boolean {
-  const rel = relative(root, target)
-  const comparable = process.platform === 'win32' ? rel.toLowerCase() : rel
-  return comparable === '' || (comparable !== '..' && !comparable.startsWith(`..${sep}`) && !isAbsolute(rel))
-}
-
-function hashOf(content: string): string {
-  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`
-}
-
-/** A small, CAS-guarded filesystem port for AMP Workspace. */
-class LocalFileStorage implements FileStoragePort {
-  private readonly root: string
-  private readonly versions = new Map<string, number>()
-
-  constructor(root: string) {
-    this.root = resolve(root)
-  }
-
-  private pathOf(ref: FileRef): string {
-    const absolute = resolve(this.root, ref.path)
-    if (!inside(this.root, absolute)) throw new Error('replace path must stay inside the workspace root')
-    return absolute
-  }
-
-  read(ref: FileRef): StoredFile | undefined {
-    const absolute = this.pathOf(ref)
-    if (!existsSync(absolute)) return undefined
-    const stat = statSync(absolute)
-    if (!stat.isFile()) return undefined
-    const content = readFileSync(absolute, 'utf8')
-    const version = this.versions.get(absolute) ?? 0
-    return {
-      ...ref,
-      content,
-      hash: hashOf(content),
-      version,
-      updatedAt: stat.mtime.toISOString(),
-      size: stat.size,
-    }
-  }
-
-  compareAndSwap(ref: FileRef, expectedHash: string, content: string, _fence: number): StoredFile {
-    const absolute = this.pathOf(ref)
-    const current = this.read(ref)
-    const currentHash = current?.hash ?? ''
-    if (currentHash !== expectedHash) {
-      const error = new Error(`version conflict for ${ref.path}`)
-      ;(error as Error & { code?: string }).code = 'version_conflict'
-      throw error
-    }
-    mkdirSync(dirname(absolute), { recursive: true })
-    const temporary = `${absolute}.amp-replace.tmp`
-    writeFileSync(temporary, content, 'utf8')
-    renameSync(temporary, absolute)
-    this.versions.set(absolute, (current?.version ?? 0) + 1)
-    const next = this.read(ref)
-    if (next === undefined) throw new Error(`replace did not produce ${ref.path}`)
-    return next
-  }
-
-  acquireLease(ref: FileRef, owner: string): FileLease {
-    return {
-      ...ref,
-      owner,
-      fence: 1,
-      token: randomUUID(),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    }
-  }
-
-  releaseLease(_lease: FileLease): void {
-    // The filesystem adapter has no cross-process lease; CAS is the guard.
-  }
+interface AmpProtocolSurface {
+  readonly workspace: { Workspace: new (options: Record<string, unknown>) => Workspace }
+  readonly file: { NodeFileStorage: new (options: Record<string, unknown>) => unknown }
 }
 
 export function registerReplaceTool(ctx: Context, host: AmpHost): void {
+  const protocol = host.protocol as unknown as AmpProtocolSurface
   const workspaces = new Map<string, Workspace>()
   const workspaceFor = (root: string): Workspace => {
     const existing = workspaces.get(root)
     if (existing !== undefined) return existing
-    const workspace = new host.protocol.workspace.Workspace({
+    const storage = new protocol.file.NodeFileStorage({
+      root,
+      createRoot: false,
+      maxFileBytes: Math.max(host.config.maxReadChars * 4, 1_000_000),
+    })
+    const workspace = new protocol.workspace.Workspace({
       tenantId: host.config.tenantId,
       rootId: host.config.rootId,
-      storage: new LocalFileStorage(root),
-      outline: host.protocol.file.createOutlineProvider(),
+      storage,
     })
     workspaces.set(root, workspace)
     return workspace

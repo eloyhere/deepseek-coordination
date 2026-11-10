@@ -142,7 +142,8 @@ test('workspace read/write stays inside the session root and CAS-guards writes',
     assert.equal(read.value.ok, true)
     assert.equal(read.value.value.phase, 'outline')
     assert.equal(read.value.value.content, undefined)
-    assert.deepEqual(read.value.value.nodes, [])
+    assert.ok(Array.isArray(read.value.value.nodes))
+    assert.ok(read.value.value.nodes.some((node) => node.name === 'alpha'), JSON.stringify(read.value.value.nodes))
     assert.ok(read.value.value.project.entries.some(entry => entry.path === 'a.txt'))
     const revision = read.value.value.revision
     const contentRead = await workspaceTool.execute({ verb: 'read', arguments: { path: 'a.txt' } }, execFor(workspace))

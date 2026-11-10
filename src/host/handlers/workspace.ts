@@ -1,6 +1,5 @@
 /** AMP workspace verbs backed by the session workspace root. */
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { AMP_PREFIX } from '../names.js'
@@ -9,6 +8,8 @@ import { storageLayout } from '../storage.js'
 import { hasFileOutline, markFileOutlined, markProjectOutlined, projectSnapshot, takeProjectOutline } from '../readNavigation.js'
 import { failure, ok, rootOf } from './shared.js'
 import type { HandlerMap, Params } from './shared.js'
+import type { Workspace } from 'attention-manifest-protocol/workspace'
+import type { WorkspaceFile, FileSnapshot, FileDiff, WriteTarget } from 'attention-manifest-protocol/file'
 
 function key(module: string, verb: string): string {
   return `${AMP_PREFIX}_${module}.${verb}`
@@ -36,18 +37,69 @@ function resolveInRoot(host: AmpHost, raw: unknown): Resolved {
   return { absolute: target, relative: rel === '' ? '.' : rel }
 }
 
-function revisionOf(text: string): string {
-  return `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`
+interface AmpProtocolSurface {
+  readonly workspace: { Workspace: new (options: Record<string, unknown>) => Workspace }
+  readonly file: { NodeFileStorage: new (options: Record<string, unknown>) => unknown }
 }
 
-function textOf(host: AmpHost, file: string): string {
-  const buffer = readFileSync(file)
-  if (buffer.includes(0)) throw new Error('binary files cannot be read as text')
-  const text = buffer.toString('utf8')
-  if (text.length > host.config.maxReadChars) {
-    throw new Error(`file exceeds the ${host.config.maxReadChars} character read ceiling`)
+const mounts = new WeakMap<AmpHost, Map<string, Workspace>>()
+
+/** One AMP Workspace (and its NodeFileStorage) per resolved workspace root. */
+function workspaceOf(host: AmpHost): Workspace {
+  const root = resolve(rootOf(host))
+  let byRoot = mounts.get(host)
+  if (byRoot === undefined) {
+    byRoot = new Map()
+    mounts.set(host, byRoot)
   }
-  return text
+  const existing = byRoot.get(root)
+  if (existing !== undefined) return existing
+  const protocol = host.protocol as unknown as AmpProtocolSurface
+  const storage = new protocol.file.NodeFileStorage({
+    root,
+    createRoot: false,
+    maxFileBytes: Math.max(host.config.maxReadChars * 4, 1_000_000),
+  })
+  const workspace = new protocol.workspace.Workspace({
+    tenantId: host.config.tenantId,
+    rootId: host.config.rootId,
+    storage,
+  })
+  byRoot.set(root, workspace)
+  return workspace
+}
+
+interface OpenFile {
+  readonly file: WorkspaceFile
+  readonly snapshot: FileSnapshot
+}
+
+/** Mount (and activate) one workspace-relative file through AMP. */
+function openFile(host: AmpHost, path: string, writable: boolean): OpenFile {
+  // AMP addresses files with POSIX separators; Windows callers pass `src\\a.ts`.
+  const portable = path.split(sep).join('/')
+  const file = workspaceOf(host).file(portable, { mode: writable ? 'writable' : 'read-only' })
+  file.mount()
+  const snapshot = file.activate()
+  return { file, snapshot }
+}
+
+function nodesOf(file: WorkspaceFile): Array<{ id: string; name: string; kind: string; line: number; endLine: number }> {
+  return file.outline().map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    kind: entry.kind,
+    line: entry.range.startLine + 1,
+    endLine: entry.range.endLine + 1,
+  }))
+}
+
+function languageOf(path: string): string {
+  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+  if (extension === 'md' || extension === 'markdown') return 'markdown'
+  if (extension === 'json') return 'json'
+  if (extension === 'ts' || extension === 'tsx' || extension === 'js' || extension === 'jsx' || extension === 'mjs' || extension === 'cjs') return 'typescript'
+  return extension
 }
 
 function windowOf(text: string, parameters: Params): { content: string; start: number; end: number; truncated: boolean; unit: 'line' | 'byte' | 'char' } {
@@ -83,56 +135,6 @@ function windowOf(text: string, parameters: Params): { content: string; start: n
   return { content, start, end: start + content.length, truncated: start + content.length < text.length, unit: 'char' }
 }
 
-function outlineOf(text: string, language: string): Array<{ name: string; kind: string; line: number }> {
-  const result: Array<{ name: string; kind: string; line: number }> = []
-  const lines = text.split(/\r?\n/)
-  const markdown = language === 'markdown' || language === 'md'
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? ''
-    if (markdown) {
-      const heading = /^(#{1,6})\s+(.+)$/.exec(line)
-      if (heading !== null) result.push({ name: heading[2]!.trim(), kind: `h${heading[1]!.length}`, line: index + 1 })
-      continue
-    }
-    const symbol = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)/.exec(line)
-    if (symbol !== null) {
-      const kind = /class/.test(line) ? 'class' : /interface/.test(line) ? 'interface' : /type\s/.test(line) ? 'type' : /function/.test(line) ? 'function' : 'variable'
-      result.push({ name: symbol[1]!, kind, line: index + 1 })
-    }
-  }
-  return result.slice(0, 500)
-}
-
-function languageOf(path: string): string {
-  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
-  if (extension === 'md' || extension === 'markdown') return 'markdown'
-  if (extension === 'json') return 'json'
-  if (extension === 'ts' || extension === 'tsx' || extension === 'js' || extension === 'jsx' || extension === 'mjs' || extension === 'cjs') return 'typescript'
-  return extension
-}
-
-function diffHunks(base: string, next: string): Array<Record<string, unknown>> {
-  if (base === next) return []
-  const a = base.split(/\r?\n/)
-  const b = next.split(/\r?\n/)
-  let prefix = 0
-  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix += 1
-  let suffix = 0
-  while (suffix < a.length - prefix && suffix < b.length - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix += 1
-  return [{
-    oldStart: prefix + 1,
-    oldLines: a.length - prefix - suffix,
-    newStart: prefix + 1,
-    newLines: b.length - prefix - suffix,
-    removed: a.slice(prefix, a.length - suffix),
-    added: b.slice(prefix, b.length - suffix),
-  }]
-}
-
-function ensureParent(file: string): void {
-  mkdirSync(dirname(file), { recursive: true })
-}
-
 /** One directory snapshot shared by `list` and the directory outline phases. */
 async function collectEntries(
   host: AmpHost,
@@ -162,6 +164,30 @@ async function collectEntries(
     else entries.push({ path: target.relative, kind: 'file', bytes: stat.size, modified: stat.mtime.toISOString() })
   }
   return entries
+}
+
+function editOptions(parameters: Params): { expectedBaseHash?: string; expectedBufferVersion?: number } {
+  const options: { expectedBaseHash?: string; expectedBufferVersion?: number } = {}
+  if (typeof parameters.expectedBaseHash === 'string') options.expectedBaseHash = parameters.expectedBaseHash
+  else if (typeof parameters.expectedRevision === 'string') options.expectedBaseHash = parameters.expectedRevision
+  if (typeof parameters.expectedBufferVersion === 'number') options.expectedBufferVersion = parameters.expectedBufferVersion
+  return options
+}
+
+function targetOf(parameters: Params): WriteTarget | undefined {
+  if (typeof parameters.target === 'object' && parameters.target !== null) return parameters.target as WriteTarget
+  if (typeof parameters.outlineId === 'string') return { mode: 'outline', id: parameters.outlineId }
+  if (typeof parameters.startLine === 'number') {
+    const start = Math.max(0, Math.floor(parameters.startLine) - 1)
+    const end = typeof parameters.endLine === 'number' ? Math.max(start + 1, Math.floor(parameters.endLine)) : start + 1
+    return { mode: 'line', start, end }
+  }
+  if (typeof parameters.offsetBytes === 'number') {
+    const start = Math.max(0, Math.floor(parameters.offsetBytes))
+    const end = typeof parameters.endBytes === 'number' ? Math.floor(parameters.endBytes) : start
+    return { mode: 'byte', start, end }
+  }
+  return undefined
 }
 
 export function workspaceHandlers(host: AmpHost): HandlerMap {
@@ -199,16 +225,18 @@ export function workspaceHandlers(host: AmpHost): HandlerMap {
             note: 'Project outline delivered. Pick a file and call workspace.outline on it before reading its content.',
           })
         }
-        const text = textOf(host, target.absolute)
-        const revision = revisionOf(text)
+        const opened = openFile(host, target.relative, false)
+        const text = opened.file.read()
+        const revision = opened.snapshot.baseHash
         const root = rootOf(host)
         const project = takeProjectOutline(host, root)
         if (!hasFileOutline(host, root, target.absolute, revision)) {
           const language = languageOf(target.relative)
-          const nodes = outlineOf(text, language)
+          const nodes = nodesOf(opened.file)
           markFileOutlined(host, root, target.absolute, revision)
           return ok({
             path: target.relative, revision, phase: 'outline', language, nodes,
+            baseHash: opened.snapshot.baseHash, bufferVersion: opened.snapshot.bufferVersion,
             bytes: Buffer.byteLength(text, 'utf8'), lines: text.split(/\r?\n/).length,
             ...(project === undefined ? {} : { project }),
             next: { verb: 'read', arguments: parameters },
@@ -218,16 +246,21 @@ export function workspaceHandlers(host: AmpHost): HandlerMap {
         if (project !== undefined) {
           return ok({
             path: target.relative, revision, phase: 'project_outline', project,
+            baseHash: opened.snapshot.baseHash, bufferVersion: opened.snapshot.bufferVersion,
             next: { verb: 'read', arguments: parameters },
             note: 'Project structure changed. Repeat read to retrieve content.',
           })
         }
-        host.baseContents.set(target.absolute, text)
         const window = windowOf(text, parameters)
         return ok({
           path: target.relative,
           content: window.content,
           revision,
+          baseHash: opened.snapshot.baseHash,
+          bufferVersion: opened.snapshot.bufferVersion,
+          version: opened.snapshot.version,
+          eol: opened.snapshot.eol,
+          encoding: opened.snapshot.encoding,
           bytes: Buffer.byteLength(text, 'utf8'),
           lines: text.split(/\r?\n/).length,
           range: { start: window.start, end: window.end, unit: window.unit },
@@ -256,14 +289,15 @@ export function workspaceHandlers(host: AmpHost): HandlerMap {
             note: 'Project outline delivered. Call workspace.outline on a file before reading its content.',
           })
         }
-        const text = textOf(host, target.absolute)
-        const revision = revisionOf(text)
+        const opened = openFile(host, target.relative, false)
+        const revision = opened.snapshot.baseHash
         const language = languageOf(target.relative)
-        const nodes = outlineOf(text, language)
+        const nodes = nodesOf(opened.file)
         const project = takeProjectOutline(host, rootOf(host))
         markFileOutlined(host, rootOf(host), target.absolute, revision)
         return ok({
           path: target.relative, revision, language, nodes,
+          baseHash: opened.snapshot.baseHash, bufferVersion: opened.snapshot.bufferVersion,
           ...(project === undefined ? {} : { project }),
         })
       } catch (error) {
@@ -275,13 +309,25 @@ export function workspaceHandlers(host: AmpHost): HandlerMap {
       try {
         const target = resolveInRoot(host, parameters.path)
         if (!existsSync(target.absolute)) return failure('not_found', `workspace path ${target.relative} was not found`)
-        return ok({
-          path: target.relative,
-          kind: languageOf(target.relative),
-          supported: false,
-          nodes: [],
-          note: 'binary document outlines are not implemented by this host; use the DSH office tools to inspect the file',
-        })
+        const opened = openFile(host, target.relative, false)
+        try {
+          const outline = opened.file.documentOutline(
+            typeof parameters.language === 'string' ? { language: parameters.language } : {},
+          )
+          return ok({ path: target.relative, kind: languageOf(target.relative), supported: true, ...(outline as object) })
+        } catch (error) {
+          const code = (error as { code?: string }).code
+          if (code === 'unsupported_format' || code === 'binary_file') {
+            return ok({
+              path: target.relative,
+              kind: languageOf(target.relative),
+              supported: false,
+              nodes: [],
+              note: 'AMP reports no document outline for this format; use the DSH office tools to inspect the file',
+            })
+          }
+          throw error
+        }
       } catch (error) {
         return failure('invalid_arguments', error instanceof Error ? error.message : String(error))
       }
@@ -291,16 +337,10 @@ export function workspaceHandlers(host: AmpHost): HandlerMap {
       try {
         const target = resolveInRoot(host, parameters.path)
         if (!existsSync(target.absolute)) return failure('not_found', `workspace path ${target.relative} was not found`)
-        const current = textOf(host, target.absolute)
-        const base = typeof parameters.base === 'string'
-          ? parameters.base
-          : host.baseContents.get(target.absolute) ?? ''
-        return ok({
-          path: target.relative,
-          revision: revisionOf(current),
-          baseRevision: revisionOf(base),
-          hunks: diffHunks(base, current),
-        })
+        const opened = openFile(host, target.relative, false)
+        const base = typeof parameters.base === 'string' ? { hash: parameters.base } : 'disk'
+        const diff: FileDiff = opened.file.diffStructured(base)
+        return ok({ path: target.relative, revision: opened.snapshot.baseHash, ...diff })
       } catch (error) {
         return failure('invalid_arguments', error instanceof Error ? error.message : String(error))
       }
@@ -310,62 +350,58 @@ export function workspaceHandlers(host: AmpHost): HandlerMap {
       try {
         const target = resolveInRoot(host, parameters.path)
         const dryRun = parameters.dryRun === true
-        const exists = existsSync(target.absolute)
-        const existing = exists ? textOf(host, target.absolute) : ''
-        const expected = typeof parameters.expectedRevision === 'string' ? parameters.expectedRevision : undefined
-        if (exists && expected === undefined) {
-          return failure('invalid_arguments', 'expectedRevision is required when overwriting an existing file')
+        if (typeof parameters.content !== 'string') {
+          return failure('invalid_arguments', 'content is required; use attention_manifest_protocol_replace for targeted edits')
         }
-        if (expected !== undefined && expected !== revisionOf(existing)) {
-          return failure('version_conflict', 'expectedRevision does not match the current file revision')
-        }
-        let next: string
-        if (typeof parameters.content === 'string') {
-          next = parameters.content
-        } else if (typeof parameters.startLine === 'number') {
-          const lines = existing.split(/\r?\n/)
-          const start = Math.max(1, Math.floor(parameters.startLine))
-          const end = typeof parameters.endLine === 'number' ? Math.floor(parameters.endLine) : start
-          if (end < start || start > lines.length + 1 || end > lines.length) {
-            return failure('invalid_arguments', 'line range is outside the file')
-          }
-          const replacement = typeof parameters.replacement === 'string' ? parameters.replacement.split(/\r?\n/) : []
-          lines.splice(start - 1, end - start + 1, ...replacement)
-          next = lines.join('\n')
-        } else if (typeof parameters.offsetBytes === 'number') {
-          const bytes = Buffer.from(existing, 'utf8')
-          const start = Math.max(0, Math.floor(parameters.offsetBytes))
-          const end = typeof parameters.endBytes === 'number' ? Math.floor(parameters.endBytes) : start
-          if (end < start || start > bytes.length || end > bytes.length) {
-            return failure('invalid_arguments', 'byte range is outside the file')
-          }
-          const replacement = Buffer.from(typeof parameters.replacement === 'string' ? parameters.replacement : '', 'utf8')
-          next = Buffer.concat([bytes.subarray(0, start), replacement, bytes.subarray(end)]).toString('utf8')
-        } else {
-          return failure('invalid_arguments', 'content, startLine or offsetBytes is required')
-        }
-        if (next.length > host.config.maxWriteChars) {
+        if (parameters.content.length > host.config.maxWriteChars) {
           return failure('capacity_exceeded', `write exceeds the ${host.config.maxWriteChars} character ceiling`)
         }
-        const hunks = diffHunks(existing, next)
-        if (!dryRun) {
-          ensureParent(target.absolute)
-          const temporary = `${target.absolute}.amp-${process.pid}.tmp`
-          writeFileSync(temporary, next, 'utf8')
-          renameSync(temporary, target.absolute)
-          host.baseContents.set(target.absolute, next)
+        const exists = existsSync(target.absolute)
+        if (!exists) {
+          if (dryRun) return ok({ path: target.relative, dryRun, created: true, hunks: [], summary: { added: 0, removed: 0, changed: 0 }, truncated: false })
+          mkdirSync(dirname(target.absolute), { recursive: true })
+          writeFileSync(target.absolute, parameters.content, 'utf8')
+          const opened = openFile(host, target.relative, false)
+          host.baseContents.set(target.absolute, parameters.content)
+          return ok({
+            path: target.relative, dryRun: false, created: true,
+            revision: opened.snapshot.baseHash, baseHash: opened.snapshot.baseHash,
+            bufferVersion: opened.snapshot.bufferVersion, version: opened.snapshot.version,
+            bytes: Buffer.byteLength(parameters.content, 'utf8'),
+          })
         }
-        return ok({
-          path: target.relative,
-          revision: revisionOf(next),
-          bytes: Buffer.byteLength(next, 'utf8'),
-          dryRun,
-          hunks,
-        })
+        const opened = openFile(host, target.relative, true)
+        try {
+          const options = editOptions(parameters)
+          const changeTarget = targetOf(parameters)
+          const plan = opened.file.planWrite(parameters.content, changeTarget, options)
+          if (dryRun) {
+            return ok({ path: target.relative, dryRun: true, mode: plan.mode, text: plan.text })
+          }
+          opened.file.write(parameters.content, changeTarget, options)
+          const snapshot = opened.file.flush()
+          host.baseContents.set(target.absolute, opened.file.read())
+          return ok({
+            path: target.relative, dryRun: false,
+            revision: snapshot.baseHash, baseHash: snapshot.baseHash, hash: snapshot.hash,
+            bufferVersion: snapshot.bufferVersion, version: snapshot.version,
+            dirty: snapshot.dirty, encoding: snapshot.encoding, eol: snapshot.eol,
+            bytes: Buffer.byteLength(opened.file.read(), 'utf8'),
+          })
+        } finally {
+          try {
+            opened.file.unmount({ discardDirty: true })
+          } catch {
+            // Releasing the lease is best effort; a mounted write already failed.
+          }
+        }
       } catch (error) {
+        const code = (error as { code?: string }).code
+        if (code === 'version_conflict' || code === 'buffer_conflict' || code === 'stale') {
+          return failure(code, error instanceof Error ? error.message : String(error))
+        }
         return failure('invalid_arguments', error instanceof Error ? error.message : String(error))
       }
     },
   }
 }
-

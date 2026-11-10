@@ -100,7 +100,7 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
       if (!host.preferencesFor(agent?.session?.header?.cwd).get().takeoverFileWrite) return ''
       return [
         'File-write takeover is enabled: use `attention_manifest_protocol_workspace.write` for full writes and `attention_manifest_protocol_replace` for targeted replacements inside the session workspace.',
-        'Read the file with `attention_manifest_protocol_workspace.read` before changing it. For write, pass the returned `revision` as `expectedRevision`; for replace, use `expectedBufferVersion` and/or `expectedBaseHash` from the same snapshot.',
+        'Read the file with `attention_manifest_protocol_workspace.read` before changing it. For write, pass `expectedBaseHash` (the returned `baseHash`) and/or `expectedBufferVersion`; set `dryRun: true` to preview. For replace, pass the same `expectedBaseHash`/`expectedBufferVersion`. `expectedRevision` stays accepted as an alias for `expectedBaseHash`.',
         'Replace supports literal string, regular expression, line range, UTF-8 byte range and outline node targets, with `all` or a one-based `occurrence`; use `dryRun: true` on write to preview.',
         'Native write and replace tools are disabled while this takeover is active. If a CAS guard conflicts, read the latest file and reapply the intended edit. Fall back to native file tools only for paths outside the workspace or format-aware binary documents.',
       ].join(' ')
