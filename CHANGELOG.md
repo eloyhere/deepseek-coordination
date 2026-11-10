@@ -15,7 +15,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
-## [0.27.5] - 2026-11-10
+## [0.27.6] - 2026-11-10
+
+### Changed
+
+- Upgraded to `attention-manifest-protocol@0.9.1`, which keeps CRLF edits clean after `flush()` (the buffer is rebased on the committed LF text) and always releases the replace lease (`unmount({ discardDirty: true })`).
+- Consecutive CAS replaces on CRLF files now work: previously the first commit reported `dirty: true`, blocked `unmount`, and the leaked lease made the next replace fail with `fence_rejected`.
+
+## [0.27.5] - 2026-11-10 - 2026-11-10
 
 ### Changed
 

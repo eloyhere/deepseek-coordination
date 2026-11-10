@@ -13,7 +13,14 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
-## [0.27.5] — 2026-11-10
+## [0.27.6] — 2026-11-10
+
+### 变更
+
+- 升级到 `attention-manifest-protocol@0.9.1`：CRLF 编辑在 `flush()` 后不再残留 dirty（buffer 以提交后的 LF 文本为基准），replace 也始终释放租约（`unmount({ discardDirty: true })`）。
+- CRLF 文件上的连续 CAS replace 现在可用：此前第一次提交返回 `dirty: true`，阻塞 `unmount`，泄漏的租约让下一次 replace 以 `fence_rejected` 失败。
+
+## [0.27.5] — 2026-11-10 — 2026-11-10
 
 ### 变更
 
