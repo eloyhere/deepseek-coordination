@@ -5,14 +5,14 @@ import type { AmpHost } from './amp.js'
 import { format, pickText, type Locale, type LocalizedText } from '../shared/i18n.js'
 
 const STATUS_HEADER: LocalizedText = {
-  zh: 'AMP 0.9.0 — {agents} 个智能体模块，{verbs} 个已暴露动词',
-  en: 'AMP 0.9.0 — {agents} agent modules, {verbs} exposed verbs',
-  ja: 'AMP 0.9.0 — エージェントモジュール {agents} 件、公開動詞 {verbs} 件',
-  es: 'AMP 0.9.0 — {agents} módulos de agente, {verbs} verbos expuestos',
-  fr: "AMP 0.9.0 — {agents} modules d'agent, {verbs} verbes exposés",
-  de: 'AMP 0.9.0 — {agents} Agentenmodule, {verbs} exponierte Verben',
-  ru: 'AMP 0.9.0 — модулей агента: {agents}, открытых глаголов: {verbs}',
-  pt: 'AMP 0.9.0 — {agents} módulos de agente, {verbs} verbos expostos',
+  zh: 'AMP 0.9.1 — {agents} 个智能体模块，{verbs} 个已暴露动词',
+  en: 'AMP 0.9.1 — {agents} agent modules, {verbs} exposed verbs',
+  ja: 'AMP 0.9.1 — エージェントモジュール {agents} 件、公開動詞 {verbs} 件',
+  es: 'AMP 0.9.1 — {agents} módulos de agente, {verbs} verbos expuestos',
+  fr: "AMP 0.9.1 — {agents} modules d'agent, {verbs} verbes exposés",
+  de: 'AMP 0.9.1 — {agents} Agentenmodule, {verbs} exponierte Verben',
+  ru: 'AMP 0.9.1 — модулей агента: {agents}, открытых глаголов: {verbs}',
+  pt: 'AMP 0.9.1 — {agents} módulos de agente, {verbs} verbos expostos',
 }
 
 const STATUS_BINDING: LocalizedText = {

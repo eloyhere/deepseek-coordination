@@ -55,7 +55,7 @@ export type AmpPanelProps = PropsRuntime<'conversation.input.dock'> & {
 }
 
 /** Stable display name for the protocol, independent of the host version. */
-const PROTOCOL_VERSION = '0.9.0'
+const PROTOCOL_VERSION = '0.9.1'
 
 function callRow(entry: AmpJournalEntry, index: number, t: (key: string) => string): React.ReactElement {
   const ok = entry.ok !== false

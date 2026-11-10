@@ -15,7 +15,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
-## [0.27.6] - 2026-11-10
+## [0.27.7] - 2026-11-10
+
+### Fixed
+
+- Every place that reports the protocol version (ping, discovery catalog, commands, prompt contract, client panel and copy) now says AMP `0.9.1` instead of the stale `0.9.0` literal.
+
+## [0.27.6] - 2026-11-10 - 2026-11-10
 
 ### Changed
 

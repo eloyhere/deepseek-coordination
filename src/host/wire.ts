@@ -186,7 +186,7 @@ export function wireId(channel: WireChannel, sessionId: string, turn: number, sl
  * The subset of AMP `CreateAttentionInput` this host writes.
  *
  * It is declared locally so `wire.ts` never imports the AMP runtime; the shape
- * is structurally identical to `attention-manifest-protocol` 0.9.0 and can be
+ * is structurally identical to `attention-manifest-protocol` 0.9.1 and can be
  * passed to `kernel.flow.compileTurnContext({ create })` unchanged.
  */
 export interface CreateAttentionInput {

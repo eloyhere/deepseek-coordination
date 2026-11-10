@@ -200,7 +200,7 @@ export function registerDiscoverTool(ctx: Context, host: AmpHost): void {  ctx.t
         }))
       return jsonSafe({
         protocol: 'attention-manifest-protocol',
-        version: '0.9.0',
+        version: '0.9.1',
         prefix: 'attention_manifest_protocol',
         discovered: selected.length,
         modules: selected,
