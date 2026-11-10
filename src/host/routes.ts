@@ -78,10 +78,12 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
   const route = (path: string, handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>): void => {
     try {
       disposers.push(webServer.register({ kind: 'exact', path, handler }))
-    } catch {
+    } catch (error) {
       // A reload can leave a route owned by an earlier, aborted registration.
-      // Keep registering the remaining routes: one stale path must not hide
-      // the dialog/notification routes that follow it.
+      // Keep registering the remaining routes, but record the collision: a
+      // stale owner keeps answering with its old handler (and its old version),
+      // so this must be diagnosable instead of silently swallowed.
+      dependencies.host.recordRouteFailure?.(path, error)
     }
   }
 
@@ -267,6 +269,13 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
   })
 
   return () => {
-    for (const dispose of disposers.reverse()) dispose()
+    for (const dispose of disposers.reverse()) {
+      try {
+        dispose()
+      } catch {
+        // Releasing the remaining routes matters more than one bad disposer:
+        // a single throwing route must not keep every later one registered.
+      }
+    }
   }
 }

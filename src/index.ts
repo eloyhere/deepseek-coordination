@@ -50,6 +50,8 @@ export const name = 'deepseek-coordination'
 export const inject = ['tools', 'systemPrompt', 'commands', 'skills', 'sessions', 'agents']
 
 export { Config }
+/** Exported for the client-integration tests; DSH reads only `name`/`inject`/`apply`. */
+export { registerRoutes } from './host/routes.js'
 export type { CoordinationConfig }
 
 /** Zeroed recovery counters used when the activation-time replay failed. */
@@ -168,7 +170,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.24.1',
+          version: '0.24.2',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler

@@ -188,6 +188,8 @@ export class AmpHost {
   contextOptimizer?: AmpContextOptimizer
   /** Last client render failures, exposed through the diagnostic route. */
   readonly clientErrors: Array<Record<string, unknown>> = []
+  /** Routes the web server refused because a stale owner still holds them. */
+  readonly routeFailures: Array<{ at: string; path: string; message: string }> = []
 
   private readonly slots = new Map<string, StoreSlot>()
   private readonly failures: StorageFailure[] = []
@@ -410,6 +412,20 @@ export class AmpHost {
     }
   }
 
+  /**
+   * Record a route the web server refused. A duplicate path means an earlier
+   * instance still owns it, so the new handler (and its version) never serves;
+   * surfacing the collision instead of swallowing it keeps that diagnosable.
+   */
+  recordRouteFailure(path: string, error: unknown): void {
+    this.routeFailures.push({
+      at: new Date().toISOString(),
+      path,
+      message: error instanceof Error ? error.message : String(error),
+    })
+    while (this.routeFailures.length > 20) this.routeFailures.shift()
+  }
+
   /** Takeover preferences for a workspace root (machine-wide when unknown). */
   preferencesFor(root?: string): AmpPreferencesStore {
     return this.slotAt(this.resolveRoot(root)).preferences
@@ -417,14 +433,13 @@ export class AmpHost {
 
   /** Runtime takeover switches, resolved against one live Session's workspace. */
   preferencesForSession(sessionId?: string): AmpPreferencesStore {
+    // Resolve through `rootOfSession`, which also consults the session registry
+    // and the last observed workspace. Reading `ctx.agents` directly here fell
+    // through to the machine-wide store whenever that single lookup failed, so
+    // a workspace-level takeover switch looked ignored by the client tools.
     if (sessionId !== undefined) {
-      try {
-        const agent = this.ctx.agents.get(sessionId as never)
-        const cwd = agent?.session.header?.cwd
-        if (typeof cwd === 'string' && cwd.length > 0) return this.preferencesFor(cwd)
-      } catch {
-        // Use the current/default root when the Session is no longer live.
-      }
+      const root = this.rootOfSession(sessionId)
+      if (root !== undefined) return this.preferencesFor(root)
     }
     return this.preferencesFor()
   }
@@ -646,6 +661,7 @@ export class AmpHost {
       storage: this.storage(resolved),
       kernel,
       journal: this.journalEntries(sessionId).slice(-50),
+      ...(this.routeFailures.length === 0 ? {} : { routeFailures: [...this.routeFailures] }),
       ...(lists === undefined ? {} : { lists }),
       ...(listsError === undefined ? {} : { listsError }),
     }

@@ -15,6 +15,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.24.2] - 2026-11-10
+
+### Fixed
+
+- Session-scoped takeover preferences now resolve the workspace through the
+  session registry (`ctx.sessions`) and the last observed root as well as the
+  live agent table. A workspace-level switch enabled in the client settings
+  applies to the next tool call instead of silently falling back to the
+  machine-wide store, which made `coordination_notification` answer
+  `DISABLED` while the settings page showed notifications enabled.
+- Route registration no longer swallows a duplicate web-server path. A stale
+  owner — a reloaded instance that still holds the previous handler — is
+  recorded as `routeFailures` and surfaced in `/amp/status`, so a client route
+  that keeps answering with the old version is diagnosable. Disposal now
+  releases the remaining routes when one route's disposer throws.
+
 ## [0.24.0] - 2026-11-07
 
 ### Added
