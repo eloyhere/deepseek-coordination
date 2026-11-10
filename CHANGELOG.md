@@ -15,7 +15,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
-## [0.27.3] - 2026-11-10
+## [0.27.4] - 2026-11-10
+
+### Fixed
+
+- The description DSH shows for this plugin now reports AMP `0.9.0`, seventeen agent modules and sixty-one verbs instead of the stale `0.8.0` text.
+- MUI and Emotion moved from runtime to development dependencies: the client bundle already inlines them, so `pnpm add deepseek-coordination` no longer resolves their dependency tree.
+
+## [0.27.3] - 2026-11-10 - 2026-11-10
 
 ### Fixed
 

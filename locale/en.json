@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Coordination (AMP 0.7.9)",
-    "description": "Attention Manifest Protocol host for DeepSeek Harness: fifteen agent modules, the discovery surface, an executable SQLite kernel, notification surfaces and read-only AMP panels."
+    "title": "Coordination (AMP 0.9.0)",
+    "description": "Attention Manifest Protocol host for DeepSeek Harness: seventeen agent modules with sixty-one verbs, the discovery surface, an executable kernel, notification surfaces and read-only AMP panels."
   }
 }

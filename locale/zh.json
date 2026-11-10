@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "协作协议（AMP 0.7.9）",
-    "description": "DeepSeek Harness 的注意力清单协议宿主：十五个智能体模块、发现入口、可执行的 SQLite 内核、通知界面与只读 AMP 面板。"
+    "title": "协作协议（AMP 0.9.0）",
+    "description": "DeepSeek Harness 的注意力清单协议宿主：十七个智能体模块、共 61 个动词，发现入口、可执行内核、通知界面与只读 AMP 面板。"
   }
 }
