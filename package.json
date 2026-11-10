@@ -1,7 +1,7 @@
 {
   "name": "deepseek-coordination",
-  "version": "0.24.3",
-  "description": "Attention Manifest Protocol (AMP 0.7.9) host for DeepSeek Harness: fifteen agent modules, a discovery surface, an executable kernel, notification surfaces and read-only AMP panels.",
+  "version": "0.25.0",
+  "description": "Attention Manifest Protocol (AMP 0.8.0) host for DeepSeek Harness: seventeen agent modules, a discovery surface, an executable kernel, notification surfaces and read-only AMP panels.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -124,7 +124,7 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^9.5.0",
     "@mui/material": "^9.5.0",
-    "attention-manifest-protocol": "0.7.9",
+    "attention-manifest-protocol": "0.8.0",
     "react-dom": "^18.2.0"
   }
 }

@@ -2,7 +2,7 @@
  * deepseek-coordination — Attention Manifest Protocol (AMP 0.7.9) host for DSH.
  *
  * One Cordis plugin registers:
- *  - fifteen AMP module tools plus the discovery bootstrap on `ctx.tools`;
+ *  - seventeen AMP module tools plus the discovery bootstrap on `ctx.tools`;
  *  - the notification tool and its poll route;
  *  - AMP skills, human commands, a system-prompt contract and read-only routes;
  *  - a turn observer that keeps AMP turn positions aligned with the DSH log.
@@ -170,7 +170,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.24.3',
+          version: '0.25.0',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler

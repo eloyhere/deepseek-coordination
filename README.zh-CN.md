@@ -3,11 +3,11 @@
 **简体中文** · [English](README.md) · [更新日志](CHANGELOG.zh-CN.md)
 
 面向 **DeepSeek Harness 0.2.2-rc.1**（Windows 桌面版）的注意力清单协议（AMP）宿主插件。
-它把依赖从旧的 0.6 协调层升级到 **AMP 0.7.9**，移除过时的协调功能，保留通知组件，
+它把依赖从旧的 0.6 协调层升级到 **AMP 0.8.0**，移除过时的协调功能，保留通知组件，
 并把 AMP 的模块面注册进 Harness 宿主。
 
 ```
-AMP 0.7.9                              DeepSeek Harness 0.2.2-rc.1
+AMP 0.8.0                              DeepSeek Harness 0.2.2-rc.1
 ┌───────────────────────────┐          ┌──────────────────────────────────┐
 │ 智能体面（27 个模块）      │          │ ctx.tools   ← 15 个模块工具      │
 │ 15 agent / 8 host / 4 hid │  ──────► │ ctx.systemPrompt ← AMP 契约      │
@@ -20,7 +20,7 @@ AMP 0.7.9                              DeepSeek Harness 0.2.2-rc.1
 
 ## 0.24.0 变化
 
-- **依赖**：`attention-manifest-protocol@0.7.9`（原 `0.6.0`），连同它的
+- **依赖**：`attention-manifest-protocol@0.8.0`（原 `0.6.0`），连同它的
   `semantic-typescript` 运行时依赖。
 - **移除**：旧协调数据库、图/文本/认知引擎、输入框下拉、接管与审批对话框、
   400 KB 面板、旧 `src/protocol` 兼容层，以及所有既不属于 AMP 也不属于通知的工具。
@@ -28,18 +28,18 @@ AMP 0.7.9                              DeepSeek Harness 0.2.2-rc.1
 - **保持不变**：通知组件 —— `snackbar`、`alert`、`dialog`、`popover`
   （`src/host/notify.ts`、`src/client/notification.ts`、`src/shared/notification.ts`）
   与 `coordination_notification` 工具。只有它们外围的注册胶水是新的。
-- **新宿主**：15 个 AMP 模块工具、`attention_manifest_protocol_discover`、
+- **新宿主**：17 个 AMP 模块工具、`attention_manifest_protocol_discover`、
   SQLite 可执行内核、10 个技能、2 个人工命令、系统提示词契约和只读 HTTP 路由。
 - **新客户端**：通知座位 + 紧凑的 AMP 状态条 + 设置页；旧 MUI 面板已删除
   （客户端包约 424 KB）。
 
 ## AMP 模块面
 
-AMP 0.7.9 定义 27 个模块，本插件全部以三种方式之一注册：
+AMP 0.8.0 定义 29 个模块，本插件全部以三种方式之一注册：
 
 | 层级 | 数量 | 注册方式 |
 |---|---:|---|
-| `agent` | 15 | 每个模块一个 `attention_manifest_protocol_<module>` DSH 工具，通过 `{ verb, arguments }` 暴露动词，共 49 个动词。 |
+| `agent` | 17 | 每个模块一个 `attention_manifest_protocol_<module>` DSH 工具，通过 `{ verb, arguments }` 暴露动词，共 60 个动词。0.8.0 新增 `elaboration`（构建诊断、解释、propose）与 `draft`（open/write/patch/diff/check）。 |
 | `host` | 8 | 宿主服务/路由：`capability`、`manifest`、`provenance`、`receipt`、`verification`、`retrieval`、`model`、`runtime`；宿主发布 `ctx.amp`（`AmpHost`），其他插件可注入该服务访问内核端口、网关日志、收据与证据。 |
 | `hidden` | 4 | 仅内部：`workflow`、`policy`、`profession`、`behaviour`，永不暴露给模型。 |
 
@@ -47,15 +47,15 @@ AMP 0.7.9 定义 27 个模块，本插件全部以三种方式之一注册：
 支持 `query`、`module`、`tier` 过滤，返回完整目录及 mutating/authority 信息。`query`
 可以是字符串或字符串数组；传 `regex: true` 时，每个条目按不区分大小写的正则表达式匹配。
 同一工具还支持 `action: "search"` 搜索项目文件。开启设置里的「接管搜索」后，会使用
-AMP 0.7.9 内置的 `createSessionFileDiscoveryProvider`、`collectDiscoveryCandidates` 和
+AMP 0.8.0 内置的 `createSessionFileDiscoveryProvider`、`collectDiscoveryCandidates` 和
 `discover` 排名，不重复实现排序算法。通过 `scope` 选择 `files`、`content` 或 `both`，并可传入
 相对工作区的 `path`、`include`/`exclude` glob、`maxFiles`、`maxFileBytes`、`limit`、
 `maxPerModule`、`minimumScore`。
 搜索限制在项目目录、跳过依赖和生成目录，并限制内容快照大小；结果提供文件路径和行号，
 后续可用 `attention_manifest_protocol_workspace.read` 读取内容。
 
-> AMP 0.7.9 只发布工具**名称与权限**，不发布参数 schema。因此本宿主为每个模块
-> 提供一个带类型的 `verb` 和一个无损 `arguments` 对象，而不是 49 个带点的工具名。
+> AMP 0.8.0 只发布工具**名称与权限**，不发布参数 schema。因此本宿主为每个模块
+> 提供一个带类型的 `verb` 和一个无损 `arguments` 对象，而不是 60 个带点的工具名。
 > 网关仍然强制宿主绑定身份、mutating 动词的幂等键、权限钩子，并为每次调用记录一条日志。
 
 ## 内核与持久化
@@ -121,7 +121,7 @@ node scripts/migrateStore.mjs --to <工作区>
 export const inject = ['amp']
 export function apply(ctx: Context) {
   const kernel = ctx.amp.kernel(root)        // 每个工作区一个内核
-  const modules = ctx.amp.modules            // 全部 27 个 AMP 模块
+  const modules = ctx.amp.modules            // 全部 29 个 AMP 模块
   const journal = ctx.amp.journalEntries()   // 每次网关调用一条记录
 }
 ```
@@ -193,8 +193,8 @@ AMP 要求独立的 verification 与 evidence 才能结算 Goal/Task。DSH 报�
 | Slot | 注册项 | 作用 |
 |---|---|---|
 | `conversation.input.dock` | `deepseek-coordination.notifications` | 保持不变的通知界面。 |
-| `conversation.composer.dock` | `deepseek-coordination.amp` | 紧凑的 `AMP 15/49` 状态按钮与模块对话框。 |
-| `settings.section` | `deepseek-coordination` | 27 个模块的完整目录（层级、动词、权限、保留原因）。 |
+| `conversation.composer.dock` | `deepseek-coordination.amp` | 紧凑的 `AMP 17/60` 状态按钮与模块对话框。 |
+| `settings.section` | `deepseek-coordination` | 29 个模块的完整目录（层级、动词、权限、保留原因）。 |
 
 客户端包使用 DSH 的 lazy-CJS 封装（`window.__ModuleLoader__.load({ id, factory })`），
 只从页面模块表取 `react`；MUI 与 emotion 被打进单文件。
@@ -238,7 +238,7 @@ npm run build
 宿主包把每个 `@deepseek-ai/*`、Cordis 与 AMP 外部化；客户端包内联 MUI/emotion、
 外部化 React。两个预设都在 `tsdown.config.ts`。
 
-测试覆盖：17 个工具注册、27/15/49 模块面计数、内核创建、模块分发、工作区 CAS
+测试覆盖：21 个工具注册、29/17/60 模块面计数、内核创建、模块分发、工作区 CAS
 与根目录限制、项目环境 CAS、`plan.propose_draft` 的内核路径、通知、以及客户端
 bundle 的 factory 与三个 slot 注册。`test/persistence.test.mjs` 另外用临时工作区
 重启宿主，验证内核库、草稿计划、宿主状态行与工作区之间的隔离都能恢复，并验证
@@ -246,7 +246,7 @@ bundle 的 factory 与三个 slot 注册。`test/persistence.test.mjs` 另外用
 
 ### `semantic-typescript` 冻结保护
 
-AMP 0.7.9 依赖的 `semantic-typescript@2` 在 `Optional` 模块里执行
+AMP 0.8.0 依赖的 `semantic-typescript@2` 在 `Optional` 模块里执行
 `Object.freeze(Object.getPrototypeOf(Optional))`，会冻结 `Function.prototype`，
 从而破坏 DSH 所有插件配置使用的 schemastery。`src/host/freezeGuard.ts` 在任何
 AMP 导入之前运行，拒绝冻结 `Function.prototype`/`Object.prototype`/`Array.prototype`，
@@ -255,11 +255,11 @@ AMP 导入之前运行，拒绝冻结 `Function.prototype`/`Object.prototype`/`A
 
 ## 已知限制
 
-- AMP 0.7.9 不提供参数 schema；模块工具的 `arguments` 由各处理函数校验，而非协议。
+- AMP 0.8.0 不提供参数 schema；模块工具的 `arguments` 由各处理函数校验，而非协议。
 - `workspace.document_outline` 返回 `supported: false`，指向 DSH 的 Office 工具；
   未内置二进制大纲解析器。
 - `execution.run` 拒绝分发 AMP 协议工具，避免递归。
 - `turn.respond` 在 AMP 中记录模型响应意图；对话转录仍由 DSH 拥有。
 - 内核执行器端口未接线：工作流动作属于宿主，模型效果通过 `execution.run`
   或普通 DSH 工具执行。
-- AMP 0.7.9 与 0.6.0 不兼容，旧 AMP 数据库不会迁移。
+- AMP 0.8.0 与 0.6.0 不兼容，旧 AMP 数据库不会迁移。

@@ -95,27 +95,29 @@ async function withPlugin(run) {
   }
 }
 
-test('registers the 15 AMP modules, discovery and the notification tool', async () => {
+test('registers the 17 AMP modules, discovery and the notification tool', async () => {
   await withPlugin(async ({ tools }) => {
     const names = [...tools.keys()].sort()
-    assert.equal(names.length, 19)
+    assert.equal(names.length, 21)
     assert.ok(names.includes('attention_manifest_protocol_discover'))
     assert.ok(names.includes('attention_manifest_protocol_replace'))
     assert.ok(names.includes('attention_manifest_protocol_workspace'))
     assert.ok(names.includes('attention_manifest_protocol_execution'))
     assert.ok(names.includes('attention_manifest_protocol_harness'))
+    assert.ok(names.includes('attention_manifest_protocol_elaboration'))
+    assert.ok(names.includes('attention_manifest_protocol_draft'))
     assert.ok(names.includes('coordination_notification'))
   })
 })
 
-test('discovery returns all 27 AMP modules', async () => {
+test('discovery returns all 29 AMP modules', async () => {
   await withPlugin(async ({ tools }) => {
     const discover = tools.get('attention_manifest_protocol_discover')
     const value = await discover.execute({ action: 'catalog' }, fakeExec())
-    assert.equal(value.discovered, 27)
+    assert.equal(value.discovered, 29)
     const agentModules = value.modules.filter((module) => module.tier === 'agent')
-    assert.equal(agentModules.length, 15)
-    assert.equal(agentModules.reduce((total, module) => total + module.verbs.length, 0), 49)
+    assert.equal(agentModules.length, 17)
+    assert.equal(agentModules.reduce((total, module) => total + module.verbs.length, 0), 60)
   })
 })
 

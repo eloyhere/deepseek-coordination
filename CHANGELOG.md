@@ -15,6 +15,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.25.0] - 2026-11-10
+
+### Added
+
+- **AMP 0.8.0.** The bundled protocol moves from 0.7.9 to 0.8.0: 29 modules and
+  60 agent verbs. Two new agent modules are wired into the plugin:
+  `elaboration` (`get_build`, `list_diagnostics`, `explain`, `propose`) and
+  `draft` (`get`, `list`, `open`, `write`, `patch`, `diff`, `check`). Both reuse
+  AMP's own `createElaborationToolHandlers` / `createDraftToolHandlers`, and the
+  port resolves the kernel of the workspace the current call is bound to, so one
+  plugin instance still serves several workspaces.
+- Intent gains the `elaborating` / `elaborated` states, and AMP persists builds
+  and drafts in its own stores, so `elaborationOf` and open drafts survive a
+  restart.
+
+### Changed
+
+- Surface counts move to 29 modules, 17 agent modules, 60 verbs and 21 DSH
+  tools. The prompt contract, discovery catalog, `/amp/status` and the client
+  strip read these counts live instead of hard-coding them.
+
 ## [0.24.3] - 2026-11-10
 
 ### Changed

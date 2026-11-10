@@ -13,6 +13,23 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
+## [0.25.0] — 2026-11-10
+
+### 新增
+
+- **AMP 0.8.0。** 协议从 0.7.9 升到 0.8.0：29 个模块、60 个 agent 动词。插件接入
+  两个新的 agent 模块：`elaboration`（`get_build`、`list_diagnostics`、`explain`、
+  `propose`）与 `draft`（`get`、`list`、`open`、`write`、`patch`、`diff`、`check`）。
+  二者复用 AMP 自带的 `createElaborationToolHandlers` / `createDraftToolHandlers`，
+  端口按当前调用所属工作区解析内核，因此一个插件实例仍可服务多个工作区。
+- 意图新增 `elaborating` / `elaborated` 状态；AMP 用自己的存储持久化 Build 与草稿，
+  重启后 `elaborationOf` 与未冻结草稿都能恢复。
+
+### 变更
+
+- 模块面计数变为 29 模块 / 17 agent 模块 / 60 动词 / 21 个 DSH 工具。提示词契约、
+  发现目录、`/amp/status` 与客户端状态条都读取实时计数，不再硬编码。
+
 ## [0.24.3] — 2026-11-10
 
 ### 变更

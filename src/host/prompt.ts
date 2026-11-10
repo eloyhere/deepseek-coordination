@@ -53,7 +53,7 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
     text: [
       '## Attention Manifest Protocol (AMP 0.7.9)',
       '',
-      'This host exposes AMP as fifteen module tools named `attention_manifest_protocol_<module>`.',
+      'This host exposes AMP as seventeen module tools named `attention_manifest_protocol_<module>`.',
       'Each tool takes a `verb` and a lossless `arguments` object. Call `attention_manifest_protocol_discover`',
       'first when you do not know a module\'s verbs, authority or mutating status.',
       '',

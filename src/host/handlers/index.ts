@@ -2,6 +2,8 @@
 import type { GatewayHandler } from 'attention-manifest-protocol/agent'
 import type { AmpHost } from '../amp.js'
 import { attentionHandlers } from './attention.js'
+import { draftHandlers } from './draft.js'
+import { elaborationHandlers } from './elaboration.js'
 import { cooperationHandlers } from './cooperation.js'
 import { executionHandlers } from './execution.js'
 import { planningHandlers } from './planning.js'
@@ -16,6 +18,8 @@ export function createHandlers(host: AmpHost): Record<string, GatewayHandler> {
     ...attentionHandlers(host),
     ...projectHandlers(host),
     ...workspaceHandlers(host),
+    ...elaborationHandlers(host),
+    ...draftHandlers(host),
     ...executionHandlers(host),
     ...cooperationHandlers(host),
   }
