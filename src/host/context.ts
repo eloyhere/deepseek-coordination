@@ -26,8 +26,15 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { AttentionObject } from 'attention-manifest-protocol/attention'
+import type { ContextPruneCandidate } from 'attention-manifest-protocol/context'
 import type { AmpHost } from './amp.js'
 import type { Config } from './config.js'
+import type { ContextCacheStats } from './contextCache.js'
+import { ContextPruner } from './contextPrune.js'
+import { MAX_SUBMITTED_ENTRIES, candidateOf, pruneRecordCandidate } from './contextPrune.js'
+import type { ContextPruneOutcome, ContextPruneStats } from './contextPrune.js'
+import type { PruneRecord } from './prune.js'
+import { estimateTokens } from './tokenEstimate.js'
 import type { WireCapture, WireCaptureStatus } from './prestep.js'
 import type { OutputStatus, WireItemSource } from './sources.js'
 import { diffTombstones } from './tombstones.js'
@@ -49,9 +56,36 @@ interface ContextStats {
   failures: number
   excluded: number
   lastTokens: number
+  lastCompilerTokens: number
   lastCharacters: number
   lastItems: number
   lastPreview: string
+}
+
+/**
+ * The package one step actually injected, retained for `attention.context`.
+ *
+ * `tokens` is AMP's accounting (measured on the serialized projection);
+ * `renderedTokens` is the estimate for the text the model received. Both are
+ * reported because the renderer is compact and the compiler counts envelopes.
+ */
+export interface ContextPackageView {
+  readonly sessionId: string
+  readonly compiledAt: string
+  readonly items: readonly { readonly id: string; readonly summary: string; readonly tokens: number }[]
+  readonly exclusions: readonly ContextExclusionView[]
+  readonly tokens: number
+  readonly renderedTokens: number
+  readonly budgetTokens: number
+  readonly text: string
+}
+
+/** The subset of AMP's `CompiledContext` this module retains. */
+interface CompiledPackage {
+  readonly compiledAt: string
+  readonly items: readonly { readonly id: string; readonly summary: string; readonly usage: { readonly tokens: number } }[]
+  readonly exclusions: readonly unknown[]
+  readonly usage: { readonly tokens: number }
 }
 
 /** Per-session diagnostics retained before the oldest session is evicted. */
@@ -201,11 +235,25 @@ export class AmpContextOptimizer {
   private readonly prompts = new Map<string, string>()
   private readonly todos = new Map<string, string>()
   private readonly tools = new Map<string, string[]>()
-  private readonly cache = new Map<string, string>()
+  // Compiled payloads are cached by AMP's own `ContextCache`, wired into the
+  // kernel in `amp.ts`. Keeping a second string cache here duplicated it and
+  // forced a global flush on every session event.
   // Per-session base-id bookkeeping for the tombstone diff: the exact wire
   // items submitted by the last successful compile of this session.
   private readonly previousItems = new Map<string, TombstoneMap>()
-  private readonly stats: ContextStats = { compilations: 0, failures: 0, excluded: 0, lastTokens: 0, lastCharacters: 0, lastItems: 0, lastPreview: '' }
+  // Every attention object this session submitted, so AMP's prune planner has
+  // something to decide about. Bounded: the oldest entries are forgotten first.
+  private readonly submitted = new Map<string, AttentionObject[]>()
+  // The ids submitted by the most recent step: they are the only entries AMP
+  // may treat as `active`, because every persisted attention object is mounted.
+  private readonly latestIds = new Map<string, Set<string>>()
+  private readonly lastPrune = new Map<string, ContextPruneOutcome>()
+  // DSH's own prune facts, projected as AMP candidates so `prune.ts` feeds the
+  // same decision instead of standing beside it.
+  private readonly pruneEvents = new Map<string, ContextPruneCandidate[]>()
+  private readonly lastPackage = new Map<string, ContextPackageView>()
+  private readonly pruner: ContextPruner
+  private readonly stats: ContextStats = { compilations: 0, failures: 0, excluded: 0, lastTokens: 0, lastCompilerTokens: 0, lastCharacters: 0, lastItems: 0, lastPreview: '' }
   // Last compile attempt per session (bounded) and the most recent attempt
   // across sessions, which is what the session-less `/amp/context` view reads.
   private readonly diagnosticsBySession = new Map<string, CompileDiagnostics>()
@@ -217,19 +265,49 @@ export class AmpContextOptimizer {
     this.config = config
     this.wire = wire
     this.sources = sources
+    this.pruner = new ContextPruner({
+      keepRecent: config.contextPruneKeepRecent,
+      maxEntries: config.contextPruneMaxEntries,
+      maxTokens: config.contextPruneMaxTokens,
+      ...(typeof config.contextPruneMinScore === 'number' ? { minScore: config.contextPruneMinScore } : {}),
+    })
   }
 
-  status(): ContextStats & { enabled: boolean; budgetTokens: number; capture?: WireCaptureStatus; outputs?: OutputStatus } {
+  status(root?: string): ContextStats & {
+    enabled: boolean
+    budgetTokens: number
+    capture?: WireCaptureStatus
+    outputs?: OutputStatus
+    cache?: ContextCacheStats & { failures: number }
+    prune?: ContextPruneStats & { sessions: number; last?: ContextPruneOutcome }
+    line: string
+  } {
     let outputs: OutputStatus | undefined
     try {
       outputs = this.sources?.status?.()
     } catch {
       outputs = undefined
     }
+    // AMP `ContextCache` counters for the same store slot the compile writes to.
+    let cache: (ContextCacheStats & { failures: number }) | undefined
+    try {
+      cache = this.host.contextCacheStatus(root)
+    } catch {
+      cache = undefined
+    }
+    const prune = this.pruneStatus()
+    const hitRate = cache === undefined ? 0 : cache.hitRate
+    const saved = cache === undefined ? 0 : cache.savedTokens
+    // One human-readable line for the client status bar; the structured fields
+    // above stay authoritative.
+    const line = `attention ${this.stats.lastItems} items · ${this.stats.lastTokens} tok · cache ${Math.round(hitRate * 100)}% (${saved} saved) · prune ${prune.lastKept}/${prune.lastPruned} (${prune.savedTokens} saved)`
     return {
       ...this.stats,
-      enabled: this.enabled(),
+      enabled: this.enabled(root),
       budgetTokens: this.config.contextBudgetTokens,
+      ...(cache === undefined ? {} : { cache }),
+      prune,
+      line,
       ...(this.wire === undefined ? {} : { capture: this.wire.status() }),
       ...(outputs === undefined ? {} : { outputs }),
     }
@@ -320,7 +398,6 @@ export class AmpContextOptimizer {
       const text = textOfMessage(data, 2000).trim()
       if (text.length > 0) {
         this.prompts.set(session.id, text)
-        this.cache.clear()
       }
     } else if (event.type === 'todo/write') {
       const todos = Array.isArray(data.todos) ? data.todos : []
@@ -330,14 +407,12 @@ export class AmpContextOptimizer {
         .map((todo) => `${todo.status === 'completed' ? '[x]' : todo.status === 'in_progress' ? '[~]' : '[ ]'} ${String(todo.content ?? '')}`)
         .join('\n')
       this.todos.set(session.id, summary.slice(0, 2000))
-      this.cache.clear()
     } else if (event.type === 'tool/result') {
       const text = textOfMessage(data.message, 300).trim()
       if (text.length > 0) {
         const list = this.tools.get(session.id) ?? []
         list.push(text)
         this.tools.set(session.id, list.slice(-3))
-        this.cache.clear()
       }
     } else if (event.type === 'turn/start') {
       this.tools.delete(session.id)
@@ -361,9 +436,6 @@ export class AmpContextOptimizer {
     const prompt = pending !== undefined && pending.prompt.length > 0
       ? pending.prompt
       : this.prompts.get(sessionId) ?? ''
-    const key = `${sessionId}:${turn}:${step}`
-    const cached = this.cache.get(key)
-    if (cached !== undefined) return cached
     try {
       const turnId = this.host.ensureTurn(sessionId, turn, root)
       const kernel = this.host.kernel(root)
@@ -373,7 +445,12 @@ export class AmpContextOptimizer {
         sessionId,
         turnId,
       }
-      const budgetPerItem = { tokens: Math.max(256, Math.floor(this.config.contextBudgetTokens / 2)) }
+      // A single item may consume the whole package: the global budget below is
+      // the real ceiling. Capping an item at half the budget used to look safe
+      // under the old length/4 estimate, but a 600-character CJK summary costs
+      // ~660 tokens, so the most important channel (the prompt) was excluded as
+      // if it were oversized.
+      const budgetPerItem = { tokens: Math.max(256, this.config.contextBudgetTokens) }
       const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString()
       const item = (channel: WireChannel, slot: string, summary: string, scores: WireScores): WireItem | null => {
         const text = summary.trim()
@@ -470,35 +547,195 @@ export class AmpContextOptimizer {
         // declared pointer version avoids the workflow-kind lookup, which only
         // knows DSH's own entity names.
         currentVersion: (pointer: { version: string }): string => pointer.version,
-        countTokens: (text: string): number => Math.ceil(text.length / 4),
+        countTokens: (text: string): number => estimateTokens(text),
       })
-      const text = compiled.compiled.items
-        .map((entry) => `- [${entry.id}] ${entry.summary}`)
-        .join('\n')
+      // Render exactly what AMP counted. `compiled.text` is the concatenation of
+      // the serialized projections the budget check measured, so `usage.tokens`
+      // and the injected payload now agree. Re-joining a compact `- [id] summary`
+      // form would read nicer but silently decouple the two numbers.
+      const compiledText = (compiled.compiled as { text?: unknown }).text
+      const text = typeof compiledText === 'string' && compiledText.length > 0
+        ? compiledText
+        : compiled.compiled.items.map((entry) => `- [${entry.id}] ${entry.summary}`).join('\n')
       this.stats.compilations += 1
       this.stats.excluded = compiled.compiled.exclusions.length
       this.stats.lastItems = compiled.compiled.items.length
       this.stats.lastCharacters = text.length
-      this.stats.lastTokens = Math.ceil(text.length / 4)
+      this.stats.lastTokens = estimateTokens(text)
+      // AMP always reports usage, but a fixture (or a future shape change) must
+      // not turn a successful compile into a failed one.
+      const usageTokens = (compiled.compiled.usage as { tokens?: unknown } | undefined)?.tokens
+      this.stats.lastCompilerTokens = typeof usageTokens === 'number' ? usageTokens : 0
       this.stats.lastPreview = text.slice(0, 300)
+      // Keep the exact objects AMP just persisted; the prune review at turn end
+      // decides which of them are still worth their tokens.
+      try {
+        this.rememberSubmitted(sessionId, compiled.attention ?? [])
+      } catch {
+        // Bookkeeping only; it must never cost the step its context.
+      }
       // Diagnostics are a read model of this attempt: the exclusion count and
       // its first 50 stable projections, plus whether pre-step input existed.
       this.rememberCompile(sessionId, pending !== undefined, compiled.compiled.exclusions)
-      this.cache.set(key, text)
+      this.rememberPackage(sessionId, compiled.compiled, text)
       return text
     } catch (error) {
       this.stats.failures += 1
       this.rememberFailure(sessionId, pending !== undefined)
-      this.cache.set(key, '')
       return ''
     }
   }
 
-  /** Drop every step cache entry for one turn; a pre-step capture calls this. */
-  invalidate(sessionId: string, turn: number): void {
-    const prefix = `${sessionId}:${turn}:`
-    for (const key of this.cache.keys()) {
-      if (key.startsWith(prefix)) this.cache.delete(key)
+  /**
+   * Drop one session's compiled payloads from the AMP `ContextCache`.
+   *
+   * No caller needs this per step: a changed prompt, plan or tool outcome
+   * produces a different cache signature and can never be served stale. Turn
+   * end is the natural eviction point — memory hygiene, not correctness.
+   */
+  invalidate(sessionId: string): void {
+    try {
+      this.host.evictContextCache(sessionId)
+    } catch {
+      // Eviction is best effort; the cache policy still bounds growth.
+    }
+  }
+
+  /** Remember the exact attention objects this step submitted (deduped, bounded). */
+  private rememberSubmitted(sessionId: string, objects: readonly AttentionObject[]): void {
+    if (objects.length === 0) return
+    const list = this.submitted.get(sessionId) ?? []
+    const index = new Map<string, number>()
+    for (let position = 0; position < list.length; position += 1) index.set(list[position].id, position)
+    for (const object of objects) {
+      if (typeof object?.id !== 'string') continue
+      const at = index.get(object.id)
+      if (at === undefined) {
+        index.set(object.id, list.length)
+        list.push(object)
+      } else {
+        list[at] = object
+      }
+    }
+    while (list.length > MAX_SUBMITTED_ENTRIES) list.shift()
+    this.submitted.set(sessionId, list)
+    const latest = new Set<string>()
+    for (const object of objects) {
+      if (typeof object?.id === 'string') latest.add(object.id)
+    }
+    this.latestIds.set(sessionId, latest)
+  }
+
+  /**
+   * Feed DSH's own prune records into the AMP planner.
+   *
+   * `prune.ts` observes what DSH's pruner already did; converting those records
+   * to candidates means AMP's decision reports `superseded` for them instead of
+   * leaving the facts in a side ledger. Deduped by id and bounded.
+   */
+  notePruneRecords(sessionId: string, records: readonly PruneRecord[]): void {
+    if (records.length === 0) return
+    const list = this.pruneEvents.get(sessionId) ?? []
+    const index = new Map<string, number>()
+    for (let position = 0; position < list.length; position += 1) index.set(list[position].id, position)
+    for (const record of records) {
+      try {
+        const candidate = pruneRecordCandidate(sessionId, record)
+        const at = index.get(candidate.id)
+        if (at === undefined) {
+          index.set(candidate.id, list.length)
+          list.push(candidate)
+        } else {
+          list[at] = candidate
+        }
+      } catch {
+        // One malformed record must not drop the rest.
+      }
+    }
+    while (list.length > MAX_SUBMITTED_ENTRIES) list.shift()
+    this.pruneEvents.set(sessionId, list)
+  }
+
+  /**
+   * Run AMP's prune state machine over this session's submitted attention.
+   *
+   * Called at turn end: the turn's entries are complete and the next turn starts
+   * a fresh set. The verified checkpoint is appended to the AMP store (best
+   * effort) and the outcome kept for `/amp/context`. Never throws.
+   */
+  reviewTurn(sessionId: string): ContextPruneOutcome | undefined {
+    try {
+      const list = this.submitted.get(sessionId) ?? []
+      const events = this.pruneEvents.get(sessionId) ?? []
+      if (list.length === 0 && events.length === 0) return undefined
+      const latest = this.latestIds.get(sessionId) ?? new Set<string>()
+      const outcome = this.pruner.review([
+        ...list.map((object) => candidateOf(object, latest.has(object.id))),
+        ...events,
+      ])
+      if (outcome === undefined) return undefined
+      this.lastPrune.delete(sessionId)
+      this.lastPrune.set(sessionId, outcome)
+      while (this.lastPrune.size > MAX_DIAGNOSTIC_SESSIONS) {
+        const oldest = this.lastPrune.keys().next().value
+        if (typeof oldest !== 'string') break
+        this.lastPrune.delete(oldest)
+      }
+      try {
+        const kernel = this.host.kernel(this.host.rootOfSession(sessionId))
+        kernel.store.appendEvent('context.prune.checkpoint', { sessionId, outcome }, outcome.checkpoint.id)
+      } catch {
+        // The checkpoint is already verified in memory; the durable append is
+        // best effort and its failure must not lose the decision.
+      }
+      return outcome
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Prune counters plus the newest outcome, for `/amp/context`. */
+  pruneStatus(): ContextPruneStats & { sessions: number; last?: ContextPruneOutcome } {
+    const outcomes = [...this.lastPrune.values()]
+    const last = outcomes.length === 0 ? undefined : outcomes[outcomes.length - 1]
+    return {
+      ...this.pruner.stats(),
+      sessions: this.submitted.size,
+      ...(last === undefined ? {} : { last }),
+    }
+  }
+
+  /** Retain the package one step injected, bounded like the diagnostics map. */
+  private rememberPackage(sessionId: string, compiled: CompiledPackage, text: string): void {
+    try {
+      const pkg: ContextPackageView = {
+        sessionId,
+        compiledAt: compiled.compiledAt,
+        items: compiled.items.map((entry) => ({ id: entry.id, summary: entry.summary, tokens: entry.usage.tokens })),
+        exclusions: exclusionViewsOf(compiled.exclusions),
+        tokens: compiled.usage.tokens,
+        renderedTokens: estimateTokens(text),
+        budgetTokens: this.config.contextBudgetTokens,
+        text,
+      }
+      this.lastPackage.delete(sessionId)
+      this.lastPackage.set(sessionId, pkg)
+      while (this.lastPackage.size > MAX_DIAGNOSTIC_SESSIONS) {
+        const oldest = this.lastPackage.keys().next().value
+        if (typeof oldest !== 'string') break
+        this.lastPackage.delete(oldest)
+      }
+    } catch {
+      // Diagnostics only; the step keeps its context.
+    }
+  }
+
+  /** The exact package this session's last successful compile injected. */
+  packageFor(sessionId: string): ContextPackageView | undefined {
+    try {
+      return this.lastPackage.get(sessionId)
+    } catch {
+      return undefined
     }
   }
 

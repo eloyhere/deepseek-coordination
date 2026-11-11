@@ -877,6 +877,9 @@ interface AmpCompactionSink {
 | `systemPrompt.context` | ✅ 已接线 | `src/host/prompt.ts`、`src/host/context.ts` |
 | `systemPrompt.variable` | ✅ 已接线 | `src/host/prompt.ts`；注册 `amp_tenant`、`amp_contract`、`amp_budget_tokens`、`amp_module_count`、`amp_session` |
 | AMP attention 编译 | ✅ 已接线 | `src/host/context.ts`；R1 后 pre-step 捕获/缓存失效，S1 增加 `contextDiagnostics`（真实 `lag`、`lastCompileAt`、`lastExclusions` 前 50 条、`compilerExclusions` 数字）；step 限定 id 避免同 id 复用 |
+| AMP 编译缓存 | ✅ 已接线 | `src/host/contextCache.ts`；`createKernel(options, { context })` 注入 AMP `compileContextCached` + `ContextCache`（LRU+TTL）。AMP 把 `options.now` 编进签名，端口因此为每个批次记住首次编译时钟，重复 assembly 才命中；`compileContextCached` 未从 `context/index.js` 再导出，需走 `attention-manifest-protocol/context/cached.js`。`hits`/`hitRate`/`savedTokens` 经 `/amp/context` 的 `cache` 暴露 |
+| AMP 剪枝决策 | ✅ 已接线 | `src/host/contextPrune.ts`；turn 结束对已提交条目与 DSH `compaction/prune` 记录（投影为 `superseded` 候选）跑 `planContextPrune → approve → apply → compactContext → verifyContextCompaction`，checkpoint 以 `context.prune.checkpoint` 事件写入 AMP store；`apply` 是对 AMP 0.9.1 缺失导出的受控补位（用导出的 `CONTEXT_PRUNE_TRANSITIONS` 校验），决策与 `savedTokens` 经 `prune.decisions` 暴露 |
+| token 口径 | ✅ 已接线 | `src/host/tokenEstimate.ts`；CJK/假名/谚文按 1 token/字、其余 4 字符/token 的上界估计，替换 `length / 4`；注入文本改为 AMP 的 `compiled.text`（预算实测的那串序列化投影），`tokens` 与 `renderedTokens` 由此相等 |
 | 可观测性 | ✅ 已接线 | `/amp/context` 的 `recovery`、`lastCapture`、`capture`、`contextDiagnostics`、`compilerExclusionsDetailed`；三本账字段保持（`compilerExclusions`/`hostExclusions`/`retentionOmissions`） |
 | DSH → AMP sync | 🟡 部分 | `src/host/sync.ts`；R3 增加 compaction/fork 的审计计数，不复制 AMP workflow 实体；session/turn/goal/todo/tool 仍为原投影 |
 | AMP → DSH bridge | ✅ 已接线 | `src/host/bridge.ts` |

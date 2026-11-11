@@ -1,5 +1,7 @@
 /** AMP execution verbs: discover DSH tools, inspect them, run them through the pipeline. */
+import { createHash } from 'node:crypto'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { RetrievalHandleStore } from 'attention-manifest-protocol/retrieval'
 import { AMP_PREFIX } from '../names.js'
 import type { AmpHost } from '../amp.js'
 import { jsonSafe } from '../json.js'
@@ -11,6 +13,25 @@ function key(module: string, verb: string): string {
 }
 
 const HANDLE_THRESHOLD = 16_000
+
+/**
+ * AMP retrieval handle index, one per host. Handles live in the AMP
+ * `RetrievalHandleStore`, so every read is scope-checked (tenant/session) and
+ * expires instead of being an unmanaged entry in a host map.
+ */
+const handleIndexes = new WeakMap<object, RetrievalHandleStore<string>>()
+
+function handleIndex(host: AmpHost): RetrievalHandleStore<string> {
+  const existing = handleIndexes.get(host)
+  if (existing !== undefined) return existing
+  const created = new RetrievalHandleStore<string>(() => new Date().toISOString())
+  handleIndexes.set(host, created)
+  return created
+}
+
+function digestOf(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
 
 function score(tool: ToolDefinition, terms: readonly string[]): number {
   const haystack = `${tool.name} ${tool.description}`.toLowerCase()
@@ -64,23 +85,26 @@ export function executionHandlers(host: AmpHost): HandlerMap {
           : []
       if (supplied.length === 0) return failure('invalid_parameters', 'calls or tool is required')
       if (supplied.length > 8) return failure('capacity_exceeded', 'at most 8 child calls per execution.run')
-      const calls = supplied.map((raw, index) => {
+      // Validate without throwing: these used to escape the execute try/catch as
+      // an unhandled rejection instead of a structured invalid_parameters failure.
+      const calls: { type: 'tool-call'; id: never; name: string; arguments: string }[] = []
+      for (const [index, raw] of supplied.entries()) {
         const call = typeof raw === 'object' && raw !== null ? raw as Record<string, unknown> : {}
         const name = typeof call.name === 'string' ? call.name : ''
-        if (name.length === 0) throw new Error(`calls[${index}].name is required`)
+        if (name.length === 0) return failure('invalid_parameters', `calls[${index}].name is required`)
         if (name.startsWith(AMP_PREFIX)) {
-          throw new Error('execution.run cannot dispatch AMP protocol tools; call them directly')
+          return failure('invalid_parameters', 'execution.run cannot dispatch AMP protocol tools; call them directly')
         }
         const callId = typeof call.callId === 'string' && call.callId.length > 0
           ? call.callId
           : `amp-${Date.now().toString(36)}-${index}`
-        return {
+        calls.push({
           type: 'tool-call' as const,
           id: callId as never,
           name,
           arguments: JSON.stringify(call.arguments ?? {}),
-        }
-      })
+        })
+      }
       try {
         const exec = execOf(host)
         const batch = await host.ctx.tools.execute({
@@ -99,10 +123,24 @@ export function executionHandlers(host: AmpHost): HandlerMap {
             text: text.slice(0, 4000),
           }
         })
+        // One AMP behaviour observation per batch; recording never mutates state.
+        host.behaviour.recordRun({
+          runId: `${sessionOf(host)}:${Date.now().toString(36)}:${results.length}`,
+          successes: results.filter((entry) => !entry.isError).length,
+          total: results.length,
+        })
         const serialized = JSON.stringify(results)
         if (serialized.length <= HANDLE_THRESHOLD) return ok({ results })
         const handleId = `handle:${sessionOf(host)}:${Date.now().toString(36)}`
-        host.handles.set(handleId, serialized)
+        const scope = { tenantId: host.config.tenantId, ownerId: sessionOf(host), sessionId: sessionOf(host) }
+        handleIndex(host).create({
+          ...scope,
+          id: handleId,
+          sourceDigest: digestOf(serialized),
+          ttlMilliseconds: 15 * 60_000,
+          revocationEpoch: 0,
+          records: [serialized],
+        })
         return ok({
           results: results.map((result) => ({ callId: result.callId, isError: result.isError, preview: result.text.slice(0, 500) })),
           handle: handleId,
@@ -113,12 +151,27 @@ export function executionHandlers(host: AmpHost): HandlerMap {
       }
     },
 
-    [key('execution', 'read_handle')]: (parameters: Params) => {
+    [key('execution', 'read_handle')]: async (parameters: Params) => {
       const handle = parameters.handle ?? parameters.id
       if (typeof handle !== 'string' || handle.length === 0) return failure('invalid_parameters', 'handle is required')
-      const stored = host.handles.get(handle)
-      if (stored === undefined) return failure('not_found', `handle ${handle} was not found`)
-      const text = typeof stored === 'string' ? stored : JSON.stringify(stored)
+      const scope = { tenantId: host.config.tenantId, ownerId: sessionOf(host), sessionId: sessionOf(host) }
+      const now = new Date().toISOString()
+      let text: string
+      try {
+        // AMP authorizes every read: tenant/session must match and the handle
+        // must not be expired or revoked.
+        const page = await handleIndex(host).read(handle, {
+          ...scope,
+          limit: 1,
+          now,
+          expectedRevocationEpoch: 0,
+        }, (indexed, request) => indexed.tenantId === request.tenantId
+          && indexed.sessionId === request.sessionId
+          && request.now <= indexed.expiresAt)
+        text = page.items[0] ?? ''
+      } catch (error) {
+        return failure('not_found', error instanceof Error ? error.message : `handle ${handle} was not found`)
+      }
       const offset = typeof parameters.offset === 'number' && parameters.offset >= 0 ? Math.floor(parameters.offset) : 0
       const limit = typeof parameters.limit === 'number' && parameters.limit > 0 ? Math.min(Math.floor(parameters.limit), 20_000) : 12_000
       return ok({ handle, content: text.slice(offset, offset + limit), offset, limit, total: text.length })

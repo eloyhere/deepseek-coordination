@@ -71,7 +71,26 @@ export function sessionHandlers(host: AmpHost): HandlerMap {
       const notes = host.notes.get(sessionId) ?? []
       notes.push({ kind: 'turn-response', turn, content: content.slice(0, 2000), at: new Date().toISOString() })
       host.notes.set(sessionId, notes.slice(-100))
-      return ok({ accepted: true, sessionId, turn: turn ?? null, characters: content.length })
+      // A response is a Turn transition, not only a host note: advance AMP's
+      // TurnService so the turn state/version reflect what the model did.
+      // Fail-open: an illegal edge (e.g. already responding) must not fail the verb.
+      let advanced = false
+      let transition: string | undefined
+      try {
+        if (turn !== undefined) {
+          const turnId = host.ensureTurn(sessionId, turn)
+          const service = host.kernel().ports.services.turn as unknown as {
+            get(id: string): { version: number }
+            respond(id: string, options: { expectedVersion: number; actor: string; reason?: string }): unknown
+          }
+          const current = service.get(turnId)
+          service.respond(turnId, { expectedVersion: current.version, actor: 'dsh-model', reason: 'model response recorded' })
+          advanced = true
+        }
+      } catch (error) {
+        transition = error instanceof Error ? error.message : String(error)
+      }
+      return ok({ accepted: true, sessionId, turn: turn ?? null, characters: content.length, advanced, ...(transition === undefined ? {} : { transition }) })
     },
 
     [key('turn', 'clarify')]: async (parameters: Params) => {
@@ -147,11 +166,21 @@ export function sessionHandlers(host: AmpHost): HandlerMap {
       host.notes.set(sessionId, notes.slice(-100))
       try {
         const service = host.kernel().ports.services.intent as unknown as {
-          clarify(id: string, options: Record<string, unknown>): unknown
+          get(id: string): { version: number }
+          clarify(id: string, options: { expectedVersion: number; actor: string; reason?: string }): unknown
         }
-        return ok({ proposal: text, intent: service.clarify(id, { actor: 'dsh-model', reason: 'clarification submitted' } as never) })
+        // `TransitionOptions` has no free-text payload; the clarification text is
+        // carried in `reason` so the workflow event records it instead of only
+        // the host note. A rejected transition is a failure, not an ok/null.
+        const current = service.get(id)
+        const intent = service.clarify(id, {
+          expectedVersion: current.version,
+          actor: 'dsh-model',
+          reason: text.slice(0, 500),
+        })
+        return ok({ proposal: text, intent })
       } catch (error) {
-        return ok({ proposal: text, intent: null, note: error instanceof Error ? error.message : String(error) })
+        return failure('invalid_state', error instanceof Error ? error.message : String(error))
       }
     },
 

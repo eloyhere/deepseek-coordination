@@ -59,7 +59,46 @@ export function planningHandlers(host: AmpHost): HandlerMap {
       } catch {
         feedback = null
       }
-      return ok({ submitted: true, goalId, evidence: evidence ?? null, verified: false, feedback })
+      // AMP evidence is receipt-bound (`RecordEvidenceInput.receiptId` is required).
+      // When the caller supplies one, record it in the AMP evidence ledger;
+      // otherwise the submission stays an explicit host note.
+      const receiptId = entityId(parameters, 'receiptId')
+      if (receiptId !== undefined) {
+        try {
+          const claim = typeof parameters.claim === 'string'
+            ? parameters.claim
+            : typeof evidence === 'string'
+              ? evidence
+              : undefined
+          const recorded = await host.kernel().flow.recordEvidence({
+            receiptId,
+            ...(claim === undefined ? {} : { claim: claim.slice(0, 500) }),
+            ...(typeof parameters.level === 'string' ? { level: parameters.level } : {}),
+            ...(typeof parameters.source === 'string' ? { source: parameters.source } : {}),
+            sessionId,
+          } as never)
+          return ok({
+            submitted: true,
+            goalId,
+            evidence: evidence ?? null,
+            verified: false,
+            recorded: true,
+            evidenceId: (recorded as { id?: string }).id ?? null,
+            feedback,
+          })
+        } catch (error) {
+          return failure('invalid_state', error instanceof Error ? error.message : String(error))
+        }
+      }
+      return ok({
+        submitted: true,
+        goalId,
+        evidence: evidence ?? null,
+        verified: false,
+        recorded: false,
+        reason: 'AMP recordEvidence requires a receiptId; submission kept as a host note',
+        feedback,
+      })
     },
 
     [key('plan', 'get')]: (parameters: Params) => {
@@ -178,17 +217,62 @@ export function planningHandlers(host: AmpHost): HandlerMap {
         }
       }
       const sessionId = sessionOf(host)
-      return ok(page(serviceOf(host, 'task').list(sessionId), parameters))
+      // Without a planId, "ready" still means ready: TaskService.list returns
+      // every task, so filter by the §4.7 state instead of returning all.
+      const ready = serviceOf(host, 'task')
+        .list(sessionId)
+        .filter((task) => (task as { state?: string }).state === 'ready')
+      return ok(page(ready, parameters))
     },
 
     [key('task', 'report_progress')]: (parameters: Params) => {
       const taskId = entityId(parameters, 'taskId') ?? entityId(parameters)
       if (taskId === undefined) return failure('invalid_parameters', 'taskId is required')
       const sessionId = sessionOf(host)
+      const progress = parameters.progress ?? parameters.message ?? null
       const notes = host.notes.get(sessionId) ?? []
-      notes.push({ kind: 'task-progress', taskId, progress: parameters.progress ?? parameters.message ?? null, at: new Date().toISOString() })
+      notes.push({ kind: 'task-progress', taskId, progress, at: new Date().toISOString() })
       host.notes.set(sessionId, notes.slice(-100))
-      return ok({ reported: true, taskId })
+      // AMP's TaskService has no free-text progress field: the note carries the
+      // text and the named `state` carries the transition. Fail-open — an
+      // illegal edge is reported in the result, never thrown at the model.
+      const state = typeof parameters.state === 'string' ? parameters.state : undefined
+      let advanced = false
+      let transition: string | undefined
+      if (state !== undefined) {
+        const supported = state === 'active' || state === 'paused' || state === 'resumed'
+          || state === 'blocked' || state === 'unblocked'
+        if (!supported) {
+          // Reject an unknown state before touching the store, so the caller gets
+          // the real reason instead of a misleading "task not found".
+          transition = `unsupported state ${state}`
+        } else {
+          try {
+            const service = host.kernel().ports.services.task as unknown as {
+              get(id: string): { version: number }
+              start(id: string, options: Record<string, unknown>): unknown
+              pause(id: string, options: Record<string, unknown>): unknown
+              resume(id: string, options: Record<string, unknown>): unknown
+              block(id: string, options: Record<string, unknown>): unknown
+              unblock(id: string, options: Record<string, unknown>): unknown
+            }
+            const options = {
+              expectedVersion: service.get(taskId).version,
+              actor: 'dsh-model',
+              reason: typeof progress === 'string' ? progress.slice(0, 200) : 'progress reported',
+            }
+            if (state === 'active') service.start(taskId, options)
+            else if (state === 'paused') service.pause(taskId, options)
+            else if (state === 'resumed') service.resume(taskId, options)
+            else if (state === 'blocked') service.block(taskId, options)
+            else service.unblock(taskId, options)
+            advanced = true
+          } catch (error) {
+            transition = error instanceof Error ? error.message : String(error)
+          }
+        }
+      }
+      return ok({ reported: true, taskId, state: state ?? null, advanced, ...(transition === undefined ? {} : { transition }) })
     },
 
     [key('action', 'get')]: (parameters: Params) => {

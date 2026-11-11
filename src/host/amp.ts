@@ -35,6 +35,9 @@ import type { AmpProtocol } from './protocol.js'
 import type { AmpSync } from './sync.js'
 import type { HarnessBridge } from './bridge.js'
 import type { AmpContextOptimizer } from './context.js'
+import { AmpContextCache } from './contextCache.js'
+import type { ContextCacheStats } from './contextCache.js'
+import { TOKEN_ESTIMATOR_ID } from './tokenEstimate.js'
 import { AmpPreferencesStore } from './preferences.js'
 import {
   AmpStateStore,
@@ -52,6 +55,10 @@ import { createHandlers } from './handlers/index.js'
 import { asRecord, jsonSafe } from './json.js'
 import { observeView, projectSessionLists, sessionContext, meaningful, type SessionViewContext, type ViewRow } from './sessionView.js'
 import type { AmpCallResult, AmpModule } from './types.js'
+import { AmpSurface } from './ampSurface.js'
+import { AmpBehaviour } from './ampBehaviour.js'
+import { AmpCooperation } from './ampCooperation.js'
+import { AmpModel, AmpRuntime } from './ampPorts.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -125,6 +132,8 @@ class StoreSlot {
   readonly layout: AmpStorageLayout
   readonly preferences: AmpPreferencesStore
   readonly state: AmpStateStore
+  /** AMP `ContextCache` wired into this slot's kernel; see `contextCache.ts`. */
+  readonly contextCache: AmpContextCache
   private readonly protocol: AmpProtocol
   private readonly config: Config
   private kernelInstance: Kernel | undefined
@@ -144,6 +153,13 @@ class StoreSlot {
       compactCatalog: false,
     })
     this.state = new AmpStateStore(join(layout.directory, STATE_FILE))
+    // One AMP cache per store slot: sessions in different workspaces must not
+    // share compiled payloads, and the cache dies with the slot's kernel.
+    this.contextCache = new AmpContextCache({
+      maxEntries: config.contextCacheEntries,
+      maxTokens: config.contextCacheTokens,
+      ttlMilliseconds: config.contextCacheTtlMs,
+    }, { tokenizer: TOKEN_ESTIMATOR_ID })
   }
 
   hasKernel(): boolean {
@@ -161,12 +177,13 @@ class StoreSlot {
       rootId: this.config.rootId,
       storePath: this.layout.storePath,
       clock: () => new Date().toISOString(),
-    })
+    }, { context: this.contextCache.port() })
     return this.kernelInstance
   }
 
   close(): void {
     this.state.dispose()
+    this.contextCache.clear()
     this.kernelInstance?.close()
     this.kernelInstance = undefined
   }
@@ -200,6 +217,21 @@ export class AmpHost {
   private readonly callFrame = new AsyncLocalStorage<CallFrame>()
   private readonly observedViews = new Map<string, SessionViewContext>()
   private readonly historyViews = new Map<string, { session: unknown; seq: unknown; generation: unknown; view: SessionViewContext }>()
+  /** AMP capability + manifest surface for the module catalog. */
+  readonly ampSurface: AmpSurface
+
+  /** AMP behaviour governance for tool execution batches. */
+  readonly behaviour: AmpBehaviour
+
+  /** AMP cooperation kernel backing the host mailbox. */
+  readonly cooperation: AmpCooperation
+
+  /** AMP model port: the host installs an adapter with `setPort`. */
+  readonly model: AmpModel
+
+  /** AMP execution coordinator: the host configures it with real ports. */
+  readonly runtime: AmpRuntime
+
   private readonly turnPositions = new Map<string, { turn: number; step: number }>()
 
   constructor(ctx: Context, config: Config, protocol: AmpProtocol) {
@@ -217,6 +249,11 @@ export class AmpHost {
     }
     this.surface = protocol.agent.createAgentSurface(only === undefined || only.length === 0 ? undefined : { only })
     this.catalog = this.surface.tools
+    this.ampSurface = new AmpSurface(this.agentModules, config.tenantId)
+    this.behaviour = new AmpBehaviour()
+    this.cooperation = new AmpCooperation()
+    this.model = new AmpModel()
+    this.runtime = new AmpRuntime()
     this.gateway = new protocol.agent.AgentGateway({
       surface: this.surface,
       handlers: createHandlers(this),
@@ -307,7 +344,7 @@ export class AmpHost {
       principalId: agent.id,
       sessionId: agent.id,
       ...(position === undefined ? {} : { turnId: this.turnId(agent.id, position.turn) }),
-      policyVersion: 'dsh-amp-0.9.1',
+      policyVersion: 'dsh-amp-0.14.0',
       cancellationEpoch: 0,
     }
   }
@@ -409,6 +446,42 @@ export class AmpHost {
       // machine-wide fallback so the protocol surface stays usable.
       const fallback = this.fallbackStorage()
       return fallback.kernel()
+    }
+  }
+
+  /**
+   * AMP `ContextCache` counters for one workspace root.
+   *
+   * This is the observability half of the cache wiring: `hitRate` shows whether
+   * a step reused a compiled payload and `savedTokens` how much serialization
+   * was never rebuilt. Never throws; an unknown slot reports zeros.
+   */
+  contextCacheStatus(root?: string): ContextCacheStats & { failures: number } {
+    try {
+      return this.slotAt(this.resolveRoot(root)).contextCache.stats()
+    } catch {
+      return {
+        entries: 0,
+        tokens: 0,
+        bytes: 0,
+        hits: 0,
+        misses: 0,
+        evictions: 0,
+        expirations: 0,
+        hitRate: 0,
+        utilisation: 0,
+        savedTokens: 0,
+        failures: 1,
+      }
+    }
+  }
+
+  /** Drop one session's compiled payloads from its slot cache. */
+  evictContextCache(sessionId: string, root?: string): number {
+    try {
+      return this.slotAt(this.resolveRoot(root)).contextCache.evictSession(sessionId)
+    } catch {
+      return 0
     }
   }
 

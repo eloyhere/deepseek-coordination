@@ -34,6 +34,20 @@ export interface Config {
   contextOptimization: boolean
   /** Token budget for one compiled AMP attention package. */
   contextBudgetTokens: number
+  /** Compiled AMP payloads retained in the per-store AMP `ContextCache`. */
+  contextCacheEntries: number
+  /** Compiled payload tokens retained in the per-store AMP `ContextCache`. */
+  contextCacheTokens: number
+  /** Milliseconds since last access after which a compiled payload is discarded. */
+  contextCacheTtlMs: number
+  /** Most recent attention entries AMP's prune planner always keeps. */
+  contextPruneKeepRecent: number
+  /** Attention entries a session may keep before AMP prunes the coldest. */
+  contextPruneMaxEntries: number
+  /** Attention tokens a session may keep before AMP prunes the coldest. */
+  contextPruneMaxTokens: number
+  /** Candidates scoring below this are pruned; omit to disable score pruning. */
+  contextPruneMinScore?: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -53,4 +67,11 @@ export const Config: Schema<Config> = Schema.object({
   maxWriteChars: Schema.number().default(1_000_000),
   contextOptimization: Schema.boolean().default(true),
   contextBudgetTokens: Schema.number().default(1200),
+  contextCacheEntries: Schema.number().default(128),
+  contextCacheTokens: Schema.number().default(64_000),
+  contextCacheTtlMs: Schema.number().default(300_000),
+  contextPruneKeepRecent: Schema.number().default(24),
+  contextPruneMaxEntries: Schema.number().default(200),
+  contextPruneMaxTokens: Schema.number().default(20_000),
+  contextPruneMinScore: Schema.number(),
 })

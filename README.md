@@ -32,7 +32,7 @@ AMP 0.9.0                              DeepSeek Harness 0.2.2-rc.1
   and `popover` (`src/host/notify.ts`, `src/client/notification.ts`,
   `src/shared/notification.ts`) and the `coordination_notification` tool. Only the
   registration glue around them is new.
-- **New host:** seventeen AMP module tools, `attention_manifest_protocol_discover`,
+- **New host:** eighteen AMP module tools, `attention_manifest_protocol_discover`,
   an executable AMP kernel in SQLite, 10 skills, 2 commands, a system-prompt
   contract and read-only HTTP routes.
 - **New client:** the notification seats plus a compact AMP status strip and a
@@ -40,12 +40,12 @@ AMP 0.9.0                              DeepSeek Harness 0.2.2-rc.1
 
 ## The AMP module surface
 
-AMP 0.9.0 defines 29 modules. All of them are registered with the harness in one
+AMP 0.14.0 defines 30 modules. All of them are registered with the harness in one
 of three ways:
 
 | Tier | Count | Registered as |
 |---|---:|---|
-| `agent` | 17 | One `attention_manifest_protocol_<module>` DSH tool each, exposing its verbs through `{ verb, arguments }`; 61 verbs total. `elaboration` (build diagnostics, explain, propose) and `draft` (open, write, patch, diff, check) are new in 0.8.0. |
+| `agent` | 18 | One `attention_manifest_protocol_<module>` DSH tool each, exposing its verbs through `{ verb, arguments }`; 64 verbs total. `question` (`get`, `list`, `open`) is new in 0.14.0. |
 | `host` | 8 | Host services/routes: `capability`, `manifest`, `provenance`, `receipt`, `verification`, `retrieval`, `model`, `runtime`. The host publishes `ctx.amp` (`AmpHost`) so other plugins can inject the service and reach the kernel ports, gateway journal, receipts and evidence. |
 | `hidden` | 4 | Internal only: `workflow`, `policy`, `profession`, `behaviour`. They are never offered to the model. |
 
@@ -170,7 +170,7 @@ The host object is published as the Cordis service `ctx.amp`:
 export const inject = ['amp']
 export function apply(ctx: Context) {
   const kernel = ctx.amp.kernel(root)        // per-workspace kernel
-  const modules = ctx.amp.modules            // all 29 AMP modules
+  const modules = ctx.amp.modules            // all 30 AMP modules
   const journal = ctx.amp.journalEntries()   // one record per gateway call
 }
 ```
@@ -196,11 +196,37 @@ AMP attention is wired into the actual model request, not only the panel:
    and the workspace root.
 2. It calls `kernel.flow.compileTurnContext` with
    `contextBudgetTokens` (default 1200) and an explicit per-item budget.
-3. The compiled items are injected as the `<amp_attention>` runtime context;
-   items that do not fit are recorded as AMP `exclusions` and never presented as
-   read.
-4. `GET /deepseek-coordination/amp/context` reports compilations, item count,
-   exclusions and the last package size.
+3. The compiled payload is served through AMP's own `ContextCache`
+   (`src/host/contextCache.ts`), injected via the kernel's public
+   `KernelOverrides.context` seam: LRU + TTL, and `hits`/`hitRate`/`savedTokens`
+   are reported under `cache` in `/amp/context`. An unchanged batch is compiled
+   once; a changed prompt, plan, tool outcome or version always misses.
+4. The injected block is AMP's own `text` — the exact serialized projections the
+   budget check measured — so `usage.tokens` and the payload agree by
+   construction. The budget is measured with a CJK-aware upper bound
+   (`src/host/tokenEstimate.ts`), not `length / 4`; `tokens` (AMP accounting) and
+   `renderedTokens` (estimate for the same string) are both reported and must
+   match.
+5. At turn end the submitted entries — plus DSH's own `compaction/prune`
+   records, projected as `superseded` candidates — go through AMP's prune state
+   machine (`planContextPrune → approve → apply → compactContext →
+   verifyContextCompaction`). The verified checkpoint is appended to the AMP
+   store, and `prune.decisions` in `/amp/context` names the reason for every
+   entry.
+6. `GET /deepseek-coordination/amp/context` reports compilations, item count,
+   exclusions, cache reuse, prune decisions and a one-line `status.line`
+   summary. `attention.context` returns the exact package the last step
+   injected.
+
+> AMP 0.9.1 publishes `approved -> applied` in `CONTEXT_PRUNE_TRANSITIONS` but
+> does not export the function that performs it; `applyContextPrune` validates
+> that edge against AMP's own table instead of inventing a state.
+>
+> The compiled-context cache goes through AMP's `compileContextCached` and
+> `ContextCache`. Because AMP folds `options.now` into the cache signature and
+> `compileTurnContext` passes a live clock, the port remembers the first compile
+> clock of each batch and reuses it for that batch's repeats; the reasoning is in
+> `src/host/contextCache.ts`.
 
 > See [wire.md](wire.md) for the per-channel wiring contract, exclusion ledgers
 > and status matrix.
@@ -213,6 +239,12 @@ Configuration:
   config:
     contextOptimization: true
     contextBudgetTokens: 1200
+    contextCacheEntries: 128
+    contextCacheTokens: 64000
+    contextCacheTtlMs: 300000
+    contextPruneKeepRecent: 24
+    contextPruneMaxEntries: 200
+    contextPruneMaxTokens: 20000
 ```
 
 The overall flow is also projected continuously: session → turn → goal →
@@ -261,8 +293,8 @@ Explicit dialog actions settle requests. Disabling takeover restores new native 
 | Slot | Entry | Role |
 |---|---|---|
 | `conversation.input.dock` | `deepseek-coordination.notifications` | The unchanged notification surfaces. |
-| `conversation.composer.dock` | `deepseek-coordination.amp` | Compact `AMP 17/60` status button and module dialog. |
-| `settings.section` | `deepseek-coordination` | Full 29-module catalog with tiers, verbs, authority and withheld reasons. |
+| `conversation.composer.dock` | `deepseek-coordination.amp` | Compact `AMP 18/64` status button and module dialog. |
+| `settings.section` | `deepseek-coordination` | Full 30-module catalog with tiers, verbs, authority and withheld reasons. |
 
 The client bundle is emitted in DSH's lazy-CJS envelope
 (`window.__ModuleLoader__.load({ id, factory })`) and requires only `react` from
@@ -334,7 +366,7 @@ The host bundle externalises every `@deepseek-ai/*` package, Cordis and AMP; the
 client bundle inlines MUI/emotion and externalises React. `tsdown.config.ts`
 contains both presets.
 
-Tests cover registration (21 tools), the 29/17/60 surface counts, kernel creation,
+Tests cover registration (22 tools), the 30/18/64 surface counts, kernel creation,
 module dispatch, workspace CAS and root confinement, project environment CAS,
 `plan.propose_draft` through the kernel, notifications, and the client bundle's
 factory and three slot registrations. `test/persistence.test.mjs` additionally

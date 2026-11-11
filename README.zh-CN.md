@@ -35,11 +35,11 @@ AMP 0.9.0                              DeepSeek Harness 0.2.2-rc.1
 
 ## AMP 模块面
 
-AMP 0.9.0 定义 29 个模块，本插件全部以三种方式之一注册：
+AMP 0.14.0 定义 30 个模块，本插件全部以三种方式之一注册：
 
 | 层级 | 数量 | 注册方式 |
 |---|---:|---|
-| `agent` | 17 | 每个模块一个 `attention_manifest_protocol_<module>` DSH 工具，通过 `{ verb, arguments }` 暴露动词，共 61 个动词。0.8.0 新增 `elaboration`（构建诊断、解释、propose）与 `draft`（open/write/patch/diff/check）。 |
+| `agent` | 18 | 每个模块一个 `attention_manifest_protocol_<module>` DSH 工具，通过 `{ verb, arguments }` 暴露动词，共 64 个动词。0.8.0 新增 `elaboration`（构建诊断、解释、propose）与 `draft`（open/write/patch/diff/check）。 |
 | `host` | 8 | 宿主服务/路由：`capability`、`manifest`、`provenance`、`receipt`、`verification`、`retrieval`、`model`、`runtime`；宿主发布 `ctx.amp`（`AmpHost`），其他插件可注入该服务访问内核端口、网关日志、收据与证据。 |
 | `hidden` | 4 | 仅内部：`workflow`、`policy`、`profession`、`behaviour`，永不暴露给模型。 |
 
@@ -121,7 +121,7 @@ node scripts/migrateStore.mjs --to <工作区>
 export const inject = ['amp']
 export function apply(ctx: Context) {
   const kernel = ctx.amp.kernel(root)        // 每个工作区一个内核
-  const modules = ctx.amp.modules            // 全部 29 个 AMP 模块
+  const modules = ctx.amp.modules            // 全部 30 个 AMP 模块
   const journal = ctx.amp.journalEntries()   // 每次网关调用一条记录
 }
 ```
@@ -194,7 +194,7 @@ AMP 要求独立的 verification 与 evidence 才能结算 Goal/Task。DSH 报�
 |---|---|---|
 | `conversation.input.dock` | `deepseek-coordination.notifications` | 保持不变的通知界面。 |
 | `conversation.composer.dock` | `deepseek-coordination.amp` | 紧凑的 `AMP 17/60` 状态按钮与模块对话框。 |
-| `settings.section` | `deepseek-coordination` | 29 个模块的完整目录（层级、动词、权限、保留原因）。 |
+| `settings.section` | `deepseek-coordination` | 30 个模块的完整目录（层级、动词、权限、保留原因）。 |
 
 客户端包使用 DSH 的 lazy-CJS 封装（`window.__ModuleLoader__.load({ id, factory })`），
 只从页面模块表取 `react`；MUI 与 emotion 被打进单文件。

@@ -360,15 +360,32 @@ export function workspaceHandlers(host: AmpHost): HandlerMap {
         if (!exists) {
           if (dryRun) return ok({ path: target.relative, dryRun, created: true, hunks: [], summary: { added: 0, removed: 0, changed: 0 }, truncated: false })
           mkdirSync(dirname(target.absolute), { recursive: true })
-          writeFileSync(target.absolute, parameters.content, 'utf8')
-          const opened = openFile(host, target.relative, false)
-          host.baseContents.set(target.absolute, parameters.content)
-          return ok({
-            path: target.relative, dryRun: false, created: true,
-            revision: opened.snapshot.baseHash, baseHash: opened.snapshot.baseHash,
-            bufferVersion: opened.snapshot.bufferVersion, version: opened.snapshot.version,
-            bytes: Buffer.byteLength(parameters.content, 'utf8'),
-          })
+          // Create the file empty, then let AMP own the content write so a
+          // create shares the same journal/CAS path as an edit.
+          writeFileSync(target.absolute, '', 'utf8')
+          const opened = openFile(host, target.relative, true)
+          try {
+            const options = editOptions(parameters)
+            const changeTarget = targetOf(parameters)
+            const plan = opened.file.planWrite(parameters.content, changeTarget, options)
+            opened.file.write(parameters.content, changeTarget, options)
+            const snapshot = opened.file.flush()
+            const written = opened.file.read()
+            host.baseContents.set(target.absolute, written)
+            return ok({
+              path: target.relative, dryRun: false, created: true, mode: plan.mode,
+              revision: snapshot.baseHash, baseHash: snapshot.baseHash, hash: snapshot.hash,
+              bufferVersion: snapshot.bufferVersion, version: snapshot.version,
+              dirty: snapshot.dirty, encoding: snapshot.encoding, eol: snapshot.eol,
+              bytes: Buffer.byteLength(written, 'utf8'),
+            })
+          } finally {
+            try {
+              opened.file.unmount({ discardDirty: true })
+            } catch {
+              // Releasing the lease is best effort.
+            }
+          }
         }
         const opened = openFile(host, target.relative, true)
         try {

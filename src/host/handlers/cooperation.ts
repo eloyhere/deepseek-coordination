@@ -23,9 +23,24 @@ export function cooperationHandlers(host: AmpHost): HandlerMap {
   return {
     [key('cooperation', 'inbox')]: (parameters: Params) => {
       const sessionId = sessionOf(host)
+      // AMP cooperation messages first: they carry an owning cooperation and
+      // provenance. The legacy host mailbox stays as a fallback for older sends.
+      const fromCooperation = host.cooperation.inbox(sessionId).map((message) => {
+        const payload = message.payload as { to?: string | null; thread?: string | null; content?: unknown }
+        return {
+          id: message.messageId,
+          from: message.senderAgentId,
+          to: payload.to ?? null,
+          kind: 'message' as const,
+          content: payload.content ?? null,
+          thread: payload.thread ?? null,
+          at: message.sentAt,
+          cooperationId: message.cooperationId ?? null,
+        }
+      })
       const mailbox = (host.mailboxes.get(sessionId) ?? []) as Envelope[]
       const unread = mailbox.filter((item) => item.to === null || item.to === sessionId)
-      return ok(page(unread, parameters))
+      return ok(page([...unread, ...fromCooperation], parameters))
     },
 
     [key('cooperation', 'send')]: (parameters: Params) => {
@@ -34,19 +49,25 @@ export function cooperationHandlers(host: AmpHost): HandlerMap {
       if (content === undefined) return failure('invalid_parameters', 'content is required')
       const thread = typeof parameters.thread === 'string' ? parameters.thread : null
       const target = typeof parameters.to === 'string' ? parameters.to : null
-      const envelope: Envelope = {
-        id: `coop-${randomUUID()}`,
-        from: sessionId,
-        to: target,
-        kind: 'message',
-        content,
-        thread,
-        at: new Date().toISOString(),
+      try {
+        const message = host.cooperation.send(sessionId, { to: target, thread, content })
+        return ok({ sent: true, id: message.messageId, thread, cooperationId: message.cooperationId ?? null })
+      } catch (error) {
+        // Fallback keeps a send durable if AMP refuses the cooperation write.
+        const envelope: Envelope = {
+          id: `coop-${randomUUID()}`,
+          from: sessionId,
+          to: target,
+          kind: 'message',
+          content,
+          thread,
+          at: new Date().toISOString(),
+        }
+        const mailbox = (host.mailboxes.get(sessionId) ?? []) as Envelope[]
+        mailbox.push(envelope)
+        host.mailboxes.set(sessionId, mailbox.slice(-200))
+        return ok({ sent: true, id: envelope.id, thread, fallback: error instanceof Error ? error.message : String(error) })
       }
-      const mailbox = (host.mailboxes.get(sessionId) ?? []) as Envelope[]
-      mailbox.push(envelope)
-      host.mailboxes.set(sessionId, mailbox.slice(-200))
-      return ok({ sent: true, id: envelope.id, thread })
     },
 
     [key('cooperation', 'report_result')]: (parameters: Params) => {

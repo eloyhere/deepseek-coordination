@@ -15,6 +15,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.28.0] - 2026-11-11
+
+### Added
+
+- AMP 0.14.0 support: the `question` module (`get`, `list`, `open`) is registered, persisted through the AMP store and covered by tests.
+- AMP surfaces for the module catalog: every agent module is defined and activated as a `capability`, and published as a `manifest` with a tool definition (`ampSurface.ts`).
+- AMP runtime integration: execution handles page through `RetrievalHandleStore`, `execution.run` batches record behaviour shadow validations, and the host mailbox is backed by `CooperationCoordinator` (`ampCooperation.ts`).
+- Host ports: `AmpModel` (`proposeNextStep` / `ModelPort`) and `AmpRuntime` (`ExecutionCoordinator` + receipt sink) (`ampPorts.ts`).
+
+### Fixed
+
+- `turn.respond` now advances the AMP turn through `TurnService.respond`; `intent.submit_clarification` keeps the clarification text and reports rejected transitions.
+- `goal.submit_evidence` writes the AMP evidence ledger only when a receipt id is supplied; `task.report_progress` can drive task transitions and `task.list_ready` filters by the ready state.
+- `evidence.cite` validates ids against the ledger, `budget.remaining` reports the per-node tree, and `execution.run` returns structured validation errors.
+- `workspace.write` creates files through AMP `mount/planWrite/flush` instead of writing content directly.
+- `bindingFor` reports `dsh-amp-0.14.0` instead of the stale `dsh-amp-0.9.1`.
+
+### Verified
+
+- `npm test`: 194/194.
+
 ## [0.27.7] - 2026-11-10
 
 ### Fixed

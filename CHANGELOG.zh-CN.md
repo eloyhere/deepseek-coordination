@@ -13,6 +13,27 @@
 > 已不在当前分支顶端，但仍保留在 git 历史中，并有 `v0.1.5` … `v0.1.9` 标签。
 > 历史中的 `Auto-commit: typecheck-passing snapshot` 是内部检查点，不单独列为版本。
 
+## [0.28.0] — 2026-11-11
+
+### 新增
+
+- 支持 AMP 0.14.0：注册 `question` 模块（`get`、`list`、`open`），通过 AMP store 持久化并有测试覆盖。
+- 模块目录的 AMP 产物：每个 agent 模块都定义并激活为 `capability`，同时发布带 tool 定义的 `manifest`（`ampSurface.ts`）。
+- AMP 运行时接入：执行句柄通过 `RetrievalHandleStore` 分页，`execution.run` 每批记录行为影子验证，宿主邮箱由 `CooperationCoordinator` 支撑（`ampCooperation.ts`）。
+- 宿主端口：`AmpModel`（`proposeNextStep` / `ModelPort`）与 `AmpRuntime`（`ExecutionCoordinator` + receipt sink）（`ampPorts.ts`）。
+
+### 修复
+
+- `turn.respond` 通过 `TurnService.respond` 推进 AMP turn；`intent.submit_clarification` 保留澄清文本并报告被拒绝的迁移。
+- `goal.submit_evidence` 只在提供 receipt id 时写 AMP 证据台账；`task.report_progress` 可驱动任务迁移，`task.list_ready` 按 ready 过滤。
+- `evidence.cite` 对台账校验 id，`budget.remaining` 返回 per-node 树，`execution.run` 返回结构化校验错误。
+- `workspace.write` 新建文件走 AMP `mount/planWrite/flush`，不再直接写内容。
+- `bindingFor` 报告 `dsh-amp-0.14.0`，不再是过期的 `dsh-amp-0.9.1`。
+
+### 验证
+
+- `npm test`：194/194。
+
 ## [0.27.7] — 2026-11-10
 
 ### 修复

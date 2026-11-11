@@ -170,7 +170,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.27.7',
+          version: '0.28.0',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler
@@ -229,6 +229,15 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
     retention.observe(session.id, event)
     prune.observe(session.id, event)
     compaction.observe(session.id, event)
+    // DSH's prune facts enter AMP's planner as candidates, so the turn-end
+    // decision can report `superseded` for them instead of a side ledger only.
+    if (event.type === 'compaction/prune') {
+      try {
+        optimizer.notePruneRecords(session.id, prune.list(session.id))
+      } catch {
+        // Advisory bridge: a malformed record must not break the event.
+      }
+    }
     // P3/P4: keep lineage item ids turn-qualified. The subagent tracker also
     // settles a child's delegation on `turn/end`; the fork tracker only records
     // the latest turn. Both are side records and never throw.
@@ -239,7 +248,10 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
       const turn = typeof data?.turn === 'number' ? data.turn : host.currentTurn(session.id)
       if (turn !== undefined) {
         wire.clearTurn(session.id, turn)
-        optimizer.invalidate(session.id, turn)
+        optimizer.invalidate(session.id)
+        // The turn's attention entries are complete here; let AMP decide which
+        // of them are still worth their tokens and record the checkpoint.
+        optimizer.reviewTurn(session.id)
       }
     }
   })
@@ -285,7 +297,8 @@ function attachPreStepCapture(ctx: Context, host: AmpHost, wire: WireCapture, op
           if (turn === undefined) return decision
           const step = typeof payload.step === 'number' ? payload.step : 0
           wire.capture(payload.agent, decision.messages, { turn, step })
-          optimizer.invalidate(sessionId, turn)
+          // No cache invalidation here: a changed prompt produces a different
+          // AMP cache signature, and flushing per step would defeat reuse.
         } catch (error) {
           // AMP is a side path: a capture or wiring failure must never reject
           // the step or replace DSH's own decision.

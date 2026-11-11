@@ -36,6 +36,7 @@ registerHooks({
 
 const { AmpContextOptimizer } = await import('../src/host/context.ts')
 const { WireCapture } = await import('../src/host/prestep.ts')
+const { estimateTokens } = await import('../src/host/tokenEstimate.ts')
 
 const SESSION = 'session-diagnostics'
 
@@ -180,4 +181,46 @@ test('the projection is capped at 50 and drops malformed exclusions', () => {
   assert.equal(diagnostics.lastExclusions.length, 49)
   assert.deepEqual(diagnostics.lastExclusions[0], { id: 'ok', reason: 'budget' })
   assert.equal(diagnostics.lastExclusions.every((view) => typeof view.id === 'string' && typeof view.reason === 'string'), true)
+})
+
+test('the injected text is exactly the payload AMP measured', () => {
+  const text = '{"id":"attention:a","summary":"中文摘要"}'
+  const tokens = estimateTokens(text)
+  const optimizer = optimizerFor(() => ({
+    compiled: {
+      text,
+      items: [{ id: 'attention:a', summary: '中文摘要', usage: { tokens } }],
+      exclusions: [],
+      usage: { tokens },
+    },
+  }))
+
+  assert.equal(optimizer.contextFor(agent), text)
+  const status = optimizer.status()
+  assert.equal(status.lastTokens, tokens)
+  assert.equal(status.lastCompilerTokens, tokens)
+  assert.equal(status.lastCharacters, text.length)
+  assert.match(status.line, /cache 0%/)
+})
+
+test('turn review runs AMP over DSH prune facts and reports the decision', () => {
+  const optimizer = new AmpContextOptimizer(fakeContext(), fakeHost(() => compileResult([])), {
+    ...config,
+    contextPruneKeepRecent: 0,
+  })
+  optimizer.notePruneRecords(SESSION, [{
+    sessionId: SESSION,
+    shadowedRange: { start: 3, end: 9 },
+    shadowedSeqs: [3],
+    shadowedTokenCount: 400,
+    replacementSeq: 11,
+    at: '2026-01-01T00:00:00.000Z',
+    callId: 'call-1',
+  }])
+
+  const outcome = optimizer.reviewTurn(SESSION)
+  assert.notEqual(outcome, undefined)
+  assert.equal(outcome.pruned, 1)
+  assert.equal(outcome.decisions[0].reason, 'superseded')
+  assert.equal(optimizer.pruneStatus().last.pruned, 1)
 })
