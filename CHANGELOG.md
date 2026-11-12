@@ -15,6 +15,63 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.29.0] - 2026-11-12
+
+### Added
+
+- Value quantification on the AMP surface. `/amp/context` now publishes a `benefits`
+  read model: a 0-100 guardrail quality index (shown as a percentage), net benefit
+  (gross saved spend minus injected attention cost), conservative token savings from
+  spill/retention/prune, and model-aware cost estimates.
+- Pricing follows the host-selected provider/model instead of a hardcoded V4-Pro rate:
+  DeepSeek Flash and V4-Pro each have peak/off-peak tariffs, and the effective input
+  price blends cache-hit and cache-miss rates by the observed prompt-cache hit rate
+  from DSH assistant usage. Models without a published text-token tariff are shown
+  as unpriced rather than borrowing another model's rate.
+- Static model registry: 41 DSH provider routes and 1,722 unique chat models
+  (1,614 from the installed `pi-ai` 1.3.0 catalog plus OpenRouter's 2026-11-12
+  catalog, deduped), with 1,585 per-token-priced entries. A generated registry
+  module keeps rates in USD per million tokens, supports tiered rates and
+  cache-read discounts, and falls back from exact provider/model to a unique
+  model id. `GET /amp/models` exposes the same data read-only; `/amp/context`
+  reports the registry size in `benefits.registry`.
+- The value ledger now separates three different channels instead of one
+  "prune" number: **attention prune** (AMP's verified `ContextPruner`, counted
+  as a net saving), **context prune** (DSH `compaction/prune` tool-result
+  head/tail replacement, shown with record count and original tokens) and
+  **context compaction** (`compaction/summary` history summarization, shown
+  with count and original tokens). The latter two are display-only because
+  their replacement text remains in context; the "Method and assumptions"
+  panel states that explicitly.
+- Error and execution read models on `benefits`: `errors` reports AMP gateway calls,
+  failures, error rate, error-free rate, median/p95 duration and a 0-100 duration score
+  against a 250 ms p95 target; `effectiveness` combines quality, duration, ROI and an
+  error-free gate into one percentage. The formula is
+  `(0.45 × quality + 0.25 × duration + 0.30 × ROI) × error-free`; errors are a
+  multiplicative gate, so quality does not double-count them.
+- Quality is confidence-shrunk: fewer than four compiles blend toward the neutral 50
+  anchor, so one successful run cannot claim 100. No journal sample uses a neutral 50
+  duration and a 100% error-free prior instead of hiding the panel.
+- The composer strip shows 节约 Token, 节约花费, cache-hit rate, 输出质量% and 综合效益%
+  chips; the detail dialog adds five KPI tiles (quality, net benefit, saved tokens,
+  saved cost, effectiveness), a saved/injected bar, a per-channel ledger with error
+  rate and p95 duration rows, and a "Method and assumptions" disclosure.
+- Benefit counters are durable: `/amp/context` merges the live counters with a
+  `benefit-history.json` high-water ledger found in the AMP storage directories.
+  A DSH restart or plugin reload no longer empties the value panel; the union is
+  per-field maximum, so two storage roots cannot overwrite each other.
+- Host counters: `tokensInjected`, `spill.bytes` and
+  `retention.omittedBytes/omittedItems/omittedUnknown`. Compile-cache reuse is
+  reported separately and never counted as prompt tokens.
+
+### Verified
+
+- `tsc -p tsconfig.json --noEmit`: clean.
+- `node --test test/*.test.mjs`: 209/209 (new pricing, registry, cache-hit, unpriced, error-rate, p95, effectiveness and restart-history cases).
+- `tsdown`: host and client bundles build.
+- Live `/amp/models`: 41 providers, 1,722 unique models, 1,585 priced; `/amp/context` keeps
+  `deepseek-official/deepseek-flash` on the CNY peak tariff.
+
 ## [0.28.0] - 2026-11-11
 
 ### Added

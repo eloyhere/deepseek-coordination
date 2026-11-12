@@ -118,6 +118,8 @@ export interface SpillStatus {
   readonly duplicates: number
   readonly evicted: number
   readonly failures: number
+  /** Sum of spilled bytes; the only amount that can become a token estimate. */
+  readonly bytes: number
 }
 
 /** Counters kept allocation-bounded; failures retain only a count. */
@@ -264,7 +266,13 @@ export class SpillIndex {
   /** Bounded status for diagnostics; never throws. */
   status(): SpillStatus {
     let records = 0
-    for (const list of this.bySession.values()) records += list.length
+    let bytes = 0
+    for (const list of this.bySession.values()) {
+      records += list.length
+      for (const record of list) {
+        if (typeof record.bytes === 'number' && Number.isFinite(record.bytes) && record.bytes > 0) bytes += record.bytes
+      }
+    }
     return {
       sessions: this.bySession.size,
       records,
@@ -273,6 +281,7 @@ export class SpillIndex {
       duplicates: this.counters.duplicates,
       evicted: this.counters.evicted,
       failures: this.counters.failures,
+      bytes,
     }
   }
 

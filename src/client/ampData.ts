@@ -130,10 +130,22 @@ export interface AmpCaptureSummary {
 
 /** Bounded output-channel counters from the P2 trackers. */
 export interface AmpContextOutputs {
-  readonly spill?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
-  readonly retention?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
-  readonly prune?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
-  readonly compaction?: { readonly records?: number; readonly sessions?: number; readonly failures?: number }
+  readonly spill?: {
+    readonly records?: number
+    readonly sessions?: number
+    readonly failures?: number
+    readonly bytes?: number
+  }
+  readonly retention?: {
+    readonly records?: number
+    readonly sessions?: number
+    readonly failures?: number
+    readonly omittedBytes?: number
+    readonly omittedItems?: number
+    readonly omittedUnknown?: number
+  }
+  readonly prune?: { readonly records?: number; readonly sessions?: number; readonly failures?: number; readonly shadowedTokens?: number }
+  readonly compaction?: { readonly records?: number; readonly sessions?: number; readonly failures?: number; readonly shadowedTokens?: number }
   readonly failures?: number
 }
 
@@ -163,6 +175,174 @@ export interface AmpContext {
   }
   readonly outputs?: AmpContextOutputs
   readonly lag?: number
+  /** Tokens injected across every compile; the value model's denominator. */
+  readonly tokensInjected?: number
+  /** AMP compile-cache counters; `savedTokens` never counts as prompt tokens. */
+  readonly cache?: {
+    readonly entries?: number
+    readonly tokens?: number
+    readonly bytes?: number
+    readonly hits?: number
+    readonly misses?: number
+    readonly evictions?: number
+    readonly expirations?: number
+    readonly hitRate?: number
+    readonly utilisation?: number
+    readonly savedTokens?: number
+    readonly failures?: number
+  }
+  /** Verified prune counters; `savedTokens` is the attention ledger's saving. */
+  readonly prune?: {
+    readonly reviews?: number
+    readonly applied?: number
+    readonly verified?: number
+    readonly failed?: number
+    readonly savedTokens?: number
+    readonly lastPruned?: number
+    readonly lastKept?: number
+    readonly lastAt?: string
+    readonly sessions?: number
+  }
+  /** Host-computed value model; absent on an older host. */
+  readonly benefits?: AmpBenefits
+  /** One-line host summary, preserved for compatibility. */
+  readonly line?: string
+}
+
+/** One of four readable quality bands. */
+export type AmpBenefitBand = 'excellent' | 'good' | 'fair' | 'poor'
+
+/** How much evidence backs the estimate. */
+export type AmpBenefitConfidence = 'none' | 'low' | 'medium' | 'high'
+
+/** Guardrail index behind the "output quality" tile. */
+export interface AmpBenefitQuality {
+  readonly score: number
+  readonly baseline: number
+  readonly delta: number
+  readonly band: AmpBenefitBand
+  readonly samples: number
+  readonly components: {
+    readonly freshness: number
+    readonly budget: number
+    readonly verification: number
+    readonly reliability: number
+  }
+}
+
+/** The host value read model served under `benefits` by `/amp/context`. */
+export interface AmpBenefits {
+  readonly available: boolean
+  readonly currency: string
+  /** Provider/model DSH reports for the active route. */
+  readonly model: { readonly provider: string; readonly model: string } | null
+  /** Resolved tariff; `priced: false` means the model has no text-token price. */
+  readonly pricing: {
+    readonly priced: boolean
+    readonly provider: string
+    readonly model: string
+    readonly name: string
+    readonly method: 'deepseek-peak' | 'registry' | 'flat' | 'none'
+    readonly currency: 'CNY' | 'USD'
+    readonly window: 'peak' | 'off-peak' | 'flat'
+    readonly inputMissPerMillion: number
+    readonly inputHitPerMillion: number
+    readonly outputPerMillion: number
+    readonly cacheDiscount: boolean
+    readonly tiers: readonly {
+      readonly above: number
+      readonly input: number
+      readonly output: number
+      readonly cacheRead: number
+      readonly cacheWrite: number
+    }[]
+    readonly effectiveInputPerMillion: number
+    readonly source: string
+  } | null
+  /** Actual prompt-cache usage behind the blended input price. */
+  readonly cache: {
+    readonly requests: number
+    readonly inputTokens: number
+    readonly cacheReadTokens: number
+    readonly cacheWriteTokens: number
+    readonly outputTokens: number
+    readonly totalInputTokens: number
+    readonly hitRate: number
+  }
+  /** Static price-registry size and provenance. */
+  readonly registry: {
+    readonly providers: number
+    readonly models: number
+    readonly priced: number
+    readonly sources: readonly string[]
+  } | null
+  readonly quality: AmpBenefitQuality | null
+  readonly errors: {
+    readonly available: boolean
+    readonly calls: number
+    readonly failures: number
+    readonly errorRate: number
+    readonly errorFree: number
+    readonly medianDurationMs: number
+    readonly p95DurationMs: number
+    readonly durationScore: number
+    readonly durationTargetMs: number
+  } | null
+  readonly effectiveness: {
+    readonly score: number
+    readonly components: {
+      readonly quality: number
+      readonly duration: number
+      readonly errorFree: number
+      readonly roi: number
+    }
+    readonly weights: {
+      readonly quality: number
+      readonly duration: number
+      readonly roi: number
+    }
+    readonly errorRate: number
+    readonly p95DurationMs: number
+    readonly formula: string
+  } | null
+  readonly history: {
+    readonly persisted: boolean
+    readonly updatedAt: string | null
+  }
+  readonly tokens: {
+    readonly saved: number
+    readonly spill: number
+    readonly retention: number
+    readonly prune: number
+    readonly attentionPrune: number
+    readonly contextPrune: number
+    readonly compaction: number
+    readonly contextPruneRecords: number
+    readonly compactionRecords: number
+    readonly cacheReuse: number
+    readonly injected: number
+    readonly net: number
+    readonly roi: number
+    readonly omittedItems: number
+    readonly omittedUnknown: number
+  }
+  readonly cost: {
+    readonly saved: number
+    readonly injected: number
+    readonly net: number
+    readonly pricePerMillion: number
+    readonly currency: string
+    /** False when the active model has no published text-token tariff. */
+    readonly priced: boolean
+  }
+  readonly confidence: AmpBenefitConfidence
+  readonly assumptions: {
+    readonly bytesPerToken: number
+    readonly qualityBaseline: number
+    readonly qualityWeights: readonly number[]
+    readonly countedSources: readonly string[]
+    readonly excludedSources: readonly string[]
+  }
 }
 
 export interface AmpSnapshot {
@@ -286,6 +466,46 @@ export function formatCount(value: number | undefined): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value ?? 0)
 }
 
+/**
+ * Compact token count for KPI tiles and the composer strip.
+ *
+ * Small values stay exact; larger values keep three significant digits at
+ * most, so a tile can never overflow because of a long grouped number.
+ */
+export function formatCompactCount(value: number | undefined): string {
+  const number = typeof value === 'number' && Number.isFinite(value) ? value : 0
+  const absolute = Math.abs(number)
+  if (absolute >= 1_000_000_000) return `${(number / 1_000_000_000).toFixed(absolute >= 10_000_000_000 ? 0 : 1)}B`
+  if (absolute >= 1_000_000) return `${(number / 1_000_000).toFixed(absolute >= 10_000_000 ? 0 : 1)}M`
+  if (absolute >= 10_000) return `${Math.round(number / 1_000)}k`
+  if (absolute >= 1_000) return `${(number / 1_000).toFixed(1)}k`
+  return String(Math.round(number))
+}
+
+/**
+ * Money for an estimate. Sub-cent values keep enough decimals to stay
+ * distinguishable from zero instead of rendering a misleading `¥0.00`.
+ */
+export function formatMoney(value: number | undefined, currency = 'CNY'): string {
+  const number = typeof value === 'number' && Number.isFinite(value) ? value : 0
+  const absolute = Math.abs(number)
+  const digits = absolute === 0 ? 2 : absolute >= 1 ? 2 : absolute >= 0.01 ? 4 : 6
+  const body = new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(Math.abs(number))
+  const sign = number < 0 ? '-' : ''
+  if (currency === 'CNY') return `${sign}¥${body}`
+  if (currency === 'USD') return `${sign}$${body}`
+  return `${sign}${currency} ${body}`
+}
+
+/** A leverage ratio like `3.4×`; an unmeasured ratio is an em dash. */
+export function formatRatio(value: number | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—'
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)}×`
+}
+
 /** HH:mm:ss in the page's locale, for the "updated at" line. */
 export function formatClock(timestamp: number | null, locale: string): string {
   if (timestamp === null) return '—'
@@ -357,7 +577,36 @@ export function snapshotSignature(
         context.outputs?.spill?.records,
         context.outputs?.retention?.records,
         context.outputs?.prune?.records,
+        context.outputs?.prune?.shadowedTokens,
         context.outputs?.compaction?.records,
+        context.outputs?.compaction?.shadowedTokens,
+        context.lastTokens,
+        context.tokensInjected,
+        context.cache?.savedTokens,
+        context.prune?.savedTokens,
+        context.outputs?.spill?.bytes,
+        context.outputs?.retention?.omittedBytes,
+        context.benefits?.available,
+        context.benefits?.quality?.score,
+        context.benefits?.tokens.saved,
+        context.benefits?.tokens.prune,
+        context.benefits?.tokens.contextPrune,
+        context.benefits?.tokens.compaction,
+        context.benefits?.tokens.contextPruneRecords,
+        context.benefits?.tokens.compactionRecords,
+        context.benefits?.tokens.injected,
+        context.benefits?.effectiveness?.score,
+        context.benefits?.history?.persisted,
+        context.benefits?.history?.updatedAt,
+        context.benefits?.errors?.calls,
+        context.benefits?.errors?.failures,
+        context.benefits?.errors?.p95DurationMs,
+        context.benefits?.cost.saved,
+        context.benefits?.model?.model,
+        context.benefits?.pricing?.window,
+        context.benefits?.pricing?.effectiveInputPerMillion,
+        context.benefits?.cache?.hitRate,
+        context.benefits?.confidence,
       ],
     lists: status?.lists === undefined
       ? undefined

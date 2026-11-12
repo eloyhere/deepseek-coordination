@@ -66,6 +66,12 @@ export interface RetentionStatus {
   readonly duplicates: number
   readonly evicted: number
   readonly failures: number
+  /** Sum of byte-denominated omissions; item counts stay separate. */
+  readonly omittedBytes: number
+  /** Sum of item-denominated omissions; one item is not one token. */
+  readonly omittedItems: number
+  /** Records whose omission amount the notice did not disclose. */
+  readonly omittedUnknown: number
 }
 
 interface RetentionCounters {
@@ -196,6 +202,14 @@ export class RetentionLedger {
 
   /** Bounded status for diagnostics; never throws. */
   status(): RetentionStatus {
+    let omittedBytes = 0
+    let omittedItems = 0
+    let omittedUnknown = 0
+    for (const record of this.byCall.values()) {
+      if (record.omitted.kind === 'bytes') omittedBytes += record.omitted.bytes
+      else if (record.omitted.kind === 'exact') omittedItems += record.omitted.count
+      else if (record.omitted.kind === 'unknown') omittedUnknown += 1
+    }
     return {
       records: this.byCall.size,
       maxRecords: MAX_RETENTION_RECORDS,
@@ -205,6 +219,9 @@ export class RetentionLedger {
       duplicates: this.counters.duplicates,
       evicted: this.counters.evicted,
       failures: this.counters.failures,
+      omittedBytes,
+      omittedItems,
+      omittedUnknown,
     }
   }
 

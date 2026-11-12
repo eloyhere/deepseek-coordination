@@ -74,6 +74,8 @@ export interface CompactionStatus {
   readonly summaries: number
   readonly ends: number
   readonly failures: number
+  /** Sum of compacted ranges' original token counts; display-only. */
+  readonly shadowedTokens: number
 }
 
 interface OpenCompaction {
@@ -271,6 +273,8 @@ export class CompactionTracker {
 
   /** Bounded status for diagnostics; never throws. */
   status(): CompactionStatus {
+    let shadowedTokens = 0
+    for (const record of this.recordsById.values()) shadowedTokens += record.shadowedTokenCount
     return {
       sessions: new Set([...this.recordsById.values()].map((record) => record.sessionId)).size,
       records: this.recordsById.size,
@@ -280,6 +284,7 @@ export class CompactionTracker {
       summaries: this.counters.summaries,
       ends: this.counters.ends,
       failures: this.counters.failures,
+      shadowedTokens,
     }
   }
 

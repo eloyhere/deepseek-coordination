@@ -6,6 +6,7 @@ import type { AmpHost } from './amp.js'
 import type { NotificationCenter } from './notify.js'
 import type { DialogGate } from './dialogGate.js'
 import { asRecord, jsonSafe } from './json.js'
+import { listRegistryModels, registryProviderCounts, registryProviders, registryStats } from './registry.js'
 
 export const ROUTE_PREFIX = '/deepseek-coordination'
 
@@ -175,6 +176,27 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
   route(`${ROUTE_PREFIX}/amp/context`, (request, response) => {
     if (request.method !== 'GET') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'GET only')
     ok(response, dependencies.context === undefined ? { enabled: false } : dependencies.context())
+  })
+
+  // Read-only price registry: 41 DSH routes plus OpenRouter's live catalog.
+  // This is a static snapshot generated at build time; no network call happens
+  // while serving it.
+  route(`${ROUTE_PREFIX}/amp/models`, (request, response) => {
+    if (request.method !== 'GET') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'GET only')
+    const url = urlOf(request)
+    const provider = url.searchParams.get('provider')?.trim()
+    const query = url.searchParams.get('q')?.trim()
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? '100') || 100, 1), 200)
+    ok(response, {
+      stats: registryStats(),
+      providers: registryProviderCounts(),
+      providerNames: registryProviders(),
+      entries: listRegistryModels({
+        ...(provider === undefined || provider.length === 0 ? {} : { provider }),
+        ...(query === undefined || query.length === 0 ? {} : { query }),
+        limit,
+      }),
+    })
   })
 
   route(`${ROUTE_PREFIX}/amp/sync`, (request, response) => {

@@ -51,10 +51,10 @@ export const EmptyLineageStatus: LineageStatus = emptyLineageStatus()
 
 /** All-zero P2 status, used only if the base source has no usable status. */
 const EMPTY_OUTPUT_STATUS: OutputStatus = {
-  spill: { sessions: 0, records: 0, observed: 0, parsed: 0, duplicates: 0, evicted: 0, failures: 0 },
-  retention: { records: 0, maxRecords: 0, sessions: 0, observed: 0, parsed: 0, duplicates: 0, evicted: 0, failures: 0 },
-  prune: { sessions: 0, records: 0, linked: 0, pending: 0, observed: 0, pruned: 0, unlinked: 0, failures: 0 },
-  compaction: { sessions: 0, records: 0, open: 0, observed: 0, starts: 0, summaries: 0, ends: 0, failures: 0 },
+  spill: { sessions: 0, records: 0, observed: 0, parsed: 0, duplicates: 0, evicted: 0, failures: 0, bytes: 0 },
+  retention: { records: 0, maxRecords: 0, sessions: 0, observed: 0, parsed: 0, duplicates: 0, evicted: 0, failures: 0, omittedBytes: 0, omittedItems: 0, omittedUnknown: 0 },
+  prune: { sessions: 0, records: 0, linked: 0, pending: 0, observed: 0, pruned: 0, unlinked: 0, failures: 0, shadowedTokens: 0 },
+  compaction: { sessions: 0, records: 0, open: 0, observed: 0, starts: 0, summaries: 0, ends: 0, failures: 0, shadowedTokens: 0 },
   failures: 0,
 }
 

@@ -61,6 +61,8 @@ export interface PruneStatus {
   readonly pruned: number
   readonly unlinked: number
   readonly failures: number
+  /** Sum of originals' token counts; display-only, not a net saving. */
+  readonly shadowedTokens: number
 }
 
 interface PruneCounters {
@@ -249,9 +251,11 @@ export class PruneTracker {
   status(): PruneStatus {
     let records = 0
     let linked = 0
+    let shadowedTokens = 0
     for (const list of this.bySession.values()) {
       records += list.length
       linked += linkedCount(list)
+      for (const record of list) shadowedTokens += record.shadowedTokenCount
     }
     return {
       sessions: this.bySession.size,
@@ -262,6 +266,7 @@ export class PruneTracker {
       pruned: this.counters.pruned,
       unlinked: this.counters.unlinked,
       failures: this.counters.failures,
+      shadowedTokens,
     }
   }
 

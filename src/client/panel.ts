@@ -18,14 +18,24 @@ import Hub from '@mui/icons-material/Hub'
 import Memory from '@mui/icons-material/Memory'
 import Bolt from '@mui/icons-material/Bolt'
 import History from '@mui/icons-material/History'
+import Savings from '@mui/icons-material/Savings'
+import TokenIcon from '@mui/icons-material/Token'
+import PriceCheck from '@mui/icons-material/PriceCheck'
+import Insights from '@mui/icons-material/Insights'
+import InfoOutlined from '@mui/icons-material/InfoOutlined'
+import ExpandMore from '@mui/icons-material/ExpandMore'
 import {
   COUNT_ORDER,
   formatClock,
+  formatCompactCount,
   formatCount,
+  formatMoney,
+  formatRatio,
   mutatingVerbs,
   shortToolName,
   totalVerbs,
   useAmpData,
+  type AmpBenefitBand,
   type AmpJournalEntry,
   type AmpListItem,
   type AmpModule,
@@ -158,6 +168,324 @@ function ModuleRow(props: {
   )
 }
 
+/** Map a quality band onto the tile's icon tone. */
+function qualityTone(band: AmpBenefitBand | undefined): 'success' | 'accent' | 'warning' {
+  if (band === 'excellent') return 'success'
+  if (band === 'good') return 'accent'
+  return 'warning'
+}
+
+/** Translation key for a quality band. */
+function bandLabelKey(band: AmpBenefitBand): string {
+  if (band === 'excellent') return 'valueBandExcellent'
+  if (band === 'good') return 'valueBandGood'
+  if (band === 'fair') return 'valueBandFair'
+  return 'valueBandPoor'
+}
+
+/** One small pill for the composer strip; text only, never colour-only. */
+function ValueChip(props: {
+  readonly label: string
+  readonly tone: 'neutral' | 'accent' | 'success' | 'warning'
+  readonly compactHidden?: boolean
+}): React.ReactElement {
+  return h(M.Chip, {
+    size: 'small',
+    label: props.label,
+    sx: {
+      ...chipSx(props.tone, 17),
+      display: props.compactHidden === true ? { xs: 'none', sm: 'inline-flex' } : 'inline-flex',
+      flex: '0 0 auto',
+    },
+  })
+}
+
+/**
+ * Value quantification: five KPI tiles, an honest saving/injection ledger and
+ * a methodology disclosure.
+ *
+ * The block is read-only and derived entirely from host counters. It never
+ * claims a model benchmark: the quality tile is a guardrail index, the token
+ * and cost tiles are conservative estimates, and the methodology says so.
+ */
+function BenefitSection(props: {
+  readonly data: AmpSnapshot
+  readonly t: (key: string) => string
+}): React.ReactElement | null {
+  const benefits = props.data.context?.benefits
+  if (benefits === undefined) return null
+  const { t } = props
+  const quality = benefits.quality
+  const confidenceKey = benefits.confidence === 'high'
+    ? 'valueConfidenceHigh'
+    : benefits.confidence === 'medium'
+      ? 'valueConfidenceMedium'
+      : benefits.confidence === 'low'
+        ? 'valueConfidenceLow'
+        : 'valueConfidenceNone'
+  const confidenceTone = benefits.confidence === 'high'
+    ? 'success'
+    : benefits.confidence === 'medium'
+      ? 'accent'
+      : 'warning'
+  const qualityHint = quality === null
+    ? t('valueAwaitingCompile')
+    : `${t(bandLabelKey(quality.band))} · ${quality.delta >= 0 ? '+' : ''}${formatCount(quality.delta)} ${t('valueVsBaseline')}`
+  const savingHint = benefits.tokens.saved > 0
+    ? `${t('valueToolShort')} ${formatCompactCount(benefits.tokens.spill + benefits.tokens.retention)} · ${t('valuePruneShort')} ${formatCompactCount(benefits.tokens.prune)}`
+    : t('valueNoSaving')
+  const priced = benefits.cost.priced
+  const modelLabel = benefits.model?.model ?? '—'
+  const windowKey = benefits.pricing?.window === 'peak'
+    ? 'valuePeak'
+    : benefits.pricing?.window === 'off-peak'
+      ? 'valueOffPeak'
+      : 'valueFlat'
+  const cachePct = `${Math.round((benefits.cache.hitRate ?? 0) * 100)}%`
+  const costHint = !priced
+    ? t('valueUnpriced')
+    : benefits.tokens.saved > 0
+      ? `${t('valuePriceHint')} ${formatMoney(benefits.cost.pricePerMillion)}/M`
+      : t('valueNoSaving')
+  const saved = benefits.tokens.saved
+  const injected = benefits.tokens.injected
+  const total = saved + injected
+  const savedShare = total <= 0 ? 0 : Math.max(0, Math.min(100, (saved / total) * 100))
+  const net = benefits.tokens.net
+  const errors = benefits.errors
+  const effectiveness = benefits.effectiveness
+  const errorPct = errors === null ? '—' : `${(errors.errorRate * 100).toFixed(1)}%`
+  const effectivenessHint = effectiveness === null
+    ? t('valueEffectivenessPending')
+    : `${t('valueQuality')} ${effectiveness.components.quality} · ${t('valueDuration')} ${effectiveness.components.duration} · ${t('valueErrorFree')} ${effectiveness.components.errorFree} · ${t('valueRoi')} ${effectiveness.components.roi}`
+  const qualityComponents = quality === null
+    ? ''
+    : `${quality.components.freshness} / ${quality.components.budget} / ${quality.components.verification} / ${quality.components.reliability}`
+
+  return h(
+    M.Box,
+    { sx: { mt: props.data.error ? 1.5 : 0 } },
+    h(SectionTitle, {
+      title: t('value'),
+      hint: `${t('valueEstimate')} · ${modelLabel} · ${t(windowKey)}${benefits.history.persisted ? ` · ${t('valueHistory')}` : ''}`,
+      action: h(
+        M.Stack,
+        { direction: 'row', alignItems: 'center', spacing: 0.5 },
+        h(M.Chip, {
+          size: 'small',
+          label: `${t('valueConfidence')} ${t(confidenceKey)}`,
+          sx: chipSx(confidenceTone, 17),
+        }),
+        h(
+          M.Tooltip,
+          { title: t('valueMethodShort') },
+          h(
+            M.Box,
+            {
+              component: 'span',
+              tabIndex: 0,
+              'aria-label': t('valueMethodShort'),
+              sx: { display: 'inline-flex', color: T.tertiary, cursor: 'help', borderRadius: '50%' },
+            },
+            h(InfoOutlined, { sx: { fontSize: 15 } }),
+          ),
+        ),
+      ),
+    }),
+    benefits.available
+      ? h(
+        M.Box,
+        { sx: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1 } },
+        h(MetricTile, {
+          label: t('valueQuality'),
+          value: quality === null ? '—' : `${quality.score}%`,
+          hint: qualityHint,
+          icon: Insights,
+          tone: qualityTone(quality?.band),
+        }),
+        h(MetricTile, {
+          label: t('valueBenefit'),
+          value: priced ? formatMoney(benefits.cost.net) : '—',
+          hint: priced ? t('valueNetBenefitHint') : t('valueUnpricedHint'),
+          icon: Savings,
+          tone: priced && benefits.cost.net >= 0 ? 'success' : 'warning',
+        }),
+        h(MetricTile, {
+          label: t('valueToken'),
+          value: formatCompactCount(saved),
+          hint: savingHint,
+          icon: TokenIcon,
+          tone: 'accent',
+        }),
+        h(MetricTile, {
+          label: t('valueCost'),
+          value: priced ? formatMoney(benefits.cost.saved) : '—',
+          hint: costHint,
+          icon: PriceCheck,
+          tone: priced && saved > 0 ? 'success' : 'neutral',
+        }),
+        h(
+          M.Box,
+          { sx: { gridColumn: '1 / -1' } },
+          h(MetricTile, {
+            label: t('valueEffectiveness'),
+            value: effectiveness === null ? '—' : `${effectiveness.score}%`,
+            hint: effectivenessHint,
+            icon: Insights,
+            tone: effectiveness === null
+              ? 'neutral'
+              : effectiveness.score >= 80
+                ? 'success'
+                : effectiveness.score >= 60
+                  ? 'accent'
+                  : 'warning',
+          }),
+        ),
+      )
+      : h(
+        M.Paper,
+        { variant: 'outlined', sx: { ...surfaceSx, px: 1.25, py: 1.1 } },
+        h(
+          M.Stack,
+          { direction: 'row', alignItems: 'center', spacing: 1 },
+          h(
+            M.Box,
+            { sx: { width: 32, height: 32, flex: '0 0 auto', display: 'grid', placeItems: 'center', borderRadius: T.radiusSm, color: T.accent, backgroundColor: `color-mix(in srgb, ${T.accent} 10%, transparent)` } },
+            h(Savings, { sx: { fontSize: 17 } }),
+          ),
+          h(
+            M.Stack,
+            { spacing: 0.25, sx: { minWidth: 0 } },
+            h(M.Typography, { variant: 'body2', sx: { fontSize: 12, fontWeight: 600, color: T.text } }, t('valueUnavailable')),
+            h(M.Typography, { variant: 'caption', sx: { color: T.tertiary, fontSize: 10.5 } }, t('valueUnavailableHint')),
+          ),
+        ),
+      ),
+    benefits.available
+      ? h(
+        M.Paper,
+        { variant: 'outlined', sx: { ...surfaceSx, px: 1.25, py: 1, mt: 1 } },
+        h(
+          M.Stack,
+          { direction: 'row', alignItems: 'baseline', justifyContent: 'space-between', spacing: 1, sx: { mb: 0.4 } },
+          h(M.Typography, { variant: 'caption', sx: { color: T.secondary, fontSize: 10.5 } }, `${t('valueSaved')} ${formatCount(saved)} tok`),
+          h(M.Typography, { variant: 'caption', sx: { color: T.tertiary, fontSize: 10.5, fontFamily: T.mono } }, `${t('valueInjected')} ${formatCount(injected)} tok`),
+        ),
+        h(
+          M.Box,
+          { sx: { display: 'flex', height: 5, borderRadius: 3, overflow: 'hidden', backgroundColor: T.surface, mb: 0.75 }, 'aria-hidden': true },
+          h(M.Box, { sx: { width: `${savedShare.toFixed(1)}%`, backgroundColor: T.success } }),
+          h(M.Box, { sx: { flex: 1, backgroundColor: `color-mix(in srgb, ${T.accent} 38%, transparent)` } }),
+        ),
+        h(InfoRow, { label: t('valueSpill'), value: `${formatCount(benefits.tokens.spill)} tok`, mono: true }),
+        h(InfoRow, {
+          label: t('valueRetention'),
+          value: benefits.tokens.omittedItems > 0
+            ? `${formatCount(benefits.tokens.retention)} tok · ${formatCount(benefits.tokens.omittedItems)} ${t('valueOmittedItems')}`
+            : `${formatCount(benefits.tokens.retention)} tok`,
+          mono: true,
+        }),
+        h(InfoRow, { label: t('valuePrune'), value: `${formatCount(benefits.tokens.prune)} tok`, mono: true }),
+        h(InfoRow, {
+          label: t('valueContextPrune'),
+          value: `${formatCount(benefits.tokens.contextPruneRecords)} ${t('valueItemsShort')} · ${t('valueOriginalTokens')} ${formatCount(benefits.tokens.contextPrune)} tok`,
+          mono: true,
+        }),
+        h(InfoRow, {
+          label: t('valueCompaction'),
+          value: `${formatCount(benefits.tokens.compactionRecords)} ${t('valueTimesShort')} · ${t('valueOriginalTokens')} ${formatCount(benefits.tokens.compaction)} tok`,
+          mono: true,
+        }),
+        h(InfoRow, { label: t('valueCache'), value: `${formatCount(benefits.tokens.cacheReuse)} tok · ${t('valueCacheNote')}`, mono: true }),
+        h(InfoRow, {
+          label: t('valueCacheHit'),
+          value: `${cachePct} · ${formatCount(benefits.cache.cacheReadTokens)} / ${formatCount(benefits.cache.totalInputTokens)} tok`,
+          mono: true,
+        }),
+        h(InfoRow, {
+          label: t('valueEffectiveInput'),
+          value: priced ? `${formatMoney(benefits.cost.pricePerMillion)}/M` : t('valueUnpriced'),
+          mono: true,
+        }),
+        h(InfoRow, { label: t('valueRoi'), value: formatRatio(benefits.tokens.roi), mono: true }),
+        h(InfoRow, {
+          label: t('valueErrorRate'),
+          value: errors === null || errors.calls === 0
+            ? t('valueNoCalls')
+            : `${errorPct} · ${formatCount(errors.failures)} / ${formatCount(errors.calls)} ${t('valueCalls')}`,
+          mono: true,
+          ...(errors !== null && errors.errorRate > 0 ? { tone: 'warning' as const } : {}),
+        }),
+        h(InfoRow, {
+          label: t('valueExecution'),
+          value: errors === null || errors.calls === 0
+            ? '—'
+            : `p95 ${formatCount(errors.p95DurationMs)}ms · ${t('valueTarget')} ${formatCount(errors.durationTargetMs)}ms`,
+          mono: true,
+        }),
+        h(InfoRow, {
+          label: t('valueNet'),
+          value: `${net >= 0 ? '+' : ''}${formatCount(net)} tok`,
+          mono: true,
+          tone: net >= 0 ? 'success' : 'warning',
+        }),
+      )
+      : null,
+    h(
+      M.Accordion,
+      {
+        disableGutters: true,
+        elevation: 0,
+        sx: {
+          mt: 1,
+          border: `1px solid ${T.border}`,
+          borderRadius: T.radius,
+          backgroundColor: T.surface,
+          backgroundImage: 'none',
+          '&:before': { display: 'none' },
+        },
+      },
+      h(
+        M.AccordionSummary,
+        {
+          expandIcon: h(ExpandMore, { sx: { fontSize: 17, color: T.tertiary } }),
+          sx: { minHeight: 34, px: 1.25, '& .MuiAccordionSummary-content': { my: 0.5, alignItems: 'center' } },
+        },
+        h(
+          M.Stack,
+          { direction: 'row', alignItems: 'center', spacing: 0.5 },
+          h(InfoOutlined, { sx: { fontSize: 13, color: T.tertiary } }),
+          h(M.Typography, { variant: 'caption', sx: { fontSize: 10.5, fontWeight: 600, color: T.secondary } }, t('valueMethod')),
+        ),
+      ),
+      h(
+        M.AccordionDetails,
+        { sx: { px: 1.25, pb: 1.25, pt: 0 } },
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, t('valueMethodQuality')),
+        qualityComponents.length > 0
+          ? h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.tertiary, fontSize: 10.5, mb: 0.5, fontFamily: T.mono } }, `${t('valueQualityComponents')} ${qualityComponents}`)
+          : null,
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, t('valueMethodQualityOptimized')),
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, t('valueMethodEffectiveness')),
+        effectiveness === null
+          ? null
+          : h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.tertiary, fontSize: 10.5, mb: 0.5, fontFamily: T.mono } }, effectiveness.formula),
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, t('valueMethodErrors')),
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, t('valueMethodHistory')),
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, t('valueMethodTokens')),
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, priced
+          ? `${t('valueMethodCost')} ${formatMoney(benefits.cost.pricePerMillion)}/M · ${t('valueCacheHit')} ${cachePct}`
+          : `${t('valueMethodCost')} ${t('valueUnpriced')}`),
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.secondary, fontSize: 10.5, mb: 0.5 } }, t('valueMethodPrice')),
+        benefits.registry === null
+          ? null
+          : h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.tertiary, fontSize: 10.5, mb: 0.5, fontFamily: T.mono } }, `${t('valueRegistry')} ${formatCount(benefits.registry.providers)} · ${formatCount(benefits.registry.models)} · ${formatCount(benefits.registry.priced)}`),
+        h(M.Typography, { variant: 'caption', sx: { display: 'block', color: T.tertiary, fontSize: 10.5 } }, t('valueMethodCaveat')),
+      ),
+    ),
+  )
+}
+
 function AmpDetails(props: {
   readonly open: boolean
   readonly onClose: () => void
@@ -173,6 +501,7 @@ function AmpDetails(props: {
   const mutating = mutatingVerbs(data.modules)
   const failed = data.journal.filter((entry) => entry.ok === false).length
   const online = data.status !== null && !data.error
+  const hasBenefits = data.context?.benefits !== undefined
 
   return h(
     M.Dialog,
@@ -245,6 +574,7 @@ function AmpDetails(props: {
           ),
         })
         : null,
+      h(BenefitSection, { data, t }),
       h(
         M.Box,
         {
@@ -252,7 +582,7 @@ function AmpDetails(props: {
             display: 'grid',
             gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
             gap: 1,
-            mt: data.error ? 1.5 : 0,
+            mt: hasBenefits ? 1.5 : data.error ? 1.5 : 0,
           },
         },
         h(MetricTile, { label: t('agentModules'), value: formatCount(modules), hint: `${formatCount(data.modules.length)} ${t('modules')}`, icon: Hub }),
@@ -442,6 +772,11 @@ export function AmpPanel(props: AmpPanelProps): React.ReactElement {
   const verbs = data.status?.exposedTools ?? totalVerbs(data.modules)
   const turns = counts.turn ?? 0
   const actions = counts.action ?? 0
+  const benefits = data.context?.benefits
+  const priced = benefits?.cost.priced === true
+  const benefitSummary = benefits?.available === true
+    ? `${t('valueToken')} ${formatCompactCount(benefits.tokens.saved)} · ${benefits.cost.priced ? formatMoney(benefits.cost.saved) : t('valueUnpriced')}`
+    : t('valueUnavailable')
 
   return h(
     React.Fragment,
@@ -455,7 +790,7 @@ export function AmpPanel(props: AmpPanelProps): React.ReactElement {
           onClick: () => setOpen(true),
           'aria-haspopup': 'dialog',
           'aria-expanded': open,
-          'aria-label': `${t('protocol')} · ${t('detail')}`,
+          'aria-label': `${t('protocol')} · ${t('detail')} · ${benefitSummary}`,
           sx: {
             width: '100%',
             display: 'block',
@@ -495,6 +830,26 @@ export function AmpPanel(props: AmpPanelProps): React.ReactElement {
               { variant: 'caption', noWrap: true, sx: { fontSize: 11, color: T.secondary, lineHeight: 1.5 } },
               `${formatCount(modules)} ${t('agents')} · ${formatCount(verbs)} ${t('verbs')} · ${formatCount(turns)} ${t('turns')} · ${formatCount(actions)} ${t('actions')}`,
             ),
+            benefits?.available === true
+              ? h(
+                M.Stack,
+                { direction: 'row', alignItems: 'center', spacing: 0.4, sx: { mt: 0.25, minWidth: 0, overflow: 'hidden' } },
+                h(ValueChip, { label: `${t('valueToken')} ${formatCompactCount(benefits.tokens.saved)}`, tone: 'success' }),
+                priced ? h(ValueChip, { label: formatMoney(benefits.cost.saved), tone: 'neutral' }) : null,
+                priced
+                  ? h(ValueChip, { label: `${t('valueBenefit')} ${formatMoney(benefits.cost.net)}`, tone: benefits.cost.net >= 0 ? 'success' : 'warning', compactHidden: true })
+                  : h(ValueChip, { label: t('valueUnpriced'), tone: 'warning', compactHidden: true }),
+                h(ValueChip, { label: `${t('valueCacheHit')} ${Math.round((benefits.cache.hitRate ?? 0) * 100)}%`, tone: 'neutral', compactHidden: true }),
+                h(ValueChip, { label: `${t('valueQuality')} ${benefits.quality === null ? '—' : `${benefits.quality.score}%`}`, tone: 'success', compactHidden: true }),
+                benefits.effectiveness === null
+                  ? null
+                  : h(ValueChip, {
+                    label: `${t('valueEffectiveness')} ${benefits.effectiveness.score}%`,
+                    tone: benefits.effectiveness.score >= 80 ? 'success' : benefits.effectiveness.score >= 60 ? 'neutral' : 'warning',
+                    compactHidden: true,
+                  }),
+              )
+              : null,
           ),
           h(
             M.Stack,

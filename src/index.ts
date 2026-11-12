@@ -28,6 +28,21 @@ import { registerRoutes } from './host/routes.js'
 import { AmpSync } from './host/sync.js'
 import { HarnessBridge } from './host/bridge.js'
 import { AmpContextOptimizer } from './host/context.js'
+import { join } from 'node:path'
+import { computeBenefits } from './host/benefits.js'
+import { computeEffectiveness, summarizeErrors } from './host/effectiveness.js'
+import {
+  BENEFIT_HISTORY_FILE,
+  historyChanged,
+  historyFromBenefits,
+  loadBenefitHistory,
+  mergeBenefitInput,
+  mergeErrorHistory,
+  mergeHistories,
+  saveBenefitHistory,
+} from './host/benefitHistory.js'
+import { resolvePricing } from './host/pricing.js'
+import { registryStats } from './host/registry.js'
 import { WireCapture } from './host/prestep.js'
 import { recoverContext, type RecoveryStatus } from './host/recovery.js'
 import { registerInputExtractors } from './host/channels/index.js'
@@ -170,7 +185,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.28.0',
+          version: '0.29.0',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler
@@ -188,8 +203,61 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
             // R4: one capture snapshot feeds both the flat `lastCapture` and
             // the nested `capture` view.
             const captureStatus = wire.status()
+            // Value quantification is derived from the same status object the
+            // rest of this route serves, so a poll can never mix snapshots.
+            // The tariff follows the host-selected provider/model, and its
+            // input price is blended with the observed prompt-cache hit rate.
+            const pricing = resolvePricing(optimizer.modelSelection())
+            // Gateway calls are the execution sample behind the error rate and
+            // latency score. A journal failure degrades to an unavailable error
+            // module; it must not fail the context route.
+            let errors = summarizeErrors([])
+            try {
+              errors = summarizeErrors(host.journalEntries())
+            } catch {
+              // Keep the empty summary.
+            }
+            // Live counters reset when DSH restarts. Merge the durable
+            // high-water ledger so the panel shows the workspace's history
+            // instead of an empty state after every reload.
+            const storage = host.storage()
+            const defaultRoot = typeof storage.defaultRoot === 'string' ? storage.defaultRoot : undefined
+            const roots = Array.isArray(storage.roots)
+              ? storage.roots.flatMap((entry) => {
+                const row = typeof entry === 'object' && entry !== null ? entry as Record<string, unknown> : undefined
+                return row !== undefined && typeof row.directory === 'string' && row.directory.length > 0
+                  ? [{ root: typeof row.root === 'string' ? row.root : undefined, directory: row.directory, open: row.open === true }]
+                  : []
+              })
+              : []
+            const preferredRoot = defaultRoot === undefined
+              ? roots.find((entry) => entry.open) ?? roots[0]
+              : roots.find((entry) => entry.root === defaultRoot)
+            // `host.storage()` can answer with the machine-wide directory before
+            // the first AMP call binds a workspace root. Read every candidate
+            // and merge by high-water marks so the two copies cannot diverge.
+            const directories = [
+              ...(preferredRoot === undefined ? [] : [preferredRoot.directory]),
+              ...(typeof storage.directory === 'string' ? [storage.directory] : []),
+            ].filter((value, index, all) => all.indexOf(value) === index)
+            const historyPaths = directories.map((value) => join(value, BENEFIT_HISTORY_FILE))
+            const historyPath = historyPaths[0]
+            const history = mergeHistories(historyPaths.map((value) => loadBenefitHistory(value)))
+            const mergedStatus = mergeBenefitInput(status, history)
+            const mergedErrors = mergeErrorHistory(errors, history)
+            const baseBenefits = computeBenefits(mergedStatus, contextDiagnostics, pricing, optimizer.usageSnapshot(), registryStats(), mergedErrors, null, history)
+            const benefits = {
+              ...baseBenefits,
+              effectiveness: computeEffectiveness(baseBenefits.quality?.score ?? null, mergedErrors, baseBenefits.tokens.roi),
+            }
+            if (historyPath !== undefined) {
+              const failures = typeof status.failures === 'number' ? status.failures : 0
+              const next = historyFromBenefits(baseBenefits, mergedErrors, failures, new Date(), mergedStatus.prune)
+              if (historyChanged(history, next)) saveBenefitHistory(historyPath, next)
+            }
             return {
               ...status,
+              benefits,
               compilerExclusions: status.excluded,
               /** First 50 compiler exclusions, projected to stable fields. */
               compilerExclusionsDetailed: contextDiagnostics.lastExclusions,

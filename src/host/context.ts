@@ -40,6 +40,8 @@ import type { OutputStatus, WireItemSource } from './sources.js'
 import { diffTombstones } from './tombstones.js'
 import type { TombstoneMap } from './tombstones.js'
 import { asRecord } from './json.js'
+import { parseSelection, type ModelSelection } from './pricing.js'
+import { UsageLedger, type UsageSnapshot } from './usage.js'
 import { toCreateAttention, wireId } from './wire.js'
 import type { CreateAttentionInput, WireChannel, WireItem, WireScope, WireScores } from './wire.js'
 
@@ -56,6 +58,8 @@ interface ContextStats {
   failures: number
   excluded: number
   lastTokens: number
+  /** Sum of every compiled payload's tokens; the value model's denominator. */
+  tokensInjected: number
   lastCompilerTokens: number
   lastCharacters: number
   lastItems: number
@@ -253,11 +257,16 @@ export class AmpContextOptimizer {
   private readonly pruneEvents = new Map<string, ContextPruneCandidate[]>()
   private readonly lastPackage = new Map<string, ContextPackageView>()
   private readonly pruner: ContextPruner
-  private readonly stats: ContextStats = { compilations: 0, failures: 0, excluded: 0, lastTokens: 0, lastCompilerTokens: 0, lastCharacters: 0, lastItems: 0, lastPreview: '' }
+  private readonly stats: ContextStats = { compilations: 0, failures: 0, excluded: 0, lastTokens: 0, tokensInjected: 0, lastCompilerTokens: 0, lastCharacters: 0, lastItems: 0, lastPreview: '' }
   // Last compile attempt per session (bounded) and the most recent attempt
   // across sessions, which is what the session-less `/amp/context` view reads.
   private readonly diagnosticsBySession = new Map<string, CompileDiagnostics>()
   private lastDiagnostic: CompileDiagnostics | undefined
+  // Provider/model reported by DSH for the active route, plus the prompt-cache
+  // usage observed for that route. Both feed the value estimate; neither is
+  // inferred from AMP's own counters.
+  private lastSelection: ModelSelection | undefined
+  private readonly usage = new UsageLedger()
 
   constructor(ctx: Context, host: AmpHost, config: Config, wire?: WireCapture, sources?: WireItemSource) {
     this.ctx = ctx
@@ -414,6 +423,13 @@ export class AmpContextOptimizer {
         list.push(text)
         this.tools.set(session.id, list.slice(-3))
       }
+    } else if (event.type === 'assistant/message') {
+      // DSH records provider usage on the assistant message. Cache reads and
+      // writes are separate from inputTokens; the ledger blends them later.
+      const usage = asRecord(data.usage)
+      if (usage !== undefined) {
+        this.usage.record(this.lastSelection?.provider, this.lastSelection?.model, usage)
+      }
     } else if (event.type === 'turn/start') {
       this.tools.delete(session.id)
       // Wire ids embed the turn, so carrying the previous turn's items into a
@@ -422,8 +438,48 @@ export class AmpContextOptimizer {
     }
   }
 
+  /**
+   * Remember the route DSH selected for this agent. `agent.model.current()` is
+   * the authoritative session selection; the composition default is the
+   * fallback used before the first request or in headless paths.
+   */
+  private rememberSelection(agent: Agent): void {
+    try {
+      const model = (agent as unknown as { model?: { current?: () => unknown } }).model
+      const current = model?.current?.()
+      const parsed = parseSelection(current)
+      if (parsed !== undefined) {
+        this.lastSelection = parsed
+        return
+      }
+    } catch {
+      // Fall through to the composition default.
+    }
+    try {
+      const fallback = (this.ctx.get('agentDefaultModel') as {
+        currentSelection?: () => unknown
+      } | undefined)?.currentSelection?.()
+      const parsed = parseSelection(fallback)
+      if (parsed !== undefined) this.lastSelection = parsed
+    } catch {
+      // A missing default-model service leaves the route unknown.
+    }
+  }
+
+  /** Provider/model currently selected by the host, when known. */
+  modelSelection(): ModelSelection | undefined {
+    if (this.lastSelection === undefined) this.rememberSelection({} as Agent)
+    return this.lastSelection
+  }
+
+  /** Observed prompt-cache usage for the current route. */
+  usageSnapshot(): UsageSnapshot {
+    return this.usage.snapshot(this.lastSelection?.provider, this.lastSelection?.model)
+  }
+
   /** Compiled AMP context for one agent's current step, or an empty string. */
   contextFor(agent: Agent): string {
+    this.rememberSelection(agent)
     const root = agent.session.header?.cwd
     if (!this.enabled(root)) return ''
     const sessionId = agent.id
@@ -560,8 +616,10 @@ export class AmpContextOptimizer {
       this.stats.compilations += 1
       this.stats.excluded = compiled.compiled.exclusions.length
       this.stats.lastItems = compiled.compiled.items.length
+      const textTokens = estimateTokens(text)
       this.stats.lastCharacters = text.length
-      this.stats.lastTokens = estimateTokens(text)
+      this.stats.lastTokens = textTokens
+      this.stats.tokensInjected += textTokens
       // AMP always reports usage, but a fixture (or a future shape change) must
       // not turn a successful compile into a failed one.
       const usageTokens = (compiled.compiled.usage as { tokens?: unknown } | undefined)?.tokens

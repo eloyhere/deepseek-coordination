@@ -45,7 +45,7 @@ of three ways:
 
 | Tier | Count | Registered as |
 |---|---:|---|
-| `agent` | 18 | One `attention_manifest_protocol_<module>` DSH tool each, exposing its verbs through `{ verb, arguments }`; 64 verbs total. `question` (`get`, `list`, `open`) is new in 0.14.0. |
+| `agent` | 18 | One `attention_manifest_protocol_<module>` DSH tool each, exposing its verbs through `{ verb, arguments }`; 65 verbs total. `question` (`get`, `list`, `open`) is new in 0.14.0. |
 | `host` | 8 | Host services/routes: `capability`, `manifest`, `provenance`, `receipt`, `verification`, `retrieval`, `model`, `runtime`. The host publishes `ctx.amp` (`AmpHost`) so other plugins can inject the service and reach the kernel ports, gateway journal, receipts and evidence. |
 | `hidden` | 4 | Internal only: `workflow`, `policy`, `profession`, `behaviour`. They are never offered to the model. |
 
@@ -253,6 +253,40 @@ writing back into the harness. DSH still owns the final context window and
 compaction policy; AMP decides what deserves attention inside the configured
 budget and records what it deliberately excluded.
 
+## Value quantification
+
+`GET /deepseek-coordination/amp/context` carries a `benefits` read model so the
+client can show what the plugin saved and what it cost. Counters are persisted to
+`benefit-history.json` in the AMP storage directory and merged by per-field
+high-water mark, so a DSH restart or plugin reload cannot empty the panel:
+
+| Metric | Definition | Honesty rule |
+|---|---|---|
+| Output quality | Mean of four 25-point checks: fresh capture, within budget, verified prune, reliable compile. 50 is the neutral rubric anchor. | A guardrail index, **not** a model benchmark. The dialog shows the sample count and each component. Quality with fewer than four compiles shrinks toward 50, so one run cannot claim 100. |
+| Error rate | `failures / calls` over AMP gateway calls, plus p95 call duration against a 250 ms target. | 0 calls is shown as “No calls yet”; absence of failures is not proof of quality. |
+| Effectiveness | `(0.45 × quality + 0.25 × duration + 0.30 × ROI) × error-free`, 0–100. | Error rate is a multiplicative gate, so it is penalized once rather than twice. No call sample uses neutral 50 duration and a 100% error-free prior. |
+| Benefit | Gross saved cost minus the cost of the injected attention tokens. | Negative means the attention payload cost more than the tokens it saved; the card and bar show that direction instead of hiding it. |
+| Leverage | `saved tokens / injected attention tokens`. | The same tradeoff in token terms, shown in the ledger; below `1×` is a net cost. |
+| Tokens saved | Spill bytes + retention bytes ÷ 4, plus verified **attention-prune** tokens. | Compile-cache reuse is reported but **excluded**: it saves serialization work, not model prompt tokens. |
+| Context prune | DSH `compaction/prune` records: a tool result is replaced by a shorter head/tail notice. | Shows `records × original tokens`; the replacement remains in context, so it is **display-only** and never added to net savings. |
+| Context compaction | Completed `compaction/summary` records: a history range is replaced by a summary. | Shows `records × original tokens`; the summary remains in context, so it is **display-only** and never added to net savings. |
+| Cost saved | Tokens saved × the effective input rate of the **host-selected model**. DeepSeek Flash and V4-Pro each have their own peak/off-peak tariff; the effective rate blends cache-hit and cache-miss prices by the observed prompt-cache hit rate. | A trend estimate, not a bill. Models without a published text-token tariff are shown as unpriced instead of borrowing another model's rate. Byte-only omissions use 4 bytes/token, so CJK text is undercounted. |
+| Cache hit rate | `cacheReadTokens / (inputTokens + cacheReadTokens + cacheWriteTokens)` from DSH assistant usage. | Provider-neutral: providers that do not report cache fields price every avoided input token at the miss rate. |
+
+The price registry (`src/host/registry.ts`) covers 41 provider routes and 1,722
+unique models: 1,614 chat models from the installed `pi-ai` 1.3.0 catalog plus
+OpenRouter's 2026-11-12 catalog, deduped, with 1,585 per-token-priced entries.
+Tiered rates and cache-read discounts are preserved; a missing or
+subscription-only entry stays explicitly unpriced. Browse it read-only at
+`GET /deepseek-coordination/amp/models?provider=&q=&limit=`.
+
+The composer strip shows 节约 Token, 节约花费, cache-hit rate and 输出质量%
+chips at a glance; the detail dialog adds five KPI tiles (including effectiveness), a saved-vs-injected bar,
+the per-channel ledger (spill, retention, attention prune, context prune, context compaction, cache reuse, cache hit, net) and a
+**Method and assumptions** disclosure. The model is implemented in
+`src/host/benefits.ts`, the model tariffs in `src/host/pricing.ts`, and the usage
+ledger in `src/host/usage.ts`; all three are unit-tested independently of the UI.
+
 ## Harness ↔ AMP binding
 
 The two directions are wired together:
@@ -293,7 +327,7 @@ Explicit dialog actions settle requests. Disabling takeover restores new native 
 | Slot | Entry | Role |
 |---|---|---|
 | `conversation.input.dock` | `deepseek-coordination.notifications` | The unchanged notification surfaces. |
-| `conversation.composer.dock` | `deepseek-coordination.amp` | Compact `AMP 18/64` status button and module dialog. |
+| `conversation.composer.dock` | `deepseek-coordination.amp` | Compact `AMP 18/65` status button with value chips and the module/value dialog. |
 | `settings.section` | `deepseek-coordination` | Full 30-module catalog with tiers, verbs, authority and withheld reasons. |
 
 The client bundle is emitted in DSH's lazy-CJS envelope
@@ -310,6 +344,8 @@ the page table; MUI and emotion are inlined.
 | GET | `/deepseek-coordination/amp/kernel` | Kernel snapshot of the active workspace. |
 | GET | `/deepseek-coordination/amp/journal?limit=&session=&root=` | Gateway call journal. |
 | GET | `/deepseek-coordination/amp/preferences` | Takeover switches of the active workspace (PUT/POST to update). |
+| GET | `/deepseek-coordination/amp/context` | Context compile health plus the `benefits` value model (quality, errors, execution time, effectiveness, tokens, cost). |
+| GET | `/deepseek-coordination/amp/models?provider=&q=&limit=` | Read-only price registry: 41 DSH routes, 1,722 unique models, 1,585 with a per-token price. |
 | GET | `/deepseek-coordination/amp/client` | Composed web-client entry for this plugin. |
 | GET | `/deepseek-coordination/notify/pending?session=` | Drain one session's notifications. |
 | GET | `/deepseek-coordination/dialogs/pending?session=` | Pending approvals and questions for a session. |
@@ -366,7 +402,7 @@ The host bundle externalises every `@deepseek-ai/*` package, Cordis and AMP; the
 client bundle inlines MUI/emotion and externalises React. `tsdown.config.ts`
 contains both presets.
 
-Tests cover registration (22 tools), the 30/18/64 surface counts, kernel creation,
+Tests cover registration (22 tools), the 30/18/65 surface counts, kernel creation,
 module dispatch, workspace CAS and root confinement, project environment CAS,
 `plan.propose_draft` through the kernel, notifications, and the client bundle's
 factory and three slot registrations. `test/persistence.test.mjs` additionally
