@@ -71,6 +71,25 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
   })
 
   ctx.systemPrompt.context({
+    name: 'deepseek-coordination:intake',
+    order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE') + 9,
+    required: true,
+    interpolate: false,
+    text: () => {
+      // The intake flow is part of the default contract; the user can still
+      // opt out per request, and trivial turns are explicitly excluded.
+      return [
+        '## Intake flow after each user message',
+        'After a new substantive user request, run one intake pass before other tools:',
+        '1. Expand the request into goal, assumptions, unknowns and 2-3 alternative approaches. For a large request, use `attention_manifest_protocol_elaboration` to build the expansion; otherwise write it directly.',
+        '2. Call `deepseek_coordination_intake` exactly once. Pass 1-2 concrete questions (2-4 options each), the expansion, and the proposed approaches. The tool opens the native question popup and adds a decision question so the user picks a direction.',
+        '3. When the popup returns, propose the resulting plan with `attention_manifest_protocol_plan` (`propose_draft`) or `attention_manifest_protocol_harness` (`operation: "plan"`, `operation: "todos"`), then continue with the chosen approach.',
+        'Skip the intake pass for a pure acknowledgement, when the user explicitly says not to ask, or when this turn already has answers. Never invent the user\'s answer: if the popup is cancelled or unavailable, report it and ask in plain text instead.',
+      ].join('\n')
+    },
+  })
+
+  ctx.systemPrompt.context({
     name: 'deepseek-coordination:takeover',
     order: ctx.systemPrompt.getContextOrder('HARNESS_SOURCE') + 11,
     required: false,

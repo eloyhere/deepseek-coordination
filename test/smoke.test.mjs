@@ -98,7 +98,8 @@ async function withPlugin(run) {
 test('registers the 18 AMP modules, discovery and the notification tool', async () => {
   await withPlugin(async ({ tools }) => {
     const names = [...tools.keys()].sort()
-    assert.equal(names.length, 22)
+    assert.equal(names.length, 23)
+    assert.ok(names.includes('deepseek_coordination_intake'))
     assert.ok(names.includes('attention_manifest_protocol_discover'))
     assert.ok(names.includes('attention_manifest_protocol_replace'))
     assert.ok(names.includes('attention_manifest_protocol_workspace'))

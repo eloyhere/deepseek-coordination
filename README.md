@@ -287,6 +287,32 @@ the per-channel ledger (spill, retention, attention prune, context prune, contex
 `src/host/benefits.ts`, the model tariffs in `src/host/pricing.ts`, and the usage
 ledger in `src/host/usage.ts`; all three are unit-tested independently of the UI.
 
+## Intake flow (after each user message)
+
+The system prompt adds one intake pass after every new substantive request:
+
+1. **Expand.** The agent states the goal, assumptions, unknowns and 2–3
+   alternative approaches. Large requests can use the AMP `elaboration` surface
+   first; the result is passed to the intake tool as `expansion`.
+2. **Ask.** The agent calls `deepseek_coordination_intake` once with 1–2
+   questions (2–5 options each), the expansion and the proposed approaches. The
+   tool writes each question into the AMP `question` kernel as a `clarification`
+   or `decision`, then opens the native DSH question popup. Proposals add an
+   automatic decision question; a `recommended` approach is listed first.
+3. **Answer.** The popup returns selected labels and optional custom text. The
+   tool maps them back to the AMP option ids, records the answer with
+   `answerQuestion`, appends an `intake` note to the session, and returns the
+   chosen approach. Cancelling leaves the durable questions `asked` and returns
+   `question_cancelled`; no answer is invented.
+4. **Propose.** With the answers in hand, the agent proposes the plan through
+   `attention_manifest_protocol_plan` (`propose_draft`) or
+   `attention_manifest_protocol_harness` (`plan`/`todos`), then executes it.
+
+Pure normalization and answer mapping live in `src/host/intakeCore.ts`; the tool
+and question persistence live in `src/host/intake.ts`. The intake pass is skipped
+for pure acknowledgements, an explicit “do not ask” instruction, or a turn that
+already has answers.
+
 ## Harness ↔ AMP binding
 
 The two directions are wired together:
@@ -402,7 +428,7 @@ The host bundle externalises every `@deepseek-ai/*` package, Cordis and AMP; the
 client bundle inlines MUI/emotion and externalises React. `tsdown.config.ts`
 contains both presets.
 
-Tests cover registration (22 tools), the 30/18/65 surface counts, kernel creation,
+Tests cover registration (23 tools), the 30/18/64 agent surface counts, kernel creation,
 module dispatch, workspace CAS and root confinement, project environment CAS,
 `plan.propose_draft` through the kernel, notifications, and the client bundle's
 factory and three slot registrations. `test/persistence.test.mjs` additionally

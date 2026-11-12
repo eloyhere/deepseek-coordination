@@ -160,6 +160,26 @@ AMP 注意力已经接入真实模型请求，而不只是面板展示：
 `plan.propose_draft` 与 `/amp` 桥接会反向写回 Harness。最终上下文窗口与压缩
 策略仍由 DSH 拥有；AMP 在预算内决定哪些内容值得注意，并记录被刻意排除的内容。
 
+## 用户输入后的需求澄清流程
+
+系统提示词会在每条新的实质请求后加入一次 intake 流程：
+
+1. **扩展**：先写出目标、假设、未知项和 2–3 个候选方案。较大的请求可以先用
+   AMP `elaboration` 生成扩展结果，再作为 `expansion` 传给 intake 工具。
+2. **提问**：agent 调用一次 `deepseek_coordination_intake`，传入 1–2 个问题
+   （每题 2–5 个选项）、扩展结果和候选方案。工具把每个问题写入 AMP `question`
+   内核（`clarification` / `decision`），然后打开 DSH 原生提问弹窗。有候选方案时
+   自动追加一个方案选择题，`recommended` 方案排在最前。
+3. **回答**：弹窗返回选中的标签与可选的自定义文本；工具把标签映射回 AMP option
+   id，用 `answerQuestion` 记录答案，向会话追加 `intake` 记录，并返回用户选择的
+   方案。用户取消时问题保持 `asked`，返回 `question_cancelled`，绝不伪造答案。
+4. **提方案**：拿到答案后，agent 通过 `attention_manifest_protocol_plan`
+   （`propose_draft`）或 `attention_manifest_protocol_harness`（`plan`/`todos`）
+   提出计划，再执行。
+
+纯归一化和答案映射在 `src/host/intakeCore.ts`，工具与问题持久化在
+`src/host/intake.ts`。纯致谢、用户明确说“不要问”、或本轮已经有答案时跳过该流程。
+
 ## Harness ↔ AMP 双向绑定
 
 | 方向 | 路径 |
@@ -238,7 +258,7 @@ npm run build
 宿主包把每个 `@deepseek-ai/*`、Cordis 与 AMP 外部化；客户端包内联 MUI/emotion、
 外部化 React。两个预设都在 `tsdown.config.ts`。
 
-测试覆盖：21 个工具注册、29/17/60 模块面计数、内核创建、模块分发、工作区 CAS
+测试覆盖：23 个工具注册、30/18/64 代理模块面计数、内核创建、模块分发、工作区 CAS
 与根目录限制、项目环境 CAS、`plan.propose_draft` 的内核路径、通知、以及客户端
 bundle 的 factory 与三个 slot 注册。`test/persistence.test.mjs` 另外用临时工作区
 重启宿主，验证内核库、草稿计划、宿主状态行与工作区之间的隔离都能恢复，并验证

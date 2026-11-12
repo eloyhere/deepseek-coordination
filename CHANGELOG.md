@@ -15,6 +15,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.30.0] - 2026-11-12
+
+### Added
+
+- **Post-input intake flow.** The system prompt now tells the agent to run one
+  intake pass after each substantive user message: expand the request into a
+  goal, assumptions, unknowns and 2–3 approaches; ask 1–2 concrete questions
+  through the native popup; then propose the plan.
+- **`deepseek_coordination_intake`.** One tool call creates durable AMP
+  `question` entities (`clarification` / `decision`), opens the DSH native
+  question popup with options and free text, maps selected labels/custom text
+  back with `answerQuestion`, and returns the answers plus the chosen approach.
+  Proposals add an automatic decision question; `recommended` approaches are
+  listed first. Popup cancellation leaves the questions `asked` and is reported
+  as `question_cancelled`, never as an invented answer.
+- **Expansion input.** `expansion.goal`, `summary`, `assumptions`, `unknowns`
+  and `approaches` are normalized, bounded and shown in the decision question;
+  large requests can use the AMP `elaboration` surface first.
+- Seven pure unit tests for normalization, option ids, proposal ordering,
+  answer mapping and invalid shapes (`test/intake.test.mjs`).
+
+### Verified
+
+- `npm run typecheck` clean.
+- `npm test`: **216/216** pass.
+- Live DSH reload reports `version: 0.30.0`; the new tool is registered and the
+  intake prompt section is active.
+
 ## [0.29.0] - 2026-11-12
 
 ### Added

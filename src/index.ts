@@ -58,6 +58,7 @@ import { asRecord } from './host/json.js'
 import { HostNotificationBridge } from './host/hostNotifications.js'
 import { fileWriteTakeoverGuard } from './host/writeTakeover.js'
 import { DialogGate } from './host/dialogGate.js'
+import { registerIntakeTool } from './host/intake.js'
 
 export const name = 'deepseek-coordination'
 
@@ -154,6 +155,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
   registerDiscoverTool(ctx, host)
   registerReplaceTool(ctx, host)
   registerHarnessTool(ctx, host)
+  registerIntakeTool(ctx, host)
 
   if (config.notifications) {
     registerNotificationTool(ctx, notifications, (session) => host.notificationTakeoverEnabled(session))
@@ -185,7 +187,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.29.0',
+          version: '0.30.0',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler
