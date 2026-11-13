@@ -137,22 +137,41 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
   // The returned counters are exposed by `/amp/context`; a failed pass keeps
   // the zeroed default instead of dropping the field.
   let recoveryStatus: RecoveryStatus = EMPTY_RECOVERY_STATUS
-  try {
-    recoveryStatus = recoverContext(ctx, {
-      capture: wire,
-      fork,
-      subagent,
-      spill,
-      retention,
-      prune,
-      compaction,
-      // A reloaded plugin never saw the historical `turn/end` events. Settle
-      // those existing AMP turns only; recovery does not create new facts.
-      settleTurn: (sessionId, turn, reason) => sync.settleTurn(sessionId, turn, reason),
-    })
-  } catch (error) {
-    wire.recordFailure('recovery', error)
+  // Recovery can replay up to 200 session logs. Doing that inline makes every
+  // plugin activation wait for a full history scan before the conversation can
+  // open. Let activation return first, then rebuild the indexes off the load
+  // path; the panel reports zeroed counters until this completes.
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined
+  let recoveryCancelled = false
+  const runRecovery = (): void => {
+    if (recoveryCancelled) return
+    try {
+      recoveryStatus = recoverContext(ctx, {
+        capture: wire,
+        fork,
+        subagent,
+        spill,
+        retention,
+        prune,
+        compaction,
+        // A reloaded plugin never saw the historical `turn/end` events. Settle
+        // those existing AMP turns only; recovery does not create new facts.
+        settleTurn: (sessionId, turn, reason) => sync.settleTurn(sessionId, turn, reason),
+        // Activation only needs the open-turn prompt; history trackers start
+        // from live events instead of replaying every closed conversation.
+        openTurnsOnly: true,
+      })
+    } catch (error) {
+      wire.recordFailure('recovery', error)
+    }
   }
+  // Give the conversation its first paint and first status request before the
+  // replay starts competing for the same event loop.
+  recoveryTimer = setTimeout(runRecovery, 1_500)
+  ctx.effect(() => () => {
+    recoveryCancelled = true
+    if (recoveryTimer !== undefined) clearTimeout(recoveryTimer)
+  }, 'deepseek-coordination: deferred recovery')
 
   registerAmpModuleTools(ctx, host)
   registerDiscoverTool(ctx, host)
@@ -190,7 +209,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.30.1',
+          version: '0.30.2',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler

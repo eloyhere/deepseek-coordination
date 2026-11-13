@@ -15,6 +15,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.30.2] - 2026-11-13
+
+### Fixed
+
+- **Opening a conversation no longer waits for the full AMP snapshot.** The
+  composer strip used to request status, modules, journal, sync and the heavy
+  `/amp/context` aggregate in one `Promise.all` on every mount. It now paints
+  from the small status payload first, then loads the aggregate after the first
+  frame; journal and list data load only while the detail dialog is open. Status
+  polling stays at the configured interval, while the aggregate refreshes at a
+  much lower cadence.
+- **Activation-time recovery no longer replays closed history.** `recoverContext`
+  used to feed every historical event of every session through the trackers
+  (53,459 events across 12 sessions in the live profile). It is now scheduled
+  after activation and uses `openTurnsOnly`: a session ending in `turn/end`
+  advances its cursor without a replay, and an open session is scanned backwards
+  only until its latest `turn/start` and user prompt. Live events keep the
+  trackers complete afterwards.
+- **`/amp/context` is coalesced for two seconds.** A mount and the poll can ask
+  for the same aggregate several times in one second; the route now shares one
+  snapshot instead of re-reading benefit history and recomputing the read model
+  for every request.
+
+### Verified
+
+- `npm run typecheck` clean.
+- `npm test`: **227/227** pass.
+
 ## [0.30.1] - 2026-11-12
 
 ### Added

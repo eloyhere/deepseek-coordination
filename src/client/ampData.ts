@@ -401,55 +401,81 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
   const [nonce, setNonce] = React.useState(0)
   const signatureRef = React.useRef('')
   const refresh = React.useCallback(() => setNonce((value) => value + 1), [])
+  const commit = React.useCallback((patch: Partial<Omit<AmpSnapshot, 'refresh'>>): void => {
+    setState((previous) => {
+      const next = { ...previous, ...patch }
+      // The host returns fresh objects on every poll. Comparing their
+      // serialized projection keeps a poll from re-rendering 27 Accordions
+      // (and every tab panel) while nothing actually changed.
+      const signature = snapshotSignature(next.status, next.modules, next.journal, next.sync, next.context)
+      if (signatureRef.current === signature && !previous.loading && previous.error === next.error) return previous
+      signatureRef.current = signature
+      return next
+    })
+  }, [])
 
   React.useEffect(() => {
     const controller = new AbortController()
     let stopped = false
+    let firstLoad: number | undefined
+    let statusTimer: number | undefined
+    let heavyTimer: number | undefined
 
-    const load = async (): Promise<void> => {
-      const scope = sessionId === undefined
-        ? ''
-        : `?session=${encodeURIComponent(sessionId)}${withLists ? '&lists=1' : ''}`
-      const [status, modules, journal, sync, context] = await Promise.all([
-        fetchJson<AmpStatus>(`${STATUS_ROUTE}${scope}`, controller.signal),
+    const scope = sessionId === undefined
+      ? ''
+      : `?session=${encodeURIComponent(sessionId)}${withLists ? '&lists=1' : ''}`
+    const statusUrl = `${STATUS_ROUTE}${scope}`
+    const journalUrl = `${JOURNAL_ROUTE}?limit=${JOURNAL_LIMIT}${sessionId === undefined ? '' : `&session=${encodeURIComponent(sessionId)}`}`
+
+    // The composer strip only needs the small status payload. Fetching the
+    // five-endpoint snapshot here made every conversation mount do the same
+    // expensive work twice (status plus context, modules, journal and sync)
+    // before the conversation could paint.
+    const loadStatus = async (): Promise<void> => {
+      const status = await fetchJson<AmpStatus>(statusUrl, controller.signal)
+      if (stopped) return
+      if (status === null) {
+        commit({ loading: false, error: true })
+        return
+      }
+      commit({ status, loading: false, error: false, updatedAt: Date.now() })
+    }
+
+    const loadHeavy = async (): Promise<void> => {
+      const [modules, sync, context, journal] = await Promise.all([
         fetchJson<{ modules?: readonly AmpModule[] }>(MODULES_ROUTE, controller.signal),
-        fetchJson<{ entries?: readonly AmpJournalEntry[] }>(
-          `${JOURNAL_ROUTE}?limit=${JOURNAL_LIMIT}${sessionId === undefined ? '' : `&session=${encodeURIComponent(sessionId)}`}`,
-          controller.signal,
-        ),
         fetchJson<AmpSync>(SYNC_ROUTE, controller.signal),
         fetchJson<AmpContext>(CONTEXT_ROUTE, controller.signal),
+        withLists
+          ? fetchJson<{ entries?: readonly AmpJournalEntry[] }>(journalUrl, controller.signal)
+          : Promise.resolve(null),
       ])
       if (stopped) return
-      setState((previous) => {
-        const next = {
-          status: status ?? previous.status,
-          modules: modules?.modules ?? previous.modules,
-          journal: journal?.entries ?? previous.journal,
-          sync: sync ?? previous.sync,
-          context: context ?? previous.context,
-          loading: false,
-          error: status === null,
-          updatedAt: status === null ? previous.updatedAt : Date.now(),
-        }
-        // The host returns fresh objects on every poll. Comparing their
-        // serialized projection keeps the 5 s poll from re-rendering 27
-        // Accordions (and every tab panel) while nothing actually changed.
-        const signature = snapshotSignature(next.status, next.modules, next.journal, next.sync, next.context)
-        if (signatureRef.current === signature && !previous.loading && previous.error === next.error) return previous
-        signatureRef.current = signature
-        return next
+      commit({
+        ...(modules?.modules === undefined ? {} : { modules: modules.modules }),
+        ...(sync === null ? {} : { sync }),
+        ...(context === null ? {} : { context }),
+        ...(journal?.entries === undefined ? {} : { journal: journal.entries }),
       })
     }
 
-    void load()
-    const timer = pollMs > 0 ? window.setInterval(() => { void load() }, pollMs) : undefined
+    void loadStatus()
+    // Keep the first paint free of the aggregate context compile; the strip
+    // shows its offline value for one short frame instead of delaying the
+    // conversation. The heavy snapshot refreshes far less often than status.
+    firstLoad = window.setTimeout(() => { void loadHeavy() }, 800)
+    if (pollMs > 0) {
+      statusTimer = window.setInterval(() => { void loadStatus() }, pollMs)
+      heavyTimer = window.setInterval(() => { void loadHeavy() }, Math.max(pollMs * 6, 30_000))
+    }
     return () => {
       stopped = true
       controller.abort()
-      if (timer !== undefined) window.clearInterval(timer)
+      if (firstLoad !== undefined) window.clearTimeout(firstLoad)
+      if (statusTimer !== undefined) window.clearInterval(statusTimer)
+      if (heavyTimer !== undefined) window.clearInterval(heavyTimer)
     }
-  }, [pollMs, nonce, sessionId, withLists])
+  }, [pollMs, nonce, sessionId, withLists, commit])
 
   return { ...state, refresh }
 }

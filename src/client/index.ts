@@ -48,7 +48,7 @@ function reportClient(payload: Record<string, unknown>): void {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...payload, locale: currentLocale(), version: '0.24.1', href: location.href }),
+      body: JSON.stringify({ ...payload, locale: currentLocale(), version: '0.30.2', href: location.href }),
     }).catch(() => undefined)
   } catch {
     // Diagnostics must never break the plugin.

@@ -72,6 +72,16 @@ export interface RecoveryDeps {
    * never creates a session, turn, action, goal or receipt.
    */
   readonly settleTurn?: (sessionId: string, turn: number, reason: unknown) => void
+  /**
+   * Fast activation mode: replay only the session tail that can still be open.
+   *
+   * A conversation open used to feed every historical event of every session
+   * through the trackers just to learn one prompt. With this flag, a session
+   * whose last event is `turn/end` starts at the cursor without a replay, and an
+   * open session is scanned backwards only until its latest `turn/start` and
+   * user message. Live events keep the trackers complete from then on.
+   */
+  readonly openTurnsOnly?: boolean
 }
 
 /** Bounded outcome of one `recoverContext` call. */
@@ -281,6 +291,103 @@ function replayEvent(
   return true
 }
 
+/**
+ * Fast activation replay: find the one open turn without feeding the whole log
+ * through the trackers.
+ *
+ * A closed session ends in `turn/end`, so there is nothing to hydrate and the
+ * cursor can advance to its end. An open session is scanned backwards until
+ * the latest `turn/start`, collecting the newest user prompt on the way. This
+ * turns a 50k-event replay into a bounded tail scan whose length is one turn.
+ */
+function replayOpenTurnOnly(
+  sessionId: string,
+  session: unknown,
+  reader: SessionReader,
+  deps: RecoveryDeps,
+  states: Map<string, SessionReplayState>,
+  counters: RecoveryCounters,
+): void {
+  const previous = states.get(sessionId)
+  if (
+    previous !== undefined &&
+    previous.session === session &&
+    previous.deps === deps &&
+    previous.lastSeq === reader.end
+  ) return
+
+  const finish = (openTurn: number | undefined, prompt: string): void => {
+    states.set(sessionId, { session, deps, lastSeq: reader.end, openTurn, prompt })
+    if (openTurn === undefined || prompt.length === 0) return
+    try {
+      const pending = deps.capture.hydrate({
+        sessionId,
+        turn: openTurn,
+        step: 0,
+        prompt,
+      })
+      if (pending !== undefined) counters.hydrations += 1
+    } catch {
+      counters.failures += 1
+    }
+  }
+
+  if (reader.end === 0) {
+    finish(undefined, '')
+    return
+  }
+
+  let last: unknown
+  try {
+    last = reader.read(reader.end - 1)
+  } catch {
+    counters.failures += 1
+    return
+  }
+  const lastRecord = asRecord(last)
+  if (lastRecord === undefined) {
+    counters.failures += 1
+    return
+  }
+  if (lastRecord.type === 'turn/end') {
+    finish(undefined, '')
+    return
+  }
+
+  let openTurn: number | undefined
+  let prompt = ''
+  for (let seq = reader.end - 1; seq >= 0; seq -= 1) {
+    let event: unknown
+    try {
+      event = reader.read(seq)
+    } catch {
+      counters.failures += 1
+      continue
+    }
+    const record = asRecord(event)
+    if (record === undefined) {
+      counters.failures += 1
+      continue
+    }
+    counters.events += 1
+    if (record.type === 'turn/start') {
+      const data = asRecord(record.data)
+      const turn = optionalIntegerOf(data?.turn)
+      if (turn !== undefined) {
+        openTurn = turn
+        break
+      }
+      continue
+    }
+    if (record.type === 'user/message' && prompt.length === 0) {
+      const data = asRecord(record.data)
+      const value = data === undefined ? undefined : userPromptOf(data)
+      if (value !== undefined) prompt = value
+    }
+  }
+  finish(openTurn, prompt)
+}
+
 /** Replay one session's new seqs, then hydrate its open-turn prompt if changed. */
 function replaySession(
   sessionId: string,
@@ -295,6 +402,11 @@ function replaySession(
     return
   }
   counters.sessions += 1
+
+  if (deps.openTurnsOnly === true) {
+    replayOpenTurnOnly(sessionId, session, reader, deps, states, counters)
+    return
+  }
 
   const previous = states.get(sessionId)
   const continuing =
