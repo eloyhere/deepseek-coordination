@@ -15,6 +15,62 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.30.1] - 2026-11-12
+
+### Added
+
+- **Markdown in question and approval dialogs.** Question titles, details,
+  option labels/descriptions and approval reasons now render safe Markdown:
+  headings, paragraphs, bullet/ordered/task lists, fenced code, inline code,
+  blockquotes, tables, links, bold/italic/strikethrough and horizontal rules.
+  Raw HTML is escaped, `javascript:` links are dropped, and links open with
+  `rel="noreferrer noopener"`. The parser and renderer live in
+  `src/client/markdownCore.ts` and `src/client/markdown.ts`; no HTML is injected.
+
+### Fixed
+
+- **Takeover switches are now enforced, not advisory.** With file-read takeover
+  on, native `read` is denied and the model is directed to AMP `workspace.list`
+  → `workspace.outline` → `workspace.read`. With search takeover on, native
+  `glob`/`grep` are denied and directed to `discover action="search"`. Native
+  write/replace remains denied under file-write takeover. The guard resolves the
+  live workspace preference on every execution, and the three switches remain
+  independent. Guards are installed on every live agent scope and on each new
+  `agent/created`, so long-running sibling sessions in other projects are
+  covered as soon as the plugin reloads, not only the session that reloaded it.
+- **The intake call is compact, so the stream no longer truncates.** The nested
+  `questions`/`expansion`/proposal-object schema made one intake call ~2.7 KB.
+  With the model's reasoning already consuming the output budget, the stream
+  stopped mid-object: `finish.reason = { kind: "error", failure: { code:
+  "MALFORMED_RESPONSE", message: "DeepSeek Messages stream: tool input is
+  invalid JSON" } }`. The tool now accepts one flat `question` + `options` +
+  `summary` + 2-3 string `proposals`, and the host appends the decision
+  question. Legacy nested input still normalizes for existing sessions.
+- **Host-visible strings follow the interface locale.** Intake-generated labels,
+  takeover denial messages and the localized prompt expansion labels now come
+  from `src/host/toolCopy.ts` (zh/en/ja/es/fr/de/ru/pt). `AmpHost.locale` is
+  updated by the same `onLocale` route that rebuilds the localized catalog, so
+  the popup, guard and catalog cannot disagree.
+
+- **Discovery queries are quoted, not bare regexes.** Session logs showed the
+  other malformed calls were `attention_manifest_protocol_discover` with
+  `"query": foo|bar` (no quotes), so the JSON parser failed even though the
+  object was balanced. `query` is now a string schema with a separate
+  `queries` array, and the description shows the quoted `"foo|bar"` form.
+- **The blocking intake popup has a 180-second ceiling.** The native question
+  prompt is the only plugin wait with no bound; if its window is hidden or the
+  notification route is stale, a turn can look hung indefinitely. The tool now
+  aborts the wait with `question_timeout` and leaves the AMP questions asked,
+  so a later turn can still inspect or answer them.
+
+### Verified
+
+- `npm run typecheck` clean.
+- `npm test`: **227/227** pass, including six Markdown parser tests, the
+  read/search takeover guard test, the all-agent guard installation test, the
+  three-question intake regression, the compact-payload regression and the
+  injected-locale label test.
+
 ## [0.30.0] - 2026-11-12
 
 ### Added

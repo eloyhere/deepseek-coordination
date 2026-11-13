@@ -97,25 +97,25 @@ test('the existing AMP discover tool searches project file names and content via
     const stringResults = stringGlobs.tree.children.flatMap((source) => source.children.flatMap((group) => group.children))
     assert.ok(stringResults.some((item) => item.kind === 'content' && item.target.path === 'src/unique-file-name.ts'), JSON.stringify(stringGlobs))
 
-    const arrayQuery = await discover.execute({ action: 'search', query: ['find-me-content', 'needlePhrase'], scope: 'content' }, execFor(project, 'call-array-query'))
+    const arrayQuery = await discover.execute({ action: 'search', queries: ['find-me-content', 'needlePhrase'], scope: 'content' }, execFor(project, 'call-array-query'))
     const arrayResults = arrayQuery.tree?.children.flatMap((source) => source.children.flatMap((group) => group.children)) ?? []
     assert.ok(arrayResults.some((item) => item.target.path === 'src/unique-file-name.ts'), JSON.stringify(arrayQuery))
 
-    const regexQuery = await discover.execute({ action: 'search', query: ['find-me-(content|phrase)'], regex: true, scope: 'content' }, execFor(project, 'call-regex-query'))
+    const regexQuery = await discover.execute({ action: 'search', queries: ['find-me-(content|phrase)'], regex: true, scope: 'content' }, execFor(project, 'call-regex-query'))
     const regexResults = regexQuery.tree?.children.flatMap((source) => source.children.flatMap((group) => group.children)) ?? []
     assert.ok(regexResults.some((item) => item.target.path === 'src/unique-file-name.ts'), JSON.stringify(regexQuery))
 
-    const badRegex = await discover.execute({ action: 'search', query: ['('], regex: true, scope: 'content' }, execFor(project, 'call-bad-regex'))
+    const badRegex = await discover.execute({ action: 'search', queries: ['('], regex: true, scope: 'content' }, execFor(project, 'call-bad-regex'))
     assert.equal(badRegex.ok, false)
     assert.equal(badRegex.error.code, 'invalid_search')
     assert.match(badRegex.error.message, /invalid regular expression/)
 
-    const catalogArray = await discover.execute({ action: 'catalog', query: ['goal', 'plan'] }, exec)
+    const catalogArray = await discover.execute({ action: 'catalog', queries: ['goal', 'plan'] }, exec)
     assert.ok(catalogArray.modules.some((module) => module.module === 'goal'))
     assert.ok(catalogArray.modules.some((module) => module.module === 'plan'))
     const catalogRegex = await discover.execute({ action: 'catalog', query: '^pla', regex: true }, exec)
     assert.ok(catalogRegex.modules.some((module) => module.module === 'plan'))
-    const badCatalogRegex = await discover.execute({ action: 'catalog', query: ['['], regex: true }, exec)
+    const badCatalogRegex = await discover.execute({ action: 'catalog', queries: ['['], regex: true }, exec)
     assert.equal(badCatalogRegex.ok, false)
     assert.equal(badCatalogRegex.error.code, 'invalid_query')
 

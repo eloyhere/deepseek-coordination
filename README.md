@@ -313,6 +313,27 @@ and question persistence live in `src/host/intake.ts`. The intake pass is skippe
 for pure acknowledgements, an explicit “do not ask” instruction, or a turn that
 already has answers.
 
+### Dialog Markdown
+
+Question titles, details, option labels/descriptions and approval reasons render
+safe Markdown in the takeover dialog: headings, paragraphs, bullet/ordered/task
+lists, fenced code, inline code, blockquotes, tables, links, emphasis and rules.
+Raw HTML is escaped, unsafe link protocols are dropped, and links open with
+`rel="noreferrer noopener"`. The parser is `src/client/markdownCore.ts`; the
+React renderer is `src/client/markdown.ts`.
+
+## Takeover enforcement
+
+The three takeover switches are enforced by a host tool guard, not just by the
+prompt. While file-read takeover is on, native `read` is denied; while search
+takeover is on, native `glob`/`grep` are denied; while file-write takeover is on,
+native `write`/`replace`/`edit`/`apply_patch` are denied. Each denial explains
+the AMP path to use instead. The guard reads the live workspace preference for
+every execution, so changing a switch takes effect immediately and the switches
+remain independent. The guard is installed on every live agent scope and on
+each new `agent/created`, so sibling sessions in other projects are covered
+without waiting for a new chat.
+
 ## Harness ↔ AMP binding
 
 The two directions are wired together:

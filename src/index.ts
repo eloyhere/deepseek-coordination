@@ -56,7 +56,8 @@ import { SubagentTracker } from './host/subagent.js'
 import { LineageSources } from './host/lineage.js'
 import { asRecord } from './host/json.js'
 import { HostNotificationBridge } from './host/hostNotifications.js'
-import { fileWriteTakeoverGuard } from './host/writeTakeover.js'
+import { installFileTakeoverGuards, type GuardRegistrar } from './host/writeTakeover.js'
+import { toolCopy } from './host/toolCopy.js'
 import { DialogGate } from './host/dialogGate.js'
 import { registerIntakeTool } from './host/intake.js'
 
@@ -85,18 +86,20 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
   // DSH owns the interface language on the client; start from the process
   // locale and let the client report the language it actually renders.
   const catalog = openLocalizedCatalog(ctx, host, hostLocale(), { skills: config.skills, commands: config.commands })
+  host.locale = catalog.locale
 
   ctx.effect(() => ctx.provide('amp', host), 'deepseek-coordination: AMP service')
   ctx.effect(() => () => host.close(), 'deepseek-coordination: AMP kernel')
   ctx.effect(() => () => catalog.dispose(), 'deepseek-coordination: localized catalog')
 
-  // The prompt explains the takeover; this guard makes it real. Native file
-  // writes stay denied only for workspaces whose owner enabled the switch, so
-  // AMP workspace.write (which does not pass through ctx.tools) remains usable.
-  const toolGuard = (ctx.tools as unknown as { guard?: (guard: (execution: { name: string; agent?: unknown }) => string | undefined) => () => void }).guard
-  if (typeof toolGuard === 'function') {
-    ctx.effect(() => toolGuard.call(ctx.tools, fileWriteTakeoverGuard(host)), 'deepseek-coordination: file-write takeover guard')
-  }
+  // The prompt explains the takeover; this guard makes it real. Register it on
+  // every live agent scope and every future agent, not just the scope that
+  // happened to load this plugin: otherwise a sibling session in another
+  // project keeps calling native edit/write while this chat is guarded.
+  ctx.effect(
+    () => installFileTakeoverGuards(ctx as unknown as GuardRegistrar, host, () => toolCopy(host.locale)),
+    'deepseek-coordination: file read/write/search takeover guards',
+  )
 
   const sync = new AmpSync(ctx, host)
   host.sync = sync
@@ -187,7 +190,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.30.0',
+          version: '0.30.1',
           clientGraph,
           sync: () => sync.status(),
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler
@@ -281,6 +284,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           locale: () => catalog.locale,
           onLocale: (value) => {
             catalog.setLocale(value)
+            host.locale = catalog.locale
           },
         }),
         'deepseek-coordination: HTTP routes',

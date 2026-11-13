@@ -6,7 +6,7 @@ import test from 'node:test'
 
 import { AmpPreferencesStore } from '../src/host/preferences.ts'
 import { registerAmpPrompt } from '../src/host/prompt.ts'
-import { fileWriteTakeoverGuard } from '../src/host/writeTakeover.ts'
+import { fileWriteTakeoverGuard, installFileTakeoverGuards } from '../src/host/writeTakeover.ts'
 
 test('file-write takeover migrates old preferences and persists only boolean changes', () => {
   const root = mkdtempSync(join(tmpdir(), 'amp-write-prefs-'))
@@ -47,6 +47,27 @@ test('write takeover guard blocks native writes only for enabled workspaces', ()
   assert.equal(guard({ name: 'write', agent: { session: { header: { cwd: '/other' } } } }), undefined)
 })
 
+test('read and search takeover guards disable their native tools independently', () => {
+  const preferences = { takeoverFileWrite: false, takeoverFileRead: true, takeoverSearch: false }
+  const host = {
+    rootOfAgent: (agent) => agent?.session?.header?.cwd,
+    preferencesFor: () => ({ get: () => preferences }),
+  }
+  const guard = fileWriteTakeoverGuard(host)
+  const agent = { session: { header: { cwd: '/project' } } }
+  assert.match(guard({ name: 'read', agent }), /workspace\.list/)
+  assert.match(guard({ name: 'read', agent }), /workspace\.outline/)
+  assert.equal(guard({ name: 'write', agent }), undefined)
+  assert.equal(guard({ name: 'grep', agent }), undefined)
+  preferences.takeoverSearch = true
+  assert.match(guard({ name: 'grep', agent }), /action="search"/)
+  assert.match(guard({ name: 'glob', agent }), /Native glob\/grep are disabled/)
+  preferences.takeoverFileRead = false
+  preferences.takeoverSearch = false
+  assert.equal(guard({ name: 'read', agent }), undefined)
+  assert.equal(guard({ name: 'grep', agent }), undefined)
+})
+
 test('write takeover context follows live workspace preferences independently of read takeover', () => {
   const contexts = new Map()
   const sections = new Map()
@@ -83,4 +104,50 @@ test('write takeover context follows live workspace preferences independently of
   assert.match(write.text(assembly('project-a')), /File-write takeover is enabled/)
   preferences.get('project-b').takeoverFileWrite = false
   assert.equal(write.text(assembly('project-b')), '')
+})
+
+test('takeover guards are installed on every live and future agent scope', () => {
+  const installed = []
+  const disposed = []
+  const makeAgent = (id) => ({
+    id,
+    ctx: {
+      tools: {
+        guard: (guard) => {
+          installed.push({ id, guard })
+          return () => disposed.push(id)
+        },
+      },
+    },
+  })
+  const current = makeAgent('current')
+  const sibling = makeAgent('sibling')
+  let created
+  let removed
+  const root = {
+    agents: { list: () => [current] },
+    on: (name, listener) => {
+      if (name === 'agent/created') created = listener
+      if (name === 'agent/disposed') removed = listener
+      return () => {}
+    },
+  }
+  // A session-loaded plugin context is agent-scoped; only `root` sees siblings.
+  const ctx = { root }
+  const host = {
+    rootOfAgent: (agent) => agent?.session?.header?.cwd,
+    preferencesFor: () => ({ get: () => ({ takeoverFileWrite: true, takeoverFileRead: true, takeoverSearch: true }) }),
+  }
+  const dispose = installFileTakeoverGuards(ctx, host)
+  assert.deepEqual(installed.map((entry) => entry.id), ['current'])
+  created({ agent: sibling })
+  assert.deepEqual(installed.map((entry) => entry.id), ['current', 'sibling'])
+  const agent = { session: { header: { cwd: '/project' } } }
+  assert.match(installed[1].guard({ name: 'edit', agent }), /workspace\.write/)
+  assert.match(installed[1].guard({ name: 'read', agent }), /workspace\.list/)
+  assert.match(installed[1].guard({ name: 'grep', agent }), /action="search"/)
+  removed({ agent: current })
+  assert.deepEqual(disposed, ['current'])
+  dispose()
+  assert.deepEqual(disposed, ['current', 'sibling'])
 })

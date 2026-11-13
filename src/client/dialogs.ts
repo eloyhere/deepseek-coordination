@@ -12,6 +12,7 @@ import { BlockingDialog } from './modal.js'
 import { useAmpPreferences } from './preferences.js'
 import { currentLocale, useCopy } from './i18n.js'
 import { usableSession } from './bridge.js'
+import { Markdown } from './markdown.js'
 
 const h = React.createElement
 const cast = (component: unknown): React.ComponentType<Record<string, unknown>> => component as React.ComponentType<Record<string, unknown>>
@@ -70,12 +71,12 @@ function RequestDialog({ item, session, settled }: { item: Pending; session: str
     h(M.Typography, { id: titleId, variant: 'h6', component: 'h2', sx: { mb: 2 } }, title),
     error ? h(M.Alert, { severity: 'error', sx: { mb: 2 } }, labels[6]) : null,
     item.kind === 'approval'
-      ? h(M.Typography, { sx: { whiteSpace: 'pre-wrap', mb: 2 } }, item.displayReason?.[locale] ?? item.displayReason?.en ?? item.reason ?? item.toolName)
+      ? h(Markdown, { text: item.displayReason?.[locale] ?? item.displayReason?.en ?? item.reason ?? item.toolName ?? '', compact: true, style: { marginBottom: 16 } })
       : h('div', null, ...(item.questions ?? []).map((question) => {
         const selection = answers[question.id] ?? { selected: [], custom: '' }
-        return h('fieldset', { key: question.id, disabled: busy, style: { border: 0, margin: '0 0 24px', padding: 0, minWidth: 0 } },
-          h('legend', { style: { fontWeight: 600, marginBottom: 8 } }, question.question),
-          question.detail ? h(M.Typography, { variant: 'body2', sx: { mb: 1, whiteSpace: 'pre-wrap' } }, question.detail) : null,
+        return h('fieldset', { key: question.id, disabled: busy, 'aria-label': question.question, style: { border: 0, margin: '0 0 24px', padding: 0, minWidth: 0 } },
+          h('div', { style: { fontWeight: 600, marginBottom: 8 } }, h(Markdown, { text: question.question, compact: true })),
+          question.detail ? h(Markdown, { text: question.detail, compact: true, style: { marginBottom: 8 } }) : null,
           h('div', { role: question.multiSelect ? 'group' : 'radiogroup', 'aria-label': question.question },
             ...(question.options ?? []).map((option) => h(M.Label, {
               key: option.label, sx: { display: 'flex', alignItems: 'flex-start', m: 0 },
@@ -83,7 +84,12 @@ function RequestDialog({ item, session, settled }: { item: Pending; session: str
                 name: `${item.id}-${question.id}`, checked: selection.selected.includes(option.label),
                 onChange: (_event: unknown, checked: boolean) => choose(question, option.label, checked),
               }),
-              label: h('span', null, h('span', null, option.label), option.description ? h(M.Typography, { variant: 'caption', component: 'div' }, option.description) : null),
+              label: h('span', null,
+                h('span', null, h(Markdown, { text: option.label, inline: true })),
+                option.description
+                  ? h('div', { style: { fontSize: '0.75rem', opacity: 0.82, marginTop: 2 } },
+                    h(Markdown, { text: option.description, inline: true }))
+                  : null),
             }))),
           h(M.TextField, {
             label: labels[5], fullWidth: true, multiline: true, minRows: 2, value: selection.custom,

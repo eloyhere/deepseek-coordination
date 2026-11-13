@@ -116,14 +116,20 @@ test('rejects invalid intake shapes with a typed error', () => {
     ],
   }), /duplicate question id/)
   assert.throws(() => normalizeIntake({ questions: [QUESTION], proposals: [PROPOSALS[0]] }), /at least two approaches/)
-  assert.throws(() => normalizeIntake({
+})
+
+test('accepts three questions plus proposals and appends the decision question', () => {
+  const intake = normalizeIntake({
     questions: [
       QUESTION,
       { id: 'second', question: 'Second?', options: ['A', 'B'] },
       { id: 'third', question: 'Third?', options: ['A', 'B'] },
     ],
     proposals: PROPOSALS,
-  }), /room for a decision question/)
+  })
+  assert.equal(intake.questions.length, 4)
+  assert.equal(intake.questions[3].id, 'proposal')
+  assert.equal(intake.questions[3].options[0].label, 'Popup first')
 })
 
 test('renders expansion context without empty labels', () => {
@@ -132,4 +138,36 @@ test('renders expansion context without empty labels', () => {
     expansionText({ goal: 'Goal', assumptions: ['A'], unknowns: ['U'] }),
     'Goal: Goal\nAssumptions: A\nOpen questions: U',
   )
+})
+
+test('accepts the compact payload and stays small', () => {
+  const input = {
+    topic: 'Fix intake',
+    question: 'Which scope?',
+    options: ['Small', 'Full'],
+    summary: 'Keep the call small.',
+    proposals: ['Patch first', 'Rewrite'],
+  }
+  const intake = normalizeIntake(input)
+  assert.equal(intake.questions.length, 2)
+  assert.equal(intake.questions[0].detail, 'Keep the call small.')
+  assert.equal(intake.proposals.length, 2)
+  assert.equal(intake.proposals[0].recommended, true)
+  assert.equal(intake.questions[1].id, 'proposal')
+  assert.ok(JSON.stringify(input).length < 500)
+})
+
+test('uses injected copy for generated labels', () => {
+  const intake = normalizeIntake(
+    { question: 'Q?', options: ['A', 'B'], proposals: ['P1', 'P2'] },
+    {
+      proposalHeader: '方案选择',
+      proposalQuestion: '选择一个方案方向',
+      goal: '目标',
+      assumptions: '假设',
+      openQuestions: '待确认',
+    },
+  )
+  assert.equal(intake.questions[1].header, '方案选择')
+  assert.equal(intake.questions[1].question, '选择一个方案方向')
 })

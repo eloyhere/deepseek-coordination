@@ -102,8 +102,8 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
           'For a project: call `attention_manifest_protocol_workspace.list` on the workspace root (or `workspace.read`/`workspace.outline` on the root directory) and review the project outline before opening any file.',
           'For a file: call `attention_manifest_protocol_workspace.outline` first, or rely on the first `workspace.read`, whose `phase: "outline"` response lists the file outline; review it, then repeat the read with `startLine`/`endLine` or a byte range for only the content you need.',
           'The host enforces the order project outline, then file outline, then content; a content request made before the outline returns the outline instead.',
-          'Prefer these verbs over the harness native file reader so the read is journaled, bounded and CAS-aware.',
-          'Fall back to the native reader only when AMP cannot address the path (outside the workspace root or a binary document), and follow the same outline-first order.',
+          'Native read is disabled while this switch is on, so every read goes through AMP and is journaled, bounded and CAS-aware.',
+          'For a binary document or a path outside the workspace root, use the format-aware tool for that format; do not bypass the guard with a shell command.',
         ].join(' ')
         : ''
     },
@@ -135,7 +135,7 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
       const agent = (assembly as { agent?: { session?: { header?: { cwd?: string } } } }).agent
       if (!host.preferencesFor(agent?.session?.header?.cwd).get().takeoverSearch) return ''
       return [
-        'Search takeover is enabled: use `attention_manifest_protocol_discover` with `action: "search"` for project file-name or file-content searches instead of native search tools.',
+        'Search takeover is enabled: use `attention_manifest_protocol_discover` with `action: "search"` for project file-name or file-content searches instead of native search tools. Native glob/grep are disabled while this switch is on.',
         'AMP discover performs the ranking; choose `scope` as `files`, `content`, or `both`, and pass `path`, `include`, and `exclude` to control the workspace-relative search scope.',
         'Search results only identify matching files and line locations; before reading content, get the file outline with `attention_manifest_protocol_workspace.outline` (or the first `workspace.read` outline phase), then read only the relevant ranges.',
       ].join(' ')

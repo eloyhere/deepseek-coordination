@@ -12,6 +12,7 @@ import {
 } from 'attention-manifest-protocol/question'
 import type { AmpHost } from './amp.js'
 import { jsonSafe } from './json.js'
+import { toolCopy } from './toolCopy.js'
 import {
   mapAnswers,
   normalizeIntake,
@@ -53,64 +54,25 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
   ctx.tools.register(defineTool({
     name: 'deepseek_coordination_intake',
     description: [
-      'Run the post-input intake flow in one call: expand the request, show the native question popup, and return the answers plus proposed approaches.',
-      'Use it once after a new substantive user message, before other tools.',
-      'Ask 1-2 concrete questions (2-4 options each) and pass 2-3 proposed approaches; the tool adds a decision question so the user picks a direction.',
+      'Run the post-input intake flow: open the native question popup and return the answers plus a selected approach.',
+      'Use one compact call: topic, one question, 2-4 short options, and 2-3 short proposal titles; optional summary and detail.',
+      'Never pass nested expansion/questions objects. Keep the args small so the stream cannot truncate.',
       'Then propose the plan with attention_manifest_protocol_plan (propose_draft) or attention_manifest_protocol_harness (operation=plan).',
     ].join(' '),
     parameters: {
       topic: { type: 'string', description: 'Short restatement of the user request.' },
-      questions: {
+      question: { type: 'string', required: true, description: 'One concrete clarification question.' },
+      options: {
         type: 'array',
-        description: 'One to three clarification questions. Each needs at least two options.',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            id: { type: 'string', description: 'Stable question id; defaults to q1, q2, q3.' },
-            header: { type: 'string', description: 'Short header shown above the question.' },
-            question: { type: 'string', required: true, description: 'The question text.' },
-            detail: { type: 'string', description: 'Optional context or expansion for this question.' },
-            options: {
-              type: 'array',
-              description: 'Two to five options; strings or { label, description } objects.',
-              items: { type: 'json' },
-            },
-            multiSelect: { type: 'boolean', description: 'Allow more than one option.' },
-            kind: { type: 'string', enum: ['clarification', 'decision', 'confirmation'], description: 'AMP question kind.' },
-          },
-        },
+        description: 'Two to four short option labels.',
+        items: { type: 'string' },
       },
-      expansion: {
-        type: 'object',
-        description: 'Expanded understanding of the request, shown as context and used for approach selection.',
-        additionalProperties: false,
-        properties: {
-          goal: { type: 'string', description: 'The concrete goal in one sentence.' },
-          summary: { type: 'string', description: 'Expanded requirement summary.' },
-          assumptions: { type: 'array', description: 'Assumptions being made.', items: { type: 'string' } },
-          unknowns: { type: 'array', description: 'Unknowns the popup should resolve.', items: { type: 'string' } },
-          approaches: {
-            type: 'array',
-            description: 'Alternative approaches; used as proposals when proposals is absent.',
-            items: { type: 'json' },
-          },
-        },
-      },
+      summary: { type: 'string', description: 'Optional one-sentence expanded understanding.' },
+      detail: { type: 'string', description: 'Optional short context shown with the question.' },
       proposals: {
         type: 'array',
-        description: 'Two to four concrete approaches. One may be recommended; the tool adds a decision question.',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            id: { type: 'string' },
-            title: { type: 'string', required: true },
-            summary: { type: 'string', description: 'What this approach does.' },
-            tradeoffs: { type: 'string', description: 'Costs, risks or tradeoffs.' },
-            recommended: { type: 'boolean', description: 'Mark the recommended approach; it is listed first.' },
-          },
-        },
+        description: 'Two or three short approach titles; the first is treated as recommended.',
+        items: { type: 'string' },
       },
     },
     output: {
@@ -122,9 +84,10 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
       if (agent === undefined) return jsonSafe({ ok: false, error: { code: 'binding_invalid', message: 'the intake flow needs an agent session' } })
       let intake: NormalizedIntake
       try {
-        intake = normalizeIntake(args)
+        intake = normalizeIntake(args, toolCopy(host.locale))
       } catch (error) {
-        return jsonSafe({ ok: false, error: { code: 'invalid_parameters', message: error instanceof Error ? error.message : String(error) } })
+        const message = error instanceof Error ? error.message : String(error)
+        return jsonSafe({ ok: false, error: { code: 'invalid_parameters', message: `${toolCopy(host.locale).invalidIntake}: ${message}` } })
       }
       const service = host.ctx.get('userQuestions') as
         | { ask(request: Record<string, unknown>): Promise<unknown> }
@@ -160,17 +123,26 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
       }
 
       let raw: unknown
+      // The native popup is blocking. Bound the wait so a popup that never
+      // becomes visible cannot leave the harness looking hung forever.
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 180_000)
       try {
-        raw = await service.ask({ agent, questions: popupQuestions(intake) })
+        raw = await service.ask({ agent, questions: popupQuestions(intake), signal: controller.signal })
       } catch (error) {
+        const timedOut = controller.signal.aborted
         return jsonSafe({
           ok: false,
           error: {
-            code: 'question_cancelled',
-            message: error instanceof Error ? error.message : String(error),
+            code: timedOut ? 'question_timeout' : 'question_cancelled',
+            message: timedOut
+              ? toolCopy(host.locale).intakeTimeout
+              : error instanceof Error ? error.message : String(error),
             questionIds: [...records.values()].map((question) => question.id),
           },
         })
+      } finally {
+        clearTimeout(timeout)
       }
 
       const answers = mapAnswers(intake, raw)

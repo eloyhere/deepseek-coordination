@@ -101,6 +101,23 @@ const MAX_OPTIONS = 5
 const MAX_PROPOSALS = 4
 const MAX_TEXT = 800
 
+/** Labels the host injects so the pure intake model stays import-free. */
+export interface IntakeCopy {
+  readonly proposalHeader: string
+  readonly proposalQuestion: string
+  readonly goal: string
+  readonly assumptions: string
+  readonly openQuestions: string
+}
+
+const DEFAULT_COPY: IntakeCopy = {
+  proposalHeader: 'Approach',
+  proposalQuestion: 'Choose an approach',
+  goal: 'Goal',
+  assumptions: 'Assumptions',
+  openQuestions: 'Open questions',
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -162,6 +179,11 @@ function normalizeQuestion(raw: unknown, index: number): IntakeQuestion {
 }
 
 function normalizeProposal(raw: unknown, index: number): IntakeProposal {
+  if (typeof raw === 'string') {
+    const title = clean(raw, 120)
+    if (title === undefined) throw new IntakeError(`proposals[${index}] title is required`)
+    return { id: `p${index + 1}`, title, recommended: index === 0 }
+  }
   const record = asRecord(raw)
   const title = clean(record?.title, 120)
   if (title === undefined) throw new IntakeError(`proposals[${index}].title is required`)
@@ -193,11 +215,22 @@ function normalizeExpansion(raw: unknown): IntakeExpansion | undefined {
 }
 
 /** Turn the model's intake request into bounded, stable popup data. */
-export function normalizeIntake(input: unknown): NormalizedIntake {
+export function normalizeIntake(input: unknown, copy: IntakeCopy = DEFAULT_COPY): NormalizedIntake {
   const record = asRecord(input) ?? {}
+  // Compact schema: one flat question plus short proposal titles. The legacy
+  // nested `questions`/`expansion` shape stays accepted for older sessions.
   const rawQuestions = Array.isArray(record.questions)
     ? record.questions
-    : record.question === undefined ? [] : [{ question: record.question, options: record.options }]
+    : record.questions === undefined && record.question !== undefined
+      ? [{
+          question: record.question,
+          options: record.options,
+          detail: record.detail ?? record.summary,
+          header: record.header,
+          kind: record.kind,
+          multiSelect: record.multiSelect,
+        }]
+      : []
   if (rawQuestions.length === 0) throw new IntakeError('at least one question is required')
   if (rawQuestions.length > MAX_QUESTIONS) throw new IntakeError(`at most ${MAX_QUESTIONS} questions are allowed`)
   const questions = rawQuestions.map(normalizeQuestion)
@@ -212,7 +245,11 @@ export function normalizeIntake(input: unknown): NormalizedIntake {
   if (proposals.length > MAX_PROPOSALS) proposals = proposals.slice(0, MAX_PROPOSALS)
   if (proposals.length === 1) throw new IntakeError('proposals need at least two approaches')
 
-  const expansion = normalizeExpansion(record.expansion)
+  let expansion = normalizeExpansion(record.expansion)
+  if (expansion === undefined) {
+    const summary = clean(record.summary, 1000)
+    if (summary !== undefined) expansion = { summary, assumptions: [], unknowns: [] }
+  }
   const expansionApproaches = asRecord(record.expansion)?.approaches
   if (proposals.length === 0 && Array.isArray(expansionApproaches)) {
     proposals = expansionApproaches.map(normalizeProposal).slice(0, MAX_PROPOSALS)
@@ -220,7 +257,6 @@ export function normalizeIntake(input: unknown): NormalizedIntake {
   }
 
   if (proposals.length >= 2) {
-    if (questions.length >= MAX_QUESTIONS) throw new IntakeError('proposals need room for a decision question; use at most two questions')
     if (questions.some((question) => question.id === 'proposal')) {
       throw new IntakeError('question id proposal is reserved for the generated decision question')
     }
@@ -236,13 +272,13 @@ export function normalizeIntake(input: unknown): NormalizedIntake {
         ? {}
         : { description: [proposal.summary, proposal.tradeoffs].filter(Boolean).join(' — ').slice(0, 300) }),
     }))
-    const detail = [expansion?.summary, expansion === undefined ? undefined : expansionText(expansion)]
+    const detail = [expansion?.summary, expansion === undefined ? undefined : expansionText(expansion, copy)]
       .filter(Boolean)
       .join('\n')
     questions.push({
       id: 'proposal',
-      header: '方案选择 / Approach',
-      question: '选择一个方案方向 / Choose an approach',
+      header: copy.proposalHeader,
+      question: copy.proposalQuestion,
       ...(detail.length === 0 ? {} : { detail }),
       options,
       multiSelect: false,
@@ -259,14 +295,13 @@ export function normalizeIntake(input: unknown): NormalizedIntake {
   }
 }
 
-export function expansionText(expansion: IntakeExpansion): string {
+export function expansionText(expansion: IntakeExpansion, copy: IntakeCopy = DEFAULT_COPY): string {
   const lines: string[] = []
-  if (expansion.goal !== undefined) lines.push(`Goal: ${expansion.goal}`)
-  if (expansion.assumptions.length > 0) lines.push(`Assumptions: ${expansion.assumptions.join('; ')}`)
-  if (expansion.unknowns.length > 0) lines.push(`Open questions: ${expansion.unknowns.join('; ')}`)
+  if (expansion.goal !== undefined) lines.push(`${copy.goal}: ${expansion.goal}`)
+  if (expansion.assumptions.length > 0) lines.push(`${copy.assumptions}: ${expansion.assumptions.join('; ')}`)
+  if (expansion.unknowns.length > 0) lines.push(`${copy.openQuestions}: ${expansion.unknowns.join('; ')}`)
   return lines.join('\n')
 }
-
 /** DSH-native popup shape; ids stay equal to the AMP question ids. */
 export function popupQuestions(intake: NormalizedIntake): readonly Record<string, unknown>[] {
   return intake.questions.map((question) => ({

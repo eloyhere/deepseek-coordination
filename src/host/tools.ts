@@ -107,10 +107,11 @@ export function registerHarnessTool(ctx: Context, host: AmpHost): void {
 /** The bootstrap entry: the full AMP module catalog, filtered by a query. */
 export function registerDiscoverTool(ctx: Context, host: AmpHost): void {  ctx.tools.register(defineTool({
     name: AMP_DISCOVER,
-    description: 'AMP discovery bootstrap. Use action=catalog to inspect modules, verbs and authority; use action=search to find project files or matching file content using AMP discovery ranking. query accepts a string or an array of strings; set regex=true to match each entry as a case-insensitive regular expression.',
+    description: 'AMP discovery bootstrap. Use action=catalog to inspect modules, verbs and authority; use action=search to find project files or matching file content using AMP discovery ranking. query must be a JSON string in double quotes, including regex with | (for example "foo|bar"); use queries for several entries. Set regex=true to treat each entry as a case-insensitive regular expression.',
     parameters: {
       action: { type: 'string', enum: ['catalog', 'search'], description: 'catalog (default) inspects the AMP protocol; search searches files or content in the current project.' },
-      query: { type: 'json', description: 'Catalog filter, or a required search query when action=search. Accepts a string or an array of strings.' },
+      query: { type: 'string', description: 'Search query (or catalog filter). Always a quoted JSON string; include regex alternation inside the quotes, for example "foo|bar".' },
+      queries: { type: 'array', items: { type: 'string' }, description: 'Optional list of search queries; use this instead of putting an array in query.' },
       regex: { type: 'boolean', description: 'Treat each query entry as a case-insensitive regular expression instead of word matching.' },
       module: { type: 'string', description: 'Catalog: return one module by name.' },
       tier: { type: 'string', enum: ['agent', 'host', 'hidden'], description: 'Catalog: filter modules by tier.' },
@@ -136,7 +137,8 @@ export function registerDiscoverTool(ctx: Context, host: AmpHost): void {  ctx.t
         }
         try {
           if (exec.agent === undefined) throw new Error('project search requires an agent session')
-          const { action: _action, ...searchArgs } = args as Record<string, unknown>
+          const { action: _action, queries, ...searchArgs } = args as Record<string, unknown>
+          if (searchArgs.query === undefined && queries !== undefined) searchArgs.query = queries
           const request = parseProjectSearchArguments(searchArgs)
           const provider = createProjectFileProvider(host, request, exec.agent.session.header?.cwd)
           const binding = host.bindingFor(exec.agent)
@@ -150,7 +152,7 @@ export function registerDiscoverTool(ctx: Context, host: AmpHost): void {  ctx.t
       if (action !== 'catalog') {
         return jsonSafe({ ok: false, error: { code: 'invalid_action', message: `unknown discover action ${String(action)}` } })
       }
-      const rawQuery = args.query
+      const rawQuery = args.query ?? args.queries
       if (rawQuery !== undefined && typeof rawQuery !== 'string' && !Array.isArray(rawQuery)) {
         return jsonSafe({ ok: false, error: { code: 'invalid_parameters', message: 'query must be a string or an array of strings' } })
       }

@@ -192,6 +192,8 @@ class StoreSlot {
 export class AmpHost {
   readonly ctx: Context
   readonly config: Config
+  /** Active host UI locale, updated by the localization route. */
+  locale = 'en'
   readonly modules: readonly AmpModule[]
   readonly surface: AgentSurface
   readonly catalog: readonly ToolDescriptor[]
