@@ -64,8 +64,12 @@ export interface RouteDependencies {
   readonly clientGraph?: () => unknown
   /** DSH→AMP projection counters and recent errors. */
   readonly sync?: () => unknown
-  /** AMP attention→DSH context compiler counters. */
+  /** AMP attention→DSH context compiler counters; polled, so it stays cheap. */
   readonly context?: () => unknown
+  /** On-demand value model (journal scan, benefit history, pricing). */
+  readonly benefits?: () => unknown
+  /** Explicit history replay for the in-process trackers. */
+  readonly recover?: () => unknown
   /** Called with the active client language so the registered catalog can follow it. */
   readonly onLocale?: (value: unknown) => void
   /** Current catalog language, when the composition exposes it. */
@@ -76,12 +80,6 @@ export interface RouteDependencies {
 export function registerRoutes(webServer: WebServer, dependencies: RouteDependencies): () => void {
   const disposers: Array<() => void> = []
   let clientReport: unknown = null
-  // `/amp/context` aggregates journal, benefit history and optimizer state. A
-  // conversation mount and the 5 s poll can ask for it several times in one
-  // second, so share one short-lived snapshot instead of recompiling it each
-  // time. Mutations go through their own routes and do not need this cache;
-  // a two-second staleness bound is invisible to the panel.
-  let contextCache: { at: number; value: unknown } | undefined
   const route = (path: string, handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void>): void => {
     try {
       disposers.push(webServer.register({ kind: 'exact', path, handler }))
@@ -179,16 +177,35 @@ export function registerRoutes(webServer: WebServer, dependencies: RouteDependen
     }
   })
 
+  // Cheap: counters only. A conversation mount polls this route, so it must
+  // never scan the journal, touch the benefit-history file or price a model.
   route(`${ROUTE_PREFIX}/amp/context`, (request, response) => {
     if (request.method !== 'GET') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'GET only')
-    const now = Date.now()
-    if (contextCache === undefined || now - contextCache.at > 2_000) {
-      contextCache = {
-        at: now,
-        value: dependencies.context === undefined ? { enabled: false } : dependencies.context(),
-      }
+    ok(response, dependencies.context === undefined ? { enabled: false } : dependencies.context())
+  })
+
+  // On demand only: the panel requests this while its details dialog is open.
+  // It scans the gateway journal, merges the durable benefit history and may
+  // write that history back, so it is deliberately not cached or polled.
+  route(`${ROUTE_PREFIX}/amp/benefits`, (request, response) => {
+    if (request.method !== 'GET') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'GET only')
+    try {
+      ok(response, dependencies.benefits === undefined ? { available: false } : dependencies.benefits())
+    } catch (error) {
+      fail(response, 500, 'BENEFITS_FAILED', error instanceof Error ? error.message : String(error))
     }
-    ok(response, contextCache.value)
+  })
+
+  // Explicit history replay for the in-process trackers. It is never scheduled
+  // automatically (a pass can replay tens of thousands of events and block the
+  // event loop); a user or the panel asks for it with POST.
+  route(`${ROUTE_PREFIX}/amp/recover`, (request, response) => {
+    if (request.method !== 'POST') return fail(response, 405, 'METHOD_NOT_ALLOWED', 'POST only')
+    try {
+      ok(response, dependencies.recover === undefined ? { enabled: false } : dependencies.recover())
+    } catch (error) {
+      fail(response, 500, 'RECOVER_FAILED', error instanceof Error ? error.message : String(error))
+    }
   })
 
   // Read-only price registry: 41 DSH routes plus OpenRouter's live catalog.

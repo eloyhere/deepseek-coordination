@@ -15,6 +15,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
 import { CooperationCoordinator } from 'attention-manifest-protocol/cooperation'
+import { benefitCacheKey, createBenefitCache } from './host/benefitCache.js'
 import { Config, type Config as CoordinationConfig } from './host/config.js'
 import { AmpHost } from './host/amp.js'
 import { loadAmpProtocol } from './host/protocol.js'
@@ -82,6 +83,31 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
   const host = new AmpHost(ctx, config, protocol)
   const dialogs = new DialogGate(host)
   if (config.routes || config.notifications) dialogs.attach(ctx)
+  // DSH binds the approval and user-question waterfalls per agent scope, so a
+  // session whose agent was composed before this activation does not see the
+  // gate and falls back to the native dialog. Attach to every live agent and
+  // every future one (the same pattern as the file takeover guards).
+  {
+    const gateRoot = ((ctx as unknown as { root?: unknown }).root ?? ctx) as unknown as {
+      agents?: { list?: () => readonly unknown[] }
+      on?: (name: string, listener: (payload: { agent?: unknown }) => void) => (() => void) | undefined
+    }
+    const attachGate = (agent: unknown): void => {
+      const agentCtx = (agent as { ctx?: unknown } | undefined)?.ctx
+      if (agentCtx === undefined || agentCtx === null) return
+      try {
+        dialogs.attach(agentCtx as Context)
+      } catch {
+        // An agent context that cannot host the listeners keeps native dialogs.
+      }
+    }
+    for (const agent of gateRoot.agents?.list?.() ?? []) attachGate(agent)
+    try {
+      gateRoot.on?.('agent/created', (payload) => attachGate(payload.agent))
+    } catch {
+      // This composition does not dispatch `agent/created`.
+    }
+  }
 
   // DSH owns the interface language on the client; start from the process
   // locale and let the client report the language it actually renders.
@@ -131,53 +157,20 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
   attachPreStepCapture(ctx, host, wire, optimizer)
   attachLineageObservation(ctx, fork, subagent)
 
-  // R1: rebuild the in-process trackers from logs that predate this activation.
-  // The replay is synchronous, reads no attachments and writes no store; a
-  // failure only leaves AMP indexes empty and never blocks plugin activation.
-  // The returned counters are exposed by `/amp/context`; a failed pass keeps
-  // the zeroed default instead of dropping the field.
+  // Recovery is deliberately not run at activation. Replaying session logs can
+  // feed tens of thousands of events through the trackers synchronously, which
+  // blocks the host event loop exactly while a conversation is opening. It is
+  // available on demand through `POST /amp/recover`; the route keeps reporting
+  // zeroed counters until someone asks for a pass.
   let recoveryStatus: RecoveryStatus = EMPTY_RECOVERY_STATUS
-  // Recovery can replay up to 200 session logs. Doing that inline makes every
-  // plugin activation wait for a full history scan before the conversation can
-  // open. Let activation return first, then rebuild the indexes off the load
-  // path; the panel reports zeroed counters until this completes.
-  let recoveryTimer: ReturnType<typeof setTimeout> | undefined
-  let recoveryCancelled = false
-  const runRecovery = (): void => {
-    if (recoveryCancelled) return
-    try {
-      recoveryStatus = recoverContext(ctx, {
-        capture: wire,
-        fork,
-        subagent,
-        spill,
-        retention,
-        prune,
-        compaction,
-        // A reloaded plugin never saw the historical `turn/end` events. Settle
-        // those existing AMP turns only; recovery does not create new facts.
-        settleTurn: (sessionId, turn, reason) => sync.settleTurn(sessionId, turn, reason),
-        // Activation only needs the open-turn prompt; history trackers start
-        // from live events instead of replaying every closed conversation.
-        openTurnsOnly: true,
-      })
-    } catch (error) {
-      wire.recordFailure('recovery', error)
-    }
-  }
-  // Give the conversation its first paint and first status request before the
-  // replay starts competing for the same event loop.
-  recoveryTimer = setTimeout(runRecovery, 1_500)
-  ctx.effect(() => () => {
-    recoveryCancelled = true
-    if (recoveryTimer !== undefined) clearTimeout(recoveryTimer)
-  }, 'deepseek-coordination: deferred recovery')
 
   registerAmpModuleTools(ctx, host)
   registerDiscoverTool(ctx, host)
   registerReplaceTool(ctx, host)
   registerHarnessTool(ctx, host)
-  registerIntakeTool(ctx, host)
+  // The plan preview dialog is a notification surface; without the notification
+  // centre there is no dialog to render it in, so the intake skips the preview.
+  registerIntakeTool(ctx, host, config.notifications ? notifications : undefined)
 
   if (config.notifications) {
     registerNotificationTool(ctx, notifications, (session) => host.notificationTakeoverEnabled(session))
@@ -197,6 +190,11 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
   // row in the boot order. `ctx.inject` binds the routes whenever the service
   // becomes available instead of silently skipping them on a cold start.
   if (config.routes || config.notifications) {
+    // AMP's entity cache is an LRU with a TTL. The value read model is normally
+    // asked for twice in quick succession (the strip prefetches it, then the
+    // details dialog opens), so one aggregation serves both; a changed counter
+    // produces a new key and an expired entry recomputes.
+    const benefitsCache = createBenefitCache()
     const clientGraph = (): unknown => {
       const modules = ctx.get('clientModules') as { graph?: () => unknown } | undefined
       return modules?.graph?.()
@@ -209,13 +207,15 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.30.2',
+          version: '0.31.1',
           clientGraph,
           sync: () => sync.status(),
+          // `/amp/context` is polled by the conversation panel, so it must stay
+          // cheap: counters only, no journal scan, no file I/O and no pricing.
           // The three exclusion ledgers stay separate (wire.md §4.6): compiler
           // exclusions live in the optimizer, host-side ones in `outputs`, and
-          // retention omissions in its own ledger. Read each expensive status
-          // once per request instead of once per field.
+          // retention omissions in its own ledger. Read each status once per
+          // request instead of once per field.
           context: () => {
             const status = optimizer.status()
             // One read per request: the flat `lag`/`compilerExclusions*` fields
@@ -227,17 +227,66 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
             // R4: one capture snapshot feeds both the flat `lastCapture` and
             // the nested `capture` view.
             const captureStatus = wire.status()
+            return {
+              ...status,
+              compilerExclusions: status.excluded,
+              /** First 50 compiler exclusions, projected to stable fields. */
+              compilerExclusionsDetailed: contextDiagnostics.lastExclusions,
+              hostExclusions: exclusions.slice(0, 50),
+              hostExclusionCount: exclusions.length,
+              retentionOmissions: retentionStatus,
+              lineage: lineageStatus.lineage ?? lineageStatus,
+              /** R1 activation-time recovery counters; zeroed when replay failed. */
+              recovery: recoveryStatus,
+              /** Most recent successful `agent/pre-step` capture, if any. */
+              lastCapture: captureStatus.lastCapture,
+              /** Full bounded capture status, preserving the legacy nested shape. */
+              capture: captureStatus,
+              /** Last compile-attempt diagnostics; `lag` is derived from it. */
+              contextDiagnostics,
+              lag: contextDiagnostics.lag,
+            }
+          },
+          // On-demand value quantification. It scans the gateway journal, reads
+          // and merges the durable benefit history, prices the selected model and
+          // may write the history file back, so it must never run on a mount, a
+          // poll or a timer: the panel asks for it only while its details dialog
+          // is open (`GET /amp/benefits`).
+          benefits: () => {
+            const status = optimizer.status()
+            const contextDiagnostics = optimizer.diagnostics()
+            const selection = optimizer.modelSelection()
+            const usage = optimizer.usageSnapshot()
+            const journal = host.journalEntries()
+            const now = new Date()
+            // Cheap projection of every input the read model depends on; the
+            // LRU keys on it so a repeat request reuses the aggregation while a
+            // changed counter recomputes instead of showing a stale number.
+            const cacheKey = benefitCacheKey({
+              selection,
+              compilations: status.compilations,
+              failures: status.failures,
+              excluded: status.excluded,
+              lastItems: status.lastItems,
+              tokensInjected: status.tokensInjected,
+              lastCompileAt: contextDiagnostics.lastCompileAt,
+              compilerExclusions: contextDiagnostics.compilerExclusions,
+              usage,
+              journalLength: journal.length,
+            })
+            const cached = benefitsCache.get<Record<string, unknown>>(cacheKey, now.toISOString())
+            if (cached !== undefined) return cached
             // Value quantification is derived from the same status object the
             // rest of this route serves, so a poll can never mix snapshots.
             // The tariff follows the host-selected provider/model, and its
             // input price is blended with the observed prompt-cache hit rate.
-            const pricing = resolvePricing(optimizer.modelSelection())
+            const pricing = resolvePricing(selection)
             // Gateway calls are the execution sample behind the error rate and
             // latency score. A journal failure degrades to an unavailable error
-            // module; it must not fail the context route.
+            // module; it must not fail the benefits route.
             let errors = summarizeErrors([])
             try {
-              errors = summarizeErrors(host.journalEntries())
+              errors = summarizeErrors(journal)
             } catch {
               // Keep the empty summary.
             }
@@ -279,26 +328,25 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
               const next = historyFromBenefits(baseBenefits, mergedErrors, failures, new Date(), mergedStatus.prune)
               if (historyChanged(history, next)) saveBenefitHistory(historyPath, next)
             }
-            return {
-              ...status,
-              benefits,
-              compilerExclusions: status.excluded,
-              /** First 50 compiler exclusions, projected to stable fields. */
-              compilerExclusionsDetailed: contextDiagnostics.lastExclusions,
-              hostExclusions: exclusions.slice(0, 50),
-              hostExclusionCount: exclusions.length,
-              retentionOmissions: retentionStatus,
-              lineage: lineageStatus.lineage ?? lineageStatus,
-              /** R1 activation-time recovery counters; zeroed when replay failed. */
-              recovery: recoveryStatus,
-              /** Most recent successful `agent/pre-step` capture, if any. */
-              lastCapture: captureStatus.lastCapture,
-              /** Full bounded capture status, preserving the legacy nested shape. */
-              capture: captureStatus,
-              /** Last compile-attempt diagnostics; `lag` is derived from it. */
-              contextDiagnostics,
-              lag: contextDiagnostics.lag,
-            }
+            benefitsCache.set(cacheKey, benefits, now.toISOString())
+            return benefits
+          },
+          // Explicit history replay. Synchronous and potentially heavy (one
+          // pass can replay tens of thousands of session events), so it is
+          // never scheduled automatically: `POST /amp/recover` runs it once and
+          // reports the resulting counters.
+          recover: () => {
+            recoveryStatus = recoverContext(ctx, {
+              capture: wire,
+              fork,
+              subagent,
+              spill,
+              retention,
+              prune,
+              compaction,
+              settleTurn: (sessionId, turn, reason) => sync.settleTurn(sessionId, turn, reason),
+            })
+            return recoveryStatus
           },
           locale: () => catalog.locale,
           onLocale: (value) => {

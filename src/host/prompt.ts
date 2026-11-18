@@ -82,8 +82,8 @@ export function registerAmpPrompt(ctx: Context, host: AmpHost): void {
         '## Intake flow after each user message',
         'After a new substantive user request, run one intake pass before other tools:',
         '1. Expand the request into goal, assumptions, unknowns and 2-3 alternative approaches. For a large request, use `attention_manifest_protocol_elaboration` to build the expansion; otherwise write it directly.',
-        '2. Call `deepseek_coordination_intake` exactly once. Pass 1-2 concrete questions (2-4 options each), the expansion, and the proposed approaches. The tool opens the native question popup and adds a decision question so the user picks a direction.',
-        '3. When the popup returns, propose the resulting plan with `attention_manifest_protocol_plan` (`propose_draft`) or `attention_manifest_protocol_harness` (`operation: "plan"`, `operation: "todos"`), then continue with the chosen approach.',
+        '2. Call `deepseek_coordination_intake` exactly once. Pass one concrete question with 2-4 options, 2-3 short approach titles (`proposals`), and 2-6 short task titles (`tasks`) for the recommended approach. The tool opens the native question popup and adds a decision question so the user picks a direction.',
+        '3. When the popup returns, continue with the chosen approach. If the result contains a `plan` draft (the host created it from `tasks`), use it instead of calling `plan.propose_draft` again. If `next` is `plan`, propose the plan yourself with `attention_manifest_protocol_plan` (`propose_draft`) or `attention_manifest_protocol_harness` (`operation: "plan"`, `operation: "todos"`). If `next` is `ask_in_text`, ask the question in plain text.',
         'Skip the intake pass for a pure acknowledgement, when the user explicitly says not to ask, or when this turn already has answers. Never invent the user\'s answer: if the popup is cancelled or unavailable, report it and ask in plain text instead.',
       ].join('\n')
     },

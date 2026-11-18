@@ -21,7 +21,7 @@
  * failure is swallowed — ignore bookkeeping must never break a protocol call.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export type VcsKind = 'git' | 'mercurial' | 'fossil' | 'bazaar' | 'pijul'
 
@@ -107,7 +107,10 @@ export function ensureStoreIgnored(root: string, directory: string): boolean {
       else return false
     }
     const relativePath = relative(vcs.root, store).replace(/\\/g, '/').replace(/^\.\//, '')
-    if (relativePath.length === 0 || relativePath.startsWith('..') || relativePath.includes(`..${sep}`)) return false
+    // `path.relative` returns an absolute path across Windows drives; such a
+    // directory is not inside the repository, so writing it would put machine
+    // paths into a project's ignore file.
+    if (relativePath.length === 0 || isAbsolute(relativePath) || relativePath.startsWith('..') || relativePath.includes(`..${sep}`)) return false
 
     switch (vcs.kind) {
       case 'git':

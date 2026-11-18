@@ -105,6 +105,60 @@ function routeDependencies(failures) {
   }
 }
 
+/** A web server that keeps each handler so a test can invoke one route. */
+function servedServer() {
+  const handlers = new Map()
+  return {
+    handlers,
+    register({ path, handler }) {
+      handlers.set(path, handler)
+      return () => handlers.delete(path)
+    },
+  }
+}
+
+/** Invoke one registered route and parse the JSON response body. */
+async function callJson(server, path, method = 'GET') {
+  const handler = server.handlers.get(path)
+  assert.ok(handler, `route ${path} is not registered`)
+  const chunks = []
+  await handler(
+    { method, url: path, headers: {} },
+    { writeHead: () => {}, end: (value) => chunks.push(String(value ?? '')) },
+  )
+  return JSON.parse(chunks.join(''))
+}
+
+test('the polled context route stays cheap and value lives on /amp/benefits', async () => {
+  const server = servedServer()
+  const failures = []
+  const dispose = registerRoutes(server, {
+    ...routeDependencies(failures),
+    context: () => ({ lag: 0, tokensInjected: 7 }),
+    benefits: () => ({ available: true, tokens: { saved: 12 } }),
+    recover: () => ({ sessions: 1, events: 3 }),
+  })
+  try {
+    const context = await callJson(server, '/deepseek-coordination/amp/context')
+    assert.deepEqual(context.value, { lag: 0, tokensInjected: 7 })
+    // The value model must never ride on the polled payload.
+    assert.equal('benefits' in context.value, false)
+
+    const benefits = await callJson(server, '/deepseek-coordination/amp/benefits')
+    assert.deepEqual(benefits.value, { available: true, tokens: { saved: 12 } })
+
+    // Recovery is explicit: GET is rejected, POST runs one pass.
+    const rejected = await callJson(server, '/deepseek-coordination/amp/recover')
+    assert.equal(rejected.ok, false)
+    const recovery = await callJson(server, '/deepseek-coordination/amp/recover', 'POST')
+    assert.deepEqual(recovery.value, { sessions: 1, events: 3 })
+    assert.equal(failures.length, 0)
+  } finally {
+    dispose()
+  }
+})
+
+
 test('a workspace takeover switch applies when only the session registry knows the workspace', async () => {
   const home = mkdtempSync(join(tmpdir(), 'amp-home-'))
   const workspace = mkdtempSync(join(tmpdir(), 'amp-workspace-'))

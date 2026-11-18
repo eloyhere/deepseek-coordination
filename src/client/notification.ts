@@ -28,7 +28,6 @@ import Snackbar from '@mui/material/Snackbar'
 import { BlockingDialog } from './modal.js'
 import DialogTitle from '@mui/material/DialogTitle'
 import DialogContent from '@mui/material/DialogContent'
-import DialogContentText from '@mui/material/DialogContentText'
 import DialogActions from '@mui/material/DialogActions'
 import Popover from '@mui/material/Popover'
 import Paper from '@mui/material/Paper'
@@ -37,6 +36,7 @@ import Typography from '@mui/material/Typography'
 import { useCopy } from './i18n.js'
 import { useAmpPreferences } from './preferences.js'
 import { usableSession } from './bridge.js'
+import { Markdown } from './markdown.js'
 import type { Copy } from '../shared/i18n.js'
 
 import type { NotificationAnchor, NotificationItem, NotificationSeverity } from '../shared/notification.js'
@@ -49,7 +49,6 @@ const MuiSnackbar = Snackbar as unknown as MuiComponent
 const MuiAlert = Alert as unknown as MuiComponent
 const MuiDialogTitle = DialogTitle as unknown as MuiComponent
 const MuiDialogContent = DialogContent as unknown as MuiComponent
-const MuiDialogContentText = DialogContentText as unknown as MuiComponent
 const MuiDialogActions = DialogActions as unknown as MuiComponent
 const MuiPopover = Popover as unknown as MuiComponent
 const MuiPaper = Paper as unknown as MuiComponent
@@ -73,7 +72,6 @@ const ALERT_HOST_STYLE: React.CSSProperties = {
   width: 'min(560px, calc(100vw - 32px))',
 }
 
-const BODY_STYLE: React.CSSProperties = { whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
 const ACTIONS_STYLE: React.CSSProperties = { display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }
 
 /** One parsed notification from the wire; anything else is dropped. */
@@ -155,7 +153,7 @@ function bodyOf(item: NotificationItem): React.ReactElement {
     item.title === undefined
       ? null
       : h(MuiTypography, { component: 'div', sx: { fontWeight: 600, fontSize: 13, marginBottom: 2 } }, item.title),
-    h(MuiTypography, { component: 'div', sx: { ...BODY_STYLE, fontSize: 13 } }, item.message),
+    h(Markdown, { text: item.message, compact: true, style: { fontSize: 13 } }),
   )
 }
 
@@ -172,7 +170,7 @@ function renderSurface(item: NotificationItem, labels: Copy, dismiss: () => void
       h(
         MuiDialogContent,
         null,
-        h(MuiDialogContentText, { component: 'div', sx: BODY_STYLE }, item.message),
+        h(Markdown, { text: item.message, compact: true }),
       ),
       h(
         MuiDialogActions,
@@ -191,12 +189,12 @@ function renderSurface(item: NotificationItem, labels: Copy, dismiss: () => void
         MuiAlert,
         { severity, variant: 'filled', onClose: dismiss, elevation: 6 },
         item.title === undefined
-          ? h('div', { style: BODY_STYLE }, item.message)
+          ? h(Markdown, { text: item.message, compact: true, style: { fontSize: 13 } })
           : h(
             'div',
             null,
             h('div', { style: { fontWeight: 600, marginBottom: 2 } }, item.title),
-            h('div', { style: BODY_STYLE }, item.message),
+            h(Markdown, { text: item.message, compact: true, style: { fontSize: 13 } }),
           ),
       ),
     )
@@ -282,8 +280,15 @@ export function NotificationHost(props: NotificationHostProps): React.ReactEleme
     }
     void tick()
     const timer = window.setInterval(() => { void tick() }, POLL_INTERVAL)
+    // The interval skips fetches while the window is hidden; resume on the
+    // first visible frame instead of waiting for the next tick.
+    const onVisibility = (): void => {
+      if (!stopped && (typeof document === 'undefined' || document.visibilityState === 'visible')) void tick()
+    }
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
     return () => {
       stopped = true
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(timer)
     }
   }, [session, preferences.takeoverNotifications])

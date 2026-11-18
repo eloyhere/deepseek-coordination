@@ -68,6 +68,8 @@ export interface NormalizedIntake {
   readonly expansion?: IntakeExpansion
   readonly questions: readonly IntakeQuestion[]
   readonly proposals: readonly IntakeProposal[]
+  /** Short task titles for the recommended approach; the host drafts the plan when present. */
+  readonly tasks?: readonly string[]
 }
 
 export interface IntakeAnswer {
@@ -287,11 +289,13 @@ export function normalizeIntake(input: unknown, copy: IntakeCopy = DEFAULT_COPY)
   }
 
   const topic = clean(record.topic, 300)
+  const tasks = stringList(record.tasks, 6)
   return {
     questions,
     proposals,
     ...(topic === undefined ? {} : { topic }),
     ...(expansion === undefined ? {} : { expansion }),
+    ...(tasks.length === 0 ? {} : { tasks }),
   }
 }
 

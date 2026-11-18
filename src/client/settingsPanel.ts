@@ -966,7 +966,10 @@ export function AmpSettings(props: AmpSettingsProps): React.ReactElement {
 function AmpSettingsContent(props: AmpSettingsProps): React.ReactElement {
   const t = ampTranslate(props.t ?? ((key: string) => key), currentLocale())
   const preferenceState = useAmpPreferences()
-  const data = useAmpData(preferenceState.preferences.autoRefresh ? 5_000 : 0)
+  // The settings page is a user-opened surface, so it may load the aggregate
+  // snapshot (and the on-demand value model) immediately; polling follows the
+  // auto-refresh switch.
+  const data = useAmpData(preferenceState.preferences.autoRefresh ? 5_000 : 0, undefined, true, true)
   const [tab, setTab] = React.useState<CatalogTab>('modules')
 
   return h(

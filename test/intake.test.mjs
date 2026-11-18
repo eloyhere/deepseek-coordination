@@ -171,3 +171,15 @@ test('uses injected copy for generated labels', () => {
   assert.equal(intake.questions[1].header, '方案选择')
   assert.equal(intake.questions[1].question, '选择一个方案方向')
 })
+
+test('normalizes optional plan tasks and omits the field when absent', () => {
+  const intake = normalizeIntake({
+    question: 'Which scope?',
+    options: ['Small', 'Full'],
+    proposals: ['Patch first', 'Rewrite'],
+    tasks: ['  Update intake  ', '', 'Add tests', 'Ship'],
+  })
+  assert.deepEqual(intake.tasks, ['Update intake', 'Add tests', 'Ship'])
+  assert.equal(normalizeIntake({ questions: [QUESTION] }).tasks, undefined)
+})
+

@@ -13,6 +13,7 @@ import { useAmpPreferences } from './preferences.js'
 import { currentLocale, useCopy } from './i18n.js'
 import { usableSession } from './bridge.js'
 import { Markdown } from './markdown.js'
+import { localizeDialogOption } from './planDialog.js'
 
 const h = React.createElement
 const cast = (component: unknown): React.ComponentType<Record<string, unknown>> => component as React.ComponentType<Record<string, unknown>>
@@ -85,10 +86,10 @@ function RequestDialog({ item, session, settled }: { item: Pending; session: str
                 onChange: (_event: unknown, checked: boolean) => choose(question, option.label, checked),
               }),
               label: h('span', null,
-                h('span', null, h(Markdown, { text: option.label, inline: true })),
+                h('span', null, h(Markdown, { text: localizeDialogOption(option, locale).label, inline: true })),
                 option.description
                   ? h('div', { style: { fontSize: '0.75rem', opacity: 0.82, marginTop: 2 } },
-                    h(Markdown, { text: option.description, inline: true }))
+                    h(Markdown, { text: localizeDialogOption(option, locale).description ?? option.description, inline: true }))
                   : null),
             }))),
           h(M.TextField, {
@@ -127,9 +128,24 @@ export function DialogHost({ sessionId }: { sessionId?: string }): React.ReactEl
     setItems([])
     if (session === null) return
     let disposed = false
+    let inFlight = false
     const controller = new AbortController()
     let timer: number | undefined
+    const canAsk = (): boolean => typeof document === 'undefined' || document.visibilityState === 'visible'
+    const schedule = (): void => {
+      if (disposed) return
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => { void tick() }, 800)
+    }
     const tick = async (): Promise<void> => {
+      if (disposed || inFlight) return
+      // A hidden window cannot answer a dialog, so do not poll the host while
+      // it is in the background; the visibility listener resumes immediately.
+      if (!canAsk()) {
+        schedule()
+        return
+      }
+      inFlight = true
       try {
         const response = await fetch(`${ROUTE}/pending?session=${encodeURIComponent(session)}`, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal })
         if (response.status === 404) return
@@ -138,10 +154,25 @@ export function DialogHost({ sessionId }: { sessionId?: string }): React.ReactEl
           if (!disposed && body.ok && Array.isArray(body.value?.items)) setItems(body.value.items)
         }
       } catch { /* Preserve a pending dialog while the host reconnects. */ }
-      finally { if (!disposed) timer = window.setTimeout(() => { void tick() }, 800) }
+      finally {
+        inFlight = false
+        schedule()
+      }
     }
+    const onVisibility = (): void => {
+      if (!disposed && canAsk()) {
+        window.clearTimeout(timer)
+        void tick()
+      }
+    }
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibility)
     void tick()
-    return () => { disposed = true; controller.abort(); window.clearTimeout(timer) }
+    return () => {
+      disposed = true
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility)
+      controller.abort()
+      window.clearTimeout(timer)
+    }
   }, [session, preferences.takeoverNotifications])
   const item = items[0]
   // Claimed requests stay visible until host settlement, even if the setting

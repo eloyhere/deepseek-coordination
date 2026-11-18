@@ -13,6 +13,8 @@ import {
 import type { AmpHost } from './amp.js'
 import { jsonSafe } from './json.js'
 import { toolCopy } from './toolCopy.js'
+import type { NotificationCenter } from './notify.js'
+import { planMarkdown, planPreviewTitle } from './planPreview.js'
 import {
   mapAnswers,
   normalizeIntake,
@@ -50,14 +52,15 @@ export function recordAnswers(
 }
 
 /** Register the single-call intake tool used immediately after a user request. */
-export function registerIntakeTool(ctx: Context, host: AmpHost): void {
+export function registerIntakeTool(ctx: Context, host: AmpHost, notifications?: NotificationCenter): void {
   ctx.tools.register(defineTool({
     name: 'deepseek_coordination_intake',
     description: [
       'Run the post-input intake flow: open the native question popup and return the answers plus a selected approach.',
-      'Use one compact call: topic, one question, 2-4 short options, and 2-3 short proposal titles; optional summary and detail.',
+      'Use one compact call: topic, one question, 2-4 short options, 2-3 short proposal titles, and 2-6 short task titles.',
+      'When tasks are present the host drafts the AMP plan (and mirrors it to the harness plan/todos) as soon as the user picks a proposal, so no second plan call is needed.',
+      'The popup blocks until the user answers. If it cannot be shown or times out, the result asks you to ask in plain text instead.',
       'Never pass nested expansion/questions objects. Keep the args small so the stream cannot truncate.',
-      'Then propose the plan with attention_manifest_protocol_plan (propose_draft) or attention_manifest_protocol_harness (operation=plan).',
     ].join(' '),
     parameters: {
       topic: { type: 'string', description: 'Short restatement of the user request.' },
@@ -72,6 +75,11 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
       proposals: {
         type: 'array',
         description: 'Two or three short approach titles; the first is treated as recommended.',
+        items: { type: 'string' },
+      },
+      tasks: {
+        type: 'array',
+        description: 'Two to six short task titles for the recommended approach; when present the host drafts the plan after the user picks a proposal.',
         items: { type: 'string' },
       },
     },
@@ -93,7 +101,23 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
         | { ask(request: Record<string, unknown>): Promise<unknown> }
         | undefined
       if (service === undefined) {
-        return jsonSafe({ ok: false, error: { code: 'not_available', message: 'no user-question popup provider is mounted' } })
+        // No popup provider is mounted: hand the question back to the model so
+        // it can ask in plain text instead of losing the whole turn.
+        return jsonSafe({
+          ok: true,
+          value: {
+            needsText: true,
+            reason: 'popup_unavailable',
+            ...(intake.topic === undefined ? {} : { topic: intake.topic }),
+            questions: intake.questions.map((question) => ({
+              id: question.id,
+              question: question.question,
+              options: question.options,
+            })),
+            proposals: intake.proposals,
+            next: 'ask_in_text',
+          },
+        })
       }
 
       const sessionId = agent.id
@@ -131,14 +155,25 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
         raw = await service.ask({ agent, questions: popupQuestions(intake), signal: controller.signal })
       } catch (error) {
         const timedOut = controller.signal.aborted
+        // The wait is still bounded, but a timeout or cancel is not a fatal
+        // error: return the question so the model can ask in plain text.
         return jsonSafe({
-          ok: false,
-          error: {
-            code: timedOut ? 'question_timeout' : 'question_cancelled',
+          ok: true,
+          value: {
+            timedOut,
+            cancelled: !timedOut,
+            reason: timedOut ? 'question_timeout' : 'question_cancelled',
             message: timedOut
               ? toolCopy(host.locale).intakeTimeout
               : error instanceof Error ? error.message : String(error),
-            questionIds: [...records.values()].map((question) => question.id),
+            ...(intake.topic === undefined ? {} : { topic: intake.topic }),
+            questions: intake.questions.map((question) => ({
+              id: question.id,
+              question: question.question,
+              options: question.options,
+            })),
+            proposals: intake.proposals,
+            next: 'ask_in_text',
           },
         })
       } finally {
@@ -151,6 +186,42 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
       const selectedProposal = proposalAnswer === undefined || proposalAnswer.selected.length === 0
         ? undefined
         : intake.proposals.find((proposal) => proposal.title === proposalAnswer.selected[0])
+      // Draft the plan as soon as an approach is picked. The popup already
+      // blocked the turn, so the user should not need a second round trip just
+      // to see a plan; the AMP draft is mirrored to the harness plan/todos.
+      let plan: unknown
+      if (selectedProposal !== undefined && intake.tasks !== undefined && intake.tasks.length > 0) {
+        try {
+          const drafted = await host.call('plan', 'propose_draft', {
+            objective: intake.topic ?? selectedProposal.title,
+            tasks: intake.tasks.map((task) => ({ intent: task, acceptance: `${task} completes` })),
+          }, exec)
+          plan = drafted.value
+          // Show the draft in the plugin's own Markdown dialog. DSH's plan
+          // review belongs to the DSH client; this is the plan surface we own,
+          // and the client renders it with the same safe Markdown parser as the
+          // question dialogs.
+          const objective = intake.topic ?? selectedProposal.title
+          const preview = planMarkdown({ objective, tasks: intake.tasks })
+          if (preview !== undefined && notifications !== undefined) {
+            try {
+              notifications.push(sessionId, {
+                surface: 'dialog',
+                severity: 'info',
+                title: planPreviewTitle(objective),
+                message: preview,
+              })
+            } catch {
+              // Advisory: the durable plan draft already exists.
+            }
+          }
+        } catch (error) {
+          plan = {
+            ok: false,
+            error: { code: 'plan_failed', message: error instanceof Error ? error.message : String(error) },
+          }
+        }
+      }
       const notes = host.notes.get(sessionId) ?? []
       notes.push({
         kind: 'intake',
@@ -180,7 +251,8 @@ export function registerIntakeTool(ctx: Context, host: AmpHost): void {
           answers,
           proposals: intake.proposals,
           ...(selectedProposal === undefined ? {} : { selectedProposal }),
-          next: 'plan',
+          ...(plan === undefined ? {} : { plan }),
+          next: plan === undefined ? 'plan' : 'continue',
         },
       })
     },

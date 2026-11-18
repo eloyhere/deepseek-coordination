@@ -351,6 +351,8 @@ export interface AmpSnapshot {
   readonly journal: readonly AmpJournalEntry[]
   readonly sync: AmpSync | null
   readonly context: AmpContext | null
+  /** On-demand value model; fetched only while the details dialog is open. */
+  readonly benefits: AmpBenefits | null
   readonly loading: boolean
   readonly error: boolean
   readonly updatedAt: number | null
@@ -362,6 +364,7 @@ export const MODULES_ROUTE = '/deepseek-coordination/amp/modules'
 export const JOURNAL_ROUTE = '/deepseek-coordination/amp/journal'
 export const SYNC_ROUTE = '/deepseek-coordination/amp/sync'
 export const CONTEXT_ROUTE = '/deepseek-coordination/amp/context'
+export const BENEFITS_ROUTE = '/deepseek-coordination/amp/benefits'
 
 /** How many calls the settings page keeps on screen; the host keeps more. */
 export const JOURNAL_LIMIT = 200
@@ -383,31 +386,48 @@ async function fetchJson<T>(url: string, signal: AbortSignal): Promise<T | null>
 }
 
 /**
- * Poll all four read-only AMP routes as one snapshot. A transient failure keeps
- * the last successful snapshot and raises `error`, so a strip never blanks out
- * just because one poll missed.
+ * Read the AMP snapshot.
+ *
+ * The conversation strip mounts on every conversation open, so `full` defaults
+ * to `withLists`: the strip requests the small status payload (polled only when
+ * `pollMs > 0`) and nothing else. `full` (modules, sync, context and the value
+ * model) is requested only for a surface the user actually opened.
+ *
+ * `prefetchBenefits` reads the value model once, shortly after the first paint,
+ * so the strip can show a summary without competing with the conversation's own
+ * history load. It never polls, and `full` supersedes it.
+ *
+ * A transient failure keeps the last successful snapshot and raises `error`, so
+ * a strip never blanks out just because one poll missed.
  */
-export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false): AmpSnapshot {
+export function useAmpData(pollMs = 0, sessionId?: string, withLists = false, full = withLists, prefetchBenefits = false): AmpSnapshot {
   const [state, setState] = React.useState<Omit<AmpSnapshot, 'refresh'>>({
     status: null,
     modules: [],
     journal: [],
     sync: null,
     context: null,
+    benefits: null,
     loading: true,
     error: false,
     updatedAt: null,
   })
   const [nonce, setNonce] = React.useState(0)
   const signatureRef = React.useRef('')
-  const refresh = React.useCallback(() => setNonce((value) => value + 1), [])
+  // One benefits read per surface lifetime: the deferred prefetch and a later
+  // dialog open must not run the aggregation twice.
+  const benefitsLoaded = React.useRef(false)
+  const refresh = React.useCallback(() => {
+    benefitsLoaded.current = false
+    setNonce((value) => value + 1)
+  }, [])
   const commit = React.useCallback((patch: Partial<Omit<AmpSnapshot, 'refresh'>>): void => {
     setState((previous) => {
       const next = { ...previous, ...patch }
       // The host returns fresh objects on every poll. Comparing their
       // serialized projection keeps a poll from re-rendering 27 Accordions
       // (and every tab panel) while nothing actually changed.
-      const signature = snapshotSignature(next.status, next.modules, next.journal, next.sync, next.context)
+      const signature = snapshotSignature(next.status, next.modules, next.journal, next.sync, next.context, next.benefits)
       if (signatureRef.current === signature && !previous.loading && previous.error === next.error) return previous
       signatureRef.current = signature
       return next
@@ -417,9 +437,9 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
   React.useEffect(() => {
     const controller = new AbortController()
     let stopped = false
-    let firstLoad: number | undefined
     let statusTimer: number | undefined
     let heavyTimer: number | undefined
+    let benefitsTimer: number | undefined
 
     const scope = sessionId === undefined
       ? ''
@@ -427,10 +447,10 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
     const statusUrl = `${STATUS_ROUTE}${scope}`
     const journalUrl = `${JOURNAL_ROUTE}?limit=${JOURNAL_LIMIT}${sessionId === undefined ? '' : `&session=${encodeURIComponent(sessionId)}`}`
 
-    // The composer strip only needs the small status payload. Fetching the
-    // five-endpoint snapshot here made every conversation mount do the same
-    // expensive work twice (status plus context, modules, journal and sync)
-    // before the conversation could paint.
+    // The polled request. It is the small status payload only; the value model
+    // and the journal used to be requested here on every mount and every five
+    // seconds, which made opening a conversation sync real work on the
+    // single-threaded host.
     const loadStatus = async (): Promise<void> => {
       const status = await fetchJson<AmpStatus>(statusUrl, controller.signal)
       if (stopped) return
@@ -441,41 +461,56 @@ export function useAmpData(pollMs = 5_000, sessionId?: string, withLists = false
       commit({ status, loading: false, error: false, updatedAt: Date.now() })
     }
 
+    const loadBenefits = async (): Promise<void> => {
+      const benefits = await fetchJson<AmpBenefits>(BENEFITS_ROUTE, controller.signal)
+      if (stopped || benefits === null) return
+      benefitsLoaded.current = true
+      commit({ benefits })
+    }
+
     const loadHeavy = async (): Promise<void> => {
-      const [modules, sync, context, journal] = await Promise.all([
+      const [modules, sync, context, benefits, journal] = await Promise.all([
         fetchJson<{ modules?: readonly AmpModule[] }>(MODULES_ROUTE, controller.signal),
         fetchJson<AmpSync>(SYNC_ROUTE, controller.signal),
         fetchJson<AmpContext>(CONTEXT_ROUTE, controller.signal),
+        benefitsLoaded.current ? Promise.resolve(null) : fetchJson<AmpBenefits>(BENEFITS_ROUTE, controller.signal),
         withLists
           ? fetchJson<{ entries?: readonly AmpJournalEntry[] }>(journalUrl, controller.signal)
           : Promise.resolve(null),
       ])
       if (stopped) return
+      if (benefits !== null) benefitsLoaded.current = true
       commit({
         ...(modules?.modules === undefined ? {} : { modules: modules.modules }),
         ...(sync === null ? {} : { sync }),
         ...(context === null ? {} : { context }),
+        ...(benefits === null ? {} : { benefits }),
         ...(journal?.entries === undefined ? {} : { journal: journal.entries }),
       })
     }
 
     void loadStatus()
-    // Keep the first paint free of the aggregate context compile; the strip
-    // shows its offline value for one short frame instead of delaying the
-    // conversation. The heavy snapshot refreshes far less often than status.
-    firstLoad = window.setTimeout(() => { void loadHeavy() }, 800)
+    // `full` is a user-opened surface (details dialog or settings page), so its
+    // aggregate read happens once, immediately; it is never on the mount path.
+    if (full) {
+      void loadHeavy()
+    } else if (prefetchBenefits && !benefitsLoaded.current) {
+      // One deferred read for the strip's summary: after the conversation's own
+      // first paint, never polled.
+      benefitsTimer = window.setTimeout(() => { void loadBenefits() }, 1_200)
+    }
     if (pollMs > 0) {
       statusTimer = window.setInterval(() => { void loadStatus() }, pollMs)
-      heavyTimer = window.setInterval(() => { void loadHeavy() }, Math.max(pollMs * 6, 30_000))
+      if (full) heavyTimer = window.setInterval(() => { void loadHeavy() }, Math.max(pollMs * 6, 30_000))
     }
     return () => {
       stopped = true
       controller.abort()
-      if (firstLoad !== undefined) window.clearTimeout(firstLoad)
+      if (benefitsTimer !== undefined) window.clearTimeout(benefitsTimer)
       if (statusTimer !== undefined) window.clearInterval(statusTimer)
       if (heavyTimer !== undefined) window.clearInterval(heavyTimer)
     }
-  }, [pollMs, nonce, sessionId, withLists, commit])
+  }, [pollMs, nonce, sessionId, withLists, full, prefetchBenefits, commit])
 
   return { ...state, refresh }
 }
@@ -568,6 +603,7 @@ export function snapshotSignature(
   journal: readonly AmpJournalEntry[],
   sync: AmpSync | null,
   context: AmpContext | null = null,
+  benefits: AmpBenefits | null = null,
 ): string {
   return JSON.stringify({
     counts: status?.kernel?.counts,
@@ -612,27 +648,33 @@ export function snapshotSignature(
         context.prune?.savedTokens,
         context.outputs?.spill?.bytes,
         context.outputs?.retention?.omittedBytes,
-        context.benefits?.available,
-        context.benefits?.quality?.score,
-        context.benefits?.tokens.saved,
-        context.benefits?.tokens.prune,
-        context.benefits?.tokens.contextPrune,
-        context.benefits?.tokens.compaction,
-        context.benefits?.tokens.contextPruneRecords,
-        context.benefits?.tokens.compactionRecords,
-        context.benefits?.tokens.injected,
-        context.benefits?.effectiveness?.score,
-        context.benefits?.history?.persisted,
-        context.benefits?.history?.updatedAt,
-        context.benefits?.errors?.calls,
-        context.benefits?.errors?.failures,
-        context.benefits?.errors?.p95DurationMs,
-        context.benefits?.cost.saved,
-        context.benefits?.model?.model,
-        context.benefits?.pricing?.window,
-        context.benefits?.pricing?.effectiveInputPerMillion,
-        context.benefits?.cache?.hitRate,
-        context.benefits?.confidence,
+      ],
+    // The value model is a separate on-demand payload, so it gets its own
+    // projection instead of riding on the context snapshot.
+    benefits: benefits === null
+      ? null
+      : [
+        benefits.available,
+        benefits.quality?.score,
+        benefits.tokens.saved,
+        benefits.tokens.prune,
+        benefits.tokens.contextPrune,
+        benefits.tokens.compaction,
+        benefits.tokens.contextPruneRecords,
+        benefits.tokens.compactionRecords,
+        benefits.tokens.injected,
+        benefits.effectiveness?.score,
+        benefits.history?.persisted,
+        benefits.history?.updatedAt,
+        benefits.errors?.calls,
+        benefits.errors?.failures,
+        benefits.errors?.p95DurationMs,
+        benefits.cost.saved,
+        benefits.model?.model,
+        benefits.pricing?.window,
+        benefits.pricing?.effectiveInputPerMillion,
+        benefits.cache?.hitRate,
+        benefits.confidence,
       ],
     lists: status?.lists === undefined
       ? undefined

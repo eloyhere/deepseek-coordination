@@ -15,6 +15,74 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.31.1] - 2026-11-18
+
+### Added
+
+- **The intake plan preview is a Markdown dialog.** After `plan.propose_draft`
+  succeeds, the host queues a notification dialog with the drafted plan rendered
+  as Markdown (objective heading plus a `- [ ]` task list). DSH's own plan review
+  belongs to the DSH client; this preview is the plan surface the plugin owns.
+- **Notification bodies render Markdown.** Every notification surface (snackbar,
+  alert, dialog, popover) now renders its body through the same safe Markdown
+  component as the question dialogs, instead of plain text.
+
+### Verified
+
+- `npm run typecheck` clean.
+- `npm test`: **235/235** pass.
+
+## [0.31.0] - 2026-11-18
+
+### Changed
+
+- **The value model moved off the polled route.** `GET /amp/context` is back to
+  cheap counters: it no longer scans the gateway journal, reads or writes
+  `benefit-history.json`, prices the selected model or computes the benefit read
+  model. That aggregate is served by the new `GET /amp/benefits`, which the panel
+  requests once per surface lifetime (deferred past the conversation's first
+  paint, never polled) and again only when the details dialog refreshes.
+- **The value read model is served through AMP's LRU.** `benefitCache.ts` keys
+  the aggregation on every counter it reads (compilations, journal length,
+  prompt-cache usage, model selection) and stores the result in AMP's
+  `createEntityCache` with a 30 s TTL. The strip prefetch and a later dialog
+  open therefore share one computation, while a changed counter still forces a
+  fresh read instead of a stale number.
+- **Opening a conversation no longer runs the aggregate snapshot.** The composer
+  strip polls the small `/amp/status` payload only; modules, journal, sync and
+  context load for a surface the user opened (details dialog or settings page).
+- **intake now drafts the plan itself.** The tool accepts an optional compact
+  `tasks` list (2–6 short titles). When the user picks a proposal, the host
+  creates the AMP plan draft with `plan.propose_draft` and mirrors it to the
+  harness plan/todos, so no second model step is needed. The popup stays
+  blocking; when it cannot be shown, is cancelled or hits its 180 s bound, the
+  result now asks the model to ask in plain text instead of failing the turn.
+- **Recovery is opt-in.** Activation no longer replays session logs (a pass can
+  feed tens of thousands of events through the trackers synchronously). The new
+  `POST /amp/recover` route runs one explicit pass and reports its counters;
+  `/amp/context` keeps reporting zeroed recovery counters until then.
+- **Notification and dialog polling pause while the window is hidden** and
+  resume on `visibilitychange`, instead of polling in the background.
+- The settings page requests the journal list again (`withLists`), so its
+  Journal tab is populated.
+
+### Fixed
+
+- **Conversation loads no longer queue behind AMP aggregation.** The mount-time
+  `Promise.all` of five routes (status, modules, journal, sync and the
+  220–270 ms `/amp/context` aggregate) ran on the single-threaded host every time
+  a conversation was opened or switched, which delayed history loading and left
+  the panel reporting an offline host.
+- **VCS ignore rules reject cross-drive store paths.** On Windows,
+  `path.relative()` returns an absolute path across drives; the host appended
+  machine-local `C:/.../Temp/...` paths to the repository's `.gitignore` when a
+  test or workspace used a store on another drive.
+
+### Verified
+
+- `npm run typecheck` clean.
+- `npm test`: **231/231** pass.
+
 ## [0.30.2] - 2026-11-13
 
 ### Fixed

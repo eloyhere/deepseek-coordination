@@ -212,8 +212,8 @@ function BenefitSection(props: {
   readonly data: AmpSnapshot
   readonly t: (key: string) => string
 }): React.ReactElement | null {
-  const benefits = props.data.context?.benefits
-  if (benefits === undefined) return null
+  const benefits = props.data.benefits
+  if (benefits == null) return null
   const { t } = props
   const quality = benefits.quality
   const confidenceKey = benefits.confidence === 'high'
@@ -501,7 +501,7 @@ function AmpDetails(props: {
   const mutating = mutatingVerbs(data.modules)
   const failed = data.journal.filter((entry) => entry.ok === false).length
   const online = data.status !== null && !data.error
-  const hasBenefits = data.context?.benefits !== undefined
+  const hasBenefits = data.benefits !== null
 
   return h(
     M.Dialog,
@@ -763,7 +763,10 @@ export function AmpPanel(props: AmpPanelProps): React.ReactElement {
   const [open, setOpen] = React.useState(false)
   // Lists are only requested while the detail dialog is open; the idle strip
   // keeps the smaller aggregate snapshot.
-  const data = useAmpData(preferenceState.preferences.autoRefresh ? 5_000 : 0, scopedSession, open)
+  // Status is polled while the strip is visible (cheap). The aggregate snapshot
+  // loads only with the details dialog, and the value summary is read once,
+  // deferred past the conversation's first paint.
+  const data = useAmpData(preferenceState.preferences.autoRefresh ? 5_000 : 0, scopedSession, open, open, true)
 
   const counts = data.status?.kernel?.counts ?? {}
   const online = data.status !== null && !data.error
@@ -772,7 +775,7 @@ export function AmpPanel(props: AmpPanelProps): React.ReactElement {
   const verbs = data.status?.exposedTools ?? totalVerbs(data.modules)
   const turns = counts.turn ?? 0
   const actions = counts.action ?? 0
-  const benefits = data.context?.benefits
+  const benefits = data.benefits
   const priced = benefits?.cost.priced === true
   const benefitSummary = benefits?.available === true
     ? `${t('valueToken')} ${formatCompactCount(benefits.tokens.saved)} · ${benefits.cost.priced ? formatMoney(benefits.cost.saved) : t('valueUnpriced')}`
