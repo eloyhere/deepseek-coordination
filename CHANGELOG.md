@@ -15,6 +15,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [Repository history](README.md#repository-history-and-license). `Auto-commit: typecheck-passing snapshot`
 > commits are internal checkpoints, not releases.
 
+## [0.31.2] - 2026-11-18
+
+### Changed
+
+- **Every session-list string now comes from the locale table.** The AMP panel's
+  record list (`sessionList.ts`) carried its own `zh ? … : …` ternaries, so the
+  six non-Chinese locales fell back to English whatever the interface language
+  was. The source-record caption, the technical-records switch and its
+  aria-label, the collapsed-context hint, the pagination buttons and the
+  `unavailable` suffix are keys in `ampCopy.ts` now, translated for zh/en/ja/es/
+  fr/de/ru/pt.
+- **State chips follow the interface locale.** `sessionCopy.ts` keeps the full
+  Chinese table and adds localized words for the sixteen states a reader meets
+  most often in the other seven locales. The long tail renders the raw
+  identifier with underscores removed — English words, never Chinese — instead
+  of leaking a Chinese label into a Japanese or Spanish panel.
+- **The loading skeleton announces itself in the interface language.**
+  `LoadingRows` had a hardcoded English `aria-label="Loading"`; it now defaults
+  to the localized `loading` string, so screen-reader output matches the page.
+
+### Verified
+
+- `npm run typecheck` clean.
+- `npm test`: **235/235** pass.
+
 ## [0.31.1] - 2026-11-18
 
 ### Added

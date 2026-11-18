@@ -231,6 +231,13 @@ const zh = {
   valueBandGood: '良',
   valueBandFair: '中',
   valueBandPoor: '待改善',
+  recordSource: '原始记录 · 仅供核对',
+  technicalRecords: '技术记录',
+  showTechnical: '显示技术记录',
+  noBusinessItems: '暂无业务关注事项，技术上下文已收起。',
+  listUnavailable: '未接入',
+  previousPage: '上一页',
+  nextPage: '下一页',
 } as const
 
 export type AmpCopyKey = keyof typeof zh
@@ -457,6 +464,13 @@ const en: Record<AmpCopyKey, string> = {
   valueBandGood: 'Good',
   valueBandFair: 'Fair',
   valueBandPoor: 'Needs work',
+  recordSource: 'Source record · for inspection',
+  technicalRecords: 'Technical records',
+  showTechnical: 'Show technical records',
+  noBusinessItems: 'No business items; technical context is collapsed.',
+  listUnavailable: 'Unavailable',
+  previousPage: 'Previous',
+  nextPage: 'Next',
 }
 
 const ja: Record<string, string> = {
@@ -579,6 +593,13 @@ const ja: Record<string, string> = {
   preferencesHint: "ホストがこれらのスイッチを永続化し、次回の呼び出しから有効になります",
   preferenceSynced: "ホストと同期済み",
   preferenceLocal: "ローカルのみ",
+  recordSource: '元の記録 · 確認用',
+  technicalRecords: '技術記録',
+  showTechnical: '技術記録を表示',
+  noBusinessItems: '業務上の項目はありません。技術コンテキストは折りたたまれています。',
+  listUnavailable: '未接続',
+  previousPage: '前へ',
+  nextPage: '次へ',
 }
 
 const es: Record<string, string> = {
@@ -701,6 +722,13 @@ const es: Record<string, string> = {
   preferencesHint: "El host persiste estos interruptores; se aplican en la próxima llamada",
   preferenceSynced: "Sincronizado con el host",
   preferenceLocal: "Solo local",
+  recordSource: 'Registro original · para revisión',
+  technicalRecords: 'Registros técnicos',
+  showTechnical: 'Mostrar registros técnicos',
+  noBusinessItems: 'No hay elementos de negocio; el contexto técnico está contraído.',
+  listUnavailable: 'No conectado',
+  previousPage: 'Anterior',
+  nextPage: 'Siguiente',
 }
 
 const fr: Record<string, string> = {
@@ -823,6 +851,13 @@ const fr: Record<string, string> = {
   preferencesHint: "L'hôte conserve ces options ; elles s'appliquent au prochain appel",
   preferenceSynced: "Synchronisé avec l'hôte",
   preferenceLocal: "Local uniquement",
+  recordSource: 'Enregistrement source · pour vérification',
+  technicalRecords: 'Enregistrements techniques',
+  showTechnical: 'Afficher les enregistrements techniques',
+  noBusinessItems: 'Aucun élément métier ; le contexte technique est replié.',
+  listUnavailable: 'Non connecté',
+  previousPage: 'Précédent',
+  nextPage: 'Suivant',
 }
 
 const de: Record<string, string> = {
@@ -945,6 +980,13 @@ const de: Record<string, string> = {
   preferencesHint: "Der Host speichert diese Schalter; sie gelten ab dem nächsten Aufruf",
   preferenceSynced: "Mit Host synchronisiert",
   preferenceLocal: "Nur lokal",
+  recordSource: 'Quellaufzeichnung · zur Prüfung',
+  technicalRecords: 'Technische Einträge',
+  showTechnical: 'Technische Einträge anzeigen',
+  noBusinessItems: 'Keine fachlichen Einträge; technischer Kontext ist eingeklappt.',
+  listUnavailable: 'Nicht angebunden',
+  previousPage: 'Zurück',
+  nextPage: 'Weiter',
 }
 
 const ru: Record<string, string> = {
@@ -1067,6 +1109,13 @@ const ru: Record<string, string> = {
   preferencesHint: "Хост сохраняет эти переключатели; они вступят в силу при следующем вызове",
   preferenceSynced: "Синхронизировано с хостом",
   preferenceLocal: "Только локально",
+  recordSource: 'Исходная запись · для сверки',
+  technicalRecords: 'Технические записи',
+  showTechnical: 'Показать технические записи',
+  noBusinessItems: 'Деловых записей нет; технический контекст свёрнут.',
+  listUnavailable: 'Не подключено',
+  previousPage: 'Назад',
+  nextPage: 'Вперёд',
 }
 
 const pt: Record<string, string> = {
@@ -1189,6 +1238,13 @@ const pt: Record<string, string> = {
   preferencesHint: "O host persiste estes interruptores; eles valem na próxima chamada",
   preferenceSynced: "Sincronizado com o host",
   preferenceLocal: "Somente local",
+  recordSource: 'Registro original · para conferência',
+  technicalRecords: 'Registros técnicos',
+  showTechnical: 'Mostrar registros técnicos',
+  noBusinessItems: 'Sem itens de negócio; o contexto técnico está recolhido.',
+  listUnavailable: 'Não conectado',
+  previousPage: 'Anterior',
+  nextPage: 'Próxima',
 }
 
 export const AMP_COPY: Readonly<Record<Locale, Record<string, string>>> = {

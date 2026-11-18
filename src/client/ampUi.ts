@@ -54,6 +54,8 @@ import DensitySmall from '@mui/icons-material/DensitySmall'
 import Autorenew from '@mui/icons-material/Autorenew'
 import Memory from '@mui/icons-material/Memory'
 import SearchIcon from '@mui/icons-material/Search'
+import { currentLocale } from './i18n.js'
+import { ampT } from './ampCopy.js'
 
 type Loose = React.ComponentType<Record<string, unknown>>
 type Icon = React.ComponentType<Record<string, unknown>>
@@ -447,9 +449,10 @@ export function EmptyState(props: {
 
 export function LoadingRows(props: { readonly rows?: number; readonly label?: string }): React.ReactElement {
   const rows = props.rows ?? 3
+  const label = props.label ?? ampT(currentLocale())('loading')
   return h(
     M.Stack,
-    { spacing: 1, 'aria-busy': true, 'aria-label': props.label ?? 'Loading' },
+    { spacing: 1, 'aria-busy': true, 'aria-label': label },
     ...Array.from({ length: rows }, (_, index) => h(M.Skeleton, {
       key: index,
       variant: 'rounded',

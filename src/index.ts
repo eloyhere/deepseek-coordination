@@ -207,7 +207,7 @@ export async function apply(ctx: Context, config: CoordinationConfig): Promise<v
           host,
           notifications,
           dialogs,
-          version: '0.31.1',
+          version: '0.31.2',
           clientGraph,
           sync: () => sync.status(),
           // `/amp/context` is polled by the conversation panel, so it must stay
